@@ -1,0 +1,12 @@
+git rm -r --cached yumi_gym/envs/__pycache__/
+git rm -r --cached output/# 忽略所有的 Python 缓存
+__pycache__/
+*.pyc
+
+# 忽略运行日志和输出数据
+logs/
+output/
+*.h5
+
+# 忽略模型权重等大文件（如果需要的话）
+checkpoint/

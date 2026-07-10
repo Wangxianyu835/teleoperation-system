@@ -1,0 +1,248 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from timm.layers import DropPath
+from einops import rearrange
+import math
+from functools import partial
+
+class Mlp(nn.Module):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+
+class Attention(nn.Module):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = qk_scale or head_dim ** -0.5
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x):
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+class Block(nn.Module):
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, 
+                 drop=0., attn_drop=0., drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn = Attention(
+            dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, 
+            attn_drop=attn_drop, proj_drop=drop)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(
+            in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+
+    def forward(self, x):
+        x = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        return x
+
+class PoseTransformer(nn.Module):
+    def __init__(self, num_frame=3, in_num_joints=25, in_chans=3, out_num_joint=17, out_chans=1, 
+                 embed_dim_ratio=32, depth=4, num_heads=8, mlp_ratio=2., 
+                 qkv_bias=True, qk_scale=None, drop_rate=0., attn_drop_rate=0., 
+                 drop_path_rate=0.2, norm_layer=None):
+        """
+        3D人体姿态估计的PoseTransformer模型
+        Args:
+            num_frame (int): 输入帧数，默认3帧
+            in_num_joints (int): 输入关节点数量，默认25个关节（人体关节）
+            in_chans (int): 输入通道数，3D关节点有3个通道：(x,y,z)坐标
+            out_num_joints (int): 输出关节点数量，默认17个关节（机器人手关节）
+            out_chans (int): 输出通道数，一维向量，即输出关节角度值
+            embed_dim_ratio (int): 空间嵌入维度比率
+            depth (int): Transformer块的深度
+            num_heads (int): 注意力头的数量
+            mlp_ratio (int): MLP隐藏层维度与嵌入维度的比例
+            qkv_bias (bool): QKV线性变换是否使用偏置项
+            qk_scale (float): QK缩放因子，如果不设置则默认为head_dim**-0.5
+            drop_rate (float): Dropout概率
+            attn_drop_rate (float): 注意力Dropout概率
+            drop_path_rate (float): 随机深度路径Dropout概率
+            norm_layer: 归一化层类型，默认LayerNorm
+        """
+        super().__init__()
+        
+        norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
+        embed_dim = embed_dim_ratio * in_num_joints
+        out_dim = out_num_joint * out_chans    
+        self.out_dim = out_dim
+        self.out_chans = out_chans
+        self.out_num_joint = out_num_joint  # 记录输出关节数量
+        
+        # 空间补丁嵌入（处理人体3D坐标输入）
+        self.Spatial_patch_to_embedding = nn.Linear(in_chans, embed_dim_ratio)
+        self.Spatial_pos_embed = nn.Parameter(torch.zeros(1, in_num_joints, embed_dim_ratio))
+        self.Temporal_pos_embed = nn.Parameter(torch.zeros(1, num_frame, embed_dim))
+        self.pos_drop = nn.Dropout(p=drop_rate)
+
+        # 随机深度衰减
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
+
+        # 空间和时序Transformer块
+        self.Spatial_blocks = nn.ModuleList([
+            Block(
+                dim=embed_dim_ratio, 
+                num_heads=num_heads, 
+                mlp_ratio=mlp_ratio, 
+                qkv_bias=qkv_bias, 
+                qk_scale=qk_scale,
+                drop=drop_rate, 
+                attn_drop=attn_drop_rate, 
+                drop_path=dpr[i], 
+                norm_layer=norm_layer
+            ) for i in range(depth)
+        ])
+        self.blocks = nn.ModuleList([
+            Block(
+                dim=embed_dim, 
+                num_heads=num_heads, 
+                mlp_ratio=mlp_ratio, 
+                qkv_bias=qkv_bias, 
+                qk_scale=qk_scale,
+                drop=drop_rate, 
+                attn_drop=attn_drop_rate, 
+                drop_path=dpr[i], 
+                norm_layer=norm_layer
+            ) for i in range(depth)
+        ])
+
+        self.Spatial_norm = norm_layer(embed_dim_ratio)
+        self.Temporal_norm = norm_layer(embed_dim)
+        self.weighted_mean = torch.nn.Conv1d(in_channels=num_frame, out_channels=1, kernel_size=1)
+
+        # 输出头：从特征映射到关节角度
+        self.head = nn.Sequential(
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, out_dim),
+        )
+        
+        # 关节角度约束层（在输出阶段应用）
+        self.joint_constraint_layer = JointConstraintLayer(out_num_joint)
+
+    def Spatial_forward_features(self, x):
+        b, c, f, p = x.shape  # [batch, channels, frames, joints]
+        x = rearrange(x, 'b c f p -> (b f) p c')
+
+        x = self.Spatial_patch_to_embedding(x)
+        x += self.Spatial_pos_embed
+        x = self.pos_drop(x)
+        
+        for blk in self.Spatial_blocks:
+            x = blk(x)
+        
+        x = self.Spatial_norm(x)
+        x = rearrange(x, '(b f) w c -> b f (w c)', f=f)
+        return x
+
+    def forward_features(self, x):
+        b = x.shape[0]
+        x += self.Temporal_pos_embed
+        x = self.pos_drop(x)
+        
+        for blk in self.blocks:
+            x = blk(x)
+
+        x = self.Temporal_norm(x)
+        x = self.weighted_mean(x)
+        x = x.view(b, 1, -1)
+        return x
+
+    def forward(self, x, lower_bounds=None, upper_bounds=None):
+        # x shape: [batch_size, frames, joints, channels] -> [batch_size, channels, frames, joints]
+        x = x.permute(0, 3, 1, 2)  # [batch, channels, frames, joints]
+        b, _, _, p = x.shape
+        
+        # 提取特征
+        x = self.Spatial_forward_features(x)  # [batch, frames, embed_dim]
+        x = self.forward_features(x)  # [batch, 1, embed_dim]
+        x = self.head(x)  # [batch, 1, out_dim]
+        x = x.squeeze(1)  # [batch, out_dim]
+        
+        # 将输出重塑为关节角度格式 [batch, out_num_joint]
+        x = x.view(b, self.out_num_joint)  # [batch, out_num_joint]
+        
+        # 在输出阶段应用关节角度约束
+        if lower_bounds is not None and upper_bounds is not None:
+            x = self.joint_constraint_layer(x, lower_bounds, upper_bounds)
+        else:
+            # 默认使用tanh映射到[-π, π]
+            x = torch.tanh(x) * math.pi
+            
+        # 重塑为最终输出格式
+        x = x.view(b, self.out_num_joint * self.out_chans)
+        return x
+
+class JointConstraintLayer(nn.Module):
+    """专门用于约束输出关节角度的层"""
+    def __init__(self, num_joints):
+        super().__init__()
+        self.num_joints = num_joints
+
+    def forward(self, angles, lower_bounds, upper_bounds):
+        """
+        Args:
+            angles: [batch, num_joints] - 预测的关节角度
+            lower_bounds: [batch, num_joints] - 每个关节的下限
+            upper_bounds: [batch, num_joints] - 每个关节的上限
+        """
+        # 确保bounds维度与angles一致
+        if lower_bounds.shape != angles.shape:
+            # 如果bounds是[batch, joint_limits]而angles是[batch, num_joints]
+            # 只取前面的关节限制
+            min_dims = min(lower_bounds.shape[1], angles.shape[1])
+            lower_subset = lower_bounds[:, :min_dims]
+            upper_subset = upper_bounds[:, :min_dims]
+            angle_subset = angles[:, :min_dims]
+            
+            # 应用约束
+            mid_point = (lower_subset + upper_subset) / 2
+            range_half = (upper_subset - lower_subset) / 2
+            constrained_angles = mid_point + range_half * torch.tanh(angle_subset)
+            
+            # 对剩余部分使用默认约束
+            if angles.shape[1] > min_dims:
+                # 报错
+                print("角度和限制不一致")
+                assert False
+            else:
+                result = constrained_angles
+        else:
+            # 直接应用约束
+            mid_point = (lower_bounds + upper_bounds) / 2
+            range_half = (upper_bounds - lower_bounds) / 2
+            result = mid_point + range_half * torch.tanh(angles)
+            
+        return result
