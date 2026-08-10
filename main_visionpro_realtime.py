@@ -27,6 +27,14 @@ from LinkerHand.utils.color_msg import ColorMsg
 
 from model.model_poseformer import PoseTransformer
 from model.angle2real import create_hand_kinematics
+from config.retarget_io import (
+    INPUT_KEY,
+    LEGACY_VISIONPRO_KEY,
+    legacy_visionpro_to_window,
+    select_hand_window,
+)
+from input_adapters.hand_keypoints import HandWindowBuffer, VISIONPRO_SOURCE
+from input_adapters.visionpro_adapter import visionpro_fingers_to_points
 
 data_tpye = 'visionpro'
 # data_tpye = 'slahmr'
@@ -1133,7 +1141,7 @@ class HandController:
                 except Exception as e:
                     ColorMsg(msg=f"关闭左手 CAN 总线失败: {e}", color="red")
 
-def vision_pro_data_process(shared_dict, stop_event):
+def _legacy_vision_pro_data_process(shared_dict, stop_event):
     """
     Vision Pro数据获取进程
     """
@@ -1270,12 +1278,22 @@ def redirection_process(shared_dict, stop_event, model_path=None):
         t_average = 0
         while not stop_event.is_set():
             # 检查是否有新的Vision Pro数据
-            vision_data = shared_dict.get('vision_pro_data', None)
+            retarget_input = shared_dict.get(INPUT_KEY, None)
+            vision_data = shared_dict.get(LEGACY_VISIONPRO_KEY, None)
             t1 = time.time()
-            if vision_data is not None:
+            selected = (
+                select_hand_window(retarget_input, preferred_side="left")
+                if retarget_input is not None
+                else None
+            )
+            if selected is not None or vision_data is not None:
                 # 转换数据格式以适应模型输入
                 # vision_data shape: (25, 3, 3) -> (1, 3, 25, 3)
-                reshaped_data = np.transpose(vision_data, (1, 0, 2))  # (3, 25, 3)
+                reshaped_data = (
+                    selected[1]
+                    if selected is not None
+                    else legacy_visionpro_to_window(vision_data)
+                )
                 reshaped_data = np.expand_dims(reshaped_data, axis=0)  # (1, 3, 25, 3)
                 # 数据乘上缩放因子
                 reshaped_data *= scaling_factor
@@ -1399,6 +1417,31 @@ def real_hand_process(shared_dict, stop_event, v_rate=1):
     
     controller.close()
     print("真实机器手进程结束")
+
+def vision_pro_data_process(shared_dict, stop_event):
+    """Publish Vision Pro data through the canonical retarget input contract."""
+    print("Vision Pro input adapter started")
+    streamer = VisionProStreamer(ip="192.168.43.20")
+    buffer = HandWindowBuffer(scale_factor=1.0)
+
+    while not stop_event.is_set():
+        latest = streamer.get_latest()
+        fingers = latest.get("left_fingers")
+        if fingers is not None:
+            points = visionpro_fingers_to_points(fingers, side="left")
+            payload = buffer.update(
+                left_hand=points,
+                timestamp=time.time(),
+                source=VISIONPRO_SOURCE,
+                metadata={"adapter": "VisionProAdapter", "side": "left"},
+            )
+            if payload is not None:
+                shared_dict[INPUT_KEY] = payload
+                shared_dict[LEGACY_VISIONPRO_KEY] = np.transpose(
+                    payload["hands"]["left"], (1, 0, 2)
+                )
+        time.sleep(0.001)
+
 
 if __name__ == '__main__':
     # 设置项目根目录
