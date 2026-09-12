@@ -159,6 +159,10 @@ python scripts/replay_hand_native.py --robot h1_2 --hand both --render --view fu
 #   --view full(默认,整机) / front(正面) / side(侧面) / hands(手部特写)
 #   --loop 0 = 无限循环；--loop 3 = 播 3 遍
 
+# ★ 答辩/报告用：三台机器人并排，各自原装手按同一份数据同步屈伸
+python scripts/show_hands_all.py --render --loop 0
+python scripts/show_hands_all.py --render --view front --loop 0
+
 # 只看映射报告（覆盖率 / 丢弃哪些自由度 / 每个关节的符号方向）
 python scripts/replay_hand_native.py --robot h1_2 --hand both --report
 
