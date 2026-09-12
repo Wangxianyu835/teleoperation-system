@@ -58,7 +58,7 @@ p.resetDebugVisualizerCamera(
 
 print(f"\n{'='*50}")
 print(f"  灵心巧手 LinkerHand 独立模型展示")
-print(f"  左手: l10v7  |  右手: l7")
+print(f"  左手: l7  |  右手: l7")
 print(f"  每只手 ~17 关节, 带完整 STL 网格")
 print(f"  鼠标滚轮可放大看手指细节")
 print(f"{'='*50}")
