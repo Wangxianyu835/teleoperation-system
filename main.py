@@ -13,6 +13,9 @@ import os
 import argparse
 import time
 
+# 动作空间维度（由机器人决定，运行期在 main() 里按 env.action_dim 覆盖）
+_ACTION_DIM = 38
+
 # 确保项目目录在Python路径中
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -23,21 +26,29 @@ from envs import SimulationEnv
 
 
 def demo_controller(obs):
-    """
-    演示用简单控制器：交替移动双臂
-    实际使用时，这里的输入来自王宪雨的重定向算法
+    """演示用简单控制器：左右臂交替摆动 + 手指缓慢开合
+
+    ⚠️ 动作向量长度由机器人决定（H1-2=38 / GR1-T2=36 / G1=28），
+       不要硬编码 28！真实长度见 env.action_dim。
+       索引含义见 env.action_joint_names（左臂7 + 右臂7 + 左手N + 右手N）。
+
+    真实遥操作时，把这里换成重定向算法的输出（obs -> action）。
     """
     import numpy as np
-    # 生成28维度的周期性关节角度
     t = time.time()
-    action = np.zeros(28)
-    # 简单的正弦波运动
-    action[0] = 0.3 * np.sin(t * 2.0)       # 左肩pitch
-    action[1] = 0.2 * np.sin(t * 1.5 + 1.0) # 左肩roll
-    action[4] = 0.5 * np.sin(t * 1.8)        # 左肘
-    action[7] = 0.3 * np.sin(t * 2.0 + 2.0)  # 右肩pitch
-    action[8] = 0.2 * np.sin(t * 1.5 + 3.0)  # 右肩roll
-    action[11] = 0.5 * np.sin(t * 1.8 + 1.0) # 右肘
+    action = np.zeros(_ACTION_DIM)
+    s = 0.3 * np.sin(t * 2.0)
+    # 左臂 7 关节（索引 0~6）
+    action[0] = s                          # shoulder_pitch
+    action[1] = 0.2 * np.sin(t * 1.5)      # shoulder_roll
+    action[3] = 0.5 * np.sin(t * 1.8)      # elbow
+    # 右臂 7 关节（索引 7~13）
+    action[7] = -s                         # shoulder_pitch
+    action[8] = 0.2 * np.sin(t * 1.5 + 3.0)
+    action[10] = 0.5 * np.sin(t * 1.8 + 1.0)   # elbow
+    # 手部（索引 14 之后）：缓慢开合
+    if _ACTION_DIM > 14:
+        action[14:] = 0.3 + 0.2 * np.sin(t * 1.2)
     return action
 
 
@@ -90,6 +101,7 @@ def main():
     args = parser.parse_args()
 
     # 交互模式
+    choice = None   # ⚠️ 必须初始化：带 --task/--demo/--benchmark 时不会进入下面的交互分支
     if args.task is None and not args.demo and not args.benchmark:
         interactive_menu()
 
@@ -124,6 +136,11 @@ def main():
         record=not args.no_record,
         data_dir=args.data_dir,
     )
+
+    # 让 demo_controller 使用当前机器人的真实动作维度
+    global _ACTION_DIM
+    _ACTION_DIM = getattr(env, 'action_dim', 38)
+    print(f"  动作空间维度: {_ACTION_DIM}")
 
     try:
         if args.task:

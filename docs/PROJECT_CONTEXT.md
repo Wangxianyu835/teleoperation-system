@@ -461,7 +461,12 @@ GitHub 用 **DataDome** 保护 `/signup` 等接口。响应头特征：`x-datado
 | 11 | 把 SSH 密钥从 `C:\Users\王宪雨\.ssh` **迁移到 `E:\ssh`**（用户不想在 C 盘存东西）|
 | 12 | 完整精读论文（13 页全文 + 68 篇参考文献）|
 | 13 | **实测验证 3 种机器人能被 PyBullet 成功加载**（H1-2=55关节 / GR1-T2=70关节 / G1=53关节）|
-| 14 | 生成本交接文档 |
+| 14 | 生成本交接文档（`docs/PROJECT_CONTEXT.md`）|
+| 15 | 排查「仿真环境到底能不能跑」，**发现 8 个问题**（详见第 12 节）|
+| 16 | **修复接口不匹配**：重写 `RobotLoader`（3 种机器人 + 关节映射表）、修 `apply_action` 动作错位、修 `SimulationEnv`、修 `main.py` |
+| 17 | **首次跑通端到端**：`test_import.py` 6 项全绿（`EXIT=0`），H1-2 + pushcube 跑 300 步无异常 |
+| 18 | 新增 `docs/INTERFACE_CONTRACT.md`（接口契约）+ `docs/TEAM_ONBOARDING.md`（队友上手指南）|
+| 19 | 用户告知：**重定向算法由队友（肖奕阳）负责，数据采集由另一位队友负责** |
 
 ### 8.2 已掌握的 Git 工作流
 
@@ -619,6 +624,97 @@ git push
 
 > **说明**：本文件已纳入 Git 版本管理（提交到 `main` 分支）。
 > 修改后请及时 commit + push，这样在**任何设备、任何新对话**中都能获取到最新上下文。
+
+---
+
+## 12. 【2026-09-12】仿真环境修复记录（★ 重要）
+
+### 12.1 修复前的真实状态
+
+> **各模块单独都写好了，但核心的 `SimulationEnv` 从未成功运行过一次。**
+
+此前的「环境已搭好」是**错觉** —— 验证过的两个脚本**都没有真正用到 `SimulationEnv`**：
+
+| 验证手段 | 为什么没发现问题 |
+|---|---|
+| `show_all.py`（能显示三机器人）| **绕过 `SimulationEnv`**，自己直接调 pybullet |
+| `test_import.py`（全绿）| 只检查「能不能 import」，`None` 也能 import 成功 |
+
+> 类比：发动机、轮子、方向盘都分别测试过能转，但**从来没把车拼起来开过一次**。
+
+### 12.2 发现并修复的 8 个问题
+
+| # | 问题 | 位置 | 症状 |
+|---|---|---|---|
+| 1 | **相对导入越界** | `envs/simulation_env.py:11-12` `from ..tasks import` | `ImportError: attempted relative import beyond top-level package`（项目根目录无 `__init__.py`）|
+| 2 | **静默吞异常** | `envs/__init__.py` 的 `try/except → SimulationEnv = None` | 致命错误被隐藏成 `None`，运行时只报 `TypeError: 'NoneType' object is not callable` |
+| 3 | **变量未定义** | `main.py:116` `if choice in ('quit','exit')` | `UnboundLocalError` → **所有命令行参数模式全崩** |
+| 4 | **假阳性自检** | `test_import.py` 只检查 import | 组件是 `None` 也报 ✓ |
+| 5 | **函数签名不匹配** | `SimulationEnv.reset()` 调 `load_robot(self.robot_type)`，但 `load_robot()` 不收参数 | `TypeError: takes 1 positional argument but 2 were given` |
+| 6 | **返回值类型不匹配** | `load_robot()` 返回 **dict**，`SimulationEnv` 当 **int** 用 | `p.getNumJoints(dict)` 崩溃 |
+| **7** | **⭐ 动作映射错位（最严重）** | `BaseTask.apply_action()` 按「第 i 个动作 → 关节索引 i」映射 | URDF **前 12 个关节是腿部**！`action[0]`（本意左肩）被送到 `left_hip_yaw_joint`（左髋）→ **手臂不动、腿乱动** |
+| 8 | **渲染判断错误** | `simulation_env.py` 的 `if self.client == p.GUI` | `client` 是连接 id（0），`p.GUI` 是类型常量（1）→ 永不相等 |
+
+### 12.3 修复后的实测结果
+
+**三种机器人的动作空间（实测 2026-09-12）：**
+
+| robot_type | 总关节 | 可动 | 左臂 | 右臂 | 左手 | 右手 | **动作维度** | `action[0]` 对应的关节索引 |
+|---|---|---|---|---|---|---|---|---|
+| `h1_2` | 55 | 51 | 7 | 7 | **12** | **12** | **38** | **13** `left_shoulder_pitch_joint` |
+| `gr1_t2` | 70 | 54 | 7 | 7 | **11** | **11** | **36** | **16** `left_shoulder_pitch_joint` |
+| `g1` | 53 | 41 | 7 | 7 | **7** | **7** | **28** | **22** `left_shoulder_pitch_joint` |
+
+> ✅ `action[0]` 现在指向**肩关节**（索引 13 / 16 / 22），不再是索引 0（腿）
+> ✅ 自动检查「动作是否误触腿部关节」→ **否**
+
+**端到端测试（首次成功）：**
+```
+$ python test_import.py
+测试6: ✓ 端到端跑通（robot_id=1, action_dim=38）
+     任务对象 = ['table', 'cube', 'target']
+所有测试完成！
+EXIT=0                                   ← 退出码 0（真·全绿）
+```
+
+### 12.4 本次新增的文件
+
+| 文件 | 用途 |
+|---|---|
+| `docs/INTERFACE_CONTRACT.md` | ⭐ **接口契约**（动作空间 / 观测空间 / 控制器接口 / HDF5 格式）—— **队友对接必读** |
+| `docs/TEAM_ONBOARDING.md` | 队友上手指南（装环境 → 拿模型 → 验证，含 7 个 FAQ）|
+
+### 12.5 新增的关键 API
+
+```python
+# RobotLoader（envs/robot_loader.py）
+loader.load_robot(robot_type)          # 'h1_2' | 'gr1_t2' | 'g1'，返回 dict
+loader.all_joints                      # {关节名: 索引}
+loader.arm_joints['left'|'right']      # 手臂关节名列表（各 7 个）
+loader.hand_joints['left'|'right']     # 灵巧手关节名列表
+loader.action_joint_names              # ★ 动作向量每个位置的关节名
+loader.action_joint_indices            # ★ 动作向量每个位置对应的 pybullet 关节索引
+loader.describe_action_space()         # 打印完整映射表
+
+# SimulationEnv（envs/simulation_env.py）
+env.action_dim                         # ★ 动作维度（不是固定 28！）
+env.action_joint_names / action_joint_indices
+env.robot_id                           # int（已修正类型）
+
+# BaseTask（tasks/base_task.py）
+task.apply_action(action, joint_indices=env.action_joint_indices)   # ★ 必须传映射
+```
+
+### 12.6 ⚠️ 仍然存在的问题（待办）
+
+| 问题 | 来源 | 影响 |
+|---|---|---|
+| `teleop_pipeline.py` 用 **TRON2(逐际动力) / xArm7** 的硬编码索引 | 早期代码 | 与论文 3 种机器人不符，需重写或废弃 |
+| `teleop_pipeline.py` **未接入 `SimulationEnv`** | 架构缺口 | 重定向算法没有标准入口（契约 C 已定义接口，待实现）|
+| `main.py` 非交互路径**仍用 `demo_controller`** | 功能缺口 | `--task xxx` 跑的不是真实遥操作 |
+| obs **缺少机器人状态向量和相机流** | 与论文的差距 | 队友 B 的 P0 任务 |
+| 相机第一人称 **eye 硬编码** `[0,0,1.5]`，未跟随头部 | 与论文的差距 | 队友 B 的 P0 任务 |
+| 相机流**只存首尾帧** | 与论文的差距 | 队友 B 的 P0 任务 |
 
 
 

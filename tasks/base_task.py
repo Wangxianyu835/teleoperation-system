@@ -57,16 +57,40 @@ class BaseTask(ABC):
         """检查任务是否完成（子类实现）"""
         return False
 
-    def apply_action(self, joint_positions: List[float]):
-        """应用关节角度到机器人"""
-        num_joints = p.getNumJoints(self.robot_id, physicsClientId=self.client)
-        for i in range(min(len(joint_positions), num_joints)):
+    def apply_action(self, joint_positions, joint_indices=None,
+                     force: float = 100.0):
+        """把关节角度指令下发到机器人
+
+        Args:
+            joint_positions: 目标角度序列（rad）
+            joint_indices:   ★ 动作向量第 i 个元素对应的 pybullet 关节索引。
+                             强烈建议显式传入（来自 RobotLoader.action_joint_indices）。
+                             不传则退化为「第 i 个动作 -> 第 i 个关节」—— 这是危险行为。
+            force:            关节电机力矩上限
+
+        ⚠️ 历史坑（已修）：旧版本固定按索引 i 映射，导致
+            action[0]（本意是左肩）被送到了 left_hip_yaw_joint（左髋＝腿），
+            整套动作全部错位 —— 表现为「手臂不动、腿在动」。
+        """
+        if self.robot_id is None:
+            raise RuntimeError("请先调用 set_robot(robot_id) 再 apply_action()")
+
+        num_joints = p.getNumJoints(self.robot_id,
+                                    physicsClientId=self.client)
+        if joint_indices is None:
+            joint_indices = list(range(len(joint_positions)))
+
+        n = min(len(joint_positions), len(joint_indices))
+        for k in range(n):
+            jidx = int(joint_indices[k])
+            if not (0 <= jidx < num_joints):
+                continue
             p.setJointMotorControl2(
                 bodyUniqueId=self.robot_id,
-                jointIndex=i,
+                jointIndex=jidx,
                 controlMode=p.POSITION_CONTROL,
-                targetPosition=joint_positions[i],
-                force=100,
+                targetPosition=float(joint_positions[k]),
+                force=force,
                 physicsClientId=self.client,
             )
 

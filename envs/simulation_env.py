@@ -8,8 +8,8 @@ import pybullet_data
 from .robot_loader import RobotLoader
 from .sensor_recorder import SensorRecorder
 from .domain_randomizer import DomainRandomizer
-from ..tasks import get_task, list_tasks
-from ..utils import MetricsTracker
+from tasks import get_task, list_tasks
+from utils import MetricsTracker
 
 
 class SimulationEnv:
@@ -33,6 +33,7 @@ class SimulationEnv:
         self.record = record
 
         # 连接 PyBullet
+        self._render = bool(render)
         if render:
             self.client = p.connect(p.GUI)
             p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
@@ -65,8 +66,20 @@ class SimulationEnv:
         # 加载地面
         self._load_ground()
 
-        # 加载机器人
-        self.robot_id = self.robot_loader.load_robot(self.robot_type)
+        # 加载机器人（load_robot 返回 dict，取 'robot' 作为 body id）
+        robot_info = self.robot_loader.load_robot(self.robot_type)
+        self.robot_id = (robot_info['robot']
+                         if isinstance(robot_info, dict) else robot_info)
+
+        # ★ 动作空间（由机器人决定，不是固定 28 维）
+        self.action_joint_names = self.robot_loader.action_joint_names
+        self.action_joint_indices = self.robot_loader.action_joint_indices
+        self.action_dim = len(self.action_joint_indices)
+        if not getattr(self, '_action_space_logged', False):
+            print(f"  [SimulationEnv] 动作空间维度 = {self.action_dim} "
+                  f"(左臂7 + 右臂7 + 左手{len(self.robot_loader.hand_joints['left'])} "
+                  f"+ 右手{len(self.robot_loader.hand_joints['right'])})")
+            self._action_space_logged = True
 
         # 创建任务
         TaskClass = get_task(self.task_name)
@@ -98,9 +111,12 @@ class SimulationEnv:
         Returns:
             obs, success, done, elapsed
         """
-        # 应用动作
+        # 应用动作（★ 必须用 action_joint_indices 映射，绝不能按位置映射到关节索引）
         if action is not None:
-            self.task.apply_action(action)
+            self.task.apply_action(
+                action,
+                joint_indices=getattr(self, 'action_joint_indices', None),
+            )
 
         # 物理步进
         p.stepSimulation(physicsClientId=self.client)
@@ -177,8 +193,10 @@ class SimulationEnv:
                           f"{status} | Time: {elapsed:.2f}s | Steps: {step_i}")
                 return success, elapsed
 
-            # 渲染步进（GUI模式下放慢速度以可视化）
-            if self.client == p.GUI:
+            # 渲染步进（GUI 模式下放慢速度以便观察）
+            # ⚠️ 旧代码是 `if self.client == p.GUI:`，但 client 是【连接 id】(0)，
+            #    p.GUI 是【连接类型常量】(1)，两者永不相等 → 已改用 self._render 标志
+            if self._render:
                 time.sleep(1.0 / 240.0)
 
         return False, self.task.max_time
