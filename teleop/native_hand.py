@@ -97,6 +97,17 @@ NATIVE_MAP = {
 # l21 真正可动的维度数（dim 1~17）
 N_MOVABLE = 17
 
+# L21 各维的关节限位（来自 l21 URDF，可用 scripts/replay_hand_angles.py
+# 里的 parse_joint_limits() 复核）。只有 --limit-mode rescale 会用到。
+L21_LIMITS = {
+    1: (-0.18, 0.18), 2: (0.0, 1.57), 3: (0.0, 1.57),
+    4: (-0.18, 0.18), 5: (0.0, 1.57), 6: (0.0, 1.57),
+    7: (-0.18, 0.18), 8: (0.0, 1.57), 9: (0.0, 1.57),
+    10: (-0.18, 0.18), 11: (0.0, 1.57), 12: (0.0, 1.57),
+    13: (-0.60, 0.60), 14: (0.0, 1.60), 15: (0.0, 1.00),
+    16: (0.0, 1.57), 17: (0.0, 1.57),
+}
+
 
 def read_joint_ranges(robot_id, client):
     """读取 {关节名: (下限, 上限)} 与 {关节名: 关节索引}
@@ -145,8 +156,23 @@ def dropped_dims(robot_type, side, mapping):
     return [d for d in DIM_NAMES if d != 0 and d not in used]
 
 
-def map_frame(row, mapping):
+def map_frame(row, mapping, limit_mode='clamp'):
     """把一帧 18 维数据映射成 {关节名: 目标角度}（已按符号与限位处理）
+
+    Args:
+        row: (18,) 一帧 L21 角度
+        mapping: build_mapping() 的输出
+        limit_mode:
+          'clamp'   （默认，忠实映射）
+                    超出原装手限位的值直接【截断】。语义准确，
+                    但数据超出原装手行程时手指会"卡"在限位上。
+          'rescale' （视觉辅助，不是真实映射）
+                    用 L21 的限位把比例线性映射到原装手的限位：
+                    保运动形状、幅度等比缩放，不会卡住。
+                    代价：改变了角度语义，报告里必须声明。
+                    ⚠️ 实测触发原因：L21 拇指 cmc_pitch 行程 0~1.0，
+                       而 H1-2 原装手 thumb_proximal_pitch 只有 -0.1~0.6
+                       -> 右撇子有 50% 的帧被截断。
 
     Returns:
         (joints: dict, n_clipped: int)
@@ -155,9 +181,16 @@ def map_frame(row, mapping):
     joints, clipped = {}, 0
     for d, jn, sg, lo, hi in mapping:
         v = sg * float(row[d])
-        if v < lo or v > hi:
-            clipped += 1
-        joints[jn] = min(max(v, lo), hi)
+        if limit_mode == 'rescale' and d in L21_LIMITS:
+            l21lo, l21hi = L21_LIMITS[d]
+            span = l21hi - l21lo
+            v = lo + (v - l21lo) / span * (hi - lo) if span > 1e-9 else lo
+            v = min(max(v, lo), hi)
+        else:
+            if v < lo or v > hi:
+                clipped += 1
+            v = min(max(v, lo), hi)
+        joints[jn] = v
     return joints, clipped
 
 

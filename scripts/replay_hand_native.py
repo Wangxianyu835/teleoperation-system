@@ -158,6 +158,12 @@ def main():
                          'front=正面 / side=侧面 / hands=手部特写')
     ap.add_argument('--loop', type=int, default=1,
                     help='播放几遍（默认 1；设 0 表示无限循环，方便演示）')
+    ap.add_argument('--limit-mode', default='clamp',
+                    choices=['clamp', 'rescale'],
+                    help='数据超出原装手限位时怎么办：'
+                         'clamp=截断（默认，忠实映射）；'
+                         'rescale=按比例缩放（保运动形状但改变语义，'
+                         '用于判断"是不是被限位卡住了"）')
     ap.add_argument('--speed', type=float, default=1.0)
     ap.add_argument('--substeps', type=int, default=0,
                     help='每帧数据推进多少个物理步（默认 0 = 自动匹配数据时间，'
@@ -303,7 +309,8 @@ def main():
                 for side, (mapping, arr, val, names) in plans.items():
                     if not val[i]:
                         continue
-                    joints, nclip = map_frame(arr[i], mapping)
+                    joints, nclip = map_frame(arr[i], mapping,
+                                              limit_mode=args.limit_mode)
                     clip[side] += nclip
                     tot[side] += len(mapping)
                     for jn, v in joints.items():
