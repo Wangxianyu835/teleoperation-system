@@ -469,6 +469,7 @@ GitHub 用 **DataDome** 保护 `/signup` 等接口。响应头特征：`x-datado
 | 18 | 新增 `docs/INTERFACE_CONTRACT.md`（接口契约）+ `docs/TEAM_ONBOARDING.md`（队友上手指南）|
 | 19 | 用户告知：**重定向算法由队友（肖奕阳）负责，数据采集由另一位队友负责** |
 | 20 | **设计并实现「离线 Vision 流水线」**：新增契约 G/H、`scripts/replay_actions.py`、`scripts/make_sample_data.py`（详见第 14 节）|
+| 21 | **接入队友的重定向输出**，用「维度范围 vs 关节限位」二分图匹配推导出目标手是 **l21**（非 l7），新增 `scripts/replay_hand_angles.py`（详见第 15 节）|
 
 ### 8.2 已掌握的 Git 工作流
 
@@ -912,6 +913,127 @@ python scripts/make_sample_data.py --kind all
 - **阶段 1（先做）**：只做**手部**（MediaPipe 关键点 → dex-retargeting → 手部关节角）
 - **阶段 2**：加上**手臂**（手腕 6DoF → IK(PINK) → 7 个手臂关节）
 - **阶段 3**：对齐论文（SMPLer-X 替代 MediaPipe、PINK IK、卡尔曼滤波）
+
+---
+
+## 15. 【2026-09-12】接入队友的重定向输出（★ 目标手是 l21，不是 l7）
+
+### 15.1 收到的数据
+
+| 项 | 值 |
+|---|---|
+| 项目内路径 | **`datasets/raw/retarget_twohand_153542.h5`**（96 KB）|
+| 原始来源 | `D:\xwechat_files\...\twohand_angles_153542_none_warmstart - 副本.h5` |
+| 队友的模型 | `mytrans/checkpoint/models/twohand_h5/linker/none_warmstart/model_best.pth` |
+| 说明 | **自训练模型**（不是论文的 dex-retargeting）；目标是 `linker` 灵巧手 |
+
+文件结构：
+```
+left_angles / right_angles  (557, 18)  float32
+left_valid  / right_valid   (557,)     bool     ← 无效帧 = 全零帧
+timestamps                  (557,)     float64  0.174 ~ 18.99 s
+attrs: checkpoint / input_file / left_coordinate_mode / output_shape=[18]
+```
+
+### 15.2 数据质量
+
+| 项 | 结果 |
+|---|---|
+| 总帧 / 有效帧 | 557 / **512（91.9%）** |
+| **有效帧范围** | **第 25 ~ 536 帧**（首尾各约 25 帧无效 + 全零）|
+| 时长 / 帧率 | 17.00 s / 30.3 FPS |
+| 有变化的维度 | 16 / 18 |
+| ⚠️ 帧间跳变（>0.3 rad）| **34/511，最大 1.4634 rad（83.8°）** → **建议加平滑（卡尔曼滤波）** |
+
+> ✅ `*_valid` 标记与全零帧**完全对应**，设计规范，可直接用于过滤。
+
+### 15.3 ★★★ 关键发现：目标手是 `l21`，**不是** `l7`
+
+用「**每个维度的实测范围** vs **每个关节的限位**」做**二分图最优匹配**（`scipy.optimize.linear_sum_assignment`），
+遍历 LinkerHand 全部 15 个型号：
+
+| 型号 | 关节数 | 可行匹配 | 越界维度 |
+|---|---|---|---|
+| **l21_left / l21_right** | **17** | **17/18** | **1** ← **最吻合** |
+| g20 / l25 | 21 | 17/18 | 1 |
+| l20_right | 21 | 14/18 | 4 |
+| l10 / l10v6 / l10v7 | 20 | 11/18 | 7 |
+| **l7_left / l7_right** | 17 | **11/18** | **7** ← **差很多** |
+
+**决定性证据**（数据范围精确落在 l21 关节限位内）：
+
+```
+dim 13 [-0.5997, -0.5875] ↔ thumb_cmc_roll    (±0.600)   精确到 0.0003  ★
+dim 14 [+0.0067, +1.5953] ↔ thumb_cmc_yaw     (0~1.600)  精确到 0.002   ★
+dim 15 [+0.0002, +0.9549] ↔ thumb_cmc_pitch   (0~1.000)
+dim  1 [+0.1771, +0.1800] ↔ index_mcp_roll    (±0.180)
+dim  4 [-0.1258, +0.1798] ↔ middle_mcp_roll   (±0.180)
+```
+
+> 🔴 **必须统一的重要差异**：
+> 项目里 `teleop/hand_interface.py`（注释「LinkerHand l7 的 17 个 UDP 关节」）
+> 和 `show_hand.py` 用的是 **l7**（17 关节，**没有** `*_mcp_roll` 侧摆关节），
+> 但**队友的重定向目标是 `l21`**（多出 4 个 `*_mcp_roll`）。
+> **若两边不统一，手部动作会对不上。**
+
+### 15.4 推导出的映射（18 维 → l21 的 17 关节）
+
+```
+dim 0                → 占位（恒 0）
+dim 1,2,3            → index:  mcp_roll, mcp_pitch, pip
+dim 4,5,6            → middle: mcp_roll, mcp_pitch, pip
+dim 7,8,9            → ring:   mcp_roll, mcp_pitch, pip
+dim 10,11,12         → pinky:  mcp_roll, mcp_pitch, pip
+dim 13,14,15,16,17   → thumb:  cmc_roll, cmc_yaw, cmc_pitch, mcp, ip
+```
+
+**顺序 = l21 的 URDF 顺序**（即「每 3 个一组 = (侧摆, MCP屈曲, PIP屈曲)」）
+
+**交叉验证**：`scripts/replay_hand_angles.py` 加载 `linkerhand_l21_right.urdf` 后报告
+```
+可驱动的动作维度: 17 / 17
+```
+→ 映射表里的 17 个关节名在 URDF 中**全部命中** ✅
+（若误按 l7 映射，会有关节名找不到，数量就会少于 17）
+
+### 15.5 新增脚本：`scripts/replay_hand_angles.py`
+
+```powershell
+# ① 静态检查（维度 / 范围 / 越界 / 跳变）—— 不渲染
+python scripts/replay_hand_angles.py --check --hand right
+
+# ② GUI 可视化回放（弹 pybullet 窗口，能看见手指动）
+python scripts/replay_hand_angles.py --hand right --render
+python scripts/replay_hand_angles.py --hand both --render --smooth 5
+
+# ③ 无头回放（自动验证，不弹窗）
+python scripts/replay_hand_angles.py --hand both --headless-replay
+```
+
+### 15.6 实测结果（2026-09-12）
+
+```
+【静态检查】right   维度 18   总帧 557   有效帧 512
+  映射检查: OK=17  越界=0  未映射=1
+  帧间跳变(>0.3rad): 34/511   最大 1.4634 rad (83.8°)
+
+【回放】l21_right
+  已加载 linkerhand_l21_right.urdf：17 个关节
+  可驱动的动作维度: 17
+  回放完成：512 帧
+  末帧关节角: index_mcp_roll +0.1794 / index_pip +1.1378 / middle_pip +0.6117 ...
+结论: 所有映射维度都落在 l21 关节限位内  [OK]
+```
+
+### 15.7 ⚠️ 仍然存在的差距（待解决）
+
+| # | 问题 | 说明 |
+|---|---|---|
+| 1 | **只有手指、没有手臂** | 契约H 需要 38/36/28 维（含双臂各 7），当前输出只有手部 |
+| 2 | **维度 18 ≠ 契约H** | 需要「适配器」把 18 维映射成目标机器人的完整 `action` |
+| 3 | **手型号不一致** | 队友目标是 **l21**，项目里手接口是 **l7** |
+| 4 | **跳变需平滑** | 34/511 帧 >0.3 rad，最大 83.8° → 按论文建议加**卡尔曼滤波** |
+| 5 | 与论文不同 | 队友用的是**自训练模型**（`mytrans`）+ LinkerHand，论文是 **dex-retargeting** + Inspire/Fourier/Unitree 手 |
 
 
 

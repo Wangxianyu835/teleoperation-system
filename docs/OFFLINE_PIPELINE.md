@@ -173,3 +173,91 @@ python scripts/replay_actions.py --file xxx.h5 --render
 # ⑤ 查看某机器人的动作空间定义
 python scripts/replay_actions.py --describe --robot h1_2
 ```
+
+---
+
+# 8. 队友的重定向输出已接入（★ 目标手是 l21）
+
+> 本节记录 2026-09-12 收到队友数据后的分析与映射推导，**队友A 必须确认**。
+
+## 8.1 收到的数据
+
+```
+datasets/raw/retarget_twohand_153542.h5      ← 项目内路径（原始文件在微信目录，已复制）
+  left_angles / right_angles  (557, 18)  float32
+  left_valid  / right_valid   (557,)     bool     ← 无效帧 = 全零帧
+  timestamps                  (557,)     float64  0.174 ~ 18.99 s（30.3 FPS）
+  attrs: checkpoint=mytrans/.../linker/none_warmstart/model_best.pth
+         input_file=visual_hand_data_20260912_153542.h5
+         output_shape=[18]
+```
+
+**数据质量**：有效帧 512/557（91.9%），**有效范围 = 第 25 ~ 536 帧**（首尾各约 25 帧无效）。
+
+## 8.2 ★ 关键结论：目标手是 **`l21`**，不是 `l7`
+
+用「每个维度的实测范围」与「每个关节的限位」做**二分图最优匹配**，遍历全部 15 个型号：
+
+| 型号 | 关节数 | 可行匹配 | 越界 |
+|---|---|---|---|
+| **l21** | **17** | **17/18** | **1** ← **最吻合** |
+| g20 / l25 | 21 | 17/18 | 1 |
+| l7 | 17 | 11/18 | 7 |
+
+**决定性证据**：
+```
+dim 13 [-0.5997, -0.5875] ↔ thumb_cmc_roll  (±0.600)  精确到 0.0003
+dim 14 [+0.0067, +1.5953] ↔ thumb_cmc_yaw   (0~1.600) 精确到 0.002
+```
+
+> 🔴 **`hand_interface.py` / `show_hand.py` 用的是 `l7`（无 `*_mcp_roll`），
+> 而队友模型的目标是 `l21`（多 4 个侧摆关节）。两边必须统一！**
+
+## 8.3 映射表（18 维 → l21 的 17 关节）
+
+```
+dim 0                → 占位（恒 0）
+dim 1,2,3            → index:  mcp_roll, mcp_pitch, pip
+dim 4,5,6            → middle: mcp_roll, mcp_pitch, pip
+dim 7,8,9            → ring:   mcp_roll, mcp_pitch, pip
+dim 10,11,12         → pinky:  mcp_roll, mcp_pitch, pip
+dim 13,14,15,16,17   → thumb:  cmc_roll, cmc_yaw, cmc_pitch, mcp, ip
+```
+**顺序 = l21 URDF 顺序**，交叉验证：加载 l21 URDF 后「可驱动的动作维度 17/17」全部命中。
+
+## 8.4 回放脚本：`scripts/replay_hand_angles.py`
+
+```powershell
+# 静态检查（维度/范围/越界/跳变）
+python scripts/replay_hand_angles.py --check --hand right
+
+# GUI 可视化（能看见手指动）
+python scripts/replay_hand_angles.py --hand right --render
+python scripts/replay_hand_angles.py --hand both --render --smooth 5
+
+# 无头回放（自动验证）
+python scripts/replay_hand_angles.py --hand both --headless-replay
+```
+
+## 8.5 给队友A 的反馈
+
+| # | 反馈 | 建议 |
+|---|---|---|
+| 1 | ✅ **有效性标记设计规范** | `*_valid` 与全零帧完全对应，很好 |
+| 2 | ✅ **目标手已识别为 l21** | 请确认这个理解是否正确 |
+| 3 | ⚠️ **有 34/511 帧跳变 > 0.3 rad（最大 83.8°）** | 建议按论文加**卡尔曼滤波**平滑 |
+| 4 | ⚠️ **首尾各约 25 帧全零** | 是检测失败还是手张开？请在导出时说明 |
+| 5 | ❓ **18 维的顺序定义** | 我按「范围 vs 限位」推导如上，**请确认** |
+| 6 | ❓ **只有手指、没有手臂** | 契约H 需要完整 `action`（含双臂各 7），后续如何补？ |
+| 7 | ❓ **dim 0 恒 0** | 是占位、手腕、还是没用上？ |
+
+## 8.6 下一步建议
+
+**短期（可立即做）**：
+```powershell
+# 让重定向的师兄跑一下 GUI 回放，肉眼确认动作是否合理
+python scripts/replay_hand_angles.py --hand both --render
+```
+
+**中期**：写一个「适配器」把 18 维 → 目标机器人的完整 `action`（38/36/28 维），
+再走 `replay_actions.py` 灌进仿真环境。
