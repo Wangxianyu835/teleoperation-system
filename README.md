@@ -107,17 +107,49 @@ pip install -r requirements.txt
 
 ## 四、使用方法
 
+### 基础入口
+
 ```bash
+python test_import.py                       # 环境自检（6 项，建议先跑这个）
 python main.py                              # 列出所有任务并交互式选择
 python main.py --task pushcube              # 运行指定任务
 python main.py --demo                       # 演示模式（无控制器）
-python main.py --benchmark                  # 对 Level 1 任务做基准测试
+python main.py --benchmark --trials 3       # 对 Level 1 任务做基准测试
 python main.py --task pushcube --no-render  # 无头模式
+python main.py --robot gr1_t2 --task pickcube   # 切换机器人
 
 python show_all.py                          # 并排展示三种机器人
 python show_hand.py                         # 展示 LinkerHand 灵巧手
-python test_import.py                       # 自检所有模块能否正常导入
 python test_camera.py                       # 测试摄像头
+```
+
+### 离线 Vision 流水线（核心工作流）
+
+> 📄 详见 [`docs/OFFLINE_PIPELINE.md`](docs/OFFLINE_PIPELINE.md)　|　接口定义见 [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md)
+
+```bash
+# 查看某机器人的动作空间定义（38/36/28 维的完整关节映射）
+python scripts/replay_actions.py --describe --robot h1_2
+
+# 用假数据验证整条链路（不需要真实数据）
+python scripts/replay_actions.py --dummy --robot h1_2 --task pushcube --no-render
+
+# 回放重定向算法输出的动作序列（契约H 格式）
+python scripts/replay_actions.py --file datasets/actions/xxx.h5
+
+# 带可视化
+python scripts/replay_actions.py --file xxx.h5 --render
+
+# 生成契约 G/H 的示例数据文件
+python scripts/make_sample_data.py --kind all
+```
+
+### 离线流水线三方分工
+
+```
+队友B 采集手部数据  →  队友A 做重定向  →  仿真平台回放
+  (契约G)               (契约H)          (replay_actions.py)
+ human_hand.h5          actions.h5
 ```
 
 ---
