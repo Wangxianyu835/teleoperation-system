@@ -26,7 +26,10 @@ try:
 except Exception:
     pass
 
-from teleop.filters import detect_bad_frames, repair_bad_frames  # noqa: E402
+from teleop.filters import (  # noqa: E402
+    detect_bad_frames, detect_identity_swaps, repair_bad_frames,
+    repair_stream,
+)
 
 
 def banner(t):
@@ -134,12 +137,33 @@ def main():
            bool(ok_inject and ok_no_fp),
            f'注入帧精确检出；真实快动作零误报；本次数据检出 {n_bad} 个塌零帧')
 
-    part2(args, results, record, L, R, LV, RV, ts, bad_info)
+    # ---------------- [3b] 左右手身份切换 ----------------
+    print()
+    print('[3b] 左右手身份切换检测（MediaPipe 标签污染）')
+    swaps = detect_identity_swaps(L, R, LV, RV)
+    for s in swaps:
+        print(f'    {s["frame"]}: {s["side"]} 的标签被 {s["other"]} 污染  '
+              f'd_same={s["d_same"]:.4f}  d_cross={s["d_cross"]:.4f}  '
+              f'另一侧同时消失={s["other_lost"]}')
+    if not swaps:
+        print('    未发现身份切换')
+    # 自检：关掉 valid 门控后会误报多少？（证明门控必要）
+    no_gate = detect_identity_swaps(L, R, LV, RV, use_valid_gate=False)
+    has535 = any(s['frame'] == 535 and s['side'] == 'right' for s in no_gate)
+    ok_swap = (len(swaps) == 1 and swaps[0]['frame'] == 535
+               and swaps[0]['side'] == 'right'
+               and swaps[0]['other_lost'])
+    print(f'    自检 关闭 valid 门控 -> 误报 {len(no_gate)} 处'
+          f'（其中含 535 吗: {has535}）；说明「另一侧同时消失」这个门控是必要的')
+    record('身份切换检测精确（只命中 right[535]，0 误报）', bool(ok_swap),
+           f'检出 {len(swaps)} 处；关掉 valid 门控会误报 {len(no_gate)} 处')
+
+    part2(args, results, record, L, R, LV, RV, ts, bad_info, swaps)
     summary(results)
 
 
 # ----------------------------------------------------------------------
-def part2(args, results, record, L, R, LV, RV, ts, bad_info):
+def part2(args, results, record, L, R, LV, RV, ts, bad_info, swaps):
     """[4] 映射一致性 + [5] 无头回放"""
     import importlib.util
     spec = importlib.util.spec_from_file_location(
@@ -193,8 +217,10 @@ def part2(args, results, record, L, R, LV, RV, ts, bad_info):
         A = L if side == 'left' else R
         V = LV if side == 'left' else RV
         bad = bad_info.get(side, [])
-        # bad 是【绝对下标】：先修完整序列，再筛有效帧
-        arr = (repair_bad_frames(A, bad) if bad else A)[V]
+        swap_f = [s['frame'] for s in swaps if s['side'] == side]
+        # bad / swap_f 都是【绝对下标】：先修完整序列，再筛有效帧
+        # 组合策略：身份切换帧「保持」、塌零帧「插值」
+        arr = repair_stream(A, V, bad, swap_f)[0][V]
         cid = p.connect(p.DIRECT)
         try:
             world = os.path.dirname(urdf)

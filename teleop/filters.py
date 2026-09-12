@@ -385,8 +385,178 @@ def detect_bad_frames(seq, valid=None, near_zero=0.05, min_dims=10,
     return [int(k) for k in bad]
 
 
+def hold_last_valid(seq, bad_frames, valid=None):
+    """把坏帧替换成【上一个有效帧】的姿态（保持不动，不插值）
+
+    ★ 与 repair_bad_frames（线性插值）的区别（2026-09-12 实测总结）
+    -----------------------------------------------------------------
+      - **插值** 适合「孤立单帧抖动」：前后帧都可信，取中间值最自然
+      - **保持** 适合「左右手身份切换」：**后一帧同样不可信**，
+        插值会被错误的后一帧拉偏
+
+    实例：right[535] 是 MediaPipe 把左手误标成右手（left_valid[535] 变 False），
+    而 right[536] 也还带着左手的影子（与 right[534] 的 RMSE 0.316，
+    正常相邻帧只有 ~0.03）。此时：
+        插值 -> 534 与 536 之间取中，会被 536 拉偏
+        保持 -> 直接沿用 534，干净
+
+    Args:
+        seq: (T, D)
+        bad_frames: 坏帧的【绝对下标】列表
+        valid: (T,) bool；None 表示全部有效（用于找"上一个有效帧"）
+
+    Returns:
+        (T, D) 修复后的序列（不修改原数组）
+    """
+    seq = np.asarray(seq, dtype=np.float64)
+    out = seq.copy()
+    if not bad_frames:
+        return out
+    T = seq.shape[0]
+    ok = (np.ones(T, bool) if valid is None
+          else np.asarray(valid).astype(bool))
+    for i in bad_frames:
+        j = i - 1
+        while j >= 0 and (not ok[j] or j in bad_frames):
+            j -= 1
+        if j < 0:                     # 前面没有可用帧 -> 往后找
+            j = i + 1
+            while j < T and (not ok[j] or j in bad_frames):
+                j += 1
+        if 0 <= j < T:
+            out[i] = seq[j]
+    return out
+
+
+# ----------------------------------------------------------------------
+def detect_identity_swaps(left, right, left_valid=None, right_valid=None,
+                          ratio=0.5, min_gap=0.05, use_valid_gate=True):
+    """检测「左右手身份切换」（一方从画面消失，导致另一方标签被污染）
+
+    ★ 背景（2026-09-12 实测实例 right[535]）
+    ----------------------------------------
+        left_valid[535] 由 True 变 False（左手从画面消失）
+        right[535] 相对 right[534] 突变 1.4546 rad
+        但 right[535] 与 left[534] 的 RMSE 只有 0.0441
+        而 right[534] 的邻居全是 R[53x]（0.0366 / 0.0455 / 0.0618）
+        => MediaPipe 把原来的左手重新标成了右手
+
+    判据（不依赖原始关键点，只用角度 + valid 就能验）
+    ------------------------------------------------
+      对第 t 帧、第 s 侧，同时满足：
+        1. t-1 与 t 在 s 侧都有效
+        2. d_same  = RMSE(X_s[t],     X_s[t-1])      「与自己前一帧的距离」
+        3. d_cross = RMSE(X_s[t],     X_other[t-1])  「与另一侧前一帧的距离」
+           （要求另一侧 t-1 有效）
+        4. d_cross < ratio * d_same  且  d_same > min_gap
+      => 判为身份切换
+
+    Args:
+        left, right: (T, D) 两侧角度
+        left_valid, right_valid: (T,) bool 或 None
+        ratio: d_cross 相对 d_same 的倍数阈值（默认 0.5）
+        min_gap: d_same 至少多大才算「突变」（rad）
+        use_valid_gate: 是否要求「另一侧刚消失/本侧有效」这类 valid 线索；
+                        False 则纯看距离比
+
+    Returns:
+        list[dict]: 每项 {frame, side, other, d_same, d_cross,
+                         other_lost} —— other_lost=True 表示另一侧在同一帧
+                         或前一帧从有效变无效（更强的证据）
+    """
+    left = np.asarray(left, dtype=np.float64)
+    right = np.asarray(right, dtype=np.float64)
+    T = left.shape[0]
+    if T < 2:
+        return []
+    lv = (np.ones(T, bool) if left_valid is None
+          else np.asarray(left_valid).astype(bool))
+    rv = (np.ones(T, bool) if right_valid is None
+          else np.asarray(right_valid).astype(bool))
+
+    def rmse(a, b):
+        return float(np.sqrt(np.mean((np.asarray(a)
+                                      - np.asarray(b)) ** 2)))
+
+    out = []
+    for t in range(1, T):
+        for side, (X, V, Xo, Vo, oname) in (
+                ('left', (left, lv, right, rv, 'right')),
+                ('right', (right, rv, left, lv, 'left'))):
+            if not (V[t] and V[t - 1]):
+                continue                    # 本侧至少要连续两帧有效
+            if not Vo[t - 1]:
+                continue                    # 另一侧前一帧无效 -> 没得比
+            d_same = rmse(X[t], X[t - 1])
+            if d_same <= min_gap:
+                continue                    # 本侧没突变
+            d_cross = rmse(X[t], Xo[t - 1])
+            if d_cross >= ratio * d_same:
+                continue                    # 并不更像对面
+            # ★ 决定性旁证：另一侧在【本帧】是否消失？
+            #   「一方从画面消失」是身份切换的【必要条件】。
+            #   只靠 RMSE 比值会误报真实的快速运动（实测 345/346/353/378/
+            #   383/429 都是真实快动作，只有 535 伴随 left_valid 变 False）。
+            other_lost = (not Vo[t])
+            if use_valid_gate and not other_lost:
+                continue
+            out.append({
+                'frame': int(t), 'side': side, 'other': oname,
+                'd_same': d_same, 'd_cross': d_cross,
+                'other_lost': bool(other_lost),
+            })
+    return out
+
+
+def repair_stream(arr, valid, bad_frames, swap_frames):
+    """组合修复：身份切换帧用「保持」、塌零帧用「插值」
+
+    ★ 顺序有讲究：先对身份切换帧做 hold 把它们改干净，
+    后面的插值才会用到【正确的】邻居。
+
+    Args:
+        arr: (T, D) 原始角度
+        valid: (T,) bool
+        bad_frames: detect_bad_frames 返回的塌零帧（绝对下标）
+        swap_frames: detect_identity_swaps 返回的身份切换帧（绝对下标）
+
+    Returns:
+        (T, D) 修复后的序列
+    """
+    swap_frames = sorted(set(int(f) for f in swap_frames))
+    out = hold_last_valid(arr, swap_frames, valid)
+    rest = [int(f) for f in bad_frames if int(f) not in set(swap_frames)]
+    if rest:
+        out = repair_bad_frames(out, rest)
+    return out, swap_frames, rest
+
+
+def print_identity_swap_report(swaps, title='左右手身份切换检测'):
+    """打印身份切换报告"""
+    print()
+    print('=' * 96)
+    print(title)
+    print('=' * 96)
+    if not swaps:
+        print('  未发现左右手身份切换  [OK]')
+    else:
+        print(f'  发现 {len(swaps)} 处：')
+        print(f'  {"帧":>6} {"侧":>6} {"换成了谁":>9} {"d_same":>9} '
+              f'{"d_cross":>9}  另一侧同时消失')
+        for s in swaps:
+            print(f'  {s["frame"]:>6} {s["side"]:>6} {s["other"]:>9} '
+                  f'{s["d_same"]:>9.4f} {s["d_cross"]:>9.4f}  '
+                  f'{"是" if s["other_lost"] else "否"}')
+        print()
+        print('  建议：这些帧用 hold_last_valid()【保持上一有效姿态】修复，'
+              '不要用插值')
+        print('        （插值会被同样受污染的下一帧拉偏）')
+    print('=' * 96)
+
+
 def repair_bad_frames(seq, bad_frames):
     """把坏帧用「前后帧线性插值」替换（只用于真正的塌零帧）
+
 
     Args:
         seq: (T, D)

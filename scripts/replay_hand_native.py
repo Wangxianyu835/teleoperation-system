@@ -58,7 +58,10 @@ try:
 except Exception:
     pass
 
-from teleop.filters import detect_bad_frames, repair_bad_frames  # noqa: E402
+from teleop.filters import (  # noqa: E402
+    detect_bad_frames, detect_identity_swaps, print_identity_swap_report,
+    repair_stream,
+)
 
 # 映射表与工具统一放在 teleop/native_hand.py（正式接口，可被其它代码复用）
 from teleop.native_hand import (  # noqa: E402
@@ -126,6 +129,18 @@ def main():
     robot_id = loader.load_robot(args.robot)['robot']
 
     sides = ['left', 'right'] if args.hand == 'both' else [args.hand]
+
+    # ---- 先做「左右手身份切换」检测（必须两侧一起看）----
+    # 场景：一手从画面消失时，MediaPipe 会把另一只手误标到它头上，
+    #       表现为「本侧突变 + 另一侧同时消失」。实测 right[535] 就是这种。
+    swaps = detect_identity_swaps(
+        data['left_angles'], data['right_angles'],
+        data['left_valid'], data['right_valid'])
+    print_identity_swap_report(swaps, '左右手身份切换检测（MediaPipe 标签污染）')
+    swap_by_side = {}
+    for s in swaps:
+        swap_by_side.setdefault(s['side'], []).append(s['frame'])
+
     plans = {}
     for side in sides:
         ranges, names = read_joint_ranges(robot_id, cid)
@@ -145,9 +160,19 @@ def main():
         arr = data[f'{side}_angles']
         val = data[f'{side}_valid']
         bad = detect_bad_frames(arr, val)
-        if bad and not args.no_repair:
-            arr = repair_bad_frames(arr, bad)
-            print(f'  已修复 {len(bad)} 个塌零坏帧（绝对下标）{bad}')
+        fronts = sorted(set(swap_by_side.get(side, [])))
+        if args.no_repair:
+            if fronts or bad:
+                print(f'  检出 身份切换 {fronts} / 塌零 {bad}'
+                      f'（--no-repair，未修复）')
+        else:
+            arr, held, interp = repair_stream(arr, val, bad, fronts)
+            if held:
+                print(f'  已【保持上一有效姿态】修复身份切换帧: {held}')
+            if interp:
+                print(f'  已【线性插值】修复塌零帧: {interp}')
+            if not held and not interp:
+                print('  未检出需要修复的帧  [OK]')
         plans[side] = (mapping, arr, val, names)
 
     if args.report:

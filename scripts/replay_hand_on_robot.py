@@ -44,7 +44,10 @@ try:
 except Exception:
     pass
 
-from teleop.filters import detect_bad_frames, repair_bad_frames  # noqa: E402
+from teleop.filters import (  # noqa: E402
+    detect_bad_frames, detect_identity_swaps, print_identity_swap_report,
+    repair_stream,
+)
 
 # 各机器人「手基座 link」的候选名（按优先级）
 HAND_BASE_CANDIDATES = {
@@ -354,6 +357,16 @@ def main():
 
     mounts = {}
     sides = ['left', 'right'] if args.hand == 'both' else [args.hand]
+
+    # ---- 先做「左右手身份切换」检测（必须两侧一起看）----
+    swaps = detect_identity_swaps(
+        data['left_angles'], data['right_angles'],
+        data['left_valid'], data['right_valid'])
+    print_identity_swap_report(swaps, '左右手身份切换检测（MediaPipe 标签污染）')
+    swap_by_side = {}
+    for s in swaps:
+        swap_by_side.setdefault(s['side'], []).append(s['frame'])
+
     for side in sides:
         model = f'l21_{side}'
         urdf = os.path.join(rha.HAND_ROOT, model,
@@ -461,9 +474,14 @@ def main():
         arr = data[f'{side}_angles']
         val = data[f'{side}_valid']
         bad = detect_bad_frames(arr, val)
-        if bad:
-            arr = repair_bad_frames(arr, bad)
-            print(f'    已修复 {len(bad)} 个塌零坏帧（绝对下标）{bad}')
+        fronts = sorted(set(swap_by_side.get(side, [])))
+        arr, held, interp = repair_stream(arr, val, bad, fronts)
+        if held:
+            print(f'    已【保持上一有效姿态】修复身份切换帧: {held}')
+        if interp:
+            print(f'    已【线性插值】修复塌零帧: {interp}')
+        if not held and not interp:
+            print('    未检出需要修复的帧  [OK]')
         mounts[side] = (hand_id, dim2j, limits, arr, val)
         print(f'    可驱动关节 = {len(dim2j)}/17')
 
