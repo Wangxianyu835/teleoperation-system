@@ -292,46 +292,54 @@ def main():
           f'物理步 {dt*1000:.2f} ms，每帧推进 {substeps} 步）')
 
     rounds = 0
-    while args.loop == 0 or rounds < args.loop:
-        rounds += 1
-        if args.render and args.loop != 1:
-            more = ('（无限循环，Ctrl+C 退出）' if args.loop == 0
-                    else f'/{args.loop}')
-            print(f'  第 {rounds} 遍{more}')
-        for i in range(T):
-            for side, (mapping, arr, val, names) in plans.items():
-                if not val[i]:
-                    continue
-                joints, nclip = map_frame(arr[i], mapping)
-                clip[side] += nclip
-                tot[side] += len(mapping)
-                for jn, v in joints.items():
-                    p.setJointMotorControl2(robot_id, names[jn],
-                                            p.POSITION_CONTROL,
-                                            targetPosition=v, force=200.0,
+    try:
+        while args.loop == 0 or rounds < args.loop:
+            rounds += 1
+            if args.render and args.loop != 1:
+                more = ('（无限循环，Ctrl+C 退出）' if args.loop == 0
+                        else f'/{args.loop}')
+                print(f'  第 {rounds} 遍{more}')
+            for i in range(T):
+                for side, (mapping, arr, val, names) in plans.items():
+                    if not val[i]:
+                        continue
+                    joints, nclip = map_frame(arr[i], mapping)
+                    clip[side] += nclip
+                    tot[side] += len(mapping)
+                    for jn, v in joints.items():
+                        p.setJointMotorControl2(robot_id, names[jn],
+                                                p.POSITION_CONTROL,
+                                                targetPosition=v, force=200.0,
+                                                physicsClientId=cid)
+                for k, j in enumerate(hold_ids):
+                    p.setJointMotorControl2(robot_id, j, p.POSITION_CONTROL,
+                                            targetPosition=hold_tgt[k],
+                                            force=500.0,
                                             physicsClientId=cid)
-            for k, j in enumerate(hold_ids):
-                p.setJointMotorControl2(robot_id, j, p.POSITION_CONTROL,
-                                        targetPosition=hold_tgt[k],
-                                        force=500.0,
-                                        physicsClientId=cid)
-            for _ in range(substeps):
-                p.stepSimulation(physicsClientId=cid)
-            if hud_pos is not None:
-                hud_id = p.addUserDebugText(
-                    f'{args.robot}  |  数据帧 {i+1}/{T}  |  '
-                    f'手部映射  左 {cov.get("left", "-")}  '
-                    f'右 {cov.get("right", "-")}\n'
-                    f'手指：队友重定向输出（L21 -> 原装手）      '
-                    f'手臂：数据里没有，保持中性姿态静止',
-                    hud_pos, textSize=1.0, textColorRGB=[1.0, 0.95, 0.3],
-                    lifeTime=0, replaceItemUniqueId=hud_id,
-                    physicsClientId=cid)
-            if args.render:
-                wait = (data['timestamps'][i] - t0) / max(args.speed, 1e-6)
-                time.sleep(max(0.0, min(wait, 0.05)))
-            if (i + 1) % 200 == 0:
-                print(f'    ... {i+1}/{T}')
+                for _ in range(substeps):
+                    p.stepSimulation(physicsClientId=cid)
+                if hud_pos is not None:
+                    hud_id = p.addUserDebugText(
+                        f'{args.robot}  |  数据帧 {i+1}/{T}  |  '
+                        f'手部映射  左 {cov.get("left", "-")}  '
+                        f'右 {cov.get("right", "-")}\n'
+                        f'手指：队友重定向输出（L21 -> 原装手）      '
+                        f'手臂：数据里没有，保持中性姿态静止',
+                        hud_pos, textSize=1.0, textColorRGB=[1.0, 0.95, 0.3],
+                        lifeTime=0, replaceItemUniqueId=hud_id,
+                        physicsClientId=cid)
+                if args.render:
+                    wait = (data['timestamps'][i] - t0) / max(args.speed, 1e-6)
+                    time.sleep(max(0.0, min(wait, 0.05)))
+                if (i + 1) % 200 == 0:
+                    print(f'    ... {i+1}/{T}')
+    except p.error as exc:
+        # 手动关掉 GUI 窗口时 pybullet 会抛 "Not connected to physics server"
+        print(f'\n  GUI 窗口已关闭（{exc}），提前结束。')
+        return
+    except KeyboardInterrupt:
+        print('\n  已中断（Ctrl+C）。')
+        return
 
     print('  回放完成。')
     for side in plans:
