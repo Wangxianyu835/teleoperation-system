@@ -154,6 +154,11 @@ python scripts/replay_hand_native.py --robot h1_2   --hand both --render
 python scripts/replay_hand_native.py --robot gr1_t2 --hand both --render
 python scripts/replay_hand_native.py --robot g1     --hand both --render
 
+# 演示用：整机视角 + 无限循环（相机自动框住整个机器人）
+python scripts/replay_hand_native.py --robot h1_2 --hand both --render --view full --loop 0
+#   --view full(默认,整机) / front(正面) / side(侧面) / hands(手部特写)
+#   --loop 0 = 无限循环；--loop 3 = 播 3 遍
+
 # 只看映射报告（覆盖率 / 丢弃哪些自由度 / 每个关节的符号方向）
 python scripts/replay_hand_native.py --robot h1_2 --hand both --report
 

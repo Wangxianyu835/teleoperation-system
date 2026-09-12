@@ -86,6 +86,59 @@ def load_data(path):
 
 
 # ----------------------------------------------------------------------
+def compute_robot_extent(p, robot_id, cid):
+    """把机器人【所有 link】的 AABB 合起来 -> (中心, 最大边长, 最高点)
+
+    用来自动算相机距离，保证【整机】都在画面里（不再靠手调数字）。
+    """
+    lo = np.array([np.inf, np.inf, np.inf])
+    hi = np.array([-np.inf, -np.inf, -np.inf])
+    for i in range(-1, p.getNumJoints(robot_id, physicsClientId=cid)):
+        try:
+            a, b = p.getAABB(robot_id, i, physicsClientId=cid)
+        except p.error:
+            continue
+        lo = np.minimum(lo, np.asarray(a, dtype=float))
+        hi = np.maximum(hi, np.asarray(b, dtype=float))
+    if not np.isfinite(lo).all() or not np.isfinite(hi).all():
+        return np.zeros(3), 1.0, 1.0
+    return (lo + hi) / 2.0, float(np.max(hi - lo)), float(hi[2])
+
+
+def setup_camera(p, view, robot_id, cid, hand_pose=None):
+    """按 --view 设置相机；full/front/side 都自动框住整机
+
+    Args:
+        view: 'full' | 'front' | 'side' | 'hands'
+        hand_pose: 'hands' 视图用的目标点（手的世界坐标）
+
+    Returns:
+        (target, 说明字符串)
+    """
+    ctr, size, top = compute_robot_extent(p, robot_id, cid)
+    fov_v = 60.0
+    # 1.6 倍留白：1.35 时机器人的脚/头会贴到画面边缘，看起来"卡边"
+    auto = max(1.2, size * 1.6 / (2.0 * np.tan(np.radians(fov_v / 2.0))))
+
+    if view == 'hands':
+        tgt = list(hand_pose) if hand_pose else [ctr[0], ctr[1], top * 0.85]
+        p.resetDebugVisualizerCamera(cameraDistance=1.1, cameraYaw=135,
+                                     cameraPitch=-15,
+                                     cameraTargetPosition=tgt,
+                                     physicsClientId=cid)
+        return tgt, '手部特写'
+
+    yaw = {'full': 135.0, 'front': 0.0, 'side': 90.0}[view]
+    tgt = [ctr[0], ctr[1], ctr[2]]
+    p.resetDebugVisualizerCamera(cameraDistance=round(auto, 2),
+                                 cameraYaw=yaw, cameraPitch=-8,
+                                 cameraTargetPosition=tgt,
+                                 physicsClientId=cid)
+    return tgt, (f'整机（自动距离 {auto:.2f} m，'
+                 f'机器人高 {size:.2f} m，yaw={yaw:.0f}）')
+
+
+# ----------------------------------------------------------------------
 def main():
     import pybullet as p
     import pybullet_data
@@ -99,6 +152,12 @@ def main():
     ap.add_argument('--hand', default='both',
                     choices=['left', 'right', 'both'])
     ap.add_argument('--render', action='store_true', help='GUI 可视化')
+    ap.add_argument('--view', default='full',
+                    choices=['full', 'front', 'side', 'hands'],
+                    help='相机视角：full=整机(默认,自动框住整个机器人) / '
+                         'front=正面 / side=侧面 / hands=手部特写')
+    ap.add_argument('--loop', type=int, default=1,
+                    help='播放几遍（默认 1；设 0 表示无限循环，方便演示）')
     ap.add_argument('--speed', type=float, default=1.0)
     ap.add_argument('--substeps', type=int, default=0,
                     help='每帧数据推进多少个物理步（默认 0 = 自动匹配数据时间，'
@@ -181,14 +240,34 @@ def main():
         print('  （--report 模式：未启动回放）')
         return
 
+    # ---- 相机：自动框住【整机】----
     if args.render:
-        kin = p.getBasePositionAndOrientation(robot_id, physicsClientId=cid)
-        p.resetDebugVisualizerCamera(
-            cameraDistance=1.9, cameraYaw=135, cameraPitch=-12,
-            cameraTargetPosition=[float(kin[0][0]), float(kin[0][1]), 1.0],
-            physicsClientId=cid)
+        ctr, _size, top = compute_robot_extent(p, robot_id, cid)
+        hand_target = [float(ctr[0]), float(ctr[1]), float(top * 0.85)]
+        _tgtl, desc = setup_camera(p, args.view, robot_id, cid, hand_target)
         print()
+        print(f'  相机视角：{desc}')
         print('  鼠标：左键旋转 / 右键平移 / 滚轮缩放')
+
+    # ---- 锁住【没有数据驱动】的关节（手臂 / 腿 / 腰）----
+    # 机器人是 useFixedBase=True，但手臂关节若没有电机，
+    # 会在重力下慢慢垂下来 —— 看起来像"散架"，不像一台完整的机器人在站着。
+    # 这里用位置控制把它们保持在当前（ARM_NEUTRAL 中性）姿态。
+    hand_ids = set()
+    for _mapping, _arr, _val, names in plans.values():
+        for _d, jn, *_ in _mapping:
+            if jn in names:
+                hand_ids.add(names[jn])
+    hold_ids, hold_tgt = [], []
+    for i in range(p.getNumJoints(robot_id, physicsClientId=cid)):
+        info = p.getJointInfo(robot_id, i, physicsClientId=cid)
+        if info[2] == p.JOINT_FIXED or i in hand_ids:
+            continue
+        hold_ids.append(i)
+        hold_tgt.append(p.getJointState(robot_id, i,
+                                        physicsClientId=cid)[0])
+    print(f'  已锁住 {len(hold_ids)} 个非手部关节'
+          f'（手臂/腿/腰，数据里没有它们）')
 
     T = len(data['timestamps'])
     t0 = data['timestamps'][0]
@@ -200,27 +279,59 @@ def main():
     p.setTimeStep(dt, physicsClientId=cid)
     clip = {s: 0 for s in plans}
     tot = {s: 0 for s in plans}
+    cov = {s: (f'{len(plans[s][0])}/{N_MOVABLE}'
+               f'({coverage(args.robot, s, plans[s][0]) * 100:.0f}%)')
+           for s in plans}
+
+    hud_id, hud_pos = -1, None
+    if args.render:
+        c2, _s2, top2 = compute_robot_extent(p, robot_id, cid)
+        hud_pos = [float(c2[0]), float(c2[1]), float(top2 + 0.35)]
+
     print(f'\n[回放] {T} 帧，开始...（数据 {frame_dt*1000:.1f} ms/帧，'
           f'物理步 {dt*1000:.2f} ms，每帧推进 {substeps} 步）')
-    for i in range(T):
-        for side, (mapping, arr, val, names) in plans.items():
-            if not val[i]:
-                continue
-            joints, nclip = map_frame(arr[i], mapping)
-            clip[side] += nclip
-            tot[side] += len(mapping)
-            for jn, v in joints.items():
-                p.setJointMotorControl2(robot_id, names[jn],
-                                        p.POSITION_CONTROL,
-                                        targetPosition=v, force=200.0,
+
+    rounds = 0
+    while args.loop == 0 or rounds < args.loop:
+        rounds += 1
+        if args.render and args.loop != 1:
+            more = ('（无限循环，Ctrl+C 退出）' if args.loop == 0
+                    else f'/{args.loop}')
+            print(f'  第 {rounds} 遍{more}')
+        for i in range(T):
+            for side, (mapping, arr, val, names) in plans.items():
+                if not val[i]:
+                    continue
+                joints, nclip = map_frame(arr[i], mapping)
+                clip[side] += nclip
+                tot[side] += len(mapping)
+                for jn, v in joints.items():
+                    p.setJointMotorControl2(robot_id, names[jn],
+                                            p.POSITION_CONTROL,
+                                            targetPosition=v, force=200.0,
+                                            physicsClientId=cid)
+            for k, j in enumerate(hold_ids):
+                p.setJointMotorControl2(robot_id, j, p.POSITION_CONTROL,
+                                        targetPosition=hold_tgt[k],
+                                        force=500.0,
                                         physicsClientId=cid)
-        for _ in range(substeps):
-            p.stepSimulation(physicsClientId=cid)
-        if args.render:
-            wait = (data['timestamps'][i] - t0) / max(args.speed, 1e-6)
-            time.sleep(max(0.0, min(wait, 0.05)))
-        if (i + 1) % 200 == 0:
-            print(f'    ... {i+1}/{T}')
+            for _ in range(substeps):
+                p.stepSimulation(physicsClientId=cid)
+            if hud_pos is not None:
+                hud_id = p.addUserDebugText(
+                    f'{args.robot}  |  数据帧 {i+1}/{T}  |  '
+                    f'手部映射  左 {cov.get("left", "-")}  '
+                    f'右 {cov.get("right", "-")}\n'
+                    f'手指：队友重定向输出（L21 -> 原装手）      '
+                    f'手臂：数据里没有，保持中性姿态静止',
+                    hud_pos, textSize=1.0, textColorRGB=[1.0, 0.95, 0.3],
+                    lifeTime=0, replaceItemUniqueId=hud_id,
+                    physicsClientId=cid)
+            if args.render:
+                wait = (data['timestamps'][i] - t0) / max(args.speed, 1e-6)
+                time.sleep(max(0.0, min(wait, 0.05)))
+            if (i + 1) % 200 == 0:
+                print(f'    ... {i+1}/{T}')
 
     print('  回放完成。')
     for side in plans:
