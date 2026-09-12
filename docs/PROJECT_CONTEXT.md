@@ -126,7 +126,7 @@ F:\simulation_platform\
 ├── utils\metrics.py          53行  成功率 / 完成时间统计
 ├── docs\PROJECT_CONTEXT.md         ⭐ 本交接文档
 │
-├── robots\from_teleopbench\        机器人模型（181MB，未入库）
+├── robots\from_teleopbench\        ★机器人模型（181MB，**已入库**，普通 Git）
 ├── lib\                            依赖目录（335MB，未入库）
 ├── linkerhand_sdk\                 灵巧手 SDK（1013MB，未入库，来自 gitee）
 └── .venv\                          虚拟环境（未入库）
@@ -268,7 +268,8 @@ main (05eddb7)
 __pycache__/  *.pyc  .venv/  venv/  .idea/  .vscode/
 lib/              ← 335MB 本地依赖
 linkerhand_sdk/   ← 1013MB 第三方 SDK（来自 gitee.com/ericbrunt/linkerhand_telop_python）
-robots/           ← 455MB 机器人资产（实际代码只用 from_teleopbench 这 181MB）
+robots/*          ← 排除 robots 下全部子项…（共约 274MB，代码未引用）
+!robots/from_teleopbench/  ← …但【放行】from_teleopbench（181MB，已入库，见第 13 节）
 data/ outputs/ logs/ *.h5 *.pkl *.pt *.ckpt ...
 ```
 
@@ -715,6 +716,89 @@ task.apply_action(action, joint_indices=env.action_joint_indices)   # ★ 必须
 | obs **缺少机器人状态向量和相机流** | 与论文的差距 | 队友 B 的 P0 任务 |
 | 相机第一人称 **eye 硬编码** `[0,0,1.5]`，未跟随头部 | 与论文的差距 | 队友 B 的 P0 任务 |
 | 相机流**只存首尾帧** | 与论文的差距 | 队友 B 的 P0 任务 |
+
+---
+
+## 13. 【2026-09-12】模型资产入库方式决策（★ 重要）
+
+### 13.1 结论
+
+> **`robots/from_teleopbench/`（181 MB）用【普通 Git】入库，不使用 Git LFS。**
+
+### 13.2 为什么不用 Git LFS
+
+排查时发现一个关键事实：**Git LFS 的文件传输强制走 HTTPS**：
+```
+Endpoint=https://github.com/Wangxianyu835/teleoperation-system.git/info/lfs
+                              ↑ HTTPS（不是 SSH）
+```
+
+而本项目网络环境的实测情况是：
+
+| 通道 | 实测结果 |
+|---|---|
+| `github.com` 的 **HTTPS（443）** | ❌ **SNI 定向干扰**，直连超时；**必须开代理**才能通 |
+| `github.com` 的 **SSH（22）** | ✅ **稳定可用，无需代理** |
+
+**若用 LFS，代价是：**
+- 你**和两位队友**都必须**常开 Clash 代理**才能 push/pull 模型
+- 受 LFS 免费额度限制：**1 GB 存储 + 1 GB/月流量**
+  （3 人各 clone 一次 ≈ 543 MB，**很容易超**，超额要付费买流量包）
+- 队友还要额外安装 `git-lfs`、配置代理
+
+**用普通 Git 的收益：**
+- 走 SSH → **完全不需要代理** ✅
+- 队友 **`git clone` 一步到位**，不需要 git-lfs ✅
+- **无配额限制** ✅
+- 代价：仓库体积 181 MB（远低于 GitHub **1 GB 警告线 / 5 GB 硬限**）
+
+### 13.3 模型体积构成
+
+| 子目录 | 体积 | 说明 |
+|---|---|---|
+| **`gr1`** | **117.4 MB** | GR1-T2（含 32 MB 的 `gr1.usd`）← **体积主体** |
+| `h1_2` | 25.5 MB | H1-2 |
+| `g1` | 17.4 MB | G1 |
+| `unitree_hand` | 15.8 MB | |
+| `inspire_hand` | 5.0 MB | |
+| **合计** | **181.1 MB** | 512 个文件 |
+
+### 13.4 `.gitignore` 的处理要点
+
+只放行代码实际使用的 `from_teleopbench`，其余 7 个未引用的子目录（274 MB）继续排除：
+
+```gitignore
+robots/*
+!robots/from_teleopbench/
+```
+
+> ⚠️ **不能用 `robots/` 整体排除** —— gitignore 规定「**父目录被排除后，无法再重新包含其子文件**」。
+> 必须用 `robots/*`（只排除直接子项）+ `!robots/from_teleopbench/` 重新放行。
+
+### 13.5 排查过程记录（供参考）
+
+1. `git lfs version` → 已装（git-lfs 3.7.1，Git for Windows 自带）
+2. `git lfs install` → 安装钩子成功
+3. 创建 `.gitattributes`（按扩展名跟踪 stl/usd/glb/onnx/obj）
+4. `git lfs track` → 18 条规则注册成功
+5. `git check-attr filter -- ...` → 正确显示 `filter: lfs`
+6. ⚠️ **测试 HTTPS**：直连 `github.com` 超时；**通过 Clash 代理返回 200**
+7. → 结论：LFS 需要代理 + 有配额风险，**改用普通 Git**
+8. 删除 `.gitattributes`，确认 `filter: unspecified`（LFS 规则已失效）
+
+### 13.6 若将来必须改用 LFS
+
+（例如模型膨胀到几十 GB）步骤：
+```powershell
+git lfs install
+# 创建 .gitattributes 写 LFS 过滤规则
+# 让 LFS 走代理：
+git config --global http.https://github.com.proxy http://127.0.0.1:7897
+# 然后重新 git add 目标文件（首次会被转成指针）
+```
+
+> ⚠️ **已在历史中的普通文件不会自动转成 LFS**，需要重写历史（`git filter-repo`），
+> 且所有协作者都要重新 clone。**趁早决定比事后迁移便宜得多。**
 
 
 

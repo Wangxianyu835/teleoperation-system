@@ -100,27 +100,35 @@ scipy>=1.10.0
 
 ---
 
-## 第 6 步：获取机器人模型（⚠️ **最容易卡住的一步**）
+## 第 6 步：机器人模型 ✅ **已随仓库自动获取**
 
-`robots/from_teleopbench/`（**181 MB**）**没有纳入 Git**（太大），你必须单独获取。
+> 🎉 **好消息**：`robots/from_teleopbench/`（181 MB）**已纳入仓库**，
+> 你在第 4 步 `git clone` 时**已经自动拿到了**，**不需要任何额外操作**。
+>
+> 验证一下：
+> ```powershell
+> Get-ChildItem robots\from_teleopbench -Directory
+> # 应显示：g1  gr1  h1_2  inspire_hand  unitree_hand
+>
+> Test-Path robots\from_teleopbench\h1_2\h1_2.urdf
+> # 应显示：True
+> ```
 
-**三种方式，任选一种：**
+**你还需要单独获取的只有这两个（体积过大/第三方）：**
 
-| 方式 | 操作 | 优缺点 |
-|---|---|---|
-| **① U盘/网盘**（推荐）| 让王宪雨把 `robots\from_teleopbench\` 整个文件夹拷给你 | ✅ 最快最稳 |
-| **② Git LFS** | 等仓库配置好 LFS 后 `git lfs pull` | 需要额外配置 |
-| **③ 上游下载** | 从 TeleOpBench 官方仓库获取 | ⚠️ 可能版本不一致 |
+| 目录 | 体积 | 何时需要 | 获取方式 |
+|---|---|---|---|
+| `lib/` | 335 MB | 一般不需要（用你自己的 venv 即可）| `pip install -r requirements.txt` |
+| `linkerhand_sdk/` | 1013 MB | **只有跑 `show_hand.py` 时需要** | 见下方 |
 
-**放置位置（必须精确）：**
+```powershell
+# 只有需要跑灵巧手展示脚本时才执行（1GB，可跳过）
+git clone https://gitee.com/ericbrunt/linkerhand_telop_python.git linkerhand_sdk
 ```
-teleoperation-system\
-└── robots\
-    └── from_teleopbench\
-        ├── h1_2\h1_2.urdf                              ← H1-2
-        ├── gr1\urdf\robot.urdf                         ← GR1-T2
-        └── g1\g1_29dof_with_hand_lock_waist.urdf       ← G1
-```
+
+> 💡 **说明**：本项目**没有使用 Git LFS**（LFS 强制走 HTTPS，而国内网络对
+> `github.com` 的 HTTPS 有干扰，需要常开代理）。改为**普通 Git + SSH**，
+> 所以 clone 一次就拿到全部模型，**你也不需要安装 git-lfs、不需要配代理**。
 
 ---
 

@@ -1,0 +1,41 @@
+# ============================================================
+#  .gitattributes
+#
+#  作用：把二进制资产显式标记为 binary，禁止 Git 做换行符转换。
+#
+#  ⚠️ 为什么必须要有这个文件：
+#     本项目全局配置了 core.autocrlf=true（Windows 常规设置），
+#     Git 会按「是否含 NUL 字节」来猜文件是文本还是二进制。
+#     但 ASCII 格式的 .obj / .stl 网格文件不含 NUL，会被误判成文本，
+#     于是 Git 会把 CRLF 换成 LF 再存 —— 导致：
+#       1. 模型文件字节被改动（可能与 URDF 引用/解析器不兼容）
+#       2. 每次 checkout 都可能产生大批无意义改动
+#     显式标记为 binary 后，Git 原样存储，不做任何转换。
+#
+#  说明：本项目【不使用 Git LFS】—— 大模型直接用普通 Git 管理，
+#        原因见 docs/PROJECT_CONTEXT.md 第 13 节。
+# ============================================================
+
+# 二进制资产：原样存储，不转换换行符，也不尝试 diff
+robots/**/*.stl    binary
+robots/**/*.STL    binary
+robots/**/*.obj    binary
+robots/**/*.dae    binary
+robots/**/*.mtl    binary
+robots/**/*.usd    binary
+robots/**/*.usda   binary
+robots/**/*.usdc   binary
+robots/**/*.glb    binary
+robots/**/*.gltf   binary
+robots/**/*.onnx   binary
+robots/**/*.pt     binary
+robots/**/*.pth    binary
+robots/**/*.ckpt   binary
+robots/**/*.png    binary
+robots/**/*.jpg    binary
+robots/**/*.jpeg   binary
+robots/**/*.tga    binary
+robots/**/*.zip    binary
+
+# 注意：.urdf / .xml / .yml / .md 是【纯文本】，保持默认处理，
+#       这样它们的 diff 和版本对比才有意义。

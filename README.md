@@ -133,24 +133,36 @@ python test_camera.py                       # 测试摄像头
 
 ---
 
-## 六、模型资产获取（重要）
+## 六、机器人模型资产
 
-本仓库**只托管源码**，以下大型资产未入库，需要自行获取后才能完整运行：
+> **好消息：`robots/from_teleopbench/`（181 MB）已纳入 Git 仓库**，
+> `git clone` 后**自动获得**，无需额外下载。
+>
+> （早期版本未入库、需要手动获取 —— 现已改为直接入库。原因见下文说明。）
 
-### 1. `robots/from_teleopbench/` —— 机器人模型（约 181 MB）
+### 关于「为什么不用 Git LFS」
 
-代码通过相对路径读取 `robots/from_teleopbench/` 下的 URDF 与 mesh：
+**Git LFS 的文件传输强制走 HTTPS**，而本项目的网络环境对 `github.com` 的 HTTPS
+存在**SNI 定向干扰**（需要代理才能通），但 **SSH（22 端口）稳定可用**。
 
-| 用途 | 路径 |
-|------|------|
-| H1-2 模型 | `robots/from_teleopbench/h1_2/h1_2.urdf` |
-| GR1-T2 模型 | `robots/from_teleopbench/gr1/urdf/robot.urdf` |
-| G1 模型 | `robots/from_teleopbench/g1/g1_29dof_with_hand_lock_waist.urdf` |
+| 方案 | 传输协议 | 需要代理？ | 队友上手 |
+|---|---|---|---|
+| Git LFS | HTTPS | ⚠️ **必须常开代理** + 有 1GB/月流量配额 | 需装 git-lfs + 配代理 |
+| **普通 Git（本项目采用）** | **SSH** | ✅ **不需要** | `git clone` 一步到位 |
 
-> 这些模型来自 **TeleOpBench**（Unitree Robotics，Apache-2.0）。
-> 请从 TeleOpBench 官方仓库获取后，放到 `robots/from_teleopbench/` 目录下。
+**代价**：仓库体积约 181 MB（远低于 GitHub 的 1 GB 警告线 / 5 GB 硬限）。
 
-### 2. `linkerhand_sdk/` —— 灵巧手 SDK（约 1013 MB）
+### 仍然需要自行获取的部分
+
+以下内容体积过大或属第三方，**未入库**：
+
+| 目录 | 体积 | 获取方式 |
+|---|---|---|
+| `lib/` | 335 MB | `pip install -r requirements.txt` |
+| `linkerhand_sdk/` | 1013 MB | ⬇️ 见下方 |
+| `robots/` 的其他子目录 | 274 MB | 代码未引用，**不需要** |
+
+#### `linkerhand_sdk/` —— 灵巧手 SDK
 
 `show_hand.py` 从该 SDK 读取灵巧手模型：
 
@@ -158,9 +170,13 @@ python test_camera.py                       # 测试摄像头
 git clone https://gitee.com/ericbrunt/linkerhand_telop_python.git linkerhand_sdk
 ```
 
-### 3. `lib/` —— 本地依赖目录（约 335 MB）
+### `robots/` 目录内容说明
 
-由 `pip install -r requirements.txt` 生成，不入库。
+| 子目录 | 体积 | 是否入库 | 说明 |
+|---|---|---|---|
+| **`from_teleopbench/`** | **181 MB** | ✅ **已入库** | H1-2 / GR1-T2 / G1 三种模型（代码实际使用）|
+| `arms/` `assembly/` `h1_paper/` `h1_with_hand/` `hands/` `linker_hand/` `xarm7_ability/` | 274 MB | ❌ | 代码未引用，可由 `.gitignore` 排除 |
+
 
 ---
 
