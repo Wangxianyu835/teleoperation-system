@@ -523,3 +523,96 @@ python scripts/replay_hand_on_robot.py --robot h1_2 --hand right --render `
 - 阶段 2 只需要把**契约 H 里的双臂 7 关节**喂给机器人即可，
   **手会自动跟随手臂运动**，不需要额外改动
 - 目前手臂保持不动（还没手臂数据），所以画面是「静止站立的机器人 + 活动的手指」
+
+---
+
+## 8.11 ★ 决策变更：仿真改用机器人【原装手】（2026-09-12）
+
+> 本节记录一次**方案变更**，请以本节为准；8.10 的「把 l21 装到腕部」保留为备用方案。
+
+### 最终采用：原装手 + 有损降维映射
+
+| | **采用** | 备用 |
+|---|---|---|
+| 方案 | **用机器人自带的灵巧手** | 把 l21 装到腕部 |
+| 脚本 | `scripts/replay_hand_native.py` | `scripts/replay_hand_on_robot.py` |
+| 映射模块 | `teleop/native_hand.py` | —— |
+
+**原因**：
+1. 机器人保持**完全原装**，与论文的 H1-2 基线更可比
+2. 使用者实测反馈：换成 LinkerHand **一直"手抖"**
+3. 原装手的动力学参数是厂商调过的，不用额外治理
+
+### ⚠️ 必须声明的代价：**有损映射**
+
+数据是 L21 的 17 个自由度，原装手装不下：
+
+| 机器人 | 可表达 | 覆盖率 | 丢弃 |
+|---|---|---|---|
+| **H1-2** | **12/17** | 71% | 4 个 `*_mcp_roll`（侧摆）+ 拇指 `cmc_roll` |
+| GR1-T2 | 11/17 | 65% | 再丢拇指 1 个 |
+| G1 | 7/17 | 41% | 另丢无名指/小指整根 |
+
+**映射原则：语义 1:1，不做无依据的"合并"**
+
+```
+L21 mcp_pitch  <->  原装手 proximal        （近端指节屈曲）
+L21 pip        <->  原装手 intermediate    （远端指节屈曲）
+L21 *_mcp_roll ->   丢弃
+拇指 cmc_yaw/pitch -> proximal_yaw/pitch
+拇指 mcp/ip        -> intermediate/distal
+```
+
+### ★ 符号方向自动判定（关键）
+
+```
+H1-2   [0.000, +1.700]   屈曲为正  -> sign = +1
+GR1-T2 [-1.570, 0.000]   屈曲为负  -> sign = -1
+G1     left 负 / right 正（左右手还不一样）
+规则：sign = +1 if |hi| >= |lo| else -1
+```
+不处理的话手指会**反着弯**。
+
+### 「手抖」根因（已查明）
+
+l21 的 URDF 在 pybullet 里动力学参数退化：
+`base link 质量 1.5785e-07 kg`、`惯量对角 (0,0,0)`、`各指节 0.0004~0.003 kg`、`damping=friction=0`。
+→ 位置控制增益相对这么小的惯量过大 → 过冲 / 数值发散。
+
+修法（备用方案脚本已默认开启）：
+`p.changeDynamics(..., mass=0.02, localInertiaDiagonal=[1e-6]*3)` + `p.setTimeStep(1/1000)`
+→ 稳态误差 0.4380 → **0.0007**。
+
+### ★★ 另一个普遍问题：仿真时间 ≠ 数据时间
+
+原来所有回放脚本**每帧只调一次 `stepSimulation()`**：
+`dt=1/240` 时每帧只推进 4.17 ms，而数据是 33 ms/帧 → **慢放 1/8，关节必然滞后**。
+
+现在两个脚本都用 `--substeps`（默认自动匹配数据时间，约 8 步）。
+验收实测：**跟踪误差 0.0018 rad**（不给足步数则 0.1878 rad）。
+
+### 用法
+
+```powershell
+# 原装手（★ 本项目主用）
+python scripts/replay_hand_native.py --robot h1_2   --hand both --render
+python scripts/replay_hand_native.py --robot gr1_t2 --hand both --render
+python scripts/replay_hand_native.py --robot g1     --hand both --render
+
+# 只看映射报告（不开仿真）
+python scripts/replay_hand_native.py --robot h1_2 --hand both --report
+```
+
+> 详细记录见 `PROJECT_CONTEXT.md` 第 18 节。
+
+### 对任务级评测的影响（写报告要注意）
+
+用原装手后，**手部动作是有损的**（丢侧摆/对掌），因此：
+
+- ✅ 可以用来展示「数据 -> 手部动作」的因果链
+- ⚠️ **不适合**断言"手部动作与真机一致"
+- ⚠️ 若论文对比需要精确的手部行为，应回到 L21 方案（无损）并声明换手
+
+**但无论哪种方案，手臂都不会动** —— 数据里没有手臂关节角，也没有手基座位姿。
+这与用哪只手无关。
+

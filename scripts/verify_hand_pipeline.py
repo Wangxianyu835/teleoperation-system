@@ -233,6 +233,92 @@ def part2(args, results, record, L, R, LV, RV, ts, bad_info):
     record('回放成功（17 个手部关节全部映射）', n_model_ok == 2,
            f'{n_model_ok}/2 只手')
 
+    part3(args, results, record)
+
+
+# ----------------------------------------------------------------------
+def part3(args, results, record):
+    """[6] 原装手降维映射（当前项目采用的方案：不换手）"""
+    import pybullet as p
+    from envs import RobotLoader
+    from teleop.native_hand import (build_mapping, coverage, dropped_dims,
+                                    map_frame, read_joint_ranges)
+
+    print()
+    print('[6] 原装手降维映射（本项目采用：用机器人【自带】的手，不换手）')
+
+    expected = {'h1_2': 12, 'gr1_t2': 11, 'g1': 7}
+    cid = p.connect(p.DIRECT)
+    loader = RobotLoader(cid)
+    all_ok = True
+    rows = []
+    try:
+        for rn in ('h1_2', 'gr1_t2', 'g1'):
+            rid = loader.load_robot(rn)['robot']
+            ranges, names = read_joint_ranges(rid, cid)
+            per = {}
+            for side in ('left', 'right'):
+                mp = build_mapping(rn, side, ranges)
+                per[side] = mp
+                ok_side = (len(mp) == expected[rn])
+                all_ok &= ok_side
+                print(f'    {rn:<8} {side:<5} 可表达 {len(mp)}/17 '
+                      f'({coverage(rn, side, mp) * 100:.0f}%)  '
+                      f'丢弃 {len(dropped_dims(rn, side, mp))} 个  '
+                      f'{"[OK]" if ok_side else "[FAIL]"}')
+            rows.append((rn, rid, per, names))
+            p.removeBody(rid)
+    finally:
+        p.disconnect(cid)
+
+    # 真回放一次：以 H1-2 右手为例，确认映射后的关节能【跟上命令】
+    # 注意：只在 valid=True 的帧上跑 —— 无效帧的角度是被置零的，
+    #       拿它当"末帧"会误判成"关节没动"。
+    import h5py
+    ok_replay = False
+    detail = ''
+    try:
+        with h5py.File(args.file, 'r') as f:
+            ar = np.asarray(f['right_angles'][:], dtype=np.float64)
+            av = np.asarray(f['right_valid'][:]).astype(bool)
+        idx = np.where(av)[0]
+        cid = p.connect(p.DIRECT)
+        p.setTimeStep(1.0 / 240.0, physicsClientId=cid)
+        loader = RobotLoader(cid)
+        rid = loader.load_robot('h1_2')['robot']
+        ranges, names = read_joint_ranges(rid, cid)
+        mp = build_mapping('h1_2', 'right', ranges)
+        step = max(1, len(idx) // 60)
+        # 让仿真时间跟上数据时间：每 step 帧数据 = step*33ms，
+        # 按 1/240 时间步就需要 step*8 个物理步，否则关节必然滞后
+        nsub = max(1, int(round(step * (1.0 / 30.0) / (1.0 / 240.0))))
+        joints = {}
+        for i in idx[::step]:
+            joints, _ = map_frame(ar[i], mp)
+            for jn, v in joints.items():
+                p.setJointMotorControl2(rid, names[jn], p.POSITION_CONTROL,
+                                        targetPosition=v, force=200.0,
+                                        physicsClientId=cid)
+            for _ in range(nsub):
+                p.stepSimulation(physicsClientId=cid)
+        err = max(abs(p.getJointState(rid, names[jn],
+                                      physicsClientId=cid)[0] - v)
+                  for jn, v in joints.items())
+        ok_replay = (err < 0.05)
+        detail = (f'H1-2 右手 {len(joints)} 个映射关节跟踪误差 '
+                  f'{err:.4f} rad（每采样 {nsub} 物理步）'
+                  f'{"[OK]" if ok_replay else "[FAIL]"}')
+        p.removeBody(rid)
+        p.disconnect(cid)
+    except Exception as exc:                  # noqa: BLE001
+        detail = f'回放异常: {type(exc).__name__}: {exc}'
+
+    print(f'    {detail}')
+    record('原装手映射可真正驱动（12/11/7，符号自动判定）',
+           bool(all_ok and ok_replay),
+           'h1_2 12/17, gr1_t2 11/17, g1 7/17；' + detail)
+
+
 
 if __name__ == '__main__':
     main()

@@ -144,6 +144,37 @@ python scripts/replay_actions.py --file xxx.h5 --render
 python scripts/make_sample_data.py --kind all
 ```
 
+### 手部回放（队友重定向输出 → 机器人手）★ 本项目主用
+
+> 映射模块：`teleop/native_hand.py`　|　决策记录：`docs/PROJECT_CONTEXT.md` 第 18 节
+
+```bash
+# ★ 用机器人【原装】灵巧手回放（本项目采用，不换手）
+python scripts/replay_hand_native.py --robot h1_2   --hand both --render
+python scripts/replay_hand_native.py --robot gr1_t2 --hand both --render
+python scripts/replay_hand_native.py --robot g1     --hand both --render
+
+# 只看映射报告（覆盖率 / 丢弃哪些自由度 / 每个关节的符号方向）
+python scripts/replay_hand_native.py --robot h1_2 --hand both --report
+
+# 备用：把 LinkerHand l21 装到机器人腕部（无损，但需要"换手"）
+python scripts/replay_hand_on_robot.py --robot h1_2 --hand both --render
+
+# 一键验收（6 项：数据结构 / 有效帧 / 坏帧检测器 / 限位 / 回放 / 原装手映射）
+python scripts/verify_hand_pipeline.py
+```
+
+**各机器人原装手能表达多少自由度**（数据是 L21 的 17 维）：
+
+| 机器人 | 原装手 | 可表达 | 覆盖率 |
+|---|---|---|---|
+| H1-2 | Inspire | 12/17 | 71% |
+| GR1-T2 | Fourier 原生手 | 11/17 | 65% |
+| G1 | 轻量三指手 | 7/17 | 41% |
+
+> ⚠️ 这是**有损**映射（丢弃 `*_mcp_roll` 侧摆等原装手没有的自由度），
+> 详情与必须声明的限制见 `docs/OFFLINE_PIPELINE.md` 第 8.11 节。
+
 ### 离线流水线三方分工
 
 ```
@@ -157,8 +188,8 @@ python scripts/make_sample_data.py --kind all
 ## 五、常见问题
 
 **Q：`show_hand.py` 报路径错误？**
-该脚本中的 `HAND_DIR` 目前是硬编码的绝对路径，换机器后需要改成自己的
-`linkerhand_sdk` 实际路径（建议改为相对路径）。
+以前是硬编码绝对路径，现已改为**基于脚本位置动态定位**（见 `HAND_DIR`）。
+若仍报错，说明本地缺少 `linkerhand_sdk`，按第六节获取即可。
 
 **Q：克隆后运行报找不到 URDF？**
 `robots/` 目录未入库，需按第六节自行获取模型资产。

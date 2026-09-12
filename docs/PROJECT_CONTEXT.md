@@ -1253,6 +1253,8 @@ python scripts/check_gbk_safe.py --strict   # 有违规退出码 1（可接 CI�
 
 ---
 
+---
+
 ## 17. 【2026-09-12】方案B：把 l21 装到机器人腕部（★ 内含一个 pybullet 大坑）
 
 ### 17.1 交付内容
@@ -1387,5 +1389,131 @@ python scripts/replay_hand_on_robot.py --robot h1_2 --hand both --render --no-au
 
 
 
+
+
+
+---
+
+## 18. 【2026-09-12】★ 决策：仿真采用机器人【原装手】（不换手）
+
+### 18.1 决策与理由
+
+**在仿真里使用机器人自带的灵巧手**，不把 LinkerHand l21 装到腕部。
+
+| | **采用** | 未采用（保留备用）|
+|---|---|---|
+| 方案 | **原装手 + L21 数据降维映射** | 把 l21 装到腕部 |
+| 脚本 | `scripts/replay_hand_native.py` | `scripts/replay_hand_on_robot.py` |
+| 映射模块 | `teleop/native_hand.py` | —— |
+
+**理由**：
+1. 机器人保持**完全原装**，与论文的 H1-2 基线更可比
+2. 使用者反馈：换成 LinkerHand **一直"手抖"**（根因见 18.3；虽已修，但增加了复杂度）
+3. 原装手的运动学/动力学参数是厂商调过的，不需要额外治理
+
+**代价（必须在报告里声明）**：这是**有损**映射
+
+| 机器人 | 可表达 | 覆盖率 | 丢弃的自由度 |
+|---|---|---|---|
+| **H1-2** | **12/17** | 71% | 4 个 `*_mcp_roll`（侧摆）+ 拇指 `cmc_roll` |
+| GR1-T2 | 11/17 | 65% | 再丢拇指 1 个 |
+| G1 | 7/17 | 41% | 另丢无名指/小指整根 |
+
+### 18.2 映射表（`teleop/native_hand.py`）
+
+原则：**语义 1:1，不做无依据的"合并"**
+
+| L21 数据维度 | 原装手关节 | 语义 |
+|---|---|---|
+| `*_mcp_pitch` | `proximal` | 近端指节屈曲 |
+| `*_pip` | `intermediate`（GR1-T2 拇指为 `distal`）| 远端指节屈曲 |
+| `*_mcp_roll` | **丢弃** | 原装手没有侧摆自由度 |
+| 拇指 `cmc_yaw` / `cmc_pitch` | `proximal_yaw` / `proximal_pitch` | 基座偏摆 / 俯仰 |
+| 拇指 `mcp` / `ip` | `intermediate` / `distal` | 指节屈曲 |
+
+**★ 符号方向自动判定**（不处理的话手指会**反着弯**）：
+
+```
+H1-2   [0.000, +1.700]   屈曲为正  -> sign = +1
+GR1-T2 [-1.570, 0.000]   屈曲为负  -> sign = -1
+G1     left 负 / right 正（左右手还不一样）
+
+规则：sign = +1 if |hi| >= |lo| else -1
+```
+
+### 18.3 「手抖」根因（已查明；两个方案都受益）
+
+l21 的 URDF 在 pybullet 里**动力学参数退化**：
+
+```
+base link 质量 = 1.5785e-07 kg         惯量对角 = (0.0, 0.0, 0.0)
+各指节质量     = 0.0004 ~ 0.003 kg     关节 damping = friction = 0
+（而 URDF 自己声明 effort=100, velocity=1 —— 作者是按真实伺服设计的）
+```
+
+→ 位置控制的增益相对这么小的惯量**过大** → 过冲 / 数值发散 → 肉眼就是"手抖"。
+（实测：不加阻尼电机追不上，稳态误差 0.4380；加了阻尼反而数值爆炸，速度 RMS 0.003 → 29）
+
+修法（`replay_hand_on_robot.py` **已默认开启**）：
+
+```python
+p.changeDynamics(h, j, mass=0.02, localInertiaDiagonal=[1e-6]*3)
+p.setTimeStep(1/1000)
+```
+
+实测：稳态误差 0.4380 → **0.0007**，超调 0.4800 → **0.0000**。
+
+> 注：质量/惯量重标只是为了让控制稳定，**不代表真实质量**；
+> 将来做接触/抓取实验时需要重新评估。
+
+### 18.4 ★★ 顺带发现的普遍问题：仿真时间 ≠ 数据时间
+
+原来**所有**回放脚本都是**每帧只调一次 `stepSimulation()`**：
+
+```
+dt = 1/240  ->  每帧推进 4.17 ms，而数据是 33 ms/帧
+             ->  仿真以 1/8 速度慢放，关节必然滞后
+```
+
+现在两个脚本都支持 `--substeps`：
+
+| 脚本 | 默认 |
+|---|---|
+| `replay_hand_native.py` | 自动 = `round(33ms / (1/240))` = **8 步** |
+| `replay_hand_on_robot.py` | **8 步**（`--substeps 0` 走自动）|
+
+**验收实测**：给足步数后跟踪误差 **0.0018 rad**；不给（20 步/采样）则 **0.1878 rad** —— 差 100 倍。
+
+### 18.5 新增/修改的文件
+
+| 文件 | 说明 |
+|---|---|
+| `teleop/native_hand.py` | **新增**：原装手映射模块（映射表 + 符号判定 + `map_frame` 等工具）|
+| `scripts/replay_hand_native.py` | **新增**：原装手回放（GUI / 无头 / `--report`）|
+| `scripts/verify_hand_pipeline.py` | 新增验收项 **[6]**：三类机器人覆盖率 + 真回放跟踪误差 |
+| `scripts/replay_hand_on_robot.py` | 修手抖 + `--dt` / `--substeps` / `--no-fix-jitter` |
+
+### 18.6 用法
+
+```powershell
+# 原装手（本项目主用）
+python scripts/replay_hand_native.py --robot h1_2   --hand both --render
+python scripts/replay_hand_native.py --robot gr1_t2 --hand both --render
+python scripts/replay_hand_native.py --robot g1     --hand both --render
+
+# 只看映射报告（不开仿真）
+python scripts/replay_hand_native.py --robot h1_2 --hand both --report
+
+# 一键验收（含原装手映射 + 真回放跟踪误差）
+python scripts/verify_hand_pipeline.py
+```
+
+### 18.7 仍然存在的限制（未变）
+
+**手臂不会动** —— 队友的数据里**只有手部 18 维**，没有手臂关节角、也没有手基座位姿。
+**这与用哪只手无关。** 要显示完整机器人的动作，需要队友补：
+
+1. **双臂各 7 个关节角**（最直接），或
+2. 至少 **hand_base 的世界位姿**（可用 IK 反解手臂）
 
 

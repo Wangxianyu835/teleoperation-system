@@ -60,65 +60,12 @@ except Exception:
 
 from teleop.filters import detect_bad_frames, repair_bad_frames  # noqa: E402
 
-# 18 维数据的语义名（dim 0 是 hand_base_link 固定占位）
-DIM_NAMES = {
-    0: 'hand_base_link(占位)',
-    1: 'index_mcp_roll', 2: 'index_mcp_pitch', 3: 'index_pip',
-    4: 'middle_mcp_roll', 5: 'middle_mcp_pitch', 6: 'middle_pip',
-    7: 'ring_mcp_roll', 8: 'ring_mcp_pitch', 9: 'ring_pip',
-    10: 'pinky_mcp_roll', 11: 'pinky_mcp_pitch', 12: 'pinky_pip',
-    13: 'thumb_cmc_roll', 14: 'thumb_cmc_yaw', 15: 'thumb_cmc_pitch',
-    16: 'thumb_mcp', 17: 'thumb_ip',
-}
+# 映射表与工具统一放在 teleop/native_hand.py（正式接口，可被其它代码复用）
+from teleop.native_hand import (  # noqa: E402
+    DIM_NAMES, N_MOVABLE,
+    build_mapping, coverage, dropped_dims, map_frame, read_joint_ranges,
+)
 
-# 关节名前缀（不同机器人命名风格不同）
-PREFIX = {
-    'h1_2':   {'left': 'L_', 'right': 'R_'},
-    'gr1_t2': {'left': 'L_', 'right': 'R_'},
-    'g1':     {'left': 'left_hand_', 'right': 'right_hand_'},
-}
-
-# 语义名 -> 原装手关节名模板（{P} 会被替换成上面的前缀）
-# 未列出的语义名 = 原装手没有这个自由度，只能丢弃
-NATIVE_MAP = {
-    'h1_2': {
-        'index_mcp_pitch':  '{P}index_proximal_joint',
-        'index_pip':        '{P}index_intermediate_joint',
-        'middle_mcp_pitch': '{P}middle_proximal_joint',
-        'middle_pip':       '{P}middle_intermediate_joint',
-        'ring_mcp_pitch':   '{P}ring_proximal_joint',
-        'ring_pip':         '{P}ring_intermediate_joint',
-        'pinky_mcp_pitch':  '{P}pinky_proximal_joint',
-        'pinky_pip':        '{P}pinky_intermediate_joint',
-        'thumb_cmc_yaw':    '{P}thumb_proximal_yaw_joint',
-        'thumb_cmc_pitch':  '{P}thumb_proximal_pitch_joint',
-        'thumb_mcp':        '{P}thumb_intermediate_joint',
-        'thumb_ip':         '{P}thumb_distal_joint',
-    },
-    'gr1_t2': {
-        'index_mcp_pitch':  '{P}index_proximal_joint',
-        'index_pip':        '{P}index_intermediate_joint',
-        'middle_mcp_pitch': '{P}middle_proximal_joint',
-        'middle_pip':       '{P}middle_intermediate_joint',
-        'ring_mcp_pitch':   '{P}ring_proximal_joint',
-        'ring_pip':         '{P}ring_intermediate_joint',
-        'pinky_mcp_pitch':  '{P}pinky_proximal_joint',
-        'pinky_pip':        '{P}pinky_intermediate_joint',
-        'thumb_cmc_yaw':    '{P}thumb_proximal_yaw_joint',
-        'thumb_cmc_pitch':  '{P}thumb_proximal_pitch_joint',
-        'thumb_ip':         '{P}thumb_distal_joint',
-    },
-    'g1': {
-        # G1 只有 食指 / 中指 / 拇指 三根
-        'index_mcp_pitch':  '{P}index_0_joint',
-        'index_pip':        '{P}index_1_joint',
-        'middle_mcp_pitch': '{P}middle_0_joint',
-        'middle_pip':       '{P}middle_1_joint',
-        'thumb_cmc_yaw':    '{P}thumb_0_joint',
-        'thumb_cmc_pitch':  '{P}thumb_1_joint',
-        'thumb_mcp':        '{P}thumb_2_joint',
-    },
-}
 
 
 def load_data(path):
@@ -133,60 +80,6 @@ def load_data(path):
             d[k] = (np.asarray(f[k][:]).astype(bool) if k in f
                     else np.ones(len(d['timestamps']), bool))
     return d
-
-
-def build_mapping(robot_type, side, joint_ranges):
-    """生成映射表：[(数据维度, 原装手关节名, 符号, 下限, 上限), ...]
-
-    Args:
-        robot_type: 'h1_2' / 'gr1_t2' / 'g1'
-        side: 'left' / 'right'
-        joint_ranges: {关节名: (lo, hi)} —— 从 pybullet 读到的真实限位
-
-    符号规则：原装手的屈曲方向有两种约定
-        H1-2   : [0.000, +1.700]  屈曲为正  -> sign = +1
-        GR1-T2 : [-1.570, 0.000]  屈曲为负  -> sign = -1
-        G1     : 左右手还不一样
-    用「限位主要落在哪半轴」自动判定，避免手指反着弯。
-    """
-    pref = PREFIX[robot_type][side]
-
-    def sign_of(lo, hi):
-        return 1.0 if abs(hi) >= abs(lo) else -1.0
-
-    table = NATIVE_MAP[robot_type]
-    out = []
-    for dim, sem in DIM_NAMES.items():
-        tpl = table.get(sem)
-        if tpl is None:
-            continue                      # 原装手没有这个自由度 -> 丢弃
-        jn = tpl.format(P=pref)
-        if jn not in joint_ranges:
-            continue
-        lo, hi = joint_ranges[jn]
-        out.append((dim, jn, sign_of(lo, hi), lo, hi))
-    return out
-
-
-def read_joint_ranges(robot_id, side, cid):
-    """读取机器人的 {关节名: (下限, 上限)} 与 {关节名: 关节索引}
-
-    ★ 必须用 info[1]（【关节名】，如 `L_index_proximal_joint`），
-      不能用 info[12]（那是 child link 名，如 `L_index_proximal`）。
-      NATIVE_MAP 里的模板用的是关节名。
-    """
-    import pybullet as p
-    del side
-    ranges, names = {}, {}
-    n = p.getNumJoints(robot_id, physicsClientId=cid)
-    for i in range(n):
-        info = p.getJointInfo(robot_id, i, physicsClientId=cid)
-        if info[2] == p.JOINT_FIXED:
-            continue
-        jn = info[1].decode() if isinstance(info[1], bytes) else info[1]
-        ranges[jn] = (float(info[8]), float(info[9]))
-        names[jn] = i
-    return ranges, names
 
 
 # ----------------------------------------------------------------------
@@ -204,6 +97,9 @@ def main():
                     choices=['left', 'right', 'both'])
     ap.add_argument('--render', action='store_true', help='GUI 可视化')
     ap.add_argument('--speed', type=float, default=1.0)
+    ap.add_argument('--substeps', type=int, default=0,
+                    help='每帧数据推进多少个物理步（默认 0 = 自动匹配数据时间，'
+                         '约 8 步）。设小了会变成慢动作且关节滞后')
     ap.add_argument('--report', action='store_true',
                     help='只打印映射报告，不启动回放')
     ap.add_argument('--no-repair', action='store_true')
@@ -232,15 +128,14 @@ def main():
     sides = ['left', 'right'] if args.hand == 'both' else [args.hand]
     plans = {}
     for side in sides:
-        ranges, names = read_joint_ranges(robot_id, side, cid)
+        ranges, names = read_joint_ranges(robot_id, cid)
         mapping = build_mapping(args.robot, side, ranges)
-        used = {d for d, *_ in mapping}
-        dropped = [d for d in DIM_NAMES if d != 0 and d not in used]
+        dropped = dropped_dims(args.robot, side, mapping)
 
         print()
         print(f'--- {side} ---')
-        print(f'  数据 17 个可动维度 -> 原装手可表达 {len(mapping)} 个 '
-              f'（覆盖率 {100.0 * len(mapping) / 17:.0f}%）')
+        print(f'  数据 {N_MOVABLE} 个可动维度 -> 原装手可表达 {len(mapping)} 个 '
+              f'（覆盖率 {coverage(args.robot, side, mapping) * 100:.0f}%）')
         print(f'  {"数据维度":<22} {"语义":<18} {"原装手关节":<36} 符号')
         for d, jn, sg, lo, hi in mapping:
             print(f'  dim{d:<4}{DIM_NAMES[d]:<18} {jn:<36} {sg:+.0f}')
@@ -272,27 +167,33 @@ def main():
 
     T = len(data['timestamps'])
     t0 = data['timestamps'][0]
+    frame_dt = (float(np.median(np.diff(data['timestamps'])))
+                if T > 1 else 1.0 / 30.0)
+    dt = 1.0 / 240.0
+    substeps = (args.substeps if args.substeps > 0
+                else max(1, int(round(frame_dt / dt))))
+    p.setTimeStep(dt, physicsClientId=cid)
     clip = {s: 0 for s in plans}
     tot = {s: 0 for s in plans}
-    print(f'\n[回放] {T} 帧，开始...')
+    print(f'\n[回放] {T} 帧，开始...（数据 {frame_dt*1000:.1f} ms/帧，'
+          f'物理步 {dt*1000:.2f} ms，每帧推进 {substeps} 步）')
     for i in range(T):
         for side, (mapping, arr, val, names) in plans.items():
             if not val[i]:
                 continue
-            for d, jn, sg, lo, hi in mapping:
-                v = sg * float(arr[i, d])
-                if v < lo or v > hi:
-                    clip[side] += 1
-                tot[side] += 1
-                v = min(max(v, lo), hi)
+            joints, nclip = map_frame(arr[i], mapping)
+            clip[side] += nclip
+            tot[side] += len(mapping)
+            for jn, v in joints.items():
                 p.setJointMotorControl2(robot_id, names[jn],
                                         p.POSITION_CONTROL,
                                         targetPosition=v, force=200.0,
                                         physicsClientId=cid)
-        p.stepSimulation(physicsClientId=cid)
+        for _ in range(substeps):
+            p.stepSimulation(physicsClientId=cid)
         if args.render:
-            dt = (data['timestamps'][i] - t0) / max(args.speed, 1e-6)
-            time.sleep(max(0.0, min(dt, 0.05)))
+            wait = (data['timestamps'][i] - t0) / max(args.speed, 1e-6)
+            time.sleep(max(0.0, min(wait, 0.05)))
         if (i + 1) % 200 == 0:
             print(f'    ... {i+1}/{T}')
 
