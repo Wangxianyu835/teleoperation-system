@@ -202,6 +202,12 @@ def replay_pybullet(angles, valid, timestamps, urdf_path, urdf_dir,
     rid = p.loadURDF(urdf_path, base_pos, useFixedBase=True,
                      physicsClientId=cid)
 
+    if gui:
+        # 把手放到视野中央（否则 20cm 的手在默认视角下几乎看不见）
+        p.resetDebugVisualizerCamera(
+            cameraDistance=0.55, cameraYaw=40, cameraPitch=-20,
+            cameraTargetPosition=list(base_pos), physicsClientId=cid)
+
     name2idx = {}
     for i in range(p.getNumJoints(rid, physicsClientId=cid)):
         info = p.getJointInfo(rid, i, physicsClientId=cid)
@@ -248,7 +254,15 @@ def replay_pybullet(angles, valid, timestamps, urdf_path, urdf_dir,
             print(f'    {jn:<22s} {v:+.4f} rad')
 
     if gui:
-        print('  关闭 pybullet 窗口即可退出')
+        print('  回放结束。窗口保持打开，可继续用鼠标查看末帧姿态。')
+        print('  退出方式：关闭 pybullet 窗口，或在终端按 Ctrl+C')
+        try:
+            while p.isConnected(cid):
+                p.stepSimulation(physicsClientId=cid)
+                time.sleep(1.0 / 60.0)
+        except (p.error, KeyboardInterrupt):
+            pass
+        print('  已退出。')
     else:
         p.disconnect(cid)
     return final_q
