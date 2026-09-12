@@ -49,12 +49,22 @@ robots/*
 data/
 outputs/
 logs/
+
+# 数据文件：默认排除（避免误提交体积大的运行产物）
 *.h5
 *.hdf5
 *.pkl
 *.npz
 *.mp4
 *.avi
+
+# ★ 但 datasets/ 下的数据必须放行 ★
+#   契约 G（human_hand.h5）与契约 H（actions.h5）靠 Git 交换，
+#   若被 *.h5 排除掉，「用 Git 交换数据」的流程会直接失效！
+#   （gitignore 规则：父目录未被排除时，可用 ! 重新包含子文件）
+!datasets/**/*.h5
+!datasets/**/*.hdf5
+!datasets/**/*.npz
 
 # ---------- 模型权重 ----------
 *.pt

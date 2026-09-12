@@ -197,6 +197,83 @@ git push                          # 以后
 
 ---
 
+## 第 9 步：跑「离线 Vision 流水线」（本项目的核心工作流）
+
+> 📄 **完整规范见 [`OFFLINE_PIPELINE.md`](OFFLINE_PIPELINE.md)**
+> 📄 **接口定义见 [`INTERFACE_CONTRACT.md`](INTERFACE_CONTRACT.md) 契约 G / H**
+
+### 三方分工
+
+```
+队友B 采集手部数据  →  队友A 做重定向  →  仿真平台回放
+   (契约G)              (契约H)            (replay_actions.py)
+```
+
+### 现成可用的脚本（不需要等队友）
+
+```powershell
+# ① 查看某机器人的动作空间定义（38/36/28 维的完整关节映射）
+python scripts/replay_actions.py --describe --robot h1_2
+
+# ② 用假数据验证整条链路（不需要真实数据！）
+python scripts/replay_actions.py --dummy --robot h1_2 --task pushcube --no-render
+
+# ③ 导出一份「契约H 示例文件」，可以直接打开看格式
+python scripts/replay_actions.py --dummy --save-actions datasets/samples/actions_demo_h1_2.h5
+
+# ④ 回放真实数据（会自动读取文件里的 robot_type / task_name）
+python scripts/replay_actions.py --file datasets/actions/你的数据.h5
+
+# ⑤ 带可视化（会弹 pybullet 窗口，能看见机器人动）
+python scripts/replay_actions.py --file 你的数据.h5 --render
+
+# ⑥ 生成契约 G/H 的示例文件（照着写自己的导出代码）
+python scripts/make_sample_data.py --kind all
+```
+
+### 示例数据（已在仓库里）
+
+```
+datasets/samples/
+├── human_hand_demo_right.h5     契约G 示例：(T,21,3) 手部关键点
+├── actions_demo_h1_2.h5         契约H 示例：38 维动作序列
+├── actions_demo_gr1_t2.h5       契约H 示例：36 维
+└── actions_demo_g1.h5           契约H 示例：28 维
+```
+
+> 💡 用 HDF5 查看器（如 HDFView）或 `python -c "import h5py; ..."` 打开它们，
+> 就能看到自己的导出代码应该长什么样。
+
+### 数据交换
+
+| 数据类型 | 大小 | 方式 |
+|---|---|---|
+| `human_hand.h5` / `actions.h5` | < 10 MB | ✅ **git commit 到 `datasets/`** |
+| 原始视频 `.mp4` | 大 | ⚠️ 网盘/移动硬盘（**不进 Git**）|
+
+```powershell
+git checkout -b data/vision-record-xxx
+git add datasets/raw/
+git commit -m "data: 采集 xxx 手部数据（契约G）"
+git push -u origin data/vision-record-xxx
+# 然后在 GitHub 开 PR 让队友A 评审
+```
+
+---
+
+## ⚠️ 关于 Windows 编码的一个重要提醒
+
+**中文 Windows 控制台默认 GBK，无法显示某些 Unicode 符号**（如 `✓` `✗` `⚠️`）。
+本项目**已经把所有这类符号替换为 ASCII 安全写法**（`[OK]` / `[FAIL]` / `注意`）。
+
+> 如果你在自己新增的代码里想用这类符号，**请注意**：
+> - 直接 `print("✓")` 在 GBK 控制台会抛 `UnicodeEncodeError` **导致崩溃**
+> - 建议用 `[OK]` 代替 `✓`，或先设置 `$env:PYTHONIOENCODING='utf-8'`
+>
+> 自查方法：`python -c "print('\u2713')"` —— 不报错才说明你的环境支持。
+
+---
+
 ## 常见问题（FAQ）
 
 ### Q1：打开 GitHub 链接显示 404？

@@ -13,7 +13,7 @@
 
     维度不是固定的！用 len(loader.action_joint_indices) 或 env.action_dim 获取。
 
-    ⚠️ 绝不能假设「动作向量第 i 个元素 -> 关节索引 i」！
+    注意 绝不能假设「动作向量第 i 个元素 -> 关节索引 i」！
        因为 URDF 前 12 个关节是【腿部】（左右髋/膝/踝），
        按索引直接映射会导致「用腿做动作、手臂不动」的严重错位。
        必须使用 action_joint_indices 做映射。
@@ -170,7 +170,7 @@ class RobotLoader:
         for side in ('left', 'right'):
             cnt = len(self.arm_joints[side])
             if cnt != 7:
-                print(f"    ⚠️ 警告：{side} 手臂识别到 {cnt} 个关节（预期 7）")
+                print(f"    注意 警告：{side} 手臂识别到 {cnt} 个关节（预期 7）")
 
     def _apply_neutral_pose(self):
         """把手臂摆到中性姿态（只影响名字匹配的关节）"""

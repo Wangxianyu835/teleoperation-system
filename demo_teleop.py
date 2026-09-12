@@ -121,7 +121,7 @@ def main():
                 success = task.check_success()
                 if success:
                     elapsed = time.time() - task_start
-                    print(f"  ✓ TASK COMPLETED! ({elapsed:.1f}s)")
+                    print(f"  [OK] TASK COMPLETED! ({elapsed:.1f}s)")
                     metrics.record('pushcube', True, elapsed)
                     break
 

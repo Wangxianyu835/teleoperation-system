@@ -2,7 +2,7 @@ from .robot_loader import RobotLoader
 from .sensor_recorder import SensorRecorder
 from .domain_randomizer import DomainRandomizer
 
-# ⚠️ 不要用 try/except 吞掉这里的导入异常！
+# 注意 不要用 try/except 吞掉这里的导入异常！
 # 之前写成：
 #     try:
 #         from .simulation_env import SimulationEnv

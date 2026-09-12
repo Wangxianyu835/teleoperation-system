@@ -468,6 +468,7 @@ GitHub 用 **DataDome** 保护 `/signup` 等接口。响应头特征：`x-datado
 | 17 | **首次跑通端到端**：`test_import.py` 6 项全绿（`EXIT=0`），H1-2 + pushcube 跑 300 步无异常 |
 | 18 | 新增 `docs/INTERFACE_CONTRACT.md`（接口契约）+ `docs/TEAM_ONBOARDING.md`（队友上手指南）|
 | 19 | 用户告知：**重定向算法由队友（肖奕阳）负责，数据采集由另一位队友负责** |
+| 20 | **设计并实现「离线 Vision 流水线」**：新增契约 G/H、`scripts/replay_actions.py`、`scripts/make_sample_data.py`（详见第 14 节）|
 
 ### 8.2 已掌握的 Git 工作流
 
@@ -799,6 +800,118 @@ git config --global http.https://github.com.proxy http://127.0.0.1:7897
 
 > ⚠️ **已在历史中的普通文件不会自动转成 LFS**，需要重写历史（`git filter-repo`），
 > 且所有协作者都要重新 clone。**趁早决定比事后迁移便宜得多。**
+
+---
+
+## 14. 【2026-09-12】离线 Vision 流水线（契约 G/H + 回放脚本）
+
+### 14.1 目标
+
+实现 **Vision-based（单目视觉）的「离线」测试**：
+```
+队友B 采集手部数据  →  队友A 做重定向  →  仿真平台回放
+```
+
+**为什么离线优先**：可以「录好慢慢处理」、无性能压力、
+**改算法不用重新采集**（最大优势）。论文评测协议本身就是先录制后评测，
+所以**离线符合论文思路，不是简化版**。
+
+### 14.2 新增两个契约
+
+| 契约 | 内容 | 谁 → 谁 | 载体 |
+|---|---|---|---|
+| **G** | **人类手部数据文件** | 队友B → 队友A | `human_hand.h5`<br>`keypoints_3d (T,21,3)` + `keypoints_2d` + `wrist_pose` + `timestamps` |
+| **H** | **动作序列文件** | 队友A → 仿真平台 | `actions.h5`<br>`actions (T,action_dim)` + attrs(robot_type/task_name/fps) |
+
+> 📄 完整定义见 `docs/INTERFACE_CONTRACT.md`（契约 G/H）
+> 与 `docs/OFFLINE_PIPELINE.md`（详细规范 + 分阶段计划）
+>
+> **核心动机**：如果不先定义**文件格式**就交换数据，**100% 接不上**。
+
+### 14.3 新增脚本
+
+| 脚本 | 作用 |
+|---|---|
+| **`scripts/replay_actions.py`** | ⭐ **离线回放**：读契约H 的动作文件 → 灌进 `SimulationEnv` → 输出结果 |
+| `scripts/make_sample_data.py` | 生成契约 G/H 的**示例文件**（可执行的文档）|
+
+```powershell
+# 查看某机器人的动作空间定义（38/36/28 维的完整映射）
+python scripts/replay_actions.py --describe --robot h1_2
+
+# 用假数据验证链路（不需要真实数据）
+python scripts/replay_actions.py --dummy --robot h1_2 --task pushcube --no-render
+
+# 导出「契约H 示例文件」给队友A 照着写
+python scripts/replay_actions.py --dummy --save-actions datasets/samples/actions_demo_h1_2.h5
+
+# 回放真实数据（自动读取文件里的 robot_type / task_name）
+python scripts/replay_actions.py --file datasets/actions/pushcube_h1_2.h5
+
+# 带可视化（弹 pybullet 窗口）
+python scripts/replay_actions.py --file xxx.h5 --render
+
+# 生成契约 G/H 示例文件
+python scripts/make_sample_data.py --kind all
+```
+
+### 14.4 实测验证（2026-09-12）
+
+| 测试 | 结果 |
+|---|---|
+| `--describe --robot h1_2` | ✅ 打印完整 38 维动作空间映射 |
+| `--dummy --robot h1_2`（480 步）| ✅ 回放成功，0.58s（**825 步/秒**）|
+| `--file actions_demo_g1.h5` | ✅ 正确读取文件内 `robot_type=g1` / `task_name=pickcube` |
+| 维度不匹配测试（h1_2 + 28维）| ✅ 正确抛 `ValueError`，提示期望 38 |
+| `make_sample_data.py --kind all` | ✅ 生成 G/H 示例文件（h5）|
+
+### 14.5 本轮顺带修复的 3 个问题
+
+| # | 问题 | 症状 | 修复 |
+|---|---|---|---|
+| 1 | `import *` 不能放函数内 | `SyntaxError: import * only allowed at module level` | 改为 `import tasks.all_tasks` |
+| 2 | **`env.action_dim` 构造后不存在** | `AttributeError: 'SimulationEnv' object has no attribute 'action_dim'` | `__init__` 加占位属性；调用方需在 `reset()` 后访问 |
+| 3 | **任务注册表依赖调用方导入** | `KeyError: Task 'pickcube' not found. Available: []` | `simulation_env.py` **自己** `import tasks.all_tasks`；`get_task` 增加提示 |
+| 4 | **print 非 GBK 字符直接崩溃** | `UnicodeEncodeError: 'gbk' codec can't encode character '\u2713'` | 全项目 **31 处** `✓`/`✗`/`⚠️` 替换为 `[OK]` / `[FAIL]` / `注意` |
+
+> ⚠️ 问题 3 是**设计脆弱点**：30 个任务靠 `import tasks.all_tasks` 的**副作用**注册，
+> 任何不导入它的调用方都会遇到「注册表为空」，而错误信息（`Available: []`）毫无提示性。
+> 已改为 **`SimulationEnv` 自己负责导入**，从根上消除这类问题。
+
+> 🔴 **问题 4 会直接坑到队友**：中文 Windows 控制台默认 **GBK（cp936）**，
+> 而 `✓`(U+2713) / `✗`(U+2717) / `⚠️`(U+26A0) **不在 GBK 字符集**里，
+> Python 一 `print` 就抛 `UnicodeEncodeError` **直接崩溃**。
+> **队友在自己电脑上跑 `python test_import.py` 就会挂。**
+>
+> **修复方式**：写了扫描脚本找出全项目 41 处（去重后 31 处替换），
+> 把符号换成 ASCII 安全写法，覆盖 9 个文件：
+> ```
+> 已修复   1 处  ./demo_teleop.py
+> 已修复   1 处  ./envs/__init__.py
+> 已修复   2 处  ./envs/robot_loader.py
+> 已修复   4 处  ./envs/simulation_env.py
+> 已修复   2 处  ./main.py
+> 已修复   5 处  ./scripts/replay_actions.py
+> 已修复   1 处  ./tasks/base_task.py
+> 已修复   2 处  ./teleop/teleop_pipeline.py
+> 已修复  13 处  ./test_import.py
+> ```
+> **验证**：`chcp 936` 模拟队友环境实测 → `EXIT=0`，不再崩溃；
+> 全量编译 `OK=25 FAIL=0`。
+
+### 14.6 下一步（队友可以开工了）
+
+| 谁 | 任务 | 产出 |
+|---|---|---|
+| **队友B** | 按**契约G**采集 3~5 秒手部数据 | `datasets/raw/human_hand_xxx.h5` → commit |
+| **队友A** | 按**契约H**输出动作序列 | `datasets/actions/xxx.h5`；可用 `replay_actions.py` 自测 |
+| **你** | 收到数据后回放 | `python scripts/replay_actions.py --file xxx.h5` |
+
+### 14.7 分阶段计划（来自 OFFLINE_PIPELINE.md）
+
+- **阶段 1（先做）**：只做**手部**（MediaPipe 关键点 → dex-retargeting → 手部关节角）
+- **阶段 2**：加上**手臂**（手腕 6DoF → IK(PINK) → 7 个手臂关节）
+- **阶段 3**：对齐论文（SMPLer-X 替代 MediaPipe、PINK IK、卡尔曼滤波）
 
 
 

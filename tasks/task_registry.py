@@ -19,7 +19,15 @@ def register_task(name: str):
 def get_task(name: str) -> Type[BaseTask]:
     """获取任务类"""
     if name not in TASK_REGISTRY:
-        raise KeyError(f"Task '{name}' not found. Available: {list(TASK_REGISTRY.keys())}")
+        hint = ""
+        if not TASK_REGISTRY:
+            hint = ("\n提示：任务注册表为空 —— 30 个任务是靠 "
+                    "`import tasks.all_tasks` 的副作用注册的。\n"
+                    "      请在使用 get_task() 前先 import tasks.all_tasks；"
+                    "或直接用 SimulationEnv（它已自动导入）。")
+        raise KeyError(
+            f"Task '{name}' not found. Available: {list(TASK_REGISTRY.keys())}"
+            f"{hint}")
     return TASK_REGISTRY[name]
 
 

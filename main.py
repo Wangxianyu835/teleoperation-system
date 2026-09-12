@@ -28,7 +28,7 @@ from envs import SimulationEnv
 def demo_controller(obs):
     """演示用简单控制器：左右臂交替摆动 + 手指缓慢开合
 
-    ⚠️ 动作向量长度由机器人决定（H1-2=38 / GR1-T2=36 / G1=28），
+    注意 动作向量长度由机器人决定（H1-2=38 / GR1-T2=36 / G1=28），
        不要硬编码 28！真实长度见 env.action_dim。
        索引含义见 env.action_joint_names（左臂7 + 右臂7 + 左手N + 右手N）。
 
@@ -101,7 +101,7 @@ def main():
     args = parser.parse_args()
 
     # 交互模式
-    choice = None   # ⚠️ 必须初始化：带 --task/--demo/--benchmark 时不会进入下面的交互分支
+    choice = None   # 注意 必须初始化：带 --task/--demo/--benchmark 时不会进入下面的交互分支
     if args.task is None and not args.demo and not args.benchmark:
         interactive_menu()
 

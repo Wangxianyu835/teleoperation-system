@@ -9,6 +9,7 @@ from .robot_loader import RobotLoader
 from .sensor_recorder import SensorRecorder
 from .domain_randomizer import DomainRandomizer
 from tasks import get_task, list_tasks
+import tasks.all_tasks          # noqa: F401  ★ 触发 30 个任务注册
 from utils import MetricsTracker
 
 
@@ -48,6 +49,16 @@ class SimulationEnv:
         # 初始化和加载
         self._init_modules(data_dir)
         self.episode_count = 0
+
+        # 机器人 / 动作空间占位
+        # 注意 真正的值在 reset() 里「按机器人确定」后填充。
+        #    这里先占位，是为了在 reset() 之前访问时能得到明确信息，
+        #    而不是抛出难懂的 AttributeError: 'SimulationEnv' object has no
+        #    attribute 'action_dim'
+        self.robot_id = None
+        self.action_dim = None
+        self.action_joint_names = []
+        self.action_joint_indices = []
 
     def _init_modules(self, data_dir: str):
         """初始化各模块"""
@@ -188,13 +199,13 @@ class SimulationEnv:
 
             if done:
                 if verbose:
-                    status = "✓ SUCCESS" if success else "✗ FAILED (timeout)"
+                    status = "[OK] SUCCESS" if success else "[FAIL] FAILED (timeout)"
                     print(f"[{self.task_name}] Episode {self.episode_count}: "
                           f"{status} | Time: {elapsed:.2f}s | Steps: {step_i}")
                 return success, elapsed
 
             # 渲染步进（GUI 模式下放慢速度以便观察）
-            # ⚠️ 旧代码是 `if self.client == p.GUI:`，但 client 是【连接 id】(0)，
+            # 注意 旧代码是 `if self.client == p.GUI:`，但 client 是【连接 id】(0)，
             #    p.GUI 是【连接类型常量】(1)，两者永不相等 → 已改用 self._render 标志
             if self._render:
                 time.sleep(1.0 / 240.0)

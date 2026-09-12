@@ -244,3 +244,76 @@ ep_0001.h5
 4. 提交信息用 `docs: 更新接口契约 - xxx`
 
 > 🔴 **冻结后的契约是「合同」** —— 一个人擅自改会导致另外两人的代码全部失效。
+
+---
+
+## 契约 G：人类手部数据文件（队友B → 队友A）
+
+> 📄 **完整定义见 [`OFFLINE_PIPELINE.md`](OFFLINE_PIPELINE.md) 第 2 节**
+
+**格式：`.h5` 或 `.npz`**
+
+```
+human_hand.h5
+├── keypoints_3d      (T, 21, 3)  float32   ⭐ MediaPipe 21 关键点世界坐标(米)
+├── keypoints_2d      (T, 21, 2)  float32   可选：像素坐标（调试用）
+├── wrist_pose        (T, 7)      float32   可选：[x,y,z,qx,qy,qz,qw]（阶段2）
+├── timestamps        (T,)        float64   每帧时间戳(秒)
+└── attrs: hand_side / fps / source / mediapipe_version
+```
+
+**三条硬性约定**：
+1. 坐标系：**右手系、Z 轴向上、单位米**
+2. 21 个关键点顺序**必须遵循 MediaPipe 官方 `HAND_21_LANDMARKS`**，不可自定义
+3. 检测失败的帧**用 NaN 填充**，不要丢帧（否则 timestamps 错位）
+
+**参考实现**：`python scripts/make_sample_data.py --kind hand`
+→ 生成 `datasets/samples/human_hand_demo_right.h5` 供格式对照
+
+---
+
+## 契约 H：动作序列文件（队友A → 仿真平台）
+
+> 📄 **完整定义见 [`OFFLINE_PIPELINE.md`](OFFLINE_PIPELINE.md) 第 3 节**
+
+**格式：`.h5` 或 `.npz`**
+
+```
+actions.h5
+├── actions      (T, action_dim)  float32   ⭐ 契约A 定义的动作向量序列
+├── timestamps   (T,)             float64   可选，缺省按 fps 生成
+└── attrs: robot_type / task_name / fps / source / algo
+```
+
+**维度必须匹配**（回放脚本会自动校验并给出明确报错）：
+
+| robot_type | action_dim |
+|---|---|
+| `h1_2` | **38** |
+| `gr1_t2` | **36** |
+| `g1` | **28** |
+
+**参考实现**：
+```powershell
+# 生成示例文件
+python scripts/replay_actions.py --dummy --save-actions datasets/samples/actions_demo_h1_2.h5
+# 回放
+python scripts/replay_actions.py --file datasets/samples/actions_demo_h1_2.h5
+# 查看动作空间定义
+python scripts/replay_actions.py --describe --robot h1_2
+```
+
+---
+
+## 契约总览表
+
+| 契约 | 内容 | 谁 → 谁 | 载体 |
+|---|---|---|---|
+| **A** | 动作空间（内存）| 队友A → SimulationEnv | `np.ndarray(action_dim)` |
+| **B** | 观测空间（内存）| SimulationEnv → 所有人 | `dict` |
+| **C** | 控制器接口 | 队友A → env.run_episode | `Callable[[dict], ndarray]` |
+| **D** | HDF5 数据记录格式 | 队友B | `ep_xxxx.h5` |
+| **E** | 命名与目录约定 | 全体 | — |
+| **F** | 变更流程 | 全体 | — |
+| **G** | **人类手部数据文件** | **队友B → 队友A** | `human_hand.h5` |
+| **H** | **动作序列文件** | **队友A → 仿真平台** | `actions.h5` |

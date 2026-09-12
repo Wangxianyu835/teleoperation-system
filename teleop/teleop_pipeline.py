@@ -197,7 +197,7 @@ class TeleopPipeline:
                     self.recorder.save_episode(self.trial_num)
 
                 if verbose:
-                    status = "✓ SUCCESS" if success else "✗ TIMEOUT"
+                    status = "[OK] SUCCESS" if success else "[FAIL] TIMEOUT"
                     print(f"  [{self.task_name}] Episode {self.trial_num}: "
                           f"{status} | {elapsed:.1f}s | {step_i} 步")
                 return {'success': success, 'elapsed': elapsed, 'steps': step_i}
