@@ -371,3 +371,80 @@ right 后 3 帧（dim3 / dim6 / dim8 / dim11）:
 | 数据获取 | 实时遥操作 | **离线**（录制后处理）|
 
 > 这些差异**本身不是缺点**，但**必须主动说明** —— 说清了是加分，被问出来是减分。
+
+---
+
+## 8.10 ✅ 方案B：l21 已装到机器人腕部（2026-09-12）
+
+**状态：已完成并验证通过（6 / 6 组合精确对齐）。**
+
+### 做了什么
+
+新增 `scripts/replay_hand_on_robot.py`：画面里现在是
+**「论文机器人（H1-2 / GR1-T2 / G1） + LinkerHand l21」**，
+比孤立的一只手更接近真实场景，同时也**为阶段 2（加手臂）铺好了路** ——
+手是用 pybullet 固定约束锁在腕部的，**将来驱动手臂时，手会自动跟着走**。
+
+| 机器人 | 手基座 link（挂载点）|
+|---|---|
+| `h1_2` | `L_hand_base_link` / `R_hand_base_link` |
+| `gr1_t2` | `l_hand_base_link` / `r_hand_base_link` |
+| `g1` | `left_hand_palm_link` / `right_hand_palm_link` |
+
+机器人自带的手会被自动隐藏（h1_2 26 个 link / gr1_t2 40 个 / g1 16 个）。
+
+### 安装朝向是「算」出来的，不是「试」出来的
+
+1. 用正运动学量出**机器人自带手**的坐标系 `M_robot`（手指方向 + 拇指侧）
+2. 同法量出 **l21** 的坐标系 `M_l21`
+3. 安装旋转 `R = M_robot * M_l21^T`
+
+脚本会打印算出的 rpy，并**在安装后自动复测比对**，输出：
+
+```
+自检：手指方向差 0.00deg / 拇指方向差 0.00deg  [OK]
+```
+
+实测 6 个组合的角度差全为 `0.000deg`，矩阵最大分量差 `~1e-07`
+（纯 float32 精度），`det(R) = +1.0000`（**无镜像问题**）。
+
+### ⚠️ 过程中踩到一个 pybullet 大坑（已修，务必记住）
+
+`p.loadURDF()` 对**自由刚体**是按 **base link 的质心（COM）** 摆放
+`basePosition` 的，**不是 link 原点**：
+
+```python
+p.loadURDF(手.urdf, [0.286, 0.2095, 0.095], orn)
+p.getBasePositionAndOrientation(手)     # 实际 (0.2773, 0.2372, 0.1713)
+#                                              偏移 0.0816 m
+```
+
+手的位置差 8 cm，会导致「测量它的坐标系时参考系错位」，
+**手指方向被算歪约 15 度** —— 表现是「朝向不对但看不出哪里不对」。
+修复：测量时用 `getBasePositionAndOrientation()` 的**实际**值作参考，
+并在 `loadURDF` 后立即 `resetBasePositionAndOrientation()` 到目标位姿。
+
+> 详细排查过程见 `PROJECT_CONTEXT.md` 第 17 节。
+
+### 用法
+
+```powershell
+# 任意机器人 + 自动朝向
+python scripts/replay_hand_on_robot.py --robot h1_2   --hand both --render
+python scripts/replay_hand_on_robot.py --robot gr1_t2 --hand both --render
+python scripts/replay_hand_on_robot.py --robot g1     --hand both --render
+
+# 无头验证（不弹窗）
+python scripts/replay_hand_on_robot.py --robot h1_2 --hand both
+
+# 手动覆盖（非零时优先于自动值）
+python scripts/replay_hand_on_robot.py --robot h1_2 --hand right --render `
+    --mount-offset 0 0 0.05 --mount-rpy 0 0 1.5708
+```
+
+### 这对阶段 2 意味着什么
+
+- **手 -> 机器人的挂载已经解决**，接口固定（手基座 link + 固定约束）
+- 阶段 2 只需要把**契约 H 里的双臂 7 关节**喂给机器人即可，
+  **手会自动跟随手臂运动**，不需要额外改动
+- 目前手臂保持不动（还没手臂数据），所以画面是「静止站立的机器人 + 活动的手指」

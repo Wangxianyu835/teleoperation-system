@@ -1188,5 +1188,141 @@ python scripts/check_gbk_safe.py --strict   # 有违规退出码 1（可接 CI�
 
 
 
+---
+
+## 17. 【2026-09-12】方案B：把 l21 装到机器人腕部（★ 内含一个 pybullet 大坑）
+
+### 17.1 交付内容
+
+新增 `scripts/replay_hand_on_robot.py`：让画面里出现「论文机器人 + l21 灵巧手」，
+比孤立的一只手更接近真实，也为将来接入手臂数据做准备（**手臂一动，手会自动跟随**）。
+
+技术做法：
+
+1. `RobotLoader` 加载机器人（`h1_2` / `gr1_t2` / `g1`）
+2. 自动定位「手基座 link」（见 17.2 表）
+3. 隐藏机器人自带的手（改为全透明，避免与 l21 重叠）
+4. 用 pybullet **固定约束**（`createConstraint` + `JOINT_FIXED`）把 l21 锁到「手基座 link」
+5. 每帧用队友的 18 维数据驱动 l21 的 17 个关节
+
+### 17.2 各种机器人的「手基座 link」与腕部安装变换（实测自 URDF）
+
+| 机器人 | 侧 | 手基座 link | 父级（腕部 link）| 腕部→手基座 xyz | rpy |
+|---|---|---|---|---|---|
+| `h1_2` | left | `L_hand_base_link` | `left_wrist_yaw_link` | `0.054 0 0` | `0 0 1.5708` |
+| `h1_2` | right | `R_hand_base_link` | `right_wrist_yaw_link` | `0.054 0 0` | `3.14159 0 -1.5708` |
+| `gr1_t2` | left | `l_hand_base_link` | `left_end_effector_link` | `-0.00144 -0.00006 -0.021` | `0 0 0` |
+| `gr1_t2` | right | `r_hand_base_link` | `right_end_effector_link` | `-0.00142 0 -0.021` | `0 0 0` |
+| `g1` | left | `left_hand_palm_link` | `left_wrist_yaw_link` | `0.0415 0.003 0` | `0 0 0` |
+| `g1` | right | `right_hand_palm_link` | `right_wrist_yaw_link` | `0.0415 -0.003 0` | `0 0 0` |
+
+隐藏自带手的数量：h1_2 = 26 个 link，gr1_t2 = 40 个，g1 = 16 个。
+
+> 💡 这些三字型号**都把手基座单独做成了一个 link**，而 l21 的基座 link 也叫
+> `hand_base_link` —— 命名语义天然对齐，所以「挂到哪个 link」这一步没有歧义。
+
+### 17.3 ★★★ pybullet 大坑：`loadURDF` 是按「质心」摆放 `basePosition` 的
+
+**这是本轮排查耗时最久的问题，务必记住。**
+
+```python
+p.loadURDF(手.urdf, basePosition=[0.286, 0.2095, 0.095], baseOrientation=orn)
+p.getBasePositionAndOrientation(手)   # 实际返回 (0.2773, 0.2372, 0.1713) !!!
+#                                                    ^^^^^^^^^^^^^^^^^^ 偏移 0.0816 m
+```
+
+对**自由刚体**（`useFixedBase=False`），pybullet 把 `basePosition` 当作
+**base link 的质心（COM）**，而不是 link 原点。l21 的实测偏移：
+
+| 手 | 偏移量 |
+|---|---|
+| `l21_left` | 0.0816 m |
+| `l21_right` | 0.0763 m |
+
+**为什么这个坑很隐蔽**：手的 base 位姿差了 8 cm，
+用它当参考系去测量手的坐标系时，**手指方向会被算歪约 15 度**，
+最终表现为「安装朝向不对，但 rpy 看起来又没错」。
+
+**排查关键线索**：残差（左 15.16deg / 右 4.88deg）在 `h1_2` 与 `gr1_t2`
+上**完全相同** —— 既然两种机器人算出完全一样的误差，
+说明误差根本不在机器人侧，**而在 l21 侧**。
+
+**修复**：
+
+1. 测量手的坐标系时，用 `p.getBasePositionAndOrientation()` 读到的
+   **实际** base 位姿当参考系，而不是 `loadURDF` 的传入值
+2. `loadURDF` 之后立即 `resetBasePositionAndOrientation()` 到目标位姿
+   （`reset*` 用的是 **link 原点** 约定，已验证精确），
+   保证固定约束建立在正确位置上
+
+### 17.4 自动安装朝向的原理（不用人工盲试）
+
+「装得正不正」可以完全用几何推出来，不需要逐个试 rpy：
+
+1. **测出机器人自带手的坐标系** `M_robot`（表达在该侧手基座 link 系里）
+   - `e1` = 四指指尖均值方向（手指伸展方向）
+   - `e2` = 拇指尖方向去掉 `e1` 分量后归一化（拇指侧）
+   - `e3` = `e1 x e2`
+2. **同法测出 l21 的坐标系** `M_l21`（表达在它自己的 `hand_base_link` 系里）
+3. **安装旋转** `R = M_robot * M_l21^T`，按 `Rz(yaw)*Ry(pitch)*Rx(roll)`
+   约定反解成 rpy（与 `p.getQuaternionFromEuler` 一致，已做往返自检，误差 1.2e-16）
+
+实测参考值（脚本会自动算，这里仅供参考）：
+
+| 机器人 | 侧 | 自动算出 rpy |
+|---|---|---|
+| `h1_2` | left | `(-1.7165, +0.3019, +2.9226)` |
+| `h1_2` | right | `(-1.5872, -0.0602, -3.0305)` |
+| `gr1_t2` | left | `(+3.0403, -0.3327, -1.6037)` |
+| `gr1_t2` | right | `(-3.0901, +0.0000, +1.2792)` |
+| `g1` | left | `(-3.0046, +1.3663, -2.9047)` |
+| `g1` | right | `(+1.2687, +1.1753, +1.2329)` |
+
+### 17.5 验证结果：6 / 6 全部精确对齐
+
+脚本内置**安装后自检**（重新测量再比对），实测：
+
+```
+h1_2   left   手指夹角 0.000deg  拇指夹角 0.000deg  最大分量差 1.67e-07  [OK]
+h1_2   right  0.000deg  0.000deg  9.94e-08  [OK]
+gr1_t2 left   0.000deg  0.000deg  1.27e-07  [OK]
+gr1_t2 right  0.000deg  0.000deg  1.14e-07  [OK]
+g1     left   0.000deg  0.000deg  2.34e-07  [OK]
+g1     right  0.000deg  0.000deg  1.34e-07  [OK]
+```
+
+6 个组合的 `det(R)` 均为 `+1.0000`（**没有左右手镜像问题**）。
+
+### 17.6 用法
+
+```powershell
+# 基本用法（朝向自动算）
+python scripts/replay_hand_on_robot.py --robot h1_2 --hand both --render
+python scripts/replay_hand_on_robot.py --robot gr1_t2 --hand both --render
+python scripts/replay_hand_on_robot.py --robot g1 --hand both --render
+
+# 无头（自动验证，不弹窗）
+python scripts/replay_hand_on_robot.py --robot h1_2 --hand both
+
+# 手动覆盖朝向（非零时优先于自动值）
+python scripts/replay_hand_on_robot.py --robot h1_2 --hand right --render `
+    --mount-offset 0 0 0.05 --mount-rpy 0 0 1.5708
+
+# 关闭自动朝向，完全手动
+python scripts/replay_hand_on_robot.py --robot h1_2 --hand both --render --no-auto-mount
+```
+
+### 17.7 本轮顺手修掉的两个 pybullet API 细节
+
+1. **`getJointInfo` 不返回 child link 索引** —— `info[12]` 是 child link 的
+   **名字**（bytes），且树形结构中「关节 `i` 的 child link 索引就是 `i` 本身」。
+   （`info[16]` 是 *parent* link 索引）
+2. **link 侧别命名有两套**：`h1_2` / `gr1_t2` 用 `L_*` / `R_*`，
+   `g1` 用 `left_*` / `right_*`。匹配时必须兼容，否则会「一个都没匹配上」
+   （表现为「已隐藏 0 个 link」，但**不报错**，很隐蔽）。
+
+
+
+
 
 
