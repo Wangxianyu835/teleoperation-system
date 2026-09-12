@@ -326,8 +326,13 @@ def main():
                 for _ in range(substeps):
                     p.stepSimulation(physicsClientId=cid)
                 if hud_pos is not None:
+                    # 把「第几遍」显示在画面上 —— 只在控制台打印容易让人
+                    # 误以为"数据是无限的、机器人一直在动"
+                    loop_txt = ('无限循环' if args.loop == 0
+                                else f'共 {args.loop} 遍')
                     hud_id = p.addUserDebugText(
-                        f'{args.robot}  |  数据帧 {i+1}/{T}  |  '
+                        f'{args.robot}  |  第 {rounds} 遍（{loop_txt}）'
+                        f'  |  数据帧 {i+1}/{T}  |  '
                         f'手部映射  左 {cov.get("left", "-")}  '
                         f'右 {cov.get("right", "-")}\n'
                         f'手指：队友重定向输出（L21 -> 原装手）      '
