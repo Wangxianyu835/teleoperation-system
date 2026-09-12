@@ -129,6 +129,141 @@ def robot_hand_link_indices(rid, side, cid):
     return idxs
 
 
+# ---------------------- 「手坐标系」推断与自动安装 ----------------------
+# 目标手的坐标系用三根正交轴描述（都在「手基座 link」坐标系里）：
+#   e1 = 手指伸展方向（从掌根指向指尖）
+#   e2 = 拇指侧方向（垂直于 e1，指向拇指）
+#   e3 = e1 × e2
+FINGER_KEYS = ('index', 'middle', 'ring', 'pinky')
+THUMB_KEY = 'thumb'
+
+
+def _collect_link_positions(n_links, get_name, get_pos):
+    """收集 link 名与位置（供下面推断坐标系用）"""
+    out = []
+    for i in range(n_links):
+        nm = get_name(i)
+        if nm:
+            out.append((nm, np.asarray(get_pos(i, nm), dtype=float)))
+    return out
+
+
+def _finger_tips(link_positions):
+    """按手指分组，每根手指取离掌根最远的那个 link"""
+    best = {}
+    for nm, pos in link_positions:
+        low = nm.lower()
+        for k in FINGER_KEYS:
+            if k in low:
+                d = float(np.linalg.norm(pos))
+                if k not in best or d > best[k][0]:
+                    best[k] = (d, pos)
+                break
+    return [v[1] for v in best.values()]
+
+
+def _thumb_tip(link_positions):
+    best = None
+    for nm, pos in link_positions:
+        if THUMB_KEY in nm.lower():
+            d = float(np.linalg.norm(pos))
+            if best is None or d > best[0]:
+                best = (d, pos)
+    return best[1] if best else None
+
+
+def compute_hand_frame(link_positions):
+    """由 link 位置推断手的正交坐标系 M=[e1|e2|e3]（3x3）
+
+    e1 = 手指方向（四指指尖的均值方向）
+    e2 = 拇指侧（拇指尖方向去掉 e1 分量后归一化）
+    e3 = e1 x e2
+    """
+    tips = _finger_tips(link_positions)
+    thumb = _thumb_tip(link_positions)
+    if len(tips) < 2 or thumb is None:
+        return None
+    mean_tip = np.mean(np.array(tips), axis=0)
+    n1 = float(np.linalg.norm(mean_tip))
+    if n1 < 1e-9:
+        return None
+    e1 = mean_tip / n1
+    t = np.asarray(thumb, dtype=float)
+    t = t - float(np.dot(t, e1)) * e1
+    n2 = float(np.linalg.norm(t))
+    if n2 < 1e-9:
+        return None
+    e2 = t / n2
+    e3 = np.cross(e1, e2)
+    return np.column_stack([e1, e2, e3])
+
+
+def _mat_to_euler_xyz(M):
+    """把旋转矩阵转成 pybullet 的 getQuaternionFromEuler 用的 (r, p, y)
+
+    pybullet 的约定是 R = Rz(yaw) * Ry(pitch) * Rx(roll)，
+    本函数按同一约定反解，保证 p.getQuaternionFromEuler(rpy) 能还原 M。
+    """
+    m = [float(M[r][c]) for r in range(3) for c in range(3)]
+    return list(_euler_from_matrix_xyz(m))
+
+
+def _euler_from_matrix_xyz(m):
+    """3x3（行主序 list）-> (roll, pitch, yaw)"""
+    sy = -m[6]
+    sy = max(-1.0, min(1.0, sy))
+    pitch = float(np.arcsin(sy))
+    if abs(sy) < 1.0 - 1e-9:
+        roll = float(np.arctan2(m[7], m[8]))
+        yaw = float(np.arctan2(m[3], m[0]))
+    else:
+        roll = float(np.arctan2(-m[5], m[4]))
+        yaw = 0.0
+    return roll, pitch, yaw
+
+
+def _vec_angle(u, v):
+    """两个向量之间的夹角（度）"""
+    u = np.asarray(u, dtype=float)
+    v = np.asarray(v, dtype=float)
+    c = float(np.dot(u, v)) / (float(np.linalg.norm(u))
+                               * float(np.linalg.norm(v)) + 1e-12)
+    return float(np.degrees(np.arccos(max(-1.0, min(1.0, c)))))
+
+
+def compute_auto_mount_rpy(robot_frame, hand_frame):
+    """R_mount = M_robot * M_hand^T（把 l21 的坐标系对到机器人的手基座坐标系）"""
+    if robot_frame is None or hand_frame is None:
+        return None, 0.0
+    R = np.asarray(robot_frame, dtype=float) @ np.asarray(
+        hand_frame, dtype=float).T
+    det = float(np.linalg.det(R))
+    return _mat_to_euler_xyz(R), det
+
+
+def measure_hand_frame(body_id, base_pos, base_orn, cid, link_indices=None):
+    """测出某只手的坐标系（表达在 base_pos/base_orn 这个「手基座」系里）
+
+    link_indices=None 表示取全部 link（用于 l21 手本身）。
+    """
+    import pybullet as p
+    inv_p, inv_o = p.invertTransform(base_pos, base_orn,
+                                     physicsClientId=cid)
+    n = p.getNumJoints(body_id, physicsClientId=cid)
+    idxs = list(range(n)) if link_indices is None else sorted(link_indices)
+    links = []
+    for li in idxs:
+        nm = _link_name_of_joint(body_id, li, cid)
+        st = p.getLinkState(body_id, li, computeForwardKinematics=True,
+                            physicsClientId=cid)
+        rel, _ = p.multiplyTransforms(inv_p, inv_o, st[4], st[5],
+                                      physicsClientId=cid)
+        links.append((nm, rel))
+    return compute_hand_frame(links)
+
+
+
+
 # --- 薄封装（延迟 import pybullet，便于模块被 import 时不连接）---
 def p_getNumJoints(rid, cid):
     import pybullet as p
@@ -164,6 +299,8 @@ def main():
                     help='安装旋转（弧度）')
     ap.add_argument('--no-hide-robot-hand', action='store_true',
                     help='不隐藏机器人自带的手（便于对比位置）')
+    ap.add_argument('--no-auto-mount', action='store_true',
+                    help='关闭自动安装朝向（改用 --mount-rpy 手动值）')
     args = ap.parse_args()
 
     print('=' * 88)
@@ -226,20 +363,65 @@ def main():
         base_pos, base_orn = ls[4], ls[5]
         print(f'    世界位姿 pos={tuple(round(float(v), 4) for v in base_pos)}')
 
-        off_pos, off_orn = p.multiplyTransforms(
-            base_pos, base_orn, args.mount_offset,
-            p.getQuaternionFromEuler(args.mount_rpy), physicsClientId=cid)
         p.setAdditionalSearchPath(os.path.dirname(urdf),
                                   physicsClientId=cid)
-        hand_id = p.loadURDF(urdf, off_pos, off_orn,
+        # 先按「零偏移」加载，用来测量 l21 自身的坐标系
+        hand_id = p.loadURDF(urdf, base_pos, base_orn,
                              useFixedBase=False, physicsClientId=cid)
+        for i in range(p.getNumJoints(hand_id, physicsClientId=cid)):
+            p.resetJointState(hand_id, i, 0.0, physicsClientId=cid)
+
+        mount_rpy = list(args.mount_rpy)
+        rob_frame = None
+        if not args.no_auto_mount:
+            rob_frame = measure_hand_frame(
+                robot_id, base_pos, base_orn, cid,
+                link_indices=robot_hand_link_indices(robot_id, side, cid))
+            # ★ 必须用手的「实际」base 位姿作参考系：
+            #   pybullet 的 loadURDF 对自由刚体按「质心」摆放 basePosition，
+            #   实际 base 与传入值有偏移（l21 约 0.076 m）。若用传入值作参考，
+            #   手指/拇指方向会被算歪（实测约 15 度）。
+            hb_pos, hb_orn = p.getBasePositionAndOrientation(
+                hand_id, physicsClientId=cid)
+            l21_frame = measure_hand_frame(hand_id, hb_pos, hb_orn, cid)
+            off = float(np.linalg.norm(np.asarray(hb_pos)
+                                       - np.asarray(base_pos)))
+            if off > 1e-4:
+                print(f'    注：loadURDF 的 base 实际偏移了 {off:.4f} m'
+                      f'（质心 vs 原点约定），已按实际位姿测量')
+            auto_rpy, det = compute_auto_mount_rpy(rob_frame, l21_frame)
+            if auto_rpy is None:
+                print('    自动安装失败（几何不足），改用 --mount-rpy')
+            else:
+                print('    自动安装朝向 rpy = ({:+.4f}, {:+.4f}, {:+.4f})'
+                      '  [det={:+.4f}]'.format(*auto_rpy, det))
+                if abs(det - 1.0) > 1e-4:
+                    print('    [WARN] det != 1：左右手存在镜像，朝向可能不准')
+                if list(args.mount_rpy) == [0.0, 0.0, 0.0]:
+                    mount_rpy = auto_rpy
+
+        off_pos, off_orn = p.multiplyTransforms(
+            base_pos, base_orn, args.mount_offset,
+            p.getQuaternionFromEuler(mount_rpy), physicsClientId=cid)
+        p.resetBasePositionAndOrientation(hand_id, off_pos, off_orn,
+                                          physicsClientId=cid)
+        # 自检：安装后再测一次 l21 坐标系，应与机器人自带手重合
+        if rob_frame is not None:
+            got = measure_hand_frame(hand_id, base_pos, base_orn, cid)
+            if got is not None:
+                a_f = _vec_angle(got[:, 0], rob_frame[:, 0])
+                a_t = _vec_angle(got[:, 1], rob_frame[:, 1])
+                ok = a_f < 0.5 and a_t < 0.5
+                print('    自检：手指方向差 {:.2f}deg / 拇指方向差 {:.2f}deg'
+                      '  {}'.format(a_f, a_t,
+                                    '[OK]' if ok else '[WARN 朝向可能有偏差]'))
         cj = p.createConstraint(
             parentBodyUniqueId=robot_id, parentLinkIndex=mlink,
             childBodyUniqueId=hand_id, childLinkIndex=-1,
             jointType=p.JOINT_FIXED, jointAxis=[0, 0, 0],
             parentFramePosition=args.mount_offset,
             childFramePosition=[0, 0, 0],
-            parentFrameOrientation=p.getQuaternionFromEuler(args.mount_rpy),
+            parentFrameOrientation=p.getQuaternionFromEuler(mount_rpy),
             childFrameOrientation=[0, 0, 0, 1], physicsClientId=cid)
         print(f'    已加载 l21 + 固定约束 (id={cj})')
 
