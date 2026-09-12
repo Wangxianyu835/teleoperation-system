@@ -548,9 +548,9 @@ def print_identity_swap_report(swaps, title='左右手身份切换检测'):
                   f'{s["d_same"]:>9.4f} {s["d_cross"]:>9.4f}  '
                   f'{"是" if s["other_lost"] else "否"}')
         print()
-        print('  建议：这些帧用 hold_last_valid()【保持上一有效姿态】修复，'
-              '不要用插值')
-        print('        （插值会被同样受污染的下一帧拉偏）')
+        print('  修复策略：这些帧用 hold_last_valid()'
+              '【保持上一有效姿态】，' + '不要用插值')
+        print('            （插值会被同样受污染的下一帧拉偏）')
     print('=' * 96)
 
 
