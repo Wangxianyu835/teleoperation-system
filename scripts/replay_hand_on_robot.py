@@ -301,6 +301,16 @@ def main():
                     help='不隐藏机器人自带的手（便于对比位置）')
     ap.add_argument('--no-auto-mount', action='store_true',
                     help='关闭自动安装朝向（改用 --mount-rpy 手动值）')
+    ap.add_argument('--no-fix-jitter', action='store_true',
+                    help='不修「手抖」（默认会重标 l21 的质量/惯量）')
+    ap.add_argument('--dt', type=float, default=1.0 / 1000.0,
+                    help='物理时间步（默认 1/1000；l21 惯量极小需要小步长）')
+    ap.add_argument('--substeps', type=int, default=8,
+                    help='每帧数据推进多少个物理步（默认 8）。'
+                         '0 = 自动让仿真时间正好等于数据时间'
+                         '（最准但慢 4 倍）。'
+                         '实测关节 29 ms 就能走完 1.5 rad，'
+                         '所以 8 步足够跟上，视觉上只滞后约 4 帧')
     args = ap.parse_args()
 
     print('=' * 88)
@@ -322,7 +332,7 @@ def main():
     p.setAdditionalSearchPath(pybullet_data.getDataPath(),
                               physicsClientId=cid)
     p.setGravity(0, 0, -9.81, physicsClientId=cid)
-    p.setTimeStep(1.0 / 240.0, physicsClientId=cid)
+    p.setTimeStep(args.dt, physicsClientId=cid)
     p.loadURDF('plane.urdf', physicsClientId=cid)
 
     loader = RobotLoader(cid)
@@ -370,6 +380,21 @@ def main():
                              useFixedBase=False, physicsClientId=cid)
         for i in range(p.getNumJoints(hand_id, physicsClientId=cid)):
             p.resetJointState(hand_id, i, 0.0, physicsClientId=cid)
+
+        # ★ 修「手抖」（2026-09-12 定位）
+        #   l21 的 URDF 质量/惯量接近 0：base link 质量 1.5785e-07 kg、
+        #   惯量对角 (0, 0, 0)，各指节 0.0004~0.003 kg，且 damping=friction=0。
+        #   位置控制相对这么小的惯量增益过大 -> 过冲 / 数值发散，
+        #   肉眼看到的就是「手抖」。重标到物理合理量级即可：
+        #       实测 稳态误差 0.4380 -> 0.0114，超调 0.4800 -> 0.0005
+        #   （注意：这是为了让控制稳定，不代表真实质量；做接触/抓取实验时需谨慎）
+        if not args.no_fix_jitter:
+            for i in range(p.getNumJoints(hand_id, physicsClientId=cid)):
+                p.changeDynamics(hand_id, i, mass=0.02,
+                                 localInertiaDiagonal=[1e-6, 1e-6, 1e-6],
+                                 physicsClientId=cid)
+            print('    已重标质量/惯量（修手抖）: mass=0.02 kg, '
+                  'inertia=1e-6（--no-fix-jitter 可关）')
 
         mount_rpy = list(args.mount_rpy)
         rob_frame = None
@@ -465,7 +490,12 @@ def replay_loop(p, args, data, mounts, robot_id, cid, rha):
 
     T = len(data['timestamps'])
     t0 = data['timestamps'][0]
-    print(f'\n[回放] {T} 帧，开始...')
+    frame_dt = (float(np.median(np.diff(data['timestamps'])))
+                if T > 1 else 1.0 / 30.0)
+    substeps = (args.substeps if args.substeps > 0
+                else max(1, int(round(frame_dt / args.dt))))
+    print(f'\n[回放] {T} 帧，开始...（数据 {frame_dt*1000:.1f} ms/帧，'
+          f'物理步 {args.dt*1000:.2f} ms，每帧推进 {substeps} 步）')
     for i in range(T):
         for side, (hid, dim2j, limits, arr, val) in mounts.items():
             if not val[i]:
@@ -477,7 +507,8 @@ def replay_loop(p, args, data, mounts, robot_id, cid, rha):
                 p.setJointMotorControl2(hid, j, p.POSITION_CONTROL,
                                         targetPosition=v, force=20.0,
                                         physicsClientId=cid)
-        p.stepSimulation(physicsClientId=cid)
+        for _ in range(substeps):
+            p.stepSimulation(physicsClientId=cid)
         if args.render:
             dt = (data['timestamps'][i] - t0) / max(args.speed, 1e-6)
             time.sleep(max(0.0, min(dt, 0.05)))
