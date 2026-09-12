@@ -100,7 +100,7 @@ F:\simulation_platform\
 ├── main.py                  137行  主入口（交互选任务/指定任务/demo/benchmark/无头）
 ├── demo_teleop.py           119行  无控制器演示
 ├── show_all.py              137行  ⭐ 三机器人并排展示
-├── show_hand.py              71行  ⭐ LinkerHand 灵巧手展示
+├── show_hand.py              73行  ⭐ LinkerHand **L21** 灵巧手展示
 ├── test_camera.py            22行  摄像头测试
 ├── test_import.py            50行  模块导入自检
 ├── requirements.txt                 pybullet/numpy/h5py/scipy
@@ -119,7 +119,7 @@ F:\simulation_platform\
 ├── teleop\
 │   ├── teleop_pipeline.py   244行  完整遥操作流水线
 │   ├── vr_interface.py      140行  Vision Pro 手腕追踪 → 关节角度
-│   ├── hand_interface.py     42行  灵巧手驱动（l7 的 17 个 UDP 关节）
+│   ├── hand_interface.py    117行  灵巧手驱动（L21 的 17 个关节 + apply_to_robot）
 │   ├── camera_interface.py   50行  摄像头采集（联想电脑 RGB）
 │   └── pipeline_data.py     143行  流水线数据结构
 │
@@ -973,11 +973,21 @@ dim  1 [+0.1771, +0.1800] ↔ index_mcp_roll    (±0.180)
 dim  4 [-0.1258, +0.1798] ↔ middle_mcp_roll   (±0.180)
 ```
 
-> 🔴 **必须统一的重要差异**：
-> 项目里 `teleop/hand_interface.py`（注释「LinkerHand l7 的 17 个 UDP 关节」）
-> 和 `show_hand.py` 用的是 **l7**（17 关节，**没有** `*_mcp_roll` 侧摆关节），
-> 但**队友的重定向目标是 `l21`**（多出 4 个 `*_mcp_roll`）。
-> **若两边不统一，手部动作会对不上。**
+> ✅ **已于 2026-09-12 解决（队友确认统一到 L21）**：
+> 项目里 `teleop/hand_interface.py` 原先用的是 **l7 的关节名**
+> （`index_dip/middle_dip/ring_dip/pinky_dip`，且**没有** `*_mcp_roll` 侧摆关节），
+> 而**队友的重定向目标是 `l21`**。现两边已统一：
+>
+> | 文件 | 原状态 | 现状态 |
+> |---|---|---|
+> | `teleop/hand_interface.py` | l7 关节名，只能命中 13/17 | ✅ 已改为 L21 的 17 个关节名<br>（新增 `L21_JOINTS` 常量 + 补齐缺失的 `apply_to_robot()`）|
+> | `show_hand.py` | 加载 `l7_left` / `l7_right` URDF | ✅ 已改为 `l21_left` / `l21_right` |
+>
+> **验证**：17 项自检全 PASS —— `get_both_hands()` 的 17 个关节名与
+> `l21_*.urdf` 的关节名**集合与顺序都完全一致**，且 `apply_to_robot()` 命中 17/17。
+>
+> 若将来要用**真实 L7 硬件**，再单独实现明确的 `L21 -> L7` 降维映射
+> （会丢掉 4 个 `*_mcp_roll` 侧摆维度，需声明）。
 
 ### 15.4 推导出的映射（18 维 → l21 的 17 关节）
 
@@ -1034,7 +1044,7 @@ python scripts/replay_hand_angles.py --hand both --headless-replay
 |---|---|---|
 | 1 | **只有手指、没有手臂** | 契约H 需要 38/36/28 维（含双臂各 7），当前输出只有手部 |
 | 2 | **维度 18 ≠ 契约H** | 需要「适配器」把 18 维映射成目标机器人的完整 `action` |
-| 3 | **手型号不一致** | 队友目标是 **l21**，项目里手接口是 **l7** |
+| 3 | ~~**手型号不一致**：队友目标是 **l21**，项目里手接口是 **l7**~~ | ✅ **已解决**（2026-09-12 队友确认统一到 L21；`hand_interface.py` + `show_hand.py` 均已改为 L21，17 项自检通过）|
 | 4 | **跳变需平滑** | 34/511 帧 >0.3 rad，最大 83.8° → 按论文建议加**卡尔曼滤波** |
 | 5 | 与论文不同 | 队友用的是**自训练模型**（`mytrans`）+ LinkerHand，论文是 **dex-retargeting** + Inspire/Fourier/Unitree 手 |
 

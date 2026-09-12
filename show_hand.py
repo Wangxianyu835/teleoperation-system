@@ -24,20 +24,22 @@ p.setGravity(0, 0, -9.81)
 p.setTimeStep(1.0 / 240.0)
 p.loadURDF("plane.urdf")
 
-# 加载左右灵巧手（l7 = 7关节右手, l7_left = 7关节左手）
+# 加载左右灵巧手（统一为 L21，17 个可动关节 —— 与队友重定向目标一致）
+# ★ 2026-09-12 型号统一：原先加载的是 l7（每手 7 关节、无 *_mcp_roll），
+#   与队友模型的输出（L21）不匹配，已按队友确认统一为 L21。
 p.setAdditionalSearchPath(HAND_DIR)
 
-# 右手 - l7
+# 右手 - L21
 right_hand = p.loadURDF(
-    "l7_right/linkerhand_l7_right.urdf",
+    "l21_right/linkerhand_l21_right.urdf",
     basePosition=[-0.2, 0, 0.6],
     baseOrientation=p.getQuaternionFromEuler([1.57, 0, 0]),
     useFixedBase=True
 )
 
-# 左手 - l7 (与右手配套的 l7 型号)
+# 左手 - L21
 left_hand = p.loadURDF(
-    "l7_left/linkerhand_l7_left.urdf",
+    "l21_left/linkerhand_l21_left.urdf",
     basePosition=[0.2, 0, 0.6],
     baseOrientation=p.getQuaternionFromEuler([1.57, 0, 0]),
     useFixedBase=True
@@ -58,8 +60,8 @@ p.resetDebugVisualizerCamera(
 
 print(f"\n{'='*50}")
 print(f"  灵心巧手 LinkerHand 独立模型展示")
-print(f"  左手: l7  |  右手: l7")
-print(f"  每只手 ~17 关节, 带完整 STL 网格")
+print(f"  左手: L21  |  右手: L21   （17 个可动关节 / 手）")
+print(f"  每只手 17 关节, 带完整 STL 网格")
 print(f"  鼠标滚轮可放大看手指细节")
 print(f"{'='*50}")
 
