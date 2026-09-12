@@ -1,0 +1,63 @@
+# ============================================================
+#  大创 —— 遥操作系统   .gitignore
+#  本仓库只托管源码；本地大型依赖 / 模型资产不入库（详见 README）
+# ============================================================
+
+# ---------- Python 缓存 / 编译产物 ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---------- 虚拟环境 ----------
+.venv/
+venv/
+env/
+ENV/
+
+# ---------- IDE / 编辑器 ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ---------- 本地依赖目录（约 335 MB）----------
+# 由 pip install -r requirements.txt 生成，不入库
+lib/
+
+# ---------- 第三方 SDK（约 1013 MB）----------
+# 来源：https://gitee.com/ericbrunt/linkerhand_telop_python
+# 获取方式见 README「六、模型资产获取」
+linkerhand_sdk/
+
+# ---------- 机器人模型资产（约 455 MB）----------
+# 本仓库只托管源码；模型请见 README「六、模型资产获取」
+robots/
+
+# ---------- 运行产物 / 采集数据 ----------
+data/
+outputs/
+logs/
+*.h5
+*.hdf5
+*.pkl
+*.npz
+*.mp4
+*.avi
+
+# ---------- 模型权重 ----------
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# ---------- 系统文件 ----------
+Thumbs.db
+Desktop.ini
+.DS_Store
+$RECYCLE.BIN/
