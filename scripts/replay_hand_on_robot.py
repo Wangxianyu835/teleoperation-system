@@ -435,11 +435,10 @@ def main():
                  if jn and jn in name2idx}
         arr = data[f'{side}_angles']
         val = data[f'{side}_valid']
-        bad = detect_bad_frames(arr[val])
+        bad = detect_bad_frames(arr, val)
         if bad:
-            arr = arr.copy()
-            arr[np.where(val)[0]] = repair_bad_frames(arr[val], bad)
-            print(f'    已修复 {len(bad)} 个坏帧 {bad}')
+            arr = repair_bad_frames(arr, bad)
+            print(f'    已修复 {len(bad)} 个塌零坏帧（绝对下标）{bad}')
         mounts[side] = (hand_id, dim2j, limits, arr, val)
         print(f'    可驱动关节 = {len(dim2j)}/17')
 

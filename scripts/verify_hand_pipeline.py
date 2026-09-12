@@ -101,18 +101,38 @@ def main():
     record('有效帧可用（>50%）', bool(LV.mean() > 0.5 and RV.mean() > 0.5),
            f'left {LV.mean()*100:.0f}% / right {RV.mean()*100:.0f}%')
 
-    # ---------------- [3] 坏帧 ----------------
+    # ---------------- [3] 坏帧（整帧塌零） ----------------
     print()
-    print('[3] 坏帧检测（整帧异常）')
+    print('[3] 坏帧检测（整帧塌零）+ 检测器自检')
     bad_info = {}
     for nm, A, V in (('left', L, LV), ('right', R, RV)):
-        bad = detect_bad_frames(A[V])
+        bad = detect_bad_frames(A, V)
         bad_info[nm] = bad
-        print(f'    {nm}: 发现 {len(bad)} 个坏帧  {bad if bad else ""}')
+        print(f'    {nm}: 检出 {len(bad)} 个塌零坏帧'
+              f'{"（绝对下标）" + str(bad) if bad else ""}')
     n_bad = sum(len(v) for v in bad_info.values())
-    record('坏帧已检测出（回放端会自动修复）', True,
-           f'共 {n_bad} 个' + ('（建议反馈给数据提供方修 valid 标记）'
-                              if n_bad else ''))
+
+    # 自检 A：注入一个真·塌零帧，必须被精确检出
+    V = LV
+    v_idx = np.where(V)[0]
+    probe = int(v_idx[len(v_idx) // 2])
+    inj = L.copy()
+    inj[probe] = 0.0
+    hit_inject = detect_bad_frames(inj, V)
+    ok_inject = (hit_inject == [probe])
+
+    # 自检 B：真实数据里被【旧判据】误报过的快速运动帧，不应再被检出
+    FP_OLD = (435, 522)          # 旧判据曾误报（435 绝对是「手张开」的 V 形谷底）
+    real_bad = set(bad_info['left']) | set(bad_info['right'])
+    ok_no_fp = all(f not in real_bad for f in FP_OLD)
+
+    print(f'    自检A 注入塌零帧 {probe} -> 检出 {hit_inject}  '
+          f'{"[OK]" if ok_inject else "[FAIL]"}')
+    print(f'    自检B 真实快动作 {FP_OLD} 未被误判  '
+          f'{"[OK]" if ok_no_fp else "[FAIL]"}')
+    record('坏帧检测器自检（只抓塌零、不误判快动作）',
+           bool(ok_inject and ok_no_fp),
+           f'注入帧精确检出；真实快动作零误报；本次数据检出 {n_bad} 个塌零帧')
 
     part2(args, results, record, L, R, LV, RV, ts, bad_info)
     summary(results)
@@ -172,10 +192,9 @@ def part2(args, results, record, L, R, LV, RV, ts, bad_info):
         limits = rha.parse_joint_limits(urdf)
         A = L if side == 'left' else R
         V = LV if side == 'left' else RV
-        arr = A[V]
         bad = bad_info.get(side, [])
-        if bad:
-            arr = repair_bad_frames(arr, bad)
+        # bad 是【绝对下标】：先修完整序列，再筛有效帧
+        arr = (repair_bad_frames(A, bad) if bad else A)[V]
         cid = p.connect(p.DIRECT)
         try:
             world = os.path.dirname(urdf)

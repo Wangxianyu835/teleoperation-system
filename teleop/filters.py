@@ -313,48 +313,90 @@ def print_jump_report(info, title='跳变性质诊断'):
 
 
 # ----------------------------------------------------------------------
-def detect_bad_frames(seq, threshold=0.4, min_dims=3):
-    """检测「整帧异常」（坏帧）
+def detect_bad_frames(seq, valid=None, near_zero=0.05, min_dims=10,
+                      neighbor_max_dims=4):
+    """检测「整帧塌零」坏帧，返回【绝对下标】
 
-    典型场景（**实测遇到过**）：某一帧的检测/推理失败，
-    导致【几乎所有维度同时】掉到接近 0，而下一帧又恢复，
-    但 `*_valid` 标记却漏标了该帧。
+    ★ 2026-09-12 重写（重要，不要改回旧判据）
+    ----------------------------------------
+    旧判据是「当前帧相对前后帧均值，偏离 > 0.4 rad 的维度 >= 3 个」。
+    用队友真实数据（557 帧）实测发现：**该判据在快速运动上必然误报** ——
+        - 全序列「单帧最大变化」中位数只有 0.0304 rad（1.7 度）
+        - 但真实快动作帧可达 1.48 rad（84.9 度）
+        - 数据里成片的真实快动作会成批被判为坏帧
+        - 决定性反例：432->433（84.9 度）没被命中，
+          434->435（73.5 度）却被命中 —— 纯属偶然，不是异常检测
+    结论：旧判据把「文档注释里描述的典型场景」当成了判据名，
+    **实际上根本没有检测「塌零」**。
 
-    判定方法：对每帧，计算每个维度相对「前后帧均值」的偏离，
-    统计偏离超过 threshold 的维度个数；若 >= min_dims 则判为坏帧。
+    新判据（「孤立塌陷」，必须同时满足）：
+      1. 本帧「接近 0」（|v| < near_zero）的维度数 >= min_dims
+      2. 前后最近的【有效】帧「接近 0」的维度数 <= neighbor_max_dims
+    即「邻居正常，只有本段塌了」。真实快动作的邻居也不接近 0，因此不会误判。
+    若塌零连续多帧，整段一并返回。
 
     Args:
-        seq: (T, D) 角度序列
-        threshold: 单维偏离阈值（rad）
-        min_dims: 至少多少个维度同时异常才判为坏帧
+        seq: (T, D) 角度序列 —— **必须是完整序列**，不要传 seq[valid]
+        valid: (T,) bool 有效帧标记；None 表示全部有效
+        near_zero: 「接近 0」阈值（rad）
+        min_dims: 本帧至少多少个维度接近 0 才算「塌陷」
+        neighbor_max_dims: 邻居最多多少个维度接近 0 才算「正常」
 
     Returns:
-        list[int]: 坏帧的索引（升序）
+        list[int]: 坏帧的【绝对下标】（升序）
+
+    注意（踩过的坑）：**必须传完整数组 + valid**。
+    如果传 seq[valid]（压缩数组），返回的是【压缩下标】，
+    一旦当成绝对下标去引用就会指向完全无关的帧 ——
+    2026-09-12 就是这样把 left[522] 误报成了 left[497]。
     """
     seq = np.asarray(seq, dtype=np.float64)
     if seq.ndim != 2 or seq.shape[0] < 3:
         return []
 
-    prev = seq[:-2, :]        # (T-2, D)
-    cur = seq[1:-1, :]
-    nxt = seq[2:, :]
-    ref = 0.5 * (prev + nxt)
-    dev = np.abs(cur - ref)
+    T = seq.shape[0]
+    ok = (np.ones(T, bool) if valid is None
+          else np.asarray(valid).astype(bool))
+    n_zero = np.sum(np.abs(seq) < near_zero, axis=1)
+    collapsed = ok & (n_zero >= min_dims)
 
-    n_bad_dims = np.sum(dev > threshold, axis=1)      # (T-2,)
-    idx = np.where(n_bad_dims >= min_dims)[0] + 1     # 换算回原索引
-    return [int(i) for i in idx]
+    def nearest_valid(j, step):
+        while 0 <= j < T:
+            if ok[j]:
+                return j
+            j += step
+        return None
+
+    bad = []
+    i = 0
+    while i < T:
+        if not collapsed[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < T and collapsed[j + 1]:
+            j += 1
+        p = nearest_valid(i - 1, -1)
+        n = nearest_valid(j + 1, +1)
+        if ((p is not None and n_zero[p] <= neighbor_max_dims)
+                or (n is not None and n_zero[n] <= neighbor_max_dims)):
+            bad.extend(range(i, j + 1))       # 整段塌陷
+        i = j + 1
+    return [int(k) for k in bad]
 
 
 def repair_bad_frames(seq, bad_frames):
-    """把坏帧用「前后帧线性插值」替换
+    """把坏帧用「前后帧线性插值」替换（只用于真正的塌零帧）
 
     Args:
         seq: (T, D)
-        bad_frames: detect_bad_frames 返回的索引列表
+        bad_frames: detect_bad_frames 返回的【绝对下标】列表
 
     Returns:
         (T, D) 修复后的序列（不修改原数组）
+
+    注意：**不要**把它用在「快速运动」帧上 —— 插值会把真实快动作抹掉。
+    只有 detect_bad_frames 判定的「孤立塌陷」才该修复。
     """
     seq = np.asarray(seq, dtype=np.float64).copy()
     T = seq.shape[0]
@@ -377,19 +419,20 @@ def repair_bad_frames(seq, bad_frames):
 
 
 def print_bad_frames_report(bad_frames, n_frames, title='坏帧检测'):
-    """打印坏帧报告"""
+    """打印坏帧报告（bad_frames 为【绝对下标】）"""
     print()
     print('=' * 92)
     print(title)
     print('=' * 92)
     if not bad_frames:
-        print(f'  共 {n_frames} 帧，未发现「整帧异常」  [OK]')
+        print(f'  共 {n_frames} 帧，未发现「整帧塌零」坏帧  [OK]')
+        print('  说明：数据里成片的快速运动是【真实动作】，不算坏帧。')
     else:
-        print(f'  共 {n_frames} 帧，发现 {len(bad_frames)} 个坏帧（整帧异常）:')
-        print(f'    帧号：{bad_frames}')
+        print(f'  共 {n_frames} 帧，发现 {len(bad_frames)} 个坏帧（整帧塌零）:')
+        print(f'    【绝对下标】{bad_frames}')
         print('  [!] 建议：')
-        print('     1) 用 repair_bad_frames() 插值修复（或回放时加 --fix-bad-frames）')
-        print('     2) 【反馈给数据提供方】让其在 *_valid 里正确标记这些帧')
+        print('     1) 回放端会用 repair_bad_frames() 插值修复（--no-repair 可关）')
+        print('     2) 若能定位成因，请在导出侧修正（但需先核对原始数据）')
     print('=' * 92)
 
 

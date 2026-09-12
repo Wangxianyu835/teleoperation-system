@@ -319,15 +319,14 @@ def main():
         raw = data[f'{side}_angles']
         valid = data[f'{side}_valid']
 
-        # ---- 坏帧检测（整帧异常：某帧几乎所有维度同时塌到 0，随后又恢复） ----
-        bad = detect_bad_frames(raw[valid])
-        print_bad_frames_report(bad, int(valid.sum()),
-                                f'{side} 坏帧检测（整帧异常）')
+        # ---- 坏帧检测（整帧塌零：多维同时掉到 0 而前后帧正常） ----
+        # ★ 必须传【完整数组 + valid】：detect_bad_frames 返回的是【绝对下标】。
+        #   旧版传的是 raw[valid]（压缩数组），返回压缩下标，会被误当成绝对下标
+        #   （2026-09-12 就把 left[522] 误报成了 left[497]）。
+        bad = detect_bad_frames(raw, valid)
+        print_bad_frames_report(bad, len(raw), f'{side} 坏帧检测（整帧塌零）')
         if bad and not args.no_repair:
-            arr = raw[valid]
-            arr_fixed = repair_bad_frames(arr, bad)
-            raw = raw.copy()
-            raw[np.where(valid)[0]] = arr_fixed
+            raw = repair_bad_frames(raw, bad)
             print(f'  [修复] 已用前后帧线性插值修复 {len(bad)} 个坏帧'
                   f'（如不想修复请加 --no-repair）')
 
