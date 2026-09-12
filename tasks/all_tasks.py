@@ -46,7 +46,7 @@ class PickCube(BaseTask):
 
     def check_success(self) -> bool:
         pos = self.get_object_position('cube')
-        return pos[2] > 0.66  # 桌高0.4 + 方块半高0.03 + 提升0.15 ≈ 0.58+
+        return pos[2] > 0.66  # 桌高0.4 + 方块半高0.03 + 提升0.15 ~= 0.58+
 
 
 @register_task('pickplacecube')

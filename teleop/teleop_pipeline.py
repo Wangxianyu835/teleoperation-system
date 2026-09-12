@@ -1,9 +1,9 @@
-"""遥操作完整流水线 - VR + 手套 → 机器人 → 任务执行
+"""遥操作完整流水线 - VR + 手套 -> 机器人 -> 任务执行
 
 论文 Section 3.2: 统一模块化接口
-  Vision Pro → 坐标转换 → IK → 双臂关节
-  LinkerHand → 重定向 → 灵巧手关节
-  → 仿真环境 → 任务执行 → 数据记录
+  Vision Pro -> 坐标转换 -> IK -> 双臂关节
+  LinkerHand -> 重定向 -> 灵巧手关节
+  -> 仿真环境 -> 任务执行 -> 数据记录
 """
 
 import time
@@ -43,10 +43,10 @@ class TeleopPipeline:
     VR + 手套 遥操作完整流水线
 
     数据流:
-      Vision Pro ──→ VRInterface ──→ IK ──→ 双臂关节
-      LinkerHand ──→ HandInterface ──→ 灵巧手关节
+      Vision Pro ──-> VRInterface ──-> IK ──-> 双臂关节
+      LinkerHand ──-> HandInterface ──-> 灵巧手关节
                           ↓
-      [仿真循环] ←── 所有关节角度
+      [仿真循环] <-── 所有关节角度
                           ↓
       任务检查 + 数据记录
     """
@@ -145,7 +145,7 @@ class TeleopPipeline:
 
         # ========== 主循环 ==========
         for step_i in range(max_steps):
-            # --- 1. VR 遥操作 → 手臂关节 ---
+            # --- 1. VR 遥操作 -> 手臂关节 ---
             vr_result = self.vr.process_frame(
                 robot_id=robot_id,
                 left_arm_indices=left_indices,
@@ -155,7 +155,7 @@ class TeleopPipeline:
                 pelvis_pos=pelvis,
             )
 
-            # --- 2. 手套 → 手指关节 ---
+            # --- 2. 手套 -> 手指关节 ---
             hand_joints = self.hand.get_both_hands()
 
             # --- 3. 应用手臂关节 ---

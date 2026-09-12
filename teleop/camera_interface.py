@@ -1,7 +1,7 @@
 """摄像头采集模块 - 联想电脑 RGB 摄像头
 
 论文 Section 3.2.1 (Vision-based teleoperation):
-  单目 RGB 相机 → MediaPipe 人体姿态 → SMPLer-X → PINK IK → 机器人关节
+  单目 RGB 相机 -> MediaPipe 人体姿态 -> SMPLer-X -> PINK IK -> 机器人关节
 
 本模块负责第一步: RGB 图像采集 + 保存帧供后续分析
 重定向部分(MediaPipe/SMPLer-X/IK)由同学负责
@@ -13,7 +13,7 @@ import time
 
 
 class CameraInterface:
-    """联想电脑摄像头 → RGB 帧采集"""
+    """联想电脑摄像头 -> RGB 帧采集"""
 
     def __init__(self, camera_id: int = 0):
         self.camera_id = camera_id

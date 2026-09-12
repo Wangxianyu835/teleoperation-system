@@ -1,23 +1,23 @@
-"""离线回放：队友重定向输出的手部角度 → LinkerHand l21 模型
+"""离线回放：队友重定向输出的手部角度 -> LinkerHand l21 模型
 
 ★ 数据来源：队友的重定向算法输出（当前是「契约外」的中间格式）
   datasets/raw/retarget_twohand_153542.h5
      left_angles / right_angles  (T, 18)  float32
-     left_valid  / right_valid   (T,)     bool     ← 无效帧（同时是全零帧）
+     left_valid  / right_valid   (T,)     bool     <- 无效帧（同时是全零帧）
      timestamps                  (T,)     float64
 
 ★ 18 维的含义（通过「维度实测范围 vs 关节限位」匹配推导，零越界）：
-     dim 0                → 占位（恒 0）
-     dims 1,2,3           → index:  mcp_roll, mcp_pitch, pip
-     dims 4,5,6           → middle: mcp_roll, mcp_pitch, pip
-     dims 7,8,9           → ring:   mcp_roll, mcp_pitch, pip
-     dims 10,11,12        → pinky:  mcp_roll, mcp_pitch, pip
-     dims 13,14,15,16,17  → thumb:  cmc_roll, cmc_yaw, cmc_pitch, mcp, ip
+     dim 0                -> 占位（恒 0）
+     dims 1,2,3           -> index:  mcp_roll, mcp_pitch, pip
+     dims 4,5,6           -> middle: mcp_roll, mcp_pitch, pip
+     dims 7,8,9           -> ring:   mcp_roll, mcp_pitch, pip
+     dims 10,11,12        -> pinky:  mcp_roll, mcp_pitch, pip
+     dims 13,14,15,16,17  -> thumb:  cmc_roll, cmc_yaw, cmc_pitch, mcp, ip
 
      推导依据（关键证据）：
-       dim 13 [-0.5997,-0.5875] ↔ thumb_cmc_roll  (±0.60)   精确到 0.0003
-       dim 14 [+0.0067,+1.5953] ↔ thumb_cmc_yaw   (0~1.60)  精确
-       dim  1 [+0.1771,+0.1800] ↔ index_mcp_roll  (±0.18)
+       dim 13 [-0.5997,-0.5875] <-> thumb_cmc_roll  (±0.60)   精确到 0.0003
+       dim 14 [+0.0067,+1.5953] <-> thumb_cmc_yaw   (0~1.60)  精确
+       dim  1 [+0.1771,+0.1800] <-> index_mcp_roll  (±0.18)
      即「每 3 个一组 = (侧摆, MCP屈曲, PIP屈曲)」，与 l21 的 URDF 顺序一致。
 
 用法：
@@ -118,18 +118,12 @@ def parse_joint_limits(urdf_path):
     return out
 
 
-def smooth(seq, win):
-    """简单滑动平均平滑（win 建议为奇数）"""
-    if win <= 1:
-        return seq
-    win = win if win % 2 == 1 else win + 1
-    pad = win // 2
-    padded = np.pad(seq, ((pad, pad), (0, 0)), mode='edge')
-    kernel = np.ones(win) / win
-    out = np.empty_like(seq)
-    for j in range(seq.shape[1]):
-        out[:, j] = np.convolve(padded[:, j], kernel, mode='valid')
-    return out
+# 平滑 / 诊断相关实现统一放在 teleop/filters.py（单一实现，避免重复）
+from teleop.filters import (            # noqa: E402
+    KalmanSmoother, moving_average, classify_jumps, print_jump_report,
+    compare_methods, print_metrics_table,
+    detect_bad_frames, repair_bad_frames, print_bad_frames_report,
+)
 
 
 # ----------------------------------------------------------------------
@@ -286,6 +280,22 @@ def main():
                     help='无头模式回放（不开窗口，用于自动验证）')
     ap.add_argument('--smooth', type=int, default=0,
                     help='滑动平均窗口（奇数，如 5）')
+    ap.add_argument('--kalman', action='store_true',
+                    help='启用卡尔曼滤波（搭配 --kalman-q/--kalman-r 调参）')
+    ap.add_argument('--kalman-q', type=float, default=1.0,
+                    help='卡尔曼过程噪声 q（默认 1.0）')
+    ap.add_argument('--kalman-r', type=float, default=0.01,
+                    help='卡尔曼观测噪声 r（默认 0.01）')
+    ap.add_argument('--gate', type=float, default=0.0,
+                    help='创新门控倍数（默认 0=关闭；仅孤立尖峰数据才需要）')
+    ap.add_argument('--analyze', action='store_true',
+                    help='打印跳变性质诊断（孤立尖峰 vs 成片真实运动）')
+    ap.add_argument('--no-repair', action='store_true',
+                    help='不修复「整帧异常」坏帧（默认会自动检测并插值修复）')
+    ap.add_argument('--compare', action='store_true',
+                    help='对比 原始/移动平均/卡尔曼 的平滑指标')
+    ap.add_argument('--fps', type=float, default=30.0,
+                    help='数据帧率（用于滤波器 dt 与指标换算，默认 30）')
     ap.add_argument('--speed', type=float, default=1.0, help='播放倍速')
     args = ap.parse_args()
 
@@ -306,12 +316,57 @@ def main():
             ok_all = False
             continue
         limits = parse_joint_limits(urdf)
-        angles = data[f'{side}_angles']
+        raw = data[f'{side}_angles']
         valid = data[f'{side}_valid']
 
-        if args.smooth > 1:
-            print(f'\n  应用滑动平均平滑（窗口 {args.smooth}）')
-            angles = smooth(angles, args.smooth)
+        # ---- 坏帧检测（整帧异常：某帧几乎所有维度同时塌到 0，随后又恢复） ----
+        bad = detect_bad_frames(raw[valid])
+        print_bad_frames_report(bad, int(valid.sum()),
+                                f'{side} 坏帧检测（整帧异常）')
+        if bad and not args.no_repair:
+            arr = raw[valid]
+            arr_fixed = repair_bad_frames(arr, bad)
+            raw = raw.copy()
+            raw[np.where(valid)[0]] = arr_fixed
+            print(f'  [修复] 已用前后帧线性插值修复 {len(bad)} 个坏帧'
+                  f'（如不想修复请加 --no-repair）')
+
+        # ---- 跳变性质诊断（决定"该不该滤波"） ----
+        if args.analyze or args.compare:
+            print_jump_report(classify_jumps(raw[valid]),
+                              f'{side} 数据跳变诊断'
+                              f'（孤立尖峰 vs 成片真实运动）')
+
+        # ---- 对比多种平滑方法 ----
+        if args.compare:
+            dt = 1.0 / max(args.fps, 1e-6)
+            methods = {
+                'ma3': moving_average(raw[valid], 3),
+                'ma7': moving_average(raw[valid], 7),
+                'kf': KalmanSmoother(dt=dt, process_noise=args.kalman_q,
+                                     measurement_noise=args.kalman_r
+                                     ).filter_sequence(raw[valid]),
+            }
+            print_metrics_table(
+                compare_methods(raw[valid], methods, fps=args.fps),
+                f'{side} 平滑效果对比（原始 vs 移动平均 vs 卡尔曼）')
+
+        # ---- 选择平滑方式 ----
+        method = 'raw（未平滑）'
+        angles = raw
+        if args.kalman:
+            kf = KalmanSmoother(dt=1.0 / max(args.fps, 1e-6),
+                                process_noise=args.kalman_q,
+                                measurement_noise=args.kalman_r,
+                                gate=args.gate)
+            angles = kf.filter_sequence(raw)
+            method = (f'kalman(q={args.kalman_q:g}, r={args.kalman_r:g}, '
+                      f'gate={args.gate:g})')
+        elif args.smooth > 1:
+            angles = moving_average(raw, args.smooth)
+            method = f'moving_average(win={args.smooth})'
+        if method != 'raw（未平滑）':
+            print(f'\n  [平滑] {side}: {method}')
 
         ok_all = static_check(data, angles, valid, side, limits) and ok_all
 

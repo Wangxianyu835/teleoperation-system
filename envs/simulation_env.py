@@ -206,7 +206,7 @@ class SimulationEnv:
 
             # 渲染步进（GUI 模式下放慢速度以便观察）
             # 注意 旧代码是 `if self.client == p.GUI:`，但 client 是【连接 id】(0)，
-            #    p.GUI 是【连接类型常量】(1)，两者永不相等 → 已改用 self._render 标志
+            #    p.GUI 是【连接类型常量】(1)，两者永不相等 -> 已改用 self._render 标志
             if self._render:
                 time.sleep(1.0 / 240.0)
 

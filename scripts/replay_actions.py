@@ -220,7 +220,7 @@ def main():
     args = ap.parse_args()
 
     from envs import SimulationEnv
-    import tasks.all_tasks          # noqa: F401  ← 触发 30 个任务注册
+    import tasks.all_tasks          # noqa: F401  <- 触发 30 个任务注册
     from tasks import get_task      # noqa: F401
 
     # ---- describe：只打印动作空间定义

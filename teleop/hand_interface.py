@@ -16,9 +16,9 @@ class HandInterface:
 
     def get_both_hands(self) -> dict:
         """返回双手 17 关节的弧度值"""
-        # 缓慢正弦波: grasp = 0 (张开) → 1 (握紧)
+        # 缓慢正弦波: grasp = 0 (张开) -> 1 (握紧)
         self._sim_t += 0.003  # 非常慢
-        grasp = 0.4 + 0.3 * np.sin(self._sim_t * 0.8)  # 0.1 → 0.7
+        grasp = 0.4 + 0.3 * np.sin(self._sim_t * 0.8)  # 0.1 -> 0.7
 
         joints = {
             # 拇指: 5 关节, 值范围 0 (张开) ~ 1.5 (弯曲)

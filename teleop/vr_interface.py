@@ -1,8 +1,8 @@
-"""VR 遥操作接口 - Apple Vision Pro 手腕追踪 → 机器人关节角度
+"""VR 遥操作接口 - Apple Vision Pro 手腕追踪 -> 机器人关节角度
 
 论文 Section 3.2.3:
-  Vision Pro 追踪 → OpenXR 坐标转换 → 机器人骨盆坐标系
-  → PINK 逆运动学 → 双臂关节角度
+  Vision Pro 追踪 -> OpenXR 坐标转换 -> 机器人骨盆坐标系
+  -> PINK 逆运动学 -> 双臂关节角度
 """
 
 import numpy as np
@@ -16,7 +16,7 @@ class VRInterface:
         self.client = physics_client_id
 
         # 坐标系变换参数
-        # 操作者骨盆 → 机器人 pelvis 的缩放因子
+        # 操作者骨盆 -> 机器人 pelvis 的缩放因子
         self.body_scale = 1.0
 
         # 手动设置 VR 数据（无真实设备时使用）
@@ -57,7 +57,7 @@ class VRInterface:
                                   robot_pelvis_pos: np.ndarray) -> dict:
         """
         将 VR 坐标系数据转换到机器人骨盆坐标系
-        Section 3.2.3: 手腕相对于头部 → 相对于骨盆
+        Section 3.2.3: 手腕相对于头部 -> 相对于骨盆
         """
         head_pos = vr_data['head_pos']
         scale = self.body_scale
