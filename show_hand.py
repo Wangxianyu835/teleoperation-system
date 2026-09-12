@@ -4,8 +4,19 @@ import pybullet_data
 import time
 import os
 
-# SDK 中的灵巧手模型路径
-HAND_DIR = r"F:\simulation_platform\linkerhand_sdk\ros1\src\assets\robots\hands\linker_hand"
+# SDK 中的灵巧手模型路径（相对本脚本定位，不依赖盘符）
+HAND_DIR = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "linkerhand_sdk", "ros1", "src", "assets", "robots", "hands", "linker_hand",
+))
+
+if not os.path.isdir(HAND_DIR):
+    raise SystemExit(
+        "未找到 LinkerHand 模型目录：\n"
+        f"  {HAND_DIR}\n\n"
+        "请先克隆 SDK 后重试：\n"
+        "  git clone https://gitee.com/ericbrunt/linkerhand_telop_python.git linkerhand_sdk\n"
+    )
 
 client = p.connect(p.GUI)
 p.setAdditionalSearchPath(pybullet_data.getDataPath())
