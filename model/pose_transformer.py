@@ -1,21 +1,12 @@
 ## Our PoseFormer model was revised from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
 
 import math
-import logging
 from functools import partial
-from collections import OrderedDict
-from einops import rearrange, repeat
+from einops import rearrange
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-from timm.models.helpers import load_pretrained
-# from timm.models.layers import DropPath, to_2tuple, trunc_normal_
-from timm.layers import DropPath, to_2tuple, trunc_normal_
-# from timm.models.registry import register_model
-from timm.models import register_model
+from timm.layers import DropPath
 
 
 class Mlp(nn.Module):
@@ -339,117 +330,3 @@ class AngleClamper(nn.Module):
         
         return x
     
-class AngleClamper01(nn.Module):
-    def __init__(self, angle_limits, num_joints, num_channels, soft_clip=False):
-        """
-        角度限制层
-        
-        Args:
-            angle_limits: 角度限制 [[min1, max1], [min2, max2], ...] 或 None
-            num_joints: 关节数量
-            num_channels: 通道数量
-            soft_clip: 是否使用软限制
-        """
-        super().__init__()
-        self.num_joints = num_joints
-        self.num_channels = num_channels
-        self.soft_clip = soft_clip  # 添加此行
-        
-        if angle_limits is not None:
-            # 将角度限制转换为张量
-            limits_tensor = torch.tensor(angle_limits, dtype=torch.float32)
-            self.register_buffer('angle_min', limits_tensor[:, 0])
-            self.register_buffer('angle_max', limits_tensor[:, 1])
-            
-            # 计算范围和中点用于缩放
-            self.register_buffer('angle_range', limits_tensor[:, 1] - limits_tensor[:, 0])
-            self.register_buffer('angle_center', (limits_tensor[:, 1] + limits_tensor[:, 0]) / 2)
-        else:
-            # 默认使用tanh，映射到[-π, π]
-            self.angle_min = None
-            self.angle_max = None
-    
-    def forward(self, x):
-        """
-        前向传播，应用角度限制
-        
-        Args:
-            x: 输入张量 [batch_size, seq_len, features] 或 [batch_size, features]
-        """
-        if self.angle_min is not None:
-            # 将tanh输出[-1, 1]映射到指定范围
-            if x.dim() == 3:  # [batch_size, seq_len, features]
-                # reshape为[batch_size, seq_len, num_joints, num_channels]
-                x = x.view(x.shape[0], x.shape[1], self.num_joints, self.num_channels)
-                
-                # 使用软限制或硬限制
-                if self.soft_clip:
-                    # 使用soft clamp，保持梯度流动
-                    x = torch.tanh(x) * 0.9  # 留出一些空间
-                    x = x * (self.angle_range / 2).unsqueeze(0).unsqueeze(-1) + \
-                        self.angle_center.unsqueeze(0).unsqueeze(-1)
-                else:
-                    # 应用tanh激活
-                    x = torch.tanh(x)
-                    
-                    # 映射到指定范围: tanh_output * range/2 + center
-                    x = x * (self.angle_range / 2).unsqueeze(0).unsqueeze(-1) + \
-                        self.angle_center.unsqueeze(0).unsqueeze(-1)
-                
-                # reshape回原形状
-                x = x.view(x.shape[0], x.shape[1], -1)
-            else:  # [batch_size, features]
-                # reshape为[batch_size, num_joints, num_channels]
-                x = x.view(x.shape[0], self.num_joints, self.num_channels)
-                
-                # 使用软限制或硬限制
-                if self.soft_clip:
-                    # 使用soft clamp，保持梯度流动
-                    x = torch.tanh(x) * 0.9  # 留出一些空间
-                    x = x * (self.angle_range / 2).unsqueeze(0).unsqueeze(-1) + \
-                        self.angle_center.unsqueeze(0).unsqueeze(-1)
-                else:
-                    # 应用tanh激活
-                    x = torch.tanh(x)
-                    
-                    # 映射到指定范围
-                    x = x * (self.angle_range / 2).unsqueeze(0).unsqueeze(-1) + \
-                        self.angle_center.unsqueeze(0).unsqueeze(-1)
-                
-                # reshape回原形状
-                x = x.view(x.shape[0], -1)
-        else:
-            # 使用默认的tanh激活，映射到[-π, π]
-            x = torch.tanh(x) * math.pi  # 输出范围[-π, π]
-        
-        return x
-
-class SigmoidAngleClamper(nn.Module):
-    def __init__(self, angle_limits, num_joints, num_channels):
-        """
-        使用sigmoid函数的角度限制层
-        """
-        super().__init__()
-        self.num_joints = num_joints
-        self.num_channels = num_channels
-        
-        if angle_limits is not None:
-            limits_tensor = torch.tensor(angle_limits, dtype=torch.float32)
-            self.register_buffer('angle_min', limits_tensor[:, 0])
-            self.register_buffer('angle_max', limits_tensor[:, 1])
-            self.register_buffer('angle_range', limits_tensor[:, 1] - limits_tensor[:, 0])
-    
-    def forward(self, x):
-        if x.dim() == 3:
-            x = x.view(x.shape[0], x.shape[1], self.num_joints, self.num_channels)
-            x = torch.sigmoid(x)  # 输出范围[0, 1]
-            x = x * self.angle_range.unsqueeze(0).unsqueeze(-1) + self.angle_min.unsqueeze(0).unsqueeze(-1)
-            x = x.view(x.shape[0], x.shape[1], -1)
-        else:
-            x = x.view(x.shape[0], self.num_joints, self.num_channels)
-            x = torch.sigmoid(x)  # 输出范围[0, 1]
-            x = x * self.angle_range.unsqueeze(0).unsqueeze(-1) + self.angle_min.unsqueeze(0).unsqueeze(-1)
-            x = x.view(x.shape[0], -1)
-        
-        return x
-

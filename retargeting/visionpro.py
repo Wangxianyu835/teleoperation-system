@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from input_adapters.hand_keypoints import HandWindowBuffer, VISIONPRO_SOURCE
+from retargeting.tracking import HandWindowBuffer, VISIONPRO_SOURCE
 
 
 class VisionProAdapter:

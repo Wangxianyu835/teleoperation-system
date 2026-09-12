@@ -1,7 +1,9 @@
 # tensorboard --logdir D:\2026\code\TransHandR\TransHandR\checkpoint\logs\linker\experiment_20260204_211955
 
 # tensorboard --logdir D:\2026\code\TransHandR\TransHandR\checkpoint\logs\experiment_20260129_194546
-
+'''
+    离线推理入口：输入为人手关键点的H5文件，把人手关键点转化为机器手关节角度，并把结果写入outputs数据集
+'''
 
 import h5py
 import torch

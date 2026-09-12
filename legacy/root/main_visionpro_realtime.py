@@ -1,19 +1,48 @@
 '''
-关节配置文件
+多进程版本：将Vision Pro手部跟踪数据转换为虚拟环境和真实机器手驱动
+使用四个进程：数据获取进程、重定向进程、虚拟环境进程、真实机器手进程
 '''
+# 添加项目根目录到 Python 路径
+import os
+import sys
+
+import multiprocessing
+import gym, yumi_gym
+import pybullet as p
 import numpy as np
+import h5py
+import time
+import math
+import yaml
+
+import can
 import torch
-"""
-碰撞忽略点记得调整
-"""
+import torch.nn.functional as F
+# import keyboard
+from avp_stream import VisionProStreamer
+
+from LinkerHand.linker_hand_api import LinkerHandApi
+from LinkerHand.utils.load_write_yaml import LoadWriteYaml
+from LinkerHand.utils.color_msg import ColorMsg
+
+from model.model_poseformer import PoseTransformer
+from model.angle2real import create_hand_kinematics
+from config.retarget_standard import (
+    INPUT_KEY,
+    LEGACY_VISIONPRO_KEY,
+    legacy_visionpro_to_window,
+    select_hand_window,
+)
+from input_adapters.hand_keypoints import HandWindowBuffer, VISIONPRO_SOURCE
+from input_adapters.visionpro_adapter import visionpro_fingers_to_points
+
 data_tpye = 'visionpro'
 # data_tpye = 'slahmr'
 #### 手型配置选择
 hand_brand = 'linker'  
-# # 'yumi'  'linker'  'shadow' 'svhhand' 'inspire'
+# # 'yumi'  'linker'  'shadow' 'svhhand'
 # hand_brand = 'svhhand'
 # hand_brand = 'shadow'
-# hand_brand = 'inspire'
 
 if data_tpye == 'visionpro':
     # scaling_factor = 1.0/0.061
@@ -402,10 +431,10 @@ if hand_brand == 'yumi':
             'Link5',
         ],
     }
-    urdf_file = "D:\\2026\\code\\mytrans\\dataset\\robot\\ur3\\robot(ur3).urdf"
+    urdf_file = "D:\\2026\\code\\TransHandR\\dataset\\robot\\ur3\\robot(ur3).urdf"
 
 elif hand_brand == 'linker':
-    urdf_file = "D:\\2026\\code\\mytrans\\dataset\\robot\\l21_right\\linkerhand_l21_right.urdf"
+    urdf_file = "D:\\2026\\code\\TransHandR\\TransHandR\\dataset\\robot\\l21_right\\linkerhand_l21_right.urdf"
     excluded_pairs=[(1, 2), (4, 5), (7, 8), (10, 11), (14, 15)]
     TIP_dic_rb_gym = [22, 4, 8 , 12, 16]
     # 记录机器手的特定关节索引
@@ -528,7 +557,7 @@ elif hand_brand == 'linker':
    
 elif hand_brand == 'shadow':
     excluded_pairs=[(3, 4), (7, 8), (11, 12), (15, 16), (20, 21)]
-    urdf_file = "D:\\2026\\code\\mytrans\\dataset\\robot\\shadow_hand\\shadow_hand_right.urdf"
+    urdf_file = "D:\\2026\\code\\TransHandR\\TransHandR\\dataset\\robot\\shadow_hand\\shadow_hand_right.urdf"
     hand_cfg = {
         'joints_name': [
             # 腕部关节
@@ -624,11 +653,11 @@ elif hand_brand == 'shadow':
         [0.0, 1.5707],        # LFJ2 (lower=0.0, upper=1.57079632679)
         [0.0, 1.5707]        # LFJ1 (lower=0.0, upper=1.57079632679)
     ]
-    scaling_factor_rb = 4.0/5.0
+    scaling_factor_rb = 1.0/0.0659
 
 elif hand_brand == 'svhhand':
-    excluded_pairs=[(1, 2), (5, 6), (9, 10), (13, 14), (14, 15),(15, 16)]
-    urdf_file = "D:\\2026\\code\\mytrans\\dataset\\robot\\schunk_hand\\schunk_svh_hand_right.urdf"
+    excluded_pairs=[(2, 3), (6, 7), (10, 11), (14, 15), (18, 19)]
+    urdf_file = "D:\\2026\\code\\TransHandR\\TransHandR\\dataset\\robot\\schunk_hand\\schunk_svh_hand_right.urdf"
     hand_cfg = {
         'joints_name': [
             'right_hand_f4',  #0
@@ -720,10 +749,10 @@ elif hand_brand == 'svhhand':
     [18,19], [19,20], [20,21], [21,26]     # 小指
     ]
     # 记录机器手的特定关节索引
-    TIP_dic_rb = [22, 23, 24, 25, 26]  # 对应各指末端
-    DIP_dic_rb = [4, 8, 12, 19, 21]   # 对应远端关节
-    PIP_dic_rb = [3, 7, 11, 18, 20]   # 对应近端关节
-    MCP_dic_rb = [2, 6, 10, 17, 19]   # 对应掌指关节
+    TIP_dic_rb = [21, 22, 23, 24, 25]  # 对应各指末端
+    DIP_dic_rb = [4, 8, 12, 16, 20]   # 对应远端关节
+    PIP_dic_rb = [3, 7, 11, 15, 19]   # 对应近端关节
+    MCP_dic_rb = [2, 6, 10, 14, 18]   # 对应掌指关节
     
     rb_dic = {'TIP_dic':TIP_dic_rb, 'DIP_dic':DIP_dic_rb, 'PIP_dic':PIP_dic_rb, 'MCP_dic':MCP_dic_rb}
     
@@ -771,7 +800,7 @@ elif hand_brand == 'svhhand':
 ]
 
 elif hand_brand == 'allegro_hand':
-    urdf_file = "D:\\2026\\code\\mytrans\\dataset\\robot\\allegro_hand\\allegro_hand_right_glb.urdf"
+    urdf_file = "D:\\2026\\code\\TransHandR\\TransHandR\\dataset\\robot\\allegro_hand\\allegro_hand_right_glb.urdf"
     hand_cfg = {
         'joints_name': [
             'hand_base_joint', #0
@@ -855,125 +884,6 @@ elif hand_brand == 'allegro_hand':
         [-0.227, 1.618],      # joint_11.0 (ring distal)
     ]
 
-elif hand_brand == 'inspire':
-    excluded_pairs=[(1, 2), (4, 5), (7, 8), (10, 11), (14, 15)]  # 根据linker手的配置设定
-    urdf_file = "D:\\2026\\code\\mytrans\\dataset\\robot\\inspire_URDF\\urdf\\R_inspire.urdf"
-    
-    # Inspire手的关节配置
-    hand_cfg = {
-        'joints_name': [
-            'R_base_link_joint',  # 0
-            # 拇指关节
-            'R_thumb_proximal_yaw_joint',  # 1
-            'R_thumb_proximal_pitch_joint',  # 2
-            'R_thumb_intermediate_joint',  # 3
-            'R_thumb_distal_joint',  # 4
-            # 食指关节
-            'R_index_proximal_joint',  # 5
-            'R_index_intermediate_joint',  # 6
-            # 中指关节
-            'R_middle_proximal_joint',  # 7
-            'R_middle_intermediate_joint',  # 8
-            # 无名指关节
-            'R_ring_proximal_joint',  # 9
-            'R_ring_intermediate_joint',  # 10
-            # 小指关节
-            'R_pinky_proximal_joint',  # 11
-            'R_pinky_intermediate_joint',  # 12
-            # 指尖
-            'R_thumb_tip_joint', # 13
-            'R_index_tip_joint', # 14
-            'R_middle_tip_joint', # 15
-            'R_ring_tip_joint', # 16
-            'R_pinky_tip_joint' # 17
-        ],
-        'edges': [
-            # 拇指链路
-            ['R_base_link_joint', 'R_thumb_proximal_yaw_joint'],
-            ['R_thumb_proximal_yaw_joint', 'R_thumb_proximal_pitch_joint'],
-            ['R_thumb_proximal_pitch_joint', 'R_thumb_intermediate_joint'],
-            ['R_thumb_intermediate_joint', 'R_thumb_distal_joint'],
-            # 食指链路
-            ['R_base_link_joint', 'R_index_proximal_joint'],
-            ['R_index_proximal_joint', 'R_index_intermediate_joint'],
-            # 中指链路
-            ['R_base_link_joint', 'R_middle_proximal_joint'],
-            ['R_middle_proximal_joint', 'R_middle_intermediate_joint'],
-            # 无名指链路
-            ['R_base_link_joint', 'R_ring_proximal_joint'],
-            ['R_ring_proximal_joint', 'R_ring_intermediate_joint'],
-            # 小指链路
-            ['R_base_link_joint', 'R_pinky_proximal_joint'],
-            ['R_pinky_proximal_joint', 'R_pinky_intermediate_joint'],
-            # 指尖
-            ['R_thumb_distal_joint', 'R_thumb_tip_joint'],
-            ['R_index_intermediate_joint', 'R_index_tip_joint'],
-            ['R_middle_intermediate_joint', 'R_middle_tip_joint'],
-            ['R_ring_intermediate_joint', 'R_ring_tip_joint'],
-            ['R_pinky_intermediate_joint', 'R_pinky_tip_joint']
-        ],
-        'root_name': 'R_base_link_joint',
-        'end_effectors': [
-            'R_thumb_tip_joint', 'R_index_tip_joint', 'R_middle_tip_joint', 'R_ring_tip_joint', 'R_pinky_tip_joint'
-        ],
-        'elbows': [
-            'R_thumb_proximal_pitch_joint',
-            'R_thumb_intermediate_joint',
-            'R_index_proximal_joint',
-            'R_middle_proximal_joint',
-            'R_ring_proximal_joint',
-            'R_pinky_proximal_joint'
-        ]
-    }
-    
-    robot_connections = [
-        # 手基座到各指根
-        [0, 1],  # 拇指根部
-        [1, 2], [2, 3], [3, 4],  # 拇指链
-        [0, 5], [5, 6],  # 食指链
-        [0, 7], [7, 8],  # 中指链
-        [0, 9], [9, 10],  # 无名指链
-        [0, 11], [11, 12],  # 小指链
-        # 指尖
-        [4, 13], [6, 14], [8, 15], [10, 16], [12, 17]
-    ]
-    
-    # 记录机器手的特定关节索引
-    TIP_dic_rb = [13, 14, 15, 16, 17]  # 拇指尖, 食指尖, 中指尖, 无名指尖, 小指尖
-    DIP_dic_rb = [3, 6, 8, 10, 12]  # 拇指远端, 食指远端, 中指远端, 无名指远端, 小指远端
-    PIP_dic_rb = [2, 5, 7, 9, 11]   # 拇指近端, 食指近端, 中指近端, 无名指近端, 小指近端
-    MCP_dic_rb = [1, 5, 7, 9, 11]   # 拇指掌指, 食指掌指, 中指掌指, 无名指掌指, 小指掌指
-    
-    rb_dic = {'TIP_dic':TIP_dic_rb, 'DIP_dic':DIP_dic_rb, 'PIP_dic':PIP_dic_rb, 'MCP_dic':MCP_dic_rb}
-    
-    scaling_factor_rb = 1  # 使用类似linker手的比例因子
-    out_num_joint = 13  # 13个活动关节
-    
-    # Inspire Hand 的关节角度限制 (弧度)
-    angle_limit_rob = [
-        [0.0, 0.0],           # R_base_link_joint (固定关节)
-        # 拇指关节限制
-        [0.0, 1.308],         # R_thumb_proximal_yaw_joint
-        [0.0, 0.6],           # R_thumb_proximal_pitch_joint
-        [0.0, 0.8],           # R_thumb_intermediate_joint
-        [0.0, 0.4],           # R_thumb_distal_joint
-        # 食指关节限制
-        [0.0, 1.47],          # R_index_proximal_joint
-        [-0.04545, 1.56],     # R_index_intermediate_joint
-        # 中指关节限制
-        [0.0, 1.47],          # R_middle_proximal_joint
-        [-0.04545, 1.56],     # R_middle_intermediate_joint
-        # 无名指关节限制
-        [0.0, 1.47],          # R_ring_proximal_joint
-        [-0.04545, 1.56],     # R_ring_intermediate_joint
-        # 小指关节限制
-        [0.0, 1.47],          # R_pinky_proximal_joint
-        [-0.04545, 1.56],     # R_pinky_intermediate_joint
-    ]
-    
-    correction_matrix = torch.tensor([[-1, 0, 0],
-                                      [0, 1 , 0],
-                                      [0, 0, -1]], dtype=torch.float32)
 '''
 模型参数
 '''
@@ -989,18 +899,600 @@ num_heads = 8
 qkv_bias = True     # QKV偏置
 qk_scale = None     # QK缩放
 drop_path_rate = 0.1
+# 关节角度限制 (弧度)
+angle_limit_rob = [
+    [0.0, 0.0],           # hand_base_link (固定关节，无限制或设为0)
+    [-0.18, 0.18],       # index_mcp_roll
+    [0.0, 1.57],         # index_mcp_pitch
+    [0.0, 1.57],         # index_pip
+    [-0.18, 0.18],       # middle_mcp_roll
+    [0.0, 1.57],         # middle_mcp_pitch
+    [0.0, 1.57],         # middle_pip
+    [-0.18, 0.18],       # ring_mcp_roll
+    [0.0, 1.57],         # ring_mcp_pitch
+    [0.0, 1.57],         # ring_pip
+    [-0.18, 0.18],       # pinky_mcp_roll
+    [0.0, 1.57],         # pinky_mcp_pitch
+    [0.0, 1.57],         # pinky_pip
+    [-0.6, 0.6],         # thumb_cmc_roll
+    [0.0, 1.6],          # thumb_cmc_yaw
+    [0.0, 1.0],          # thumb_cmc_pitch
+    [0.0, 1.57],         # thumb_mcp
+    [0.0, 1.57]         # thumb_ip
+]
 
-'''
-损失函数权重
-'''
-#thumb
-# loss_weight = [500, 500, 10, 100, 10 , 500] # 侧摆损失，指尖损失，碰撞损失，大拇指损失，指尖距离损失, 大拇指二损失
-#thumb2
-# loss_weight = [500, 500, 10, 1000, 10, 500]
-#thumb3
-loss_weight = [500, 500, 10, 500, 10, 500]
+# 关节映射字典
+joint_map = {0: 15, 
+             1: 2, 
+             2: 5, 
+             3: 8, 
+             4: 11, 
+             5: 14, 
+             6: 1, 
+             7: 4, 
+             8: 7, 
+             9: 10, 
+             10: 13, 
+            11: 0, 12: 0, 13: 0, 14: 0, 
+            15: 16, 
+            16: 0, 17: 0, 18: 0, 19: 0,
+            20: 17, 
+            21: 3, 
+            22: 6, 
+            23: 9, 
+            24: 12}
 
-# loss_weight = [0, 50, 10, 0, 10] # 侧摆损失，指尖损失，碰撞损失，大拇指损失，指尖距离损失
-# loss_weight = [500, 0, 10, 0, 50]
+def trans2realworld(angle):
+    '''
+    将虚拟角度转换为真实角度,且检查是否超限,输入为弧度,下限,上限
+    '''
+    # 18个关节
+    angle_real = angle.copy()
+    # 先归一化至0-255 按照关节角度限制angle_limit_rob进行归一化
+    for i in range(len(angle_real)):
+        low, high = angle_limit_rob[i]
+        # 归一化到0-1
+        norm_angle = (angle_real[i] - low) / (high - low) if high > low else 0.0
+        # 归一化到0-255
+        angle_real[i] = int(norm_angle * 255)
+    # 再进行重排顺序 按照joint_map进行重排
+    angle_mapped = [0] * 25
+    for drive_idx, joint_idx in joint_map.items():
+        angle_mapped[drive_idx] = angle_real[joint_idx]
+        # 所有角度要从0-255转为255-0
+        angle_mapped[drive_idx] = 255 - angle_mapped[drive_idx]
+    #不需要反转故再反转一次
+    angle_mapped[0] = 255 - angle_mapped[0]
+    angle_mapped[6] = 255 - angle_mapped[6]
+    angle_mapped[7] = 255 - angle_mapped[7]
+    angle_mapped[8] = 255 - angle_mapped[8]
+    angle_mapped[9] = 255 - angle_mapped[9]
+    #输出要求是整数列表
+    angle_mapped = [unit(int(a)) for a in angle_mapped]
+    return angle_mapped
 
-col_threshold = 0.010
+def unit(num):
+    #限制在0-255
+    return 0 if num < 0 else 255 if num > 255 else num
+
+class HandController:
+    def __init__(self, left_positions=None):
+        self.yaml = LoadWriteYaml()
+        # 加载左手配置文件
+        self.left_setting = self.yaml.load_setting_yaml(config="setting")
+        self.hands = {}  # 存储左手的配置和API
+        self._init_hands()
+        if self.hands:
+            self._set_default_speeds()
+        self.init_positions = {
+            "left": self._get_default_positions("left", left_positions)
+        }
+
+    def _test_can_connection(self, can_channel, bitrate=1000000):
+        """测试 CAN 连接是否可用"""
+        try:
+            ColorMsg(msg=f"测试 CAN 通道 {can_channel}...", color="yellow")
+            bus = can.interface.Bus(
+                channel=can_channel,
+                bustype='pcan',
+                bitrate=bitrate
+            )
+            test_msg = can.Message(arbitration_id=0x123, data=[0x01], is_extended_id=False)
+            bus.send(test_msg)
+            time.sleep(0.1)
+            bus.shutdown()
+            ColorMsg(msg=f"CAN 通道 {can_channel} 连接成功", color="green")
+            return True
+        except Exception as e:
+            ColorMsg(msg=f"CAN 通道 {can_channel} 连接失败: {e}", color="red")
+            return False
+
+    def _init_hands(self):
+        # 初始化左手
+        hand_type = "left"
+        setting = self.left_setting
+        hand_config = setting['LINKER_HAND']['LEFT_HAND']
+        if hand_config.get('EXISTS', False):
+            hand_joint = hand_config['JOINT']
+            can_channel = hand_config.get('CAN_CHANNEL', 'PCAN_USBBUS1')
+            bitrate = hand_config.get('BITRATE', 1000000)
+
+            if not self._test_can_connection(can_channel, bitrate):
+                ColorMsg(msg=f"左手 CAN 通道不可用，跳过初始化", color="red")
+                return
+
+            try:
+                ColorMsg(msg=f"初始化 左手 LinkerHandApi...", color="yellow")
+                api = LinkerHandApi(
+                    hand_type=hand_type,
+                    hand_joint=hand_joint,
+                    can=can_channel
+                )
+
+                if not hasattr(api.hand, 'bus') or api.hand.bus is None:
+                    ColorMsg(msg=f"{hand_type} bus 未正确初始化，正在修复...", color="yellow")
+                    api.hand.bus = can.interface.Bus(
+                        channel=can_channel,
+                        bustype='pcan',
+                        bitrate=bitrate,
+                        can_filters=[{"can_id": api.hand.can_id, "can_mask": 0x7FF}]
+                    )
+
+                version = api.get_embedded_version()
+                if version is None or len(version) == 0:
+                    ColorMsg(msg=f"左手 硬件版本未识别，可能设备未响应",
+                             color="red")
+                    return
+
+                self.hands[hand_type] = {
+                    "joint": hand_joint,
+                    "api": api,
+                    "bus": api.hand.bus,
+                    "channel": can_channel
+                }
+                ColorMsg(
+                    msg=f"初始化左手成功！关节类型: {hand_joint}, CAN通道: {can_channel}, 版本: {version}",
+                    color="green")
+
+            except Exception as e:
+                ColorMsg(msg=f"初始化左手 LinkerHandApi 失败: {e}",
+                         color="red")
+                ColorMsg(
+                    msg=f"详细建议：1. 确认 PCAN 驱动已安装；2. 使用 PCAN-View 测试 {can_channel}；3. 检查设备连接；4. 验证 YAML 中的 CAN_CHANNEL 配置。",
+                    color="yellow")
+                return
+        else:
+            print("左手未启用")
+
+        if not self.hands:
+            ColorMsg(msg="警告：左手初始化失败，请检查硬件和配置！", color="red")
+        else:
+            ColorMsg(msg=f"成功初始化左手", color="green")
+
+    def _set_default_speeds(self):
+        speed_map = {
+            "L7": [180, 250, 250, 250, 250, 250, 250],
+            "L10": [180, 250, 250, 250, 250],
+            "L20": [120, 180, 180, 180, 180],
+            "L21": [60, 220, 220, 220, 220],
+            "L25": [60, 250, 250, 250, 250]
+        }
+        for hand_type, hand_info in self.hands.items():
+            speed = speed_map.get(hand_info["joint"], [180, 250, 250, 250, 250])
+            ColorMsg(msg=f"设置左手速度: {speed}", color="green")
+            try:
+                hand_info["api"].set_speed(speed)
+                ColorMsg(msg=f"左手速度设置成功", color="green")
+            except Exception as e:
+                ColorMsg(msg=f"设置左手速度失败: {e}", color="red")
+
+    def _get_default_positions(self, hand_type, positions):
+        if hand_type not in self.hands:
+            return []
+        pos_map = {
+            "L7": [250] * 7,
+            "L10": [255] * 10,
+            "L20": [255, 255, 255, 255, 255, 255, 10, 100, 180, 240, 245, 255, 255, 255, 255, 255, 255, 255, 255, 255],
+            "L21": [96, 255, 255, 255, 255, 150, 114, 151, 189, 255, 180, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+                    255, 255, 255, 255, 255],
+            "L25": [96, 255, 255, 255, 255, 150, 114, 151, 189, 255, 180, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+                    255, 255, 255, 255, 255]
+        }
+        return positions if positions else pos_map.get(self.hands[hand_type]["joint"], [255] * 10)
+
+    def control_hand(self, left_positions=None):
+        if not self.hands:
+            ColorMsg(msg="无可用手部，无法执行控制", color="red")
+            return
+
+        for hand_type, hand_info in self.hands.items():
+            positions = left_positions 
+
+            if not positions:
+                positions = self.init_positions.get(hand_type, [])
+
+            if not positions:
+                ColorMsg(msg=f"左手 无有效位置数据，跳过控制", color="yellow")
+                continue
+
+            expected_len = len(self.init_positions.get(hand_type, []))
+            if expected_len > 0 and len(positions) != expected_len:
+                ColorMsg(
+                    msg=f"错误: 左手控制信号长度 {len(positions)} 不匹配关节数量 {expected_len}",
+                    color="red")
+                continue
+
+            ColorMsg(
+                msg=f"执行左手控制信号: 前{5}个位置值 [{', '.join(map(str, positions[:5]))}]...",
+                color="green")
+            try:
+                hand_info["api"].finger_move(pose=positions)
+                ColorMsg(msg=f"左手控制执行成功", color="green")
+            except Exception as e:
+                ColorMsg(msg=f"控制左手失败: {e}", color="red")
+                continue
+
+    def close(self):
+        for hand_type, hand_info in self.hands.items():
+            if "bus" in hand_info and hand_info["bus"]:
+                try:
+                    hand_info["bus"].shutdown()
+                    print(f"关闭左手 CAN 总线")
+                except Exception as e:
+                    ColorMsg(msg=f"关闭左手 CAN 总线失败: {e}", color="red")
+
+def _legacy_vision_pro_data_process(shared_dict, stop_event):
+    """
+    Vision Pro数据获取进程
+    """
+    print("Vision Pro数据获取进程启动")
+    
+    avp_ip = "192.168.43.20"  # Vision Pro IP (shown in the app)
+    s = VisionProStreamer(ip=avp_ip)
+    
+    # 存储最近3帧数据
+    recent_frames = []
+    t_sum = 0
+    t_average = 0
+    f = 0 
+    while not stop_event.is_set():
+        t_start = time.time()
+        r = s.get_latest()
+        
+        # 提取右手手指跟踪数据
+        # right_fingers = r['right_fingers']
+        right_fingers = r['left_fingers']
+        
+        # 存储处理后的坐标
+        coordinates = []
+        
+        # 遍历所有关节
+        for i in range(len(right_fingers)):
+            # 获取4x4变换矩阵
+            transform_matrix = right_fingers[i]
+            
+            # 应用坐标变换
+            # x = -transform_matrix[1][3]
+            # y = transform_matrix[2][3]
+            # z = -transform_matrix[0][3]  #右手
+
+            x = transform_matrix[1][3]
+            y = -transform_matrix[2][3]
+            z = transform_matrix[0][3] # 左手
+            # 添加到坐标列表
+            coordinates.append([x, y, z])
+        
+        # 转换为numpy数组以便处理
+        coordinates = np.array(coordinates)
+        
+        # 获取手腕位置（0号点）
+        wrist_pos = coordinates[0]
+        
+        # 将所有点相对于手腕位置进行变换（减去0号点）
+        relative_coordinates = coordinates - wrist_pos
+        
+        # 添加到最近帧列表
+        recent_frames.append(relative_coordinates)
+        
+        # 保持最多3帧
+        if len(recent_frames) > 3:
+            recent_frames.pop(0)
+        
+        # 如果已经有3帧数据，则发送给重定向进程
+        if len(recent_frames) == 3:
+            # 转换为期望的格式并发送
+            shared_dict['vision_pro_data'] = np.stack(recent_frames, axis=1)  # (25, 3, 3) -> (25, 3, 3)
+        t_stop = time.time()
+        t_sum += t_stop - t_start
+        f += 1
+        t_average = t_sum/f
+        if f%100 == 0:
+            print(f"Vision Pro数据获取完成，平均处理时间: {t_average}")
+        time.sleep(0.001)  # 控制数据获取频率
+    
+    print("Vision Pro数据获取进程结束")
+
+def redirection_process(shared_dict, stop_event, model_path=None):
+    """
+    重定向进程：接收三帧人手数据，输出一帧机器手关节角度
+    """
+    print("重定向进程启动")
+    
+    if model_path is None:
+        # model_path = r"D:\\2026\\code\\TransHandR\\TransHandR\\checkpoint\\models\\visionpro\\linker\\model_final.pth"
+        model_path = r"D:\\2026\\code\\TransHandR\\TransHandR\\checkpoint\\models\\thumb2\\linker\\model_final.pth"
+    
+    
+    # 定义一些必要的字典用于测试
+    rb_dic = {
+        'TIP_dic': [22, 18, 19, 20, 21],  # 机器人手的指尖索引
+        'DIP_dic': [17, 3, 6, 9, 12],
+        'PIP_dic': [15, 2, 5, 8, 11],
+        'MCP_dic': [14, 1, 4, 7, 10]
+    }
+    source_dic = {
+        'TIP_dic': [4, 9, 14, 19, 24],  # 人体手的指尖索引
+        'DIP_dic': [3, 8, 13, 18, 23],
+        'PIP_dic': [2, 7, 12, 17, 22],
+        'MCP_dic': [1, 6, 11, 16, 21]
+    }
+    try:
+        # # 加载模型
+        # 在 redirection_process 函数中，替换原来的模型初始化代码：
+        model = PoseTransformer(
+            num_frame=receptive_field,
+            in_num_joints=num_joints, 
+            in_chans=3, 
+            out_num_joint=out_num_joint, 
+            out_chans=1, 
+            embed_dim_ratio=embed_dim_ratio,
+            spatial_depth=spatial_depth,     
+            temporal_depth=temporal_depth,    
+            spatial_mlp_ratio=spatial_mlp_ratio, 
+            temporal_mlp_ratio=temporal_mlp_ratio, 
+            num_heads=num_heads, 
+            qkv_bias=qkv_bias, 
+            qk_scale=None,
+            drop_path_rate=drop_path_rate,
+            angle_limit_rad=angle_limit_rob
+        )
+        
+        # 如果有可用的GPU，将模型移到GPU上
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
+        hand_fk = create_hand_kinematics(urdf_file, hand_cfg, device,scale_factor=scaling_factor_rb)
+
+        # 加载模型权重
+        print(f"Loading model from: {model_path}")
+        # 使用 strict=False 忽略不匹配的键
+        checkpoint = torch.load(model_path)
+        model.load_state_dict(checkpoint['model_pos'], strict=False)
+        print("Model loaded successfully!")
+        print(f"Model is on device: {next(model.parameters()).device}")
+        
+        model.eval()
+        
+        print("重定向进程初始化完成")
+        f = 0 
+        t_sum = 0
+        t_average = 0
+        while not stop_event.is_set():
+            # 检查是否有新的Vision Pro数据
+            retarget_input = shared_dict.get(INPUT_KEY, None)
+            vision_data = shared_dict.get(LEGACY_VISIONPRO_KEY, None)
+            t1 = time.time()
+            selected = (
+                select_hand_window(retarget_input, preferred_side="left")
+                if retarget_input is not None
+                else None
+            )
+            if selected is not None or vision_data is not None:
+                # 转换数据格式以适应模型输入
+                # vision_data shape: (25, 3, 3) -> (1, 3, 25, 3)
+                reshaped_data = (
+                    selected[1]
+                    if selected is not None
+                    else legacy_visionpro_to_window(vision_data)
+                )
+                reshaped_data = np.expand_dims(reshaped_data, axis=0)  # (1, 3, 25, 3)
+                # 数据乘上缩放因子
+                reshaped_data *= scaling_factor
+                # 转换为tensor并移动到设备
+                input_tensor = torch.from_numpy(reshaped_data).float().to(device)
+                
+                with torch.no_grad():
+                    # 模型推理
+                    output = model(input_tensor)
+                    
+                    # 提取结果并转换为numpy数组
+                    result = output.cpu().numpy()[0]  # 移除批次维度
+                    
+                    # 将结果发送到下一个进程
+                    shared_dict['robot_angles'] = result
+                    
+                    # print(f"重定向进程处理完成，输出形状: {result.shape}")
+            t2 = time.time()
+            f += 1
+            t_sum += t2-t1
+            t_average = t_sum/f
+            if f%100 == 0:
+                # print(f"重定向进程处理完成，输出形状: {result.shape}")
+                print(f"处理时间: {t_average}")
+                print(t2-t1)
+            time.sleep(0.0001)  # 控制处理频率
+    
+    except Exception as e:
+        print(f"重定向进程出错: {str(e)}")
+    
+    print("重定向进程结束")
+
+def virtual_env_process(shared_dict, stop_event, v_rate=1):
+    """
+    虚拟环境进程
+    """
+    # 初始化虚拟环境
+    env = gym.make('yumi-v0')
+    observation = env.reset()
+    
+    camera_distance = 2
+    camera_yaw = 90
+    camera_pitch = -10
+    camera_roll = 0
+    camera_target_position = [0, 0, 0.05]
+    paused = False
+    
+    print("虚拟环境进程启动")
+    t_sum = 0
+    t_average = 0
+    f = 0
+    while not stop_event.is_set():
+        t_start = time.time()
+        env.render()
+        
+        # 尝试获取机器人关节角度数据
+        robot_angles = shared_dict.get('robot_angles', None)
+        if robot_angles is not None:
+            # 将数据转换为虚拟环境所需的格式
+            for i in range(2):
+                R_robot_angle = np.concatenate((robot_angles, np.zeros((5,)))).tolist()
+                action = R_robot_angle
+                # 检查键盘事件
+                keys = p.getKeyboardEvents()
+                for k, v in keys.items():
+                    if v & p.KEY_WAS_TRIGGERED:
+                        if k == ord('w'):
+                            camera_distance -= 0.3
+                        elif k == ord('s'):
+                            camera_distance += 0.3
+                        elif k == ord('a'):
+                            camera_yaw -= 10
+                        elif k == ord('d'):
+                            camera_yaw += 10
+                        elif k == ord('q'):
+                            camera_pitch -= 10
+                        elif k == ord('e'):
+                            camera_pitch += 10
+                        elif k == ord(' '):
+                            paused = not paused
+                            print('切换暂停')
+                # 如果处于暂停状态，则跳过仿真步骤
+                if paused:
+                    time.sleep(0.02)  # 保持短暂延迟以减少CPU占用
+                p.resetDebugVisualizerCamera(cameraDistance=camera_distance,
+                                            cameraYaw=camera_yaw,
+                                            cameraPitch=camera_pitch,
+                                            cameraTargetPosition=camera_target_position)
+                
+                observation, reward, done, info = env.step(action)
+                t_end = time.time()
+                f += 1
+                t_sum += t_end-t_start
+                t_average = t_sum/f
+                if f%100 == 0:
+                    print(f"虚拟环境进程处理完成，平均处理时间: {t_average}")
+                time.sleep(0.02 * v_rate)
+    
+    env.close()
+    print("虚拟环境进程结束")
+
+def real_hand_process(shared_dict, stop_event, v_rate=1):
+    """
+    真实机器手进程
+    """
+    print("真实机器手进程启动")
+    
+    # 初始化手部控制器
+    initial_positions = [255] * 25  # 默认位置
+    controller = HandController(left_positions=initial_positions)
+    
+    while not stop_event.is_set():
+        # 尝试获取机器人关节角度数据
+        robot_angles = shared_dict.get('robot_angles', None)
+        if robot_angles is not None:
+            # 将数据转换为真实机器手所需的格式
+            R_robot_angle = trans2realworld(robot_angles)
+            controller.control_hand(left_positions=R_robot_angle)
+        
+        time.sleep(0.02 * v_rate)
+    
+    controller.close()
+    print("真实机器手进程结束")
+
+def vision_pro_data_process(shared_dict, stop_event):
+    """Publish Vision Pro data through the canonical retarget input contract."""
+    print("Vision Pro input adapter started")
+    streamer = VisionProStreamer(ip="192.168.43.20")
+    buffer = HandWindowBuffer(scale_factor=1.0)
+
+    while not stop_event.is_set():
+        latest = streamer.get_latest()
+        fingers = latest.get("left_fingers")
+        if fingers is not None:
+            points = visionpro_fingers_to_points(fingers, side="left")
+            payload = buffer.update(
+                left_hand=points,
+                timestamp=time.time(),
+                source=VISIONPRO_SOURCE,
+                metadata={"adapter": "VisionProAdapter", "side": "left"},
+            )
+            if payload is not None:
+                shared_dict[INPUT_KEY] = payload
+                shared_dict[LEGACY_VISIONPRO_KEY] = np.transpose(
+                    payload["hands"]["left"], (1, 0, 2)
+                )
+        time.sleep(0.001)
+
+
+if __name__ == '__main__':
+    # 设置项目根目录
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    sys.path.append(os.path.abspath(os.path.join(current_dir, "../..")))
+    
+    # 创建共享字典
+    manager = multiprocessing.Manager()
+    shared_dict = manager.dict()
+    
+    # 创建停止事件
+    stop_event = multiprocessing.Event()
+    v_rate = 1  # 可根据需要调整速度比例
+    
+    try:
+        # 启动四个进程
+        vision_process = multiprocessing.Process(target=vision_pro_data_process, args=(shared_dict, stop_event))
+        redirection_process_instance = multiprocessing.Process(target=redirection_process, args=(shared_dict, stop_event))
+        virtual_env_process_instance = multiprocessing.Process(target=virtual_env_process, args=(shared_dict, stop_event, v_rate))
+        real_hand_process_instance = multiprocessing.Process(target=real_hand_process, args=(shared_dict, stop_event, v_rate))
+        
+        # 启动进程
+        vision_process.start()
+        redirection_process_instance.start()
+        virtual_env_process_instance.start()
+        real_hand_process_instance.start()
+        
+        print("所有进程已启动，按 Ctrl+C 或 'z' 键停止...")
+        
+        # 等待用户中断
+        while True:
+            # if keyboard.is_pressed('z'):
+                # print("检测到按键 'z'，正在停止程序...")
+                # break
+            time.sleep(0.1)
+    
+    except KeyboardInterrupt:
+        print("用户中断程序")
+    
+    finally:
+        # 设置停止事件，通知所有进程退出
+        stop_event.set()
+        
+        # 等待进程结束
+        processes = [vision_process, redirection_process_instance, virtual_env_process_instance, real_hand_process_instance]
+        # processes = [vision_process, redirection_process_instance, real_hand_process_instance]
+        # processes = [vision_process, redirection_process_instance, virtual_env_process_instance]
+        for proc in processes:
+            if proc and proc.is_alive():
+                proc.join(timeout=2)
+                if proc.is_alive():
+                    proc.terminate()
+        
+        print("程序已安全退出")

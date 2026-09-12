@@ -1,20 +1,18 @@
-import tempfile
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-from config.retarget_io import (
+from retargeting.contracts import (
     HAND_KEYPOINTS,
     RECEPTIVE_FIELD,
     legacy_visionpro_to_window,
     validate_retarget_input,
 )
-from input_adapters.hand_keypoints import (
+from retargeting.tracking import (
+    HandIdentityTracker,
     HandWindowBuffer,
     mediapipe21_to_hand25,
 )
-from input_adapters.npy_replay_adapter import NpyReplayAdapter
 
 
 class InputAdapterTests(unittest.TestCase):
@@ -48,30 +46,27 @@ class InputAdapterTests(unittest.TestCase):
         normalized = legacy_visionpro_to_window(legacy)
         self.assertEqual(normalized.shape, (RECEPTIVE_FIELD, 25, 3))
 
-    def test_npy_replay_emits_three_frame_window(self):
-        points = np.zeros((21, 3), dtype=np.float32)
-        frames = np.array(
-            [
-                {
-                    "frame_id": index,
-                    "timestamp": float(index),
-                    "left_hand": points + index,
-                    "right_hand": None,
-                }
-                for index in range(3)
-            ],
-            dtype=object,
-        )
+    def test_identity_tracker_corrects_single_hand_label_switch(self):
+        tracker = HandIdentityTracker()
+        shape = np.linspace(0.0, 0.2, 21 * 3, dtype=np.float32).reshape(21, 3)
+        left = shape + [0.70, 0.0, 0.0]
+        right = shape + [0.30, 0.0, 0.0]
+        tracker.update(left_hand=left, right_hand=right)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "hands.npy"
-            np.save(path, frames)
-            payload = NpyReplayAdapter(path).next_input()
+        switched = tracker.update(right_hand=left + [0.01, 0.0, 0.0])
 
-        self.assertIsNotNone(payload)
-        self.assertEqual(payload["source"], "mediapipe_approx")
-        self.assertEqual(payload["hands"]["left"].shape, (3, 25, 3))
+        self.assertIsNotNone(switched["left"])
+        self.assertIsNone(switched["right"])
 
+    def test_identity_tracker_rejects_unmatched_jump(self):
+        tracker = HandIdentityTracker()
+        shape = np.linspace(0.0, 0.2, 21 * 3, dtype=np.float32).reshape(21, 3)
+        tracker.update(right_hand=shape + [0.30, 0.0, 0.0])
+
+        result = tracker.update(right_hand=shape + [0.60, 0.0, 0.0])
+
+        self.assertIsNone(result["left"])
+        self.assertIsNone(result["right"])
 
 if __name__ == "__main__":
     unittest.main()
