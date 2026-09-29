@@ -2,8 +2,8 @@
 MediaPipe 摄像头适配器，用于低成本手部跟踪实验。
 
 该模块使用 MediaPipe 的手部关键点检测模型，从摄像头读取视频流，
-逐帧检测左右手的关键点，并通过 HandWindowBuffer 累积多帧数据，
-最终生成用于模型重定向（retargeting）的标准输入载荷（payload）。
+逐帧检测左右手的关键点，并交给共享 Hand Core 处理 canonicalization、
+三帧窗口和标准输入载荷（payload）。
 """
 
 from __future__ import annotations
@@ -14,11 +14,10 @@ from pathlib import Path
 import numpy as np
 
 # 导入手部关键点缓冲区以及数据来源常量（MEDIAPIPE_APPROX_SOURCE）
+from retargeting.hand_core import CanonicalHandProcessor
 from retargeting.tracking import (
     DEFAULT_MAX_CENTER_DISPLACEMENT,
     DEFAULT_MAX_SHAPE_RMSE,
-    HandIdentityTracker,
-    HandWindowBuffer,
     MEDIAPIPE_APPROX_SOURCE,
 )
 
@@ -68,8 +67,8 @@ class MediaPipeCameraAdapter:
         self._mp = mp
 
         # 初始化手部数据缓冲区（用于累积多帧，构建时序窗口）
-        self._buffer = HandWindowBuffer(scale_factor=scale_factor)
-        self._identity_tracker = HandIdentityTracker(
+        self._hand_core = CanonicalHandProcessor(
+            scale_factor=scale_factor,
             max_center_displacement=max_center_displacement,
             max_shape_rmse=max_shape_rmse,
         )
@@ -136,15 +135,10 @@ class MediaPipeCameraAdapter:
                 if hand_type in ("left", "right"):
                     detections.append((hand_type, keypoints))
 
-        tracked_hands = self._identity_tracker.update_detections(detections)
-        for side in ("left", "right"):
-            if tracked_hands[side] is None:
-                self._buffer.reset_side(side)
-
-        # 6. 更新缓冲区，并尝试获取输入载荷
-        return self._buffer.update(
-            left_hand=tracked_hands["left"],
-            right_hand=tracked_hands["right"],
+        # 6. Shared hand core performs identity continuity, canonicalization,
+        # wrist-relative normalization, and three-frame windowing.
+        return self._hand_core.update_detections(
+            detections=detections,
             timestamp=round(time.time() - self._start_time, 3),  # 相对时间（秒）
             source=MEDIAPIPE_APPROX_SOURCE,                     # 标识数据来源
             metadata={"camera_index": int(self._cap.get(self._cv2.CAP_PROP_POS_FRAMES))},  # 帧索引

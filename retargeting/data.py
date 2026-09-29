@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-from collections import deque
 from pathlib import Path
 from typing import Iterator
 
 import h5py
 import numpy as np
 
+from retargeting.hand_core import CanonicalHandProcessor
 from retargeting.tracking import (
     DEFAULT_MAX_CENTER_DISPLACEMENT,
     DEFAULT_MAX_SHAPE_RMSE,
-    HandIdentityTracker,
-    ensure_hand25,
 )
 from retargeting.coordinates import COORDINATE_FRAME
 
@@ -90,12 +88,12 @@ class TwoHandH5Dataset:
         }
 
     def _build_samples(self) -> list[dict]:
-        buffers = {
-            side: deque(maxlen=self.receptive_field) for side in HAND_SIDES
-        }
         samples: list[dict] = []
         previous_frame_id = None
-        identity_tracker = HandIdentityTracker(
+        processor = CanonicalHandProcessor(
+            scale_factor=self.scale_factor,
+            receptive_field=self.receptive_field,
+            track_identity=self.track_identity,
             max_center_displacement=self.max_center_displacement,
             max_shape_rmse=self.max_shape_rmse,
         )
@@ -108,44 +106,30 @@ class TwoHandH5Dataset:
                 and frame_id is not None
                 and frame_id != previous_frame_id + 1
             ):
-                for buffer in buffers.values():
-                    buffer.clear()
-                identity_tracker.reset()
+                processor.reset()
             previous_frame_id = frame_id
 
             raw_hands = {
                 side: self._raw_hands[side][frame_index]
                 for side in HAND_SIDES
             }
-            if self.track_identity:
-                tracked_hands = identity_tracker.update(
-                    left_hand=raw_hands["left"],
-                    right_hand=raw_hands["right"],
-                )
-            else:
-                tracked_hands = raw_hands
-
-            current: dict[str, np.ndarray] = {}
-            for side in HAND_SIDES:
-                raw_points = tracked_hands[side]
-                if not _is_valid_hand_frame(raw_points):
-                    buffers[side].clear()
-                    continue
-
-                hand = ensure_hand25(
-                    raw_points,
-                    scale_factor=self.scale_factor,
-                )
+            payload, current = processor.process(
+                left_hand=raw_hands["left"],
+                right_hand=raw_hands["right"],
+                timestamp=_scalar_or_none(self.timestamps[frame_index]),
+                source="h5",
+                metadata={"frame_index": frame_index},
+            )
+            for side, hand in current.items():
                 if not np.isfinite(hand).all():
                     raise ValueError(
                         f"Converted {side} hand contains NaN or Inf at "
                         f"frame {frame_index}"
                     )
-                buffers[side].append(hand)
-                current[side] = hand
 
             valid_sides = {
-                side: side in current and len(buffers[side]) == self.receptive_field
+                side: payload is not None
+                and payload["hands"][side] is not None
                 for side in HAND_SIDES
             }
             # Keep one sample for every frame that has enough history to be a
@@ -162,10 +146,7 @@ class TwoHandH5Dataset:
             }
             for side in HAND_SIDES:
                 if valid_sides[side]:
-                    sample[f"{side}_input"] = np.stack(
-                        tuple(buffers[side]),
-                        axis=0,
-                    ).astype(np.float32, copy=False)
+                    sample[f"{side}_input"] = payload["hands"][side]
                     sample[f"{side}_target"] = current[side][None, :, :]
                 else:
                     sample[f"{side}_input"] = np.zeros(
