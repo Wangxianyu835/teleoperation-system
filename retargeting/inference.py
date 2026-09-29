@@ -15,7 +15,7 @@ from retargeting.data import (
     TwoHandH5ChunkedGenerator,
     TwoHandH5Dataset,
 )
-from retargeting.coordinates import validate_left_coordinate_mode
+from retargeting.coordinates import COORDINATE_ALIGNMENT
 from retargeting.tracking import (
     DEFAULT_MAX_CENTER_DISPLACEMENT,
     DEFAULT_MAX_SHAPE_RMSE,
@@ -25,17 +25,11 @@ from retargeting.model import create_twohand_retargeter
 
 def run(args: argparse.Namespace) -> int:
     device = _resolve_device(args.device)
-    left_coordinate_mode = _resolve_coordinate_mode(
-        args.left_coordinate_mode,
-        args.checkpoint,
-    )
-
     dataset = TwoHandH5Dataset(
         args.input,
         receptive_field=L21.model.receptive_field,
         scale_factor=args.scale_factor,
         reset_on_gaps=True,
-        left_coordinate_mode=left_coordinate_mode,
         track_identity=not args.disable_identity_tracking,
         max_center_displacement=args.max_center_displacement,
         max_shape_rmse=args.max_shape_rmse,
@@ -103,7 +97,7 @@ def run(args: argparse.Namespace) -> int:
         h5_file.attrs["input_file"] = str(args.input)
         h5_file.attrs["checkpoint"] = str(args.checkpoint)
         h5_file.attrs["output_shape"] = (L21.model.output_joints,)
-        h5_file.attrs["left_coordinate_mode"] = left_coordinate_mode
+        h5_file.attrs["coordinate_alignment"] = COORDINATE_ALIGNMENT
         h5_file.attrs["identity_tracking"] = not args.disable_identity_tracking
         h5_file.attrs["max_center_displacement"] = args.max_center_displacement
         h5_file.attrs["max_shape_rmse"] = args.max_shape_rmse
@@ -112,7 +106,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"device={device}")
     print(f"input={args.input}")
     print(f"checkpoint={args.checkpoint}")
-    print(f"left_coordinate_mode={left_coordinate_mode}")
+    print(f"coordinate_alignment={COORDINATE_ALIGNMENT}")
     print(f"output={output_path}")
     print(f"frames={frame_count}")
     for side in HAND_SIDES:
@@ -185,12 +179,6 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         choices=("auto", "cpu", "cuda"),
         default="auto",
     )
-    parser.add_argument(
-        "--left-coordinate-mode",
-        choices=("auto", "none", "mirror_x"),
-        default="auto",
-        help="left-hand coordinate mode; auto reads the checkpoint metadata",
-    )
     parser.set_defaults(handler=run)
 
 
@@ -200,37 +188,6 @@ def main() -> int:
     )
     configure_parser(parser)
     return run(parser.parse_args())
-
-
-def _resolve_coordinate_mode(requested: str, checkpoint_path: Path) -> str:
-    checkpoint_mode = _checkpoint_coordinate_mode(checkpoint_path)
-    if requested == "auto":
-        return checkpoint_mode
-    explicit_mode = validate_left_coordinate_mode(requested)
-    if explicit_mode != checkpoint_mode:
-        print(
-            "warning=left_coordinate_mode_mismatch "
-            f"checkpoint={checkpoint_mode} requested={explicit_mode}"
-        )
-    return explicit_mode
-
-
-def _checkpoint_coordinate_mode(checkpoint_path: Path) -> str:
-    if not checkpoint_path.is_file():
-        raise FileNotFoundError(f"Checkpoint was not found: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    mode = (
-        checkpoint.get("left_coordinate_mode")
-        if isinstance(checkpoint, dict)
-        else None
-    )
-    if mode is None:
-        print(
-            "warning=checkpoint_missing_left_coordinate_mode "
-            "using=none"
-        )
-        return "none"
-    return validate_left_coordinate_mode(mode)
 
 
 def _resolve_device(requested: str) -> torch.device:

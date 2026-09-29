@@ -15,10 +15,7 @@ from retargeting.tracking import (
     HandIdentityTracker,
     ensure_hand25,
 )
-from retargeting.coordinates import (
-    transform_hand_coordinates,
-    validate_left_coordinate_mode,
-)
+from retargeting.coordinates import COORDINATE_FRAME
 
 
 HAND_SIDES = ("left", "right")
@@ -45,7 +42,6 @@ class TwoHandH5Dataset:
         frame_start: int = 0,
         frame_end: int | None = None,
         reset_on_gaps: bool = True,
-        left_coordinate_mode: str = "none",
         track_identity: bool = True,
         max_center_displacement: float = DEFAULT_MAX_CENTER_DISPLACEMENT,
         max_shape_rmse: float = DEFAULT_MAX_SHAPE_RMSE,
@@ -58,10 +54,6 @@ class TwoHandH5Dataset:
         self.track_identity = bool(track_identity)
         self.max_center_displacement = float(max_center_displacement)
         self.max_shape_rmse = float(max_shape_rmse)
-        self.left_coordinate_mode = validate_left_coordinate_mode(
-            left_coordinate_mode
-        )
-
         if self.receptive_field < 1:
             raise ValueError("receptive_field must be positive")
 
@@ -143,11 +135,6 @@ class TwoHandH5Dataset:
                 hand = ensure_hand25(
                     raw_points,
                     scale_factor=self.scale_factor,
-                )
-                hand = transform_hand_coordinates(
-                    hand,
-                    side=side,
-                    mode=self.left_coordinate_mode,
                 )
                 if not np.isfinite(hand).all():
                     raise ValueError(
@@ -253,6 +240,7 @@ class TwoHandH5ChunkedGenerator:
 
 def load_twohand_h5(
     path: str | Path,
+    require_aligned: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
     """Load and validate the supported two-hand H5 layouts."""
     h5_path = Path(path)
@@ -260,6 +248,16 @@ def load_twohand_h5(
         raise FileNotFoundError(f"H5 input was not found: {h5_path}")
 
     with h5py.File(h5_path, "r") as h5_file:
+        if require_aligned:
+            coordinate_frame = h5_file.attrs.get("coordinate_frame")
+            if isinstance(coordinate_frame, bytes):
+                coordinate_frame = coordinate_frame.decode("utf-8")
+            if coordinate_frame != COORDINATE_FRAME:
+                raise ValueError(
+                    "H5 input must be pre-aligned and declare "
+                    f"coordinate_frame={COORDINATE_FRAME!r}; "
+                    f"got {coordinate_frame!r}. Run the align_h5 command first."
+                )
         if all(key in h5_file for key in _SIDE_KEYS.values()):
             left = np.asarray(h5_file[_SIDE_KEYS["left"]][:])
             right = np.asarray(h5_file[_SIDE_KEYS["right"]][:])

@@ -40,7 +40,7 @@ from retargeting.config import (
     ROBOT_JOINTS,
     SOURCE_JOINTS,
 )
-from retargeting.coordinates import validate_left_coordinate_mode
+from retargeting.coordinates import COORDINATE_ALIGNMENT
 from retargeting.data import (
     HAND_SIDES,
     TwoHandH5ChunkedGenerator,
@@ -86,9 +86,6 @@ def run(args: argparse.Namespace) -> int:
     device = _resolve_device(args.device)
     checkpoint_dir = Path(args.checkpoint_root)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    left_coordinate_mode = validate_left_coordinate_mode(
-        args.left_coordinate_mode
-    )
     run_name = _resolve_run_name(args.run_name)
     logger = _setup_logging(
         checkpoint_dir / "logs" / "twohand_h5" / hand_brand / run_name / "training.log"
@@ -110,7 +107,6 @@ def run(args: argparse.Namespace) -> int:
         frame_start=0,
         frame_end=train_end,
         reset_on_gaps=True,
-        left_coordinate_mode=left_coordinate_mode,
     )
     val_dataset = TwoHandH5Dataset(
         h5_path,
@@ -119,7 +115,6 @@ def run(args: argparse.Namespace) -> int:
         frame_start=val_start,
         frame_end=frame_count,
         reset_on_gaps=True,
-        left_coordinate_mode=left_coordinate_mode,
     )
     if len(train_dataset) == 0:
         raise ValueError("Training split contains no complete hand windows")
@@ -133,7 +128,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"validation_raw_range=[{val_start}, {frame_count})")
     print(f"train_windows={len(train_dataset)}")
     print(f"validation_windows={len(val_dataset)}")
-    print(f"left_coordinate_mode={left_coordinate_mode}")
+    print(f"coordinate_alignment={COORDINATE_ALIGNMENT}")
     print(f"run_name={run_name}")
     print(f"train_side_counts={train_dataset.side_counts()}")
     print(f"validation_side_counts={val_dataset.side_counts()}")
@@ -236,7 +231,6 @@ def run(args: argparse.Namespace) -> int:
                 global_step=global_step,
                 logger=logger,
                 training=True,
-                coordinate_mode=left_coordinate_mode,
             )
 
             model.eval()
@@ -256,7 +250,6 @@ def run(args: argparse.Namespace) -> int:
                     global_step=global_step,
                     logger=logger,
                     training=False,
-                    coordinate_mode=left_coordinate_mode,
                 )
 
             val_total = val_stats["total"]
@@ -296,7 +289,6 @@ def run(args: argparse.Namespace) -> int:
                 "h5_path": h5_path,
                 "train_end": train_end,
                 "val_start": val_start,
-                "left_coordinate_mode": left_coordinate_mode,
                 "run_name": run_name,
                 "init_checkpoint": args.init_checkpoint,
             }
@@ -398,7 +390,6 @@ def _run_epoch(
     global_step,
     logger,
     training,
-    coordinate_mode,
 ):
     totals = {name: 0.0 for name in LOSS_NAMES}
     side_totals = {
@@ -439,7 +430,6 @@ def _run_epoch(
                     reg_criterion,
                     hand_fks[side],
                     logger,
-                    coordinate_mode=coordinate_mode,
                     hand_side=side,
                 )
             else:
@@ -560,7 +550,6 @@ def _masked_hand_loss(
     reg_criterion,
     hand_fk,
     logger,
-    coordinate_mode,
     hand_side,
 ):
     return hand_loss(
@@ -576,7 +565,6 @@ def _masked_hand_loss(
         hand_fk_model=hand_fk,
         logger=logger,
         loss_weight=loss_weight,
-        coordinate_mode=coordinate_mode,
         hand_side=hand_side,
     )
 
@@ -592,7 +580,6 @@ def _save_checkpoint(
     train_end,
     val_start,
     best_epoch,
-    left_coordinate_mode,
     run_name,
     init_checkpoint,
 ):
@@ -608,7 +595,7 @@ def _save_checkpoint(
             "train_end": train_end,
             "val_start": val_start,
             "hand_sides": HAND_SIDES,
-            "left_coordinate_mode": left_coordinate_mode,
+            "coordinate_alignment": COORDINATE_ALIGNMENT,
             "run_name": run_name,
             "init_checkpoint": (
                 str(init_checkpoint) if init_checkpoint is not None else None
@@ -624,6 +611,17 @@ def _load_checkpoint(model, checkpoint_path: Path, device):
             f"Initialization checkpoint was not found: {checkpoint_path}"
         )
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    alignment = (
+        checkpoint.get("coordinate_alignment")
+        if isinstance(checkpoint, dict)
+        else None
+    )
+    if alignment != COORDINATE_ALIGNMENT:
+        raise ValueError(
+            "Initialization checkpoint must declare "
+            f"coordinate_alignment={COORDINATE_ALIGNMENT!r}; got {alignment!r}. "
+            "Start from scratch or use a coordinate-aligned checkpoint."
+        )
     state_dict = (
         checkpoint["model_pos"]
         if isinstance(checkpoint, dict) and "model_pos" in checkpoint
@@ -720,7 +718,6 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--early-stopping-patience", type=int, default=20)
     parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--left-coordinate-mode", choices=("none", "mirror_x"), default="none")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.set_defaults(handler=run)
 

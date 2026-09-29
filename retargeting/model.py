@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 
 from retargeting.contracts import HAND_SIDES, validate_retarget_input
+from retargeting.coordinates import COORDINATE_ALIGNMENT
 
 
 def build_hand_model(model_kwargs: dict[str, Any]) -> nn.Module:
@@ -27,6 +28,7 @@ def load_hand_checkpoint(
 ) -> nn.Module:
     """Load a checkpoint saved by main_train.py into one hand model."""
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    _require_coordinate_alignment(checkpoint, checkpoint_path)
     state_dict = _state_dict_for_side(checkpoint, side)
     model.load_state_dict(state_dict, strict=strict)
     return model
@@ -97,6 +99,20 @@ def create_twohand_retargeter(
 
 def _to_single_batch_tensor(hand_data: np.ndarray, device: torch.device | str) -> torch.Tensor:
     return torch.from_numpy(hand_data.astype(np.float32)).unsqueeze(0).to(device)
+
+
+def _require_coordinate_alignment(checkpoint: object, checkpoint_path: str) -> None:
+    alignment = (
+        checkpoint.get("coordinate_alignment")
+        if isinstance(checkpoint, dict)
+        else None
+    )
+    if alignment != COORDINATE_ALIGNMENT:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} is not a coordinate-aligned model; "
+            f"expected coordinate_alignment={COORDINATE_ALIGNMENT!r}, "
+            f"got {alignment!r}. Train a new model from aligned H5 data."
+        )
 
 
 def _state_dict_for_side(checkpoint: dict, side: str | None) -> dict:

@@ -14,17 +14,10 @@ DEFAULT_CHECKPOINT = (
     / "models"
     / "twohand_h5"
     / "linker"
-    / "none_warmstart"
+    / "coord_aligned_100ep"
     / "model_best.pth"
 )
-DEFAULT_WARMSTART_CHECKPOINT = (
-    PROJECT_ROOT
-    / "checkpoint"
-    / "models"
-    / "thumb3"
-    / "linker"
-    / "model_final.pth"
-)
+DEFAULT_WARMSTART_CHECKPOINT = None
 
 
 @dataclass(frozen=True)

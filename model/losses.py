@@ -6,14 +6,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from retargeting.coordinates import transform_fk_positions
-
-
 def hand_loss(predicted_angle, source_3D, rb_dic, source_dic,
               pos_loss_function, vec_loss_function, col_loss_function,
               reg_loss_function=None, visualizer=None, hand_fk_model=None,
-              logger=None, loss_weight=None, coordinate_mode="none",
-              hand_side="right"):
+              logger=None, loss_weight=None, hand_side="right"):
     """Compute the six losses used by the current L21 training loop."""
     del vec_loss_function, reg_loss_function, visualizer, logger
     if hand_fk_model is None:
@@ -24,7 +20,6 @@ def hand_loss(predicted_angle, source_3D, rb_dic, source_dic,
     batch, _, joints, coords = source_3D.shape
     source_3D = source_3D.view(batch, joints, coords)
     _, _, robot = hand_fk_model.forward(predicted_angle)
-    robot = transform_fk_positions(robot, side=hand_side, mode=coordinate_mode)
     values = [
         vec_inter_loss(robot, source_3D, pos_loss_function, rb_dic, source_dic) * loss_weight[0],
         tip_pos_loss(robot, source_3D, pos_loss_function, rb_dic, source_dic) * loss_weight[1],
