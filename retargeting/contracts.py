@@ -6,10 +6,6 @@ from typing import Any
 
 import numpy as np
 
-#validate_retarget_input.py尚未完成对arms的验证
-
-
-
 HAND_SIDES = ("left", "right")
 ARM_SIDES = ("left", "right")
 
@@ -23,6 +19,7 @@ ACTION_ORDER = (
 RECEPTIVE_FIELD = 3 #time window length for retargeting model input
 HAND_KEYPOINTS = 25 #number of keypoints for each hand
 HAND_COORDS = 3 #维度
+ARM_KEYPOINTS = 3
 INPUT_KEY = "retarget_input"
 LEGACY_VISIONPRO_KEY = "vision_pro_data"
 
@@ -57,9 +54,36 @@ def validate_hand_input(
     return True
 
 
+def validate_arm_input(
+    arm_data: np.ndarray | None,
+    side: str,
+    allow_missing: bool = True,
+) -> bool:
+    """Validate one arm observation with shoulder/elbow/wrist keypoints."""
+    if side not in ARM_SIDES:
+        raise ValueError(f"Invalid arm side: {side}")
+
+    if arm_data is None:
+        if allow_missing:
+            return True
+        raise ValueError(f"{side}_arm is missing")
+
+    value = np.asarray(arm_data, dtype=np.float32)
+    expected_shape = (ARM_KEYPOINTS, HAND_COORDS)
+    if value.shape != expected_shape:
+        raise ValueError(f"{side}_arm shape must be {expected_shape}, got {value.shape}")
+    if not np.issubdtype(value.dtype, np.number):
+        raise TypeError(f"{side}_arm must contain numeric values")
+    if not np.isfinite(value).all():
+        raise ValueError(f"{side}_arm contains NaN or infinite values")
+    return True
+
+
 def validate_retarget_input(
     retarget_input: dict[str, Any],
     allow_missing_hands: bool = True,
+    allow_missing_arms: bool = True,
+    require_arms: bool = False,
 ) -> bool:
     """Validate the shared realtime/offline retargeting input structure."""
     if not isinstance(retarget_input, dict):
@@ -79,12 +103,20 @@ def validate_retarget_input(
             allow_missing=allow_missing_hands,
         )
 
-    if "arms" in retarget_input:
+    if "arms" not in retarget_input:
+        if require_arms:
+            raise KeyError("retarget_input must contain 'arms'")
+    else:
         if not isinstance(retarget_input["arms"], dict):
             raise TypeError("retarget_input['arms'] must be a dict")
         for side in ARM_SIDES:
             if side not in retarget_input["arms"]:
                 raise KeyError(f"retarget_input['arms'] missing '{side}'")
+            validate_arm_input(
+                retarget_input["arms"][side],
+                side,
+                allow_missing=allow_missing_arms,
+            )
 
     return True
 
@@ -94,6 +126,8 @@ def build_retarget_input(
     timestamp: float | None,
     left_hand: np.ndarray | None = None,
     right_hand: np.ndarray | None = None,
+    left_arm: np.ndarray | None = None,
+    right_arm: np.ndarray | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the canonical payload shared by all input sources."""
@@ -105,8 +139,8 @@ def build_retarget_input(
             "right": right_hand,
         },
         "arms": {
-            "left": None,
-            "right": None,
+            "left": left_arm,
+            "right": right_arm,
         },
     }
     if metadata:
@@ -153,14 +187,17 @@ def build_action(
     right_arm: np.ndarray | None,
     right_hand: np.ndarray | None,
 ) -> np.ndarray:
-    """Build the simulator action in left_arm, left_hand, right_arm, right_hand order."""
-    parts = (left_arm, left_hand, right_arm, right_hand)
-    valid_parts = [np.asarray(part, dtype=np.float32).reshape(-1) for part in parts if part is not None]
-
-    if not valid_parts:
-        raise ValueError("No valid action parts provided")
-
-    return np.concatenate(valid_parts, axis=0)
+    """Build the fixed 48D simulator action in canonical limb order."""
+    parts = (("left_arm", left_arm, 7), ("left_hand", left_hand, 17), ("right_arm", right_arm, 7), ("right_hand", right_hand, 17))
+    values = []
+    for name, part, size in parts:
+        if part is None:
+            raise ValueError(f"{name} is required for a fixed RobotCommand")
+        value = np.asarray(part, dtype=np.float32).reshape(-1)
+        if value.shape != (size,) or not np.isfinite(value).all():
+            raise ValueError(f"{name} must be finite with shape ({size},)")
+        values.append(value)
+    return np.concatenate(values, axis=0)
 
 
 def build_retarget_output(

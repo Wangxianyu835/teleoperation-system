@@ -1,0 +1,3 @@
+pybullet
+roboticstoolbox-python==1.4.2
+spatialmath-python==1.1.17

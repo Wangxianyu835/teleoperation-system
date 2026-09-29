@@ -1045,6 +1045,7 @@
       velocity="1" />
   </joint>
   <!-- 添加指尖关节,为固定关节 -->
+
   <!-- tip 大拇指 -->
   <joint
     name="thumb_tip"

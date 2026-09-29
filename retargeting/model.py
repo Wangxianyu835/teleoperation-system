@@ -128,3 +128,27 @@ def _state_dict_for_side(checkpoint: dict, side: str | None) -> dict:
         raise ValueError("Two-hand checkpoints require side='left' or side='right'")
 
     return checkpoint
+
+
+def __getattr__(name: str):
+    """Lazily expose the unified interface without introducing an import cycle."""
+    if name in {
+        "DexRetargetingRetargeter",
+        "HandCommand",
+        "HandRetargeter",
+        "PoseTransformerRetargeter",
+    }:
+        from retargeting.retargeter import (
+            DexRetargetingRetargeter,
+            HandCommand,
+            HandRetargeter,
+            PoseTransformerRetargeter,
+        )
+
+        return {
+            "DexRetargetingRetargeter": DexRetargetingRetargeter,
+            "HandCommand": HandCommand,
+            "HandRetargeter": HandRetargeter,
+            "PoseTransformerRetargeter": PoseTransformerRetargeter,
+        }[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -6,6 +6,7 @@ from retargeting.contracts import (
     HAND_KEYPOINTS,
     RECEPTIVE_FIELD,
     legacy_visionpro_to_window,
+    validate_arm_input,
     validate_retarget_input,
 )
 from retargeting.tracking import (
@@ -45,6 +46,27 @@ class InputAdapterTests(unittest.TestCase):
         legacy = np.zeros((25, RECEPTIVE_FIELD, 3), dtype=np.float32)
         normalized = legacy_visionpro_to_window(legacy)
         self.assertEqual(normalized.shape, (RECEPTIVE_FIELD, 25, 3))
+
+    def test_arm_contract_accepts_optional_frame_and_rejects_bad_shape(self):
+        self.assertTrue(validate_arm_input(None, "left"))
+
+        with self.assertRaisesRegex(ValueError, "left_arm shape"):
+            validate_arm_input(np.zeros((2, 3), dtype=np.float32), "left")
+
+    def test_realtime_contract_can_require_arms_container(self):
+        payload = {
+            "hands": {
+                "left": np.zeros((RECEPTIVE_FIELD, HAND_KEYPOINTS, 3), dtype=np.float32),
+                "right": None,
+            },
+        }
+
+        validate_retarget_input(payload)
+        with self.assertRaisesRegex(KeyError, "arms"):
+            validate_retarget_input(payload, require_arms=True)
+
+        payload["arms"] = {"left": None, "right": None}
+        self.assertTrue(validate_retarget_input(payload, require_arms=True))
 
     def test_identity_tracker_corrects_single_hand_label_switch(self):
         tracker = HandIdentityTracker()
