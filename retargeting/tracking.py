@@ -373,7 +373,11 @@ class HandWindowBuffer:
         为时序模型（如 LSTM 或 Transformer）提供连续多帧的上下文信息。
     """
 
-    def __init__(self, scale_factor: float = 1.0):
+    def __init__(
+        self,
+        scale_factor: float = 1.0,
+        receptive_field: int = RECEPTIVE_FIELD,
+    ):
         """
         初始化缓冲区。
 
@@ -381,9 +385,12 @@ class HandWindowBuffer:
             scale_factor: 应用于所有手部关键点的缩放系数
         """
         self.scale_factor = scale_factor
+        self.receptive_field = int(receptive_field)
+        if self.receptive_field < 1:
+            raise ValueError("receptive_field must be positive")
         # 为左右手分别创建固定长度的 deque，存储的是经过 ensure_hand25 转换后的数组
         self._buffers: dict[str, Deque[np.ndarray]] = {
-            side: deque(maxlen=RECEPTIVE_FIELD) for side in HAND_SIDES
+            side: deque(maxlen=self.receptive_field) for side in HAND_SIDES
         }
 
     def update(
@@ -408,13 +415,39 @@ class HandWindowBuffer:
             如果左右手都达到 RECEPTIVE_FIELD 帧，则返回 build_retarget_input 构建的字典；
             否则返回 None。
         """
-        # 对左右手分别处理：如果提供了关键点，则转换并添加到对应队列
         for side, points in (("left", left_hand), ("right", right_hand)):
             if points is not None:
                 self._buffers[side].append(
-                    ensure_hand25(points, scale_factor=self.scale_factor)
+                    ensure_hand25(
+                        points,
+                        scale_factor=self.scale_factor,
+                    )
                 )
 
+        return self._build_payload(timestamp, source, metadata)
+
+    def update_canonical(
+        self,
+        left_hand: np.ndarray | None = None,
+        right_hand: np.ndarray | None = None,
+        timestamp: float | None = None,
+        source: str = "unknown",
+        metadata: dict | None = None,
+    ) -> dict | None:
+        """Append already canonical (25-point, wrist-relative) hand frames."""
+        for side, points in (("left", left_hand), ("right", right_hand)):
+            if points is not None:
+                self._buffers[side].append(np.asarray(points, dtype=np.float32))
+
+        return self._build_payload(timestamp, source, metadata)
+
+    def _build_payload(
+        self,
+        timestamp: float | None,
+        source: str,
+        metadata: dict | None,
+    ) -> dict | None:
+        """Build the existing payload from the current canonical buffers."""
         # 尝试获取左右手的窗口（堆叠后的帧序列），若任一尚未凑够帧数则返回 None
         left_window = self._window_or_none("left")
         right_window = self._window_or_none("right")
@@ -450,7 +483,7 @@ class HandWindowBuffer:
         """
         buffer = self._buffers[side]
         # 若帧数不足，返回 None
-        if len(buffer) != RECEPTIVE_FIELD:
+        if len(buffer) != self.receptive_field:
             return None
         # 将 deque 中的元素按顺序堆叠成新的数组，并确保类型为 float32
         return np.stack(tuple(buffer), axis=0).astype(np.float32, copy=False)
