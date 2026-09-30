@@ -150,13 +150,32 @@ def main():
     # 自检：关掉 valid 门控后会误报多少？（证明门控必要）
     no_gate = detect_identity_swaps(L, R, LV, RV, use_valid_gate=False)
     has535 = any(s['frame'] == 535 and s['side'] == 'right' for s in no_gate)
-    ok_swap = (len(swaps) == 1 and swaps[0]['frame'] == 535
-               and swaps[0]['side'] == 'right'
-               and swaps[0]['other_lost'])
+    # [注意] 535 这个【参考特征帧】只存在于队友那份数据
+    #   （datasets/raw/retarget_twohand_153542.h5，557 帧）。
+    #   换成别的数据（如自己采集的 my_recording_angles.h5，809 帧）时，
+    #   不能因为"没有这一帧"就判 FAIL —— 那会让人误以为数据有问题。
+    #   因此只有【参考数据】才套用「必须命中 right[535]」这条断言。
+    is_ref = os.path.basename(args.file) == 'retarget_twohand_153542.h5'
+    if is_ref:
+        ref_ok = (len(swaps) == 1 and swaps[0]['frame'] == 535
+                  and swaps[0]['side'] == 'right'
+                  and swaps[0]['other_lost'])
+        ref_note = ('参考数据：right[535] 命中' if ref_ok
+                    else '参考数据：未命中 right[535]（疑似回归）')
+    else:
+        ref_ok = True
+        ref_note = (f'非参考数据（{os.path.basename(args.file)}），'
+                    f'跳过"必须命中 535"断言，本数据检出 {len(swaps)} 处')
+    # 通用判据（任何数据都成立）：valid 门控只会【减少】检出，不会凭空造出
+    gated = {(s['frame'], s['side']) for s in swaps}
+    ungated = {(s['frame'], s['side']) for s in no_gate}
+    ok_subset = gated.issubset(ungated)
     print(f'    自检 关闭 valid 门控 -> 误报 {len(no_gate)} 处'
           f'（其中含 535 吗: {has535}）；说明「另一侧同时消失」这个门控是必要的')
-    record('身份切换检测精确（只命中 right[535]，0 误报）', bool(ok_swap),
-           f'检出 {len(swaps)} 处；关掉 valid 门控会误报 {len(no_gate)} 处')
+    print(f'    门控后检出 {len(swaps)} 处，是否为未门控检出的子集: {ok_subset}')
+    record('身份切换检测（门控不增加误报 + 参考帧断言）',
+           bool(ref_ok and ok_subset),
+           f'{ref_note}；关掉 valid 门控会误报 {len(no_gate)} 处')
 
     part2(args, results, record, L, R, LV, RV, ts, bad_info, swaps)
     summary(results)

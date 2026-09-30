@@ -161,6 +161,20 @@ F:\simulation_platform\
 
 **（4）评估指标**（`utils/metrics.py`）对应论文：成功率 + 完成时间
 
+**（5）★ 三台机器人都能用同一份采集数据演示手部动作**（2026-09-30 实测，`p.DIRECT`）
+
+数据 = `datasets/raw/my_recording_angles.h5`（809 帧，摄像头采集 + 队友重定向输出）。
+
+| 机器人 | 可表达自由度 | 会动的映射关节 | 限位截断（左/右） | 稳定后跟踪误差 | 结论 |
+|---|---|---|---|---|---|
+| H1-2 | 12/17 | 24 | 4.4% / 6.5% | 0.0000 rad | PASS |
+| GR1-T2 | 11/17 | 22 | **0.0% / 0.0%** | 0.0000 rad | PASS |
+| G1 | 7/17 | 14 | 2.8% / 4.9% | 0.0000 rad | PASS |
+
+> 「会动」= 整段回放中该关节实际转过 ≥ 0.05 rad。三台机器人**没有一根卡死的关节**。
+> GR1-T2 的原装手行程最宽，L21 数据完全不需要截断，贴合度反而比 H1-2 更好。
+> 工具：`scripts/check_native_hand_motion.py`（量化）+ `scripts/render_hand_snapshots.py`（离屏出图）。
+
 ### 3.3 ⚠️ PyCharm 中有一个失效的运行配置
 
 `.idea/workspace.xml` 里注册了 4 个运行入口，其中 **`show_robot.py` 在本仓库中不存在**（可能已删除或只是计划）：
@@ -479,6 +493,7 @@ GitHub 用 **DataDome** 保护 `/signup` 等接口。响应头特征：`x-datado
 | 24 | **项目决策：先只做手部（不含手臂）**；新增 `scripts/verify_hand_pipeline.py` **一键验收**（5 项全 PASS）；重新评估队友问题清单（8 项 → **2 项需处理**）；补充「阶段限制声明」与「与论文差异表」（详见 OFFLINE_PIPELINE 8.8 / 8.9）|
 | 25 | 【2026-09-29】补全 **Apache-2.0 LICENSE 正文**（第三方模型资产再分发合规要求；正文取自本机某个 Python 包自带的副本，因未开代理下载不到 apache.org）|
 | 26 | 【2026-09-30】新增 **`docs/ENVIRONMENT_SETUP.md`**（环境配置与工具链备忘）；修复 `teleop/native_hand.py` 里残留的 `U+26A0 U+FE0F`（位于 docstring，潜伏雷），`check_gbk_safe.py --strict` 退出码归零 |
+| 28 | 【2026-09-30】**三台机器人演示打通（本轮真正的主任务）**：用户指出「文档收尾不重要，要让 GR1-T2 和 G1 也能用手部数据演示」。① 新增 `scripts/check_native_hand_motion.py` 逐关节实测运动量 → 三台全部 PASS（24/22/14 个关节都会动，稳定后跟踪误差 0.0000 rad，GR1-T2 限位截断 0.0%）；② 查出真正卡住演示的 bug —— `replay_hand_native.py --view hands` 用「整机包围盒」猜手的位置且**写死 yaw=135 / 距离 1.1 m**，而三台机器人手在世界里的方位不同（右手 x：H1-2 +0.36 / GR1-T2 **-0.19** / G1 +0.25），GR1-T2 的手在画面里只剩几个像素；已改为按【手部 AABB】取景 + 按「躯干 → 手」方位自动选 yaw，并在 `teleop/native_hand.py` 新增正式接口 `link_extent()`；③ 新增 `scripts/render_hand_snapshots.py` 用 `getCameraImage` 离屏出图（无需显示器），并内置「相邻快照像素差」自检 —— 该自检当场抓出我自己写的一个 bug：hold 排除写成「名字比索引」，导致手部关节被 500 力矩锁死、4 张快照全一样；④ README 增「三台机器人演示验收」表 + PROJECT_CONTEXT 3.2(5) |
 | 27 | 【2026-09-30】**文档可发现性收尾**：README 新增「📚 文档索引」、补齐目录结构（`scripts/` `datasets/` `native_hand.py` `filters.py`）、修正「`robots/` 未入库」的旧说法；本文件「附录：相关文件索引」与第 0 节开场白同步补上 ENVIRONMENT_SETUP；`.gitignore` 补 `tmp_*/` 并入库（此前只存在于工作区，队友 clone 后无效）|
 
 ### 8.2 已掌握的 Git 工作流
@@ -583,7 +598,11 @@ $env:PYTHONPATH = 'F:\simulation_platform\lib'   # 设置后重试
 | `F:\simulation_platform\docs\INTERFACE_CONTRACT.md` | 接口契约 A~H（队友对接必读）|
 | `F:\simulation_platform\docs\OFFLINE_PIPELINE.md` | 离线数据流水线（契约 G / H）|
 | `F:\simulation_platform\docs\TEAM_ONBOARDING.md` | 队友从零上手（约 30 分钟）|
-| `F:\simulation_platform\README.md` | 项目说明（会展示在 GitHub 首页）|
+| `F:\simulation_platform\README.md` | 项目说明（会展示在 GitHub 首页），含「三台机器人演示验收」实测表 |
+| `F:\simulation_platform\scripts\replay_hand_native.py` | ★ 原装手回放（**演示入口**；`--view hands` 按手部 AABB 自动取景）|
+| `F:\simulation_platform\scripts\check_native_hand_motion.py` | 逐关节实测运动量（三台机器人是否真的会动 + 是否卡死）|
+| `F:\simulation_platform\scripts\render_hand_snapshots.py` | 离屏渲染三台机器人手部快照（`getCameraImage`，无需显示器）|
+| `F:\simulation_platform\scripts\show_hands_all.py` | 三台机器人并排 + 同一份数据同步屈伸（答辩用）|
 | `F:\simulation_platform\NOTICE` | 第三方开源声明（TeleOpBench Apache-2.0 / LinkerHand SDK）|
 | `F:\simulation_platform\.gitignore` | 已排除 1.8GB 依赖与资产（`lib/` `linkerhand_sdk/` `.venv/` `tmp_*/` 等，放行 `datasets/`）|
 | `F:\simulation_platform\.gitattributes` | 把 `robots/**` 下的 `.stl` `.obj` `.usd` 等标记为 `binary`，防止 `autocrlf` 改坏模型 |

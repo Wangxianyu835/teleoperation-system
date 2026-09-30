@@ -77,9 +77,11 @@ simulation_platform/
 │   ├── native_hand.py       #   ★ L21 数据 → 机器人【原装手】降维映射
 │   └── filters.py           #   关节角平滑滤波
 │
-├── scripts/                 # 离线回放 / 验收工具（8 个）
+├── scripts/                 # 离线回放 / 验收工具（10 个）
 │   ├── replay_hand_native.py    # ★ 原装手回放（本项目主用）
 │   ├── show_hands_all.py        # ★ 三机器人并排同步屈伸（答辩用）
+│   ├── check_native_hand_motion.py  # ★ 逐关节实测"到底动了没、动了多少"
+│   ├── render_hand_snapshots.py # ★ 离屏渲染三台机器人手部快照（无需显示器）
 │   ├── replay_hand_on_robot.py  # 备用：把 l21 装到机器人腕部
 │   ├── replay_hand_angles.py    # l21 直接回放
 │   ├── replay_actions.py        # 契约 H 动作序列回放
@@ -185,8 +187,16 @@ python scripts/replay_hand_native.py --robot h1_2   --hand both --render
 python scripts/replay_hand_native.py --robot gr1_t2 --hand both --render
 python scripts/replay_hand_native.py --robot g1     --hand both --render
 
-# 演示用：整机视角 + 无限循环（相机自动框住整个机器人）
-python scripts/replay_hand_native.py --robot h1_2 --hand both --render --view full --loop 0
+# ★ 演示推荐：手部特写 + 无限循环（三台机器人都能演，实测通过）
+#   单侧特写最清楚：能看清每根手指的关节在屈伸
+python scripts/replay_hand_native.py --robot gr1_t2 --hand right --render --view hands --loop 0
+python scripts/replay_hand_native.py --robot g1     --hand right --render --view hands --loop 0
+python scripts/replay_hand_native.py --robot h1_2   --hand right --render --view hands --loop 0
+#   想两只手同框（相机自动拉到 0.5~0.7 m，两手左右并排）
+python scripts/replay_hand_native.py --robot gr1_t2 --hand both --render --view hands --loop 0
+#   --view hands 按【手部 AABB】自动取景，并按「躯干 -> 手」方位自动选 yaw
+#   三台机器人的手在世界里的位置完全不同（右手 x：H1-2 +0.36 / GR1-T2 -0.19 / G1 +0.25），
+#   早期版本写死 yaw=135 + 距离 1.1 m，GR1-T2 的手在画面里只剩几个像素（已修）
 #   --view full(默认,整机) / front(正面) / side(侧面) / hands(手部特写)
 #   --loop 0 = 无限循环；--loop 3 = 播 3 遍
 
@@ -214,6 +224,28 @@ python scripts/verify_hand_pipeline.py
 
 > ⚠️ 这是**有损**映射（丢弃 `*_mcp_roll` 侧摆等原装手没有的自由度），
 > 详情与必须声明的限制见 `docs/OFFLINE_PIPELINE.md` 第 8.11 节。
+
+### 三台机器人演示验收（2026-09-30 实测，同一份采集数据）
+
+数据 = `datasets/raw/my_recording_angles.h5`（809 帧，摄像头采集 + 重定向输出）。
+
+| 机器人 | 可表达 | 会动的映射关节 | 限位截断 | 稳定后跟踪误差 | 结论 |
+|---|---|---|---|---|---|
+| H1-2 | 12/17 | 24（左右各 12） | 4.4% / 6.5% | 0.0000 rad | PASS |
+| GR1-T2 | 11/17 | 22（左右各 11） | **0.0% / 0.0%** | 0.0000 rad | PASS |
+| G1 | 7/17 | 14（左右各 7） | 2.8% / 4.9% | 0.0000 rad | PASS |
+
+> GR1-T2 的行程最宽，L21 数据**一点都不用截断**，是三者里贴合度最好的。
+> 「会动」判据：该关节整段回放中实际转过 ≥ 0.05 rad（肉眼可见）。
+
+```bash
+# 量化验收：逐关节测"实际转了多少弧度"，报告有没有卡死的关节
+python scripts/check_native_hand_motion.py --file datasets/raw/my_recording_angles.h5
+
+# 离屏出图（不需要显示器）：三台机器人的原装手快照条带 -> outputs/hand_snapshots/
+python scripts/render_hand_snapshots.py --file datasets/raw/my_recording_angles.h5
+python scripts/render_hand_snapshots.py --robots gr1_t2 g1 --n 5 --hand left
+```
 
 ### 离线流水线三方分工
 

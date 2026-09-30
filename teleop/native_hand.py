@@ -149,6 +149,34 @@ def build_mapping(robot_type, side, joint_ranges):
     return out
 
 
+def link_extent(robot_id, link_ids, client):
+    """合并若干 link 的 AABB -> (中心, 各轴边长向量)；无有效 link 时返回 (None, None)
+
+    用途：给「手部特写」相机算目标点与距离。
+    [注意] 必须用 AABB，不能用关节原点 —— 关节原点只是 link 坐标系原点，
+    手指网格可能偏离好几厘米。而且三台机器人的手在【世界】里的方位
+    完全不同（实测右手：H1-2 x=+0.36 / GR1-T2 x=-0.19 / G1 x=+0.25），
+    用固定 yaw 的相机会把镜头塞进 GR1-T2 的躯干内部，只能拍到面片背面。
+
+    返回 size 用【向量】而不是标量：`--hand both` 时两只手合起来是一个
+    横长条（实测 GR1-T2 宽 0.55 m），用最大边长会算错相机距离，
+    用对角线长度 |size| 才是稳的。
+    """
+    import pybullet as p
+    lo = np.array([np.inf, np.inf, np.inf])
+    hi = np.array([-np.inf, -np.inf, -np.inf])
+    for i in link_ids:
+        try:
+            a, b = p.getAABB(robot_id, i, physicsClientId=client)
+        except p.error:
+            continue
+        lo = np.minimum(lo, np.asarray(a, dtype=float))
+        hi = np.maximum(hi, np.asarray(b, dtype=float))
+    if not np.isfinite(lo).all():
+        return None, None
+    return (lo + hi) / 2.0, (hi - lo)
+
+
 def dropped_dims(robot_type, side, mapping):
     """返回被丢弃的数据维度（原装手没有对应自由度）"""
     del side

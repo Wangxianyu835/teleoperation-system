@@ -41,6 +41,22 @@ H1-2 是正的（`[0.000, 1.700]`）。本脚本用
 ----
     python scripts/replay_hand_native.py --robot h1_2 --hand both --render
     python scripts/replay_hand_native.py --robot h1_2 --hand both --report
+
+三台机器人同一份数据都能演（实测 2026-09-30 全部 PASS）：
+    # 自己采集的数据（809 帧）
+    python scripts/replay_hand_native.py --robot gr1_t2 --hand right --render \
+        --view hands --file datasets/raw/my_recording_angles.h5
+    python scripts/replay_hand_native.py --robot g1     --hand right --render \
+        --view hands --file datasets/raw/my_recording_angles.h5
+    python scripts/replay_hand_native.py --robot h1_2   --hand right --render \
+        --view hands --file datasets/raw/my_recording_angles.h5
+
+    --view hands 会按【手部 AABB】自动取景并选相机方位；
+    三台机器人的手在世界里的位置完全不同（右手 x：H1-2 +0.36 /
+    GR1-T2 -0.19 / G1 +0.25），写死 yaw 会拍不到手。
+
+量化依据（scripts/check_native_hand_motion.py）+ 出图
+（scripts/render_hand_snapshots.py）见 README「三台机器人演示」。
 """
 import argparse
 import os
@@ -66,7 +82,8 @@ from teleop.filters import (  # noqa: E402
 # 映射表与工具统一放在 teleop/native_hand.py（正式接口，可被其它代码复用）
 from teleop.native_hand import (  # noqa: E402
     DIM_NAMES, N_MOVABLE,
-    build_mapping, coverage, dropped_dims, map_frame, read_joint_ranges,
+    build_mapping, coverage, dropped_dims, link_extent, map_frame,
+    read_joint_ranges,
 )
 
 
@@ -105,12 +122,13 @@ def compute_robot_extent(p, robot_id, cid):
     return (lo + hi) / 2.0, float(np.max(hi - lo)), float(hi[2])
 
 
-def setup_camera(p, view, robot_id, cid, hand_pose=None):
+def setup_camera(p, view, robot_id, cid, hand_pose=None, hand_size=None):
     """按 --view 设置相机；full/front/side 都自动框住整机
 
     Args:
         view: 'full' | 'front' | 'side' | 'hands'
-        hand_pose: 'hands' 视图用的目标点（手的世界坐标）
+        hand_pose: 'hands' 视图的目标点（手部 AABB 中心的世界坐标）
+        hand_size: 手部 AABB 的【边长向量】，用来算特写距离
 
     Returns:
         (target, 说明字符串)
@@ -121,12 +139,36 @@ def setup_camera(p, view, robot_id, cid, hand_pose=None):
     auto = max(1.2, size * 1.6 / (2.0 * np.tan(np.radians(fov_v / 2.0))))
 
     if view == 'hands':
-        tgt = list(hand_pose) if hand_pose else [ctr[0], ctr[1], top * 0.85]
-        p.resetDebugVisualizerCamera(cameraDistance=1.1, cameraYaw=135,
-                                     cameraPitch=-15,
+        if hand_pose is not None and hand_size is not None:
+            tgt = [float(v) for v in hand_pose]
+            # 距离按【手部 AABB 的对角线】算：单手约 0.2 m -> 0.35 m；
+            # --hand both 时两手合起来是横长条（实测 GR1-T2 宽 0.55 m）
+            # -> 自动拉到约 0.7 m，两只手都在画面里。
+            # 固定 1.1 m 会把手指拍成一小团，肉眼看不出在动。
+            diag = float(np.linalg.norm(np.asarray(hand_size, dtype=float)))
+            dist = round(max(0.35, diag * 1.2), 2)
+            # 也绝不能固定 yaw：三台机器人的手在世界里的方位不同
+            # （H1-2 右手 x=+0.36 / GR1-T2 右手 x=-0.19 / G1 右手 x=+0.25），
+            # 固定 yaw=135 会把相机塞进 GR1-T2 的躯干内部 -> 只能拍到面片背面
+            ux, uy = tgt[0] - ctr[0], tgt[1] - ctr[1]
+            if (ux * ux + uy * uy) ** 0.5 < 0.08:
+                # 退化情形（实测 GR1-T2 --hand both：两手中点几乎落在躯干
+                # 中心上方 -> 会算出 yaw=180，相机绕到背后，什么都看不见）。
+                # 改为从机器人的【前方】看两只手：手一般比躯干中心更靠前。
+                ux, uy = 0.0, (-1.0 if tgt[1] < ctr[1] else 1.0)
+            yaw = float(np.degrees(np.arctan2(uy, ux)))
+            desc = (f'手部特写（手部 AABB 尺寸 '
+                    f'{np.round(np.asarray(hand_size), 2)} m，'
+                    f'自动距离 {dist:.2f} m，yaw={yaw:.0f}）')
+        else:
+            tgt = [ctr[0], ctr[1], top * 0.85]
+            dist, yaw = 1.1, 135.0
+            desc = '手部特写（未取到手部几何，退回整机估算位置）'
+        p.resetDebugVisualizerCamera(cameraDistance=dist, cameraYaw=yaw,
+                                     cameraPitch=-12,
                                      cameraTargetPosition=tgt,
                                      physicsClientId=cid)
-        return tgt, '手部特写'
+        return tgt, desc
 
     yaw = {'full': 135.0, 'front': 0.0, 'side': 90.0}[view]
     tgt = [ctr[0], ctr[1], ctr[2]]
@@ -146,7 +188,9 @@ def main():
     ap = argparse.ArgumentParser(
         description='用机器人【原装的手】回放队友数据（降维映射）')
     ap.add_argument('--file', default=os.path.join(
-        ROOT, 'datasets', 'raw', 'retarget_twohand_153542.h5'))
+        ROOT, 'datasets', 'raw', 'retarget_twohand_153542.h5'),
+        help='数据文件（默认 = 队友那份重定向输出 557 帧；'
+             '自己采集的数据用 datasets/raw/my_recording_angles.h5，809 帧）')
     ap.add_argument('--robot', default='h1_2',
                     choices=['h1_2', 'gr1_t2', 'g1'])
     ap.add_argument('--hand', default='both',
@@ -246,11 +290,14 @@ def main():
         print('  （--report 模式：未启动回放）')
         return
 
-    # ---- 相机：自动框住【整机】----
+    # ---- 相机：自动框住【整机】；--view hands 时按【手部 AABB】取景 ----
     if args.render:
-        ctr, _size, top = compute_robot_extent(p, robot_id, cid)
-        hand_target = [float(ctr[0]), float(ctr[1]), float(top * 0.85)]
-        _tgtl, desc = setup_camera(p, args.view, robot_id, cid, hand_target)
+        hand_links = sorted({names[jn]
+                             for _m, _a, _v, names in plans.values()
+                             for _d, jn, *_ in _m if jn in names})
+        hand_ctr, hand_size = link_extent(robot_id, hand_links, cid)
+        _tgtl, desc = setup_camera(p, args.view, robot_id, cid,
+                                   hand_ctr, hand_size)
         print()
         print(f'  相机视角：{desc}')
         print('  鼠标：左键旋转 / 右键平移 / 滚轮缩放')
