@@ -2,16 +2,20 @@
 
 > **用途**：新开一个 AI 对话时，先让它读本文件，它就能立刻了解项目全貌、环境陷阱和历史决策。
 > **文件位置**：`F:\simulation_platform\docs\PROJECT_CONTEXT.md`
-> **最后更新**：2026-09-12
+> **最后更新**：2026-09-30
 
 ---
 
 ## 0. 给 AI 的第一段话（复制这段给新对话）
 
 ```
-请先完整阅读 F:\simulation_platform\docs\PROJECT_CONTEXT.md，
-这是本项目的交接文档，包含项目背景、技术栈、运行环境陷阱、与论文的差距清单。
-读完后再开始工作。
+请先读这两个文件，再开始工作：
+  F:\simulation_platform\docs\PROJECT_CONTEXT.md   （项目背景、技术栈、决策历史）
+  F:\simulation_platform\docs\ENVIRONMENT_SETUP.md （环境配置、工具链、踩过的坑）
+
+关键前提：项目用 E:\python3.11.7\python.exe 运行（不是项目里的 .venv，那是空壳）；
+.py 文件禁止出现非 GBK 字符（提交前跑 python scripts/check_gbk_safe.py）；
+git 走 SSH（不需要代理），看 GitHub 网页要开代理。
 ```
 
 ---
@@ -473,6 +477,9 @@ GitHub 用 **DataDome** 保护 `/signup` 等接口。响应头特征：`x-datado
 | 22 | **✅ 手部链路视觉验证通过** —— GUI 回放肉眼确认「四指大幅屈伸 / 拇指基本不动 / 向掌心弯曲」，与预测完全一致，坐实映射与型号判断（详见第 15.8 节）|
 | 23 | **交付平滑滤波模块**（`teleop/filters.py`）+ **两处重要修正**：① 34 个"跳变"其实是真实运动（非噪声）② 发现 3 个「整帧异常」坏帧且 `*_valid` 漏标；新增 `scripts/check_gbk_safe.py`（详见第 16 节）|
 | 24 | **项目决策：先只做手部（不含手臂）**；新增 `scripts/verify_hand_pipeline.py` **一键验收**（5 项全 PASS）；重新评估队友问题清单（8 项 → **2 项需处理**）；补充「阶段限制声明」与「与论文差异表」（详见 OFFLINE_PIPELINE 8.8 / 8.9）|
+| 25 | 【2026-09-29】补全 **Apache-2.0 LICENSE 正文**（第三方模型资产再分发合规要求；正文取自本机某个 Python 包自带的副本，因未开代理下载不到 apache.org）|
+| 26 | 【2026-09-30】新增 **`docs/ENVIRONMENT_SETUP.md`**（环境配置与工具链备忘）；修复 `teleop/native_hand.py` 里残留的 `U+26A0 U+FE0F`（位于 docstring，潜伏雷），`check_gbk_safe.py --strict` 退出码归零 |
+| 27 | 【2026-09-30】**文档可发现性收尾**：README 新增「📚 文档索引」、补齐目录结构（`scripts/` `datasets/` `native_hand.py` `filters.py`）、修正「`robots/` 未入库」的旧说法；本文件「附录：相关文件索引」与第 0 节开场白同步补上 ENVIRONMENT_SETUP；`.gitignore` 补 `tmp_*/` 并入库（此前只存在于工作区，队友 clone 后无效）|
 
 ### 8.2 已掌握的 Git 工作流
 
@@ -572,9 +579,14 @@ $env:PYTHONPATH = 'F:\simulation_platform\lib'   # 设置后重试
 | 文件 | 说明 |
 |---|---|
 | `F:\simulation_platform\docs\PROJECT_CONTEXT.md` | **本文件**（AI 交接文档）|
+| `F:\simulation_platform\docs\ENVIRONMENT_SETUP.md` | **环境配置与工具链备忘**（解释器 / SSH / 代理 / E 盘权限 / GBK 约定）|
+| `F:\simulation_platform\docs\INTERFACE_CONTRACT.md` | 接口契约 A~H（队友对接必读）|
+| `F:\simulation_platform\docs\OFFLINE_PIPELINE.md` | 离线数据流水线（契约 G / H）|
+| `F:\simulation_platform\docs\TEAM_ONBOARDING.md` | 队友从零上手（约 30 分钟）|
 | `F:\simulation_platform\README.md` | 项目说明（会展示在 GitHub 首页）|
 | `F:\simulation_platform\NOTICE` | 第三方开源声明（TeleOpBench Apache-2.0 / LinkerHand SDK）|
-| `F:\simulation_platform\.gitignore` | 已排除 1.8GB 依赖与资产 |
+| `F:\simulation_platform\.gitignore` | 已排除 1.8GB 依赖与资产（`lib/` `linkerhand_sdk/` `.venv/` `tmp_*/` 等，放行 `datasets/`）|
+| `F:\simulation_platform\.gitattributes` | 把 `robots/**` 下的 `.stl` `.obj` `.usd` 等标记为 `binary`，防止 `autocrlf` 改坏模型 |
 | `F:\26年大创 双臂遥操作平台\2025TeleOpBench.pdf` | 论文原文（13 页）|
 | `F:\26年大创 双臂遥操作平台\TeleOpBench-main (1)源代码\` | 论文官方参考源码（1.4 GB）|
 | `E:\ssh\id_ed25519` | ⚠️ **SSH 私钥（唯一一份，务必备份）** |
@@ -597,6 +609,7 @@ $env:PYTHONPATH = 'F:\simulation_platform\lib'   # 设置后重试
 | **6. 环境陷阱** | 踩到新坑并解决后 |
 | **7. 与论文的差距清单** | 补齐了某个接口/组件后（把 ❌ 改成 ✅）|
 | **8.1 时间线** | **每次对话结束时追加一行** |
+| **附：相关文件索引** | 新增 / 重命名 / 删除任何 `docs/` 文件或根目录配置时 |
 | **9. 待办清单** | 完成一项就勾掉；有新任务就加上 |
 | **10. 常用命令速查** | 发现新的常用命令时 |
 

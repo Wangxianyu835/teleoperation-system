@@ -73,15 +73,41 @@ simulation_platform/
 │   ├── vr_interface.py      #   Vision Pro 手腕追踪 → 关节角度
 │   ├── hand_interface.py    #   灵巧手驱动接口
 │   ├── camera_interface.py  #   摄像头采集
-│   └── pipeline_data.py     #   流水线数据结构
+│   ├── pipeline_data.py     #   流水线数据结构
+│   ├── native_hand.py       #   ★ L21 数据 → 机器人【原装手】降维映射
+│   └── filters.py           #   关节角平滑滤波
+│
+├── scripts/                 # 离线回放 / 验收工具（8 个）
+│   ├── replay_hand_native.py    # ★ 原装手回放（本项目主用）
+│   ├── show_hands_all.py        # ★ 三机器人并排同步屈伸（答辩用）
+│   ├── replay_hand_on_robot.py  # 备用：把 l21 装到机器人腕部
+│   ├── replay_hand_angles.py    # l21 直接回放
+│   ├── replay_actions.py        # 契约 H 动作序列回放
+│   ├── make_sample_data.py      # 生成契约 G/H 示例数据
+│   ├── verify_hand_pipeline.py  # 手部链路一键验收
+│   └── check_gbk_safe.py        # 提交前 GBK 安全检查
 │
 ├── utils/
 │   └── metrics.py           # 评估指标（成功率 / 完成时间）
 │
-├── robots/                  # 机器人模型资产（不入库，见第六节）
+├── docs/                    # 文档（见下方「文档索引」）
+├── datasets/                # 数据交换目录（已入库，契约 G/H 靠它传递）
+│   ├── raw/                 #   队友采集的原始手部数据
+│   └── samples/             #   示例数据（可直接跑回放）
+├── robots/from_teleopbench/ # ★ 机器人模型资产（已入库，见第六节）
 ├── lib/                     # 本地依赖目录（不入库）
 └── linkerhand_sdk/          # 第三方 SDK（不入库，见第六节）
 ```
+
+### 📚 文档索引（`docs/`）
+
+| 文档 | 内容 | 什么时候看 |
+|------|------|-----------|
+| [`docs/ENVIRONMENT_SETUP.md`](docs/ENVIRONMENT_SETUP.md) | **环境配置与工具链备忘**（解释器 / SSH / 代理 / E 盘权限 / GBK 编码约定）| ★ 换机器、重装、报环境错时 |
+| [`docs/TEAM_ONBOARDING.md`](docs/TEAM_ONBOARDING.md) | 队友从零上手（约 30 分钟）| 新队友加入 |
+| [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md) | 接口契约 A~H（动作 / 观测 / 控制器 / HDF5）| 三方对接前必读 |
+| [`docs/OFFLINE_PIPELINE.md`](docs/OFFLINE_PIPELINE.md) | 离线数据流水线（契约 G / H）| 跑离线回放 |
+| [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) | 项目背景 / 决策历史 / 待办清单 | 了解「为什么这么做」|
 
 ---
 
@@ -102,6 +128,11 @@ scipy>=1.10.0
 ```bash
 pip install -r requirements.txt
 ```
+
+> ⚠️ **开发机上的实际跑法**：用的是全局 Python `E:\python3.11.7\python.exe`，
+> **不是**仓库里的 `.venv`（那是个空壳，只有 pip/Pillow/pypdf）。
+> 环境细节、踩过的坑、常用命令速查见
+> [`docs/ENVIRONMENT_SETUP.md`](docs/ENVIRONMENT_SETUP.md)。
 
 ---
 
@@ -201,7 +232,9 @@ python scripts/verify_hand_pipeline.py
 若仍报错，说明本地缺少 `linkerhand_sdk`，按第六节获取即可。
 
 **Q：克隆后运行报找不到 URDF？**
-`robots/` 目录未入库，需按第六节自行获取模型资产。
+代码实际使用的 `robots/from_teleopbench/`（181 MB）**已随仓库入库**（普通 Git，非 LFS），
+`git clone` 完成即自动获得，**无需额外下载**（见第六节）。
+若本地缺失，说明 clone 不完整（浅克隆 / 中途中断），重新 clone 即可。
 
 ---
 
