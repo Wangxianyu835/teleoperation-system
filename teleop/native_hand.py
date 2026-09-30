@@ -170,7 +170,7 @@ def map_frame(row, mapping, limit_mode='clamp'):
                     用 L21 的限位把比例线性映射到原装手的限位：
                     保运动形状、幅度等比缩放，不会卡住。
                     代价：改变了角度语义，报告里必须声明。
-                    ⚠️ 实测触发原因：L21 拇指 cmc_pitch 行程 0~1.0，
+                    注意 实测触发原因：L21 拇指 cmc_pitch 行程 0~1.0，
                        而 H1-2 原装手 thumb_proximal_pitch 只有 -0.1~0.6
                        -> 右撇子有 50% 的帧被截断。
 
