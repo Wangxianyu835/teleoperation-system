@@ -17,6 +17,10 @@
     python scripts/show_hands_all.py --render --view front --loop 0
     python scripts/show_hands_all.py --render --speed 0.5
     python scripts/show_hands_all.py                 # 无头（只验证能跑）
+
+注意 不带 --render 就是【无头模式】，屏幕上不会出现任何窗口（只打印日志）。
+     PyCharm 里想"右键一下就看到画面"：用仓库根目录的
+     demo_hands_three_robots.py（已内置 --render --loop 0 并自动挑数据）。
 """
 import argparse
 import os

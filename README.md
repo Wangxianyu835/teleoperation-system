@@ -51,6 +51,7 @@ LinkerHand 数据手套 ───────────┘
 simulation_platform/
 ├── main.py                  # 主入口（任务选择 / demo / benchmark）
 ├── demo_teleop.py           # 无控制器演示模式
+├── demo_hands_three_robots.py  # ★ 一键入口：三台机器人手部演示（PyCharm 右键 Run）
 ├── show_all.py              # 并排展示 H1-2 / GR1-T2 / G1 三种机器人
 ├── show_hand.py             # LinkerHand 灵巧手独立展示
 ├── test_camera.py           # 摄像头采集测试
@@ -135,6 +136,12 @@ pip install -r requirements.txt
 > **不是**仓库里的 `.venv`（那是个空壳，只有 pip/Pillow/pypdf）。
 > 环境细节、踩过的坑、常用命令速查见
 > [`docs/ENVIRONMENT_SETUP.md`](docs/ENVIRONMENT_SETUP.md)。
+>
+> PyCharm 里跑不起来（`ModuleNotFoundError: No module named 'pybullet'`）=
+> 项目解释器选到了空壳 `.venv`：`Settings > Project > Python Interpreter`
+> 换成 `E:\python3.11.7\python.exe` 即可。
+> 另外 `demo_hands_three_robots.py` 自带兜底：解释器缺依赖时会自动改用
+> 仓库内 `lib/`（`pip install -r requirements.txt -t lib` 的产物，不入库）。
 
 ---
 
@@ -151,6 +158,7 @@ python main.py --benchmark --trials 3       # 对 Level 1 任务做基准测试
 python main.py --task pushcube --no-render  # 无头模式
 python main.py --robot gr1_t2 --task pickcube   # 切换机器人
 
+python demo_hands_three_robots.py           # ★ 一键：三台机器人手部演示（PyCharm：右键本文件 -> Run）
 python show_all.py                          # 并排展示三种机器人
 python show_hand.py                         # 展示 LinkerHand 灵巧手
 python test_camera.py                       # 测试摄像头
@@ -199,10 +207,19 @@ python scripts/replay_hand_native.py --robot gr1_t2 --hand both --render --view 
 #   早期版本写死 yaw=135 + 距离 1.1 m，GR1-T2 的手在画面里只剩几个像素（已修）
 #   --view full(默认,整机) / front(正面) / side(侧面) / hands(手部特写)
 #   --loop 0 = 无限循环；--loop 3 = 播 3 遍
+#   --file 指定数据：默认队友数据（557 帧）；自己的采集加
+#          --file datasets/raw/my_recording_angles.h5（809 帧）
 
 # ★ 答辩/报告用：三台机器人并排，各自原装手按同一份数据同步屈伸
 python scripts/show_hands_all.py --render --loop 0
 python scripts/show_hands_all.py --render --view front --loop 0
+
+# ★ PyCharm 用户看这里：不用记上面这串参数，直接右键仓库根目录的
+#   demo_hands_three_robots.py -> Run，默认就是上面第一条的效果
+#   （已内置 --render --loop 0，并自动挑 datasets/raw 下已采好的数据）
+#   想换视角/速度就在 Run Configuration 里加参数，例如 --view front
+python demo_hands_three_robots.py
+python demo_hands_three_robots.py --view front
 
 # 只看映射报告（覆盖率 / 丢弃哪些自由度 / 每个关节的符号方向）
 python scripts/replay_hand_native.py --robot h1_2 --hand both --report
@@ -245,6 +262,14 @@ python scripts/check_native_hand_motion.py --file datasets/raw/my_recording_angl
 # 离屏出图（不需要显示器）：三台机器人的原装手快照条带 -> outputs/hand_snapshots/
 python scripts/render_hand_snapshots.py --file datasets/raw/my_recording_angles.h5
 python scripts/render_hand_snapshots.py --robots gr1_t2 g1 --n 5 --hand left
+
+# 出视频：每台一段 MP4；加 --stacked 再拼成【三台同框、帧同步】一段
+python scripts/render_hand_snapshots.py --n 6 --video --stacked --file datasets/raw/my_recording_angles.h5
+#   --video     相机固定（按取样帧姿态【并集】取景，张开/握紧都不出画）
+#   --stacked   把三台按帧横向拼成 three_robots.mp4（第 k 帧 = 同一数据帧）
+#   --no-paint  不刷浅灰：H1-2 网格材质在 getCameraImage 下是【纯黑剪影】，
+#               默认刷成浅灰才看得清手指（只改外观，不动物理）
+#   自检：视频抽「最张开 / 中 / 最握紧」三帧算像素平均差，接近 0 会告警
 ```
 
 ### 离线流水线三方分工
