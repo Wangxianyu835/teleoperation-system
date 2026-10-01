@@ -111,7 +111,7 @@ training_time=11.848s
 ```
 
 > checkpoint 路径规则：`<checkpoint-root>/models/twohand_h5/<robot>/<run-name>/model_best.pth`。
-> 训练用 CPU 也很快（示例数据 3 轮约 12 秒），GPU 不是必需条件。
+> 训练用 CPU 也很快（示例数据 3 轮约 7 ~ 12 秒，实测 6.97s / 11.85s），GPU 不是必需条件。
 
 ### 3.3 导出角度
 
@@ -181,9 +181,9 @@ python scripts/verify_hand_pipeline.py       # 默认用 datasets/raw/retarget_t
 | 项目 | 命令 | 结果 |
 |---|---|---|
 | 全量测试 | `python -m pytest tests -q` | **40 passed, 3 skipped**（跳过的是缺 URDF 的机械臂用例）|
-| 手部流水线端到端 | 第 3 节五步 | 全链路跑通（对齐 240 帧 → 训练 3 轮 11.8s → 导出 240×18 → 回放三台机器人）|
+| 手部流水线端到端 | 第 3 节五步 | 全链路跑通（对齐 240 帧 → 训练 3 轮 6.97s / 11.85s → 导出 240×18 → 回放三台机器人）|
 | 队友数据回归验收 | `python scripts/verify_hand_pipeline.py` | **7 / 7 PASS** |
-| 原装手运动量 | `python scripts/check_native_hand_motion.py --file <角度.h5> --quiet` | H1-2 24 / GR1-T2 22 / G1 14 个关节会动，0 卡死 |
+| 原装手运动量 | `python scripts/check_native_hand_motion.py --file <角度.h5> --quiet` | **「没动」= 0，三台全 `[PASS]`**；可映射关节 H1-2 24 / GR1-T2 22 / G1 14。会动数随数据波动：自造 240 帧示例 = 24/22/14 全动；队友 557 帧真实数据 = 22（+2 项「幅度偏小」）/ 22 / 14 |
 | 三台机器人回放 | `python scripts/show_hands_all.py --file <角度.h5>` | 240 帧完成，退出码 0 |
 | 一键脚本 | `python scripts/run_retargeting_pipeline.py` | **7/7 PASS，exit 0**（本轮新脚本复查，产物在 `tmp_motion/pipeline/`）|
 | 训练前后对比图 | `python scripts/compare_training_hand_pose.py --input <对齐.h5> --frame 120 --before-checkpoint <ckpt> --after-checkpoint <ckpt> --device cpu` | 生成 690 KB `compare_hand_pose.png`，exit 0（确认该队友脚本可正常导入并运行）|
@@ -261,5 +261,73 @@ python scripts/verify_hand_pipeline.py       # 默认用 datasets/raw/retarget_t
 | 6 | `scripts/run_retargeting_pipeline.py` | 原链路要手敲 5 条命令、checkpoint 路径还得自己拼 | 新增一键脚本（自带 h5py 独立复核，不依赖 `retargeting` 包）| 本机 `python scripts/run_retargeting_pipeline.py` → **7/7 PASS, exit 0** |
 
 > 机械臂链路（`dual_teleop` 等）本身**未改逻辑**，只处理了「缺资产/缺依赖不应拖垮仓库」这一层。
+
+---
+
+## 10. 自检清单（★ 不信任任何人，自己复现）
+
+原则：**每一步都看「退出码 + 不变量」，不看漂亮输出**。
+所有命令都在项目根目录执行，`python` 均指 `E:\python3.11.7\python.exe`（§2.1）。
+
+### 10.1 七条命令（按顺序，全绿就是对的）
+
+| # | 命令 | 期望 | 不对的话说明 |
+|---|---|---|---|
+| 0 | `python -c "import sys;print(sys.executable)"` | 打印 `E:\python3.11.7\python.exe` | 若打印 `.venv\Scripts\python.exe` → 你在用空壳环境，后面必然 `No module named 'torch'` |
+| 1 | `python -m pytest tests -q` | `40 passed, 3 skipped`，退出码 0 | 出现 `ERROR`（而不是 `skipped`）→ 环境/资产有问题；`failed` → 真回归 |
+| 2 | `python scripts/run_retargeting_pipeline.py` | 末尾 `7/7 PASS`、`结论：全链路跑通`、退出码 0 | 任一步 FAIL，该步日志会打印失败命令，可单独重跑 |
+| 3 | `python -m retargeting inspect --angle-h5 tmp_motion/angles_twohand.h5` | 打印 `attr.output_shape=[18]` 等属性，退出码 0 | 文件缺属性 → 用的是未对齐数据或别的导出器 |
+| 4 | `python scripts/check_native_hand_motion.py --file tmp_motion/angles_twohand.h5` | 表格三行全 `[PASS]`，**「没动」= 0** | 「没动 > 0」= 映射或回放坏了，不能拿去答辩；「幅度偏小」随数据波动（阈值 0.05 rad），**不判失败** |
+| 5 | `python scripts/verify_hand_pipeline.py` | `7 / 7 PASS`，退出码 0 | 这是队友数据的回归验收，红了说明合并破了手部契约 |
+| 6 | `python scripts/check_gbk_safe.py --strict` | `[OK]`，退出码 0 | 改了 `.py` 里有非 GBK 字符，中文 Windows 控制台会崩 |
+
+> 完整"README 里逐字粘贴"版本（步骤 0→5：造数据 → 对齐 → 训练 → 导出 → inspect）见第 3 节，
+> 本机已逐条复现通过（`saved_best=tmp_motion\ckpt\models\twohand_h5\linker\demo\model_best.pth` 确实存在）。
+
+### 10.2 不看代码、直接验产物（推荐：最独立的一种）
+
+**判断标准（18 维契约的不变量）**：
+`left/right_angles` 都是 `(T, 18) float32`、**dim0 恒 0**、无 NaN/Inf、每维范围落在
+`retargeting/config.py::ANGLE_LIMITS` 之内、`*_valid` 数量 = 有效帧数（首尾全零帧会被判无效，属正常）。
+
+把下面这段存成 `tmp_motion/h5_dump.py`（本机已有这个文件）再跑：
+
+```python
+import sys, h5py, numpy as np
+with h5py.File(sys.argv[1], "r") as f:
+    print("keys:", list(f.keys()))
+    print("attrs:", {k: f.attrs[k] for k in f.attrs})
+    for side in ("left", "right"):
+        a = np.asarray(f[f"{side}_angles"][...])
+        print(side, a.shape, "nonfinite=", int((~np.isfinite(a)).sum()),
+              "dim0全0=", bool(np.allclose(a[:, 0], 0.0)))
+        print("  每维 min/max:", [(round(float(a[:, i].min()), 3), round(float(a[:, i].max()), 3))
+                                for i in range(a.shape[1])])
+    for k in ("left_valid", "right_valid"):
+        v = np.asarray(f[k][...]); print(k, int(v.sum()), "/", v.size)
+```
+
+本机 2026-09-30 实测输出（`tmp_motion/angles_twohand.h5`）：
+`(240, 18) float32`、`nonfinite=0`、`dim0全0=True`、`left_valid 238/240`；各维 max 分别为
+`0.00/0.14/1.567/1.457/0.128/1.567/1.564/0.164/1.567/1.561/0.170/1.567/1.556/-0.449/1.204/0.818/0.249/1.564`，
+对照 `ANGLE_LIMITS`（`(-0.18,0.18)`、`(0,1.57)`、`(-0.6,0.6)`、`(0,1.6)`、`(0,1.0)`）**零越界**。
+
+### 10.3 三个"假失败"陷阱（别被误导）
+
+| 现象 | 真相 | 怎么证实 |
+|---|---|---|
+| 脚本明明跑完，退出码却是 `1` | PowerShell `\| Select-Object -Last N` 提前关管道，Python 收到 BrokenPipe | 改成 `python xxx.py > out.log 2>&1; $LASTEXITCODE`，再看 `out.log` |
+| 控制台输出成 `鏈哄櫒浜?` 乱码 | 日志是 UTF-8，控制台按 GBK 解码；**脚本没坏** | `Get-Content out.log -Encoding UTF8` |
+| `3 skipped` | 缺 TRON2A URDF 的机械臂用例（§6.1），**不是失败** | `pytest tests -q -rs` 会打印 skip 原因 |
+
+### 10.4 "这算对了吗？"——可以写进答辩的判定依据
+
+1. **结构对**：角度文件就是契约 H（`(T,18)` × 左右 + `*_valid` + 属性齐全）。
+2. **数值对**：dim0 恒 0、无坏值、零越限（§10.2）。
+3. **动作真的发生**：三台机器人可映射 24 / 22 / 14 个手部关节，「没动」= 0、最大跟踪误差 0.0000 ~ 0.0032 rad（§10.1 第 4 条）。
+   （会动/幅度偏小的**具体个数随数据变化**，只有「没动 = 0」才是判据。）
+4. **可回归**：`pytest` 40 passed / `verify_hand_pipeline.py` 7/7，说明合并没破坏既有契约。
+5. **边界诚实**：手臂关节不动（数据只有手，§1）；机械臂 IK 因缺第三方 URDF 而 skip（§6.1）——
+   这两条是**已知且有据的范围**，不是"跑坏了"。
 
 

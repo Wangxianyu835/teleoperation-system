@@ -261,6 +261,9 @@ python scripts/verify_hand_pipeline.py
 
 > 📄 详细命令、实测输出、已知缺口见 [`docs/RETARGETING_PIPELINE.md`](docs/RETARGETING_PIPELINE.md)
 
+> ⚠️ 下面命令里的 `python` **指项目解释器**（本机是 `E:\python3.11.7\python.exe`），
+> **不是**仓库里的空壳 `.venv`——用后者会 `ModuleNotFoundError: torch`。见第三节提示。
+
 ```bash
 # ★ 一键：原始数据 -> 对齐 -> 训练 -> 导出 18 维角度 -> 校验 -> 三台机器人回放
 python scripts/run_retargeting_pipeline.py
@@ -284,7 +287,9 @@ python scripts/show_hands_all.py --file datasets/raw/retarget_twohand_153542.h5
 与输入关键点对比），所以只要有原始双手关键点就能闭环，**不需要真实采集设备**。
 
 **实测（本机 2026-09-30）**：`pytest tests -q` → 40 passed / 3 skipped；
-示例数据 240 帧训练 3 轮约 12 秒；导出 240 × 18；三台机器人回放关节全部会动、0 卡死。
+示例数据 240 帧训练 3 轮约 7 ~ 12 秒（两次实测 6.97s / 11.85s，随机器负载波动）；
+导出 240 × 18（dim0 恒 0，有效帧 238/240，无越限）；三台机器人回放「没动」= 0（可映射 24/22/14 个手部关节，
+会动/幅度偏小的具体个数随数据波动，自造示例 22~24 个属正常）。
 机械臂 IK 那条链路还缺第三方 TRON2A URDF 资产（未随仓库分发），见上面那份文档第 6 节。
 
 ### 三台机器人演示验收（2026-09-30 实测，同一份采集数据）
