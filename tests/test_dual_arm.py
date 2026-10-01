@@ -17,12 +17,7 @@ from retargeting.dual_teleop import export_robot_commands
 
 URDF = Path("third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf")
 
-# TRON2A 描述包是第三方资产，没有随仓库分发；缺失时跳过机械臂用例，
-# 避免整个测试套件变红掩盖其它真实失败。补齐方式见 docs/RETARGETING_PIPELINE.md
-URDF_SKIP_REASON = f"TRON2A URDF asset is missing: {URDF}"
 
-
-@unittest.skipUnless(URDF.is_file(), URDF_SKIP_REASON)
 class DualArmTests(unittest.TestCase):
     def test_dach_urdf_has_two_complete_seven_dof_chains(self):
         for side in ("left", "right"):

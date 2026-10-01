@@ -128,9 +128,11 @@ python -m retargeting export \
 
 ```bash
 python -m retargeting inspect --angle-h5 tmp_motion/angles_smoke_e2e.h5
-# 等价入口（根目录包装脚本，两种写法都行）
-python inspect_angle_h5.py tmp_motion/angles_smoke_e2e.h5
 ```
+
+> 根目录还留着队友的便捷入口 `inspect_angle_h5.py`，但它导入的是 `retargeting.inspect` 里
+> **不存在**的 `main`（实测 `ImportError: cannot import name 'main'`）。本轮**未修改该文件**
+> （属于队友代码），请统一用上面的 `python -m retargeting inspect`。修法见第 9 节末尾。
 
 实测：`left_valid=238 left_invalid=2 left_nonfinite=0 left_out_of_limits=0`
 （右侧相同），并打印 `attr.checkpoint` / `attr.coordinate_alignment` / `attr.invalid_angle_policy=hold_previous` 等。
@@ -213,7 +215,7 @@ python scripts/verify_hand_pipeline.py       # 默认用 datasets/raw/retarget_t
 |---|---|---|
 | 预训练 checkpoint 不在仓库 | 直接用 `datasets/raw/*.h5` 回放没问题；想「重新推理」得先自己训练 | 本机用 `python -m retargeting train` 自监督训练即可（示例数据 12 秒）|
 | 原始采集数据不在仓库 | 只有队友导出的 18 维角度文件 | 用 `scripts/make_twohand_raw_sample.py` 造示例原始数据先跑通链路 |
-| `roboticstoolbox-python` 是可选依赖 | 不装时 `retargeting/arm.py` 顶层 import 会连累整个仓库（**已修**：改成延迟导入 + 给安装命令）| 手部流水线不需要它 |
+| `roboticstoolbox-python` 没装（瘦环境）| `retargeting/arm.py` 顶层就 import 它，于是 `import retargeting.dual_teleop` / `tests/test_dual_arm.py` 会 `ModuleNotFoundError`（**队友代码如此，本轮有意未改**）| 手部流水线根本不导入该模块，不受影响；要跑机械臂就装一次：`python -m pip install roboticstoolbox-python`（参考环境已装 1.4.4）|
 
 ---
 
@@ -221,9 +223,9 @@ python scripts/verify_hand_pipeline.py       # 默认用 datasets/raw/retarget_t
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `ImportError: cannot import name 'main' from 'retargeting.inspect'` | 根目录包装脚本 `inspect_angle_h5.py` 指向不存在的函数（**已修**）| 直接用修好的 `python inspect_angle_h5.py <角度.h5>` |
-| `ModuleNotFoundError: No module named 'input_adapters'` | `input_adapters/` 包与 `hand_keypoints.py` 从未入库（**已修**：补齐转发层 + 补 `NPY_REPLAY_SOURCE` 常量）| 重新拉最新代码 |
-| `ModuleNotFoundError: roboticstoolbox` | 机械臂链路可选依赖没装 | `python -m pip install roboticstoolbox-python`（只跑手部可忽略）|
+| `ImportError: cannot import name 'main' from 'retargeting.inspect'` | 根目录包装脚本 `inspect_angle_h5.py` 指向不存在的函数（**队友脚本自身问题，本轮未改**）| 改用 `python -m retargeting inspect --angle-h5 <角度.h5>`；想让这个入口能用，见第 9 节末尾的 5 行修法 |
+| `ModuleNotFoundError: No module named 'input_adapters'` | `input_adapters/` 包与 `hand_keypoints.py` 从未入库（**已修**：新增转发层，并在转发层内补齐 `NPY_REPLAY_SOURCE`，未改队友文件）| 重新拉最新代码 |
+| `ModuleNotFoundError: roboticstoolbox` | 机械臂链路依赖没装（`retargeting/arm.py` 顶层 import，队友代码原样保留）| `python -m pip install roboticstoolbox-python`；只跑手部可忽略 |
 | `KeyError: 'coordinate_frame'` / 训练拒绝开始 | 用了未对齐的原始数据 | 先跑第 3.1 步对齐 |
 | `FileNotFoundError: TRON2A URDF was not found` | 缺第三方描述包 | 见 6.1 |
 | 控制台中文乱码 / `UnicodeEncodeError` | 中文 Windows 控制台是 cp936 | `.py` 里禁止非 GBK 字符，提交前跑 `python scripts/check_gbk_safe.py --strict` |
@@ -242,25 +244,63 @@ python scripts/verify_hand_pipeline.py       # 默认用 datasets/raw/retarget_t
 | `scripts/check_native_hand_motion.py` | 量化"每个关节实际转了多少弧度" |
 | `scripts/verify_hand_pipeline.py` | 平台侧一键验收（7 项）|
 | `scripts/compare_training_hand_pose.py` | 训练前后对比图（同一帧的 FK 结果 vs 关键点目标，需 2 个 checkpoint）|
-| `inspect_angle_h5.py` | 根目录便捷入口（**已修**：不再导入不存在的 `main`）|
-| `retargeting/{training,inference,inspect,data,arm,dual_teleop}.py` | 重定向算法主体 |
-| `input_adapters/hand_keypoints.py` | 输入适配转发层（指向 `retargeting/tracking.py`）|
+| `inspect_angle_h5.py` | 根目录便捷入口（**队友脚本，当前 import 不存在的 `main`，本轮未改**；请用 `python -m retargeting inspect`）|
+| `retargeting/{training,inference,inspect,data,arm,dual_teleop}.py` | 重定向算法主体（**本轮零改动**）|
+| `tests/conftest.py` | 缺失第三方资产/依赖时跳过机械臂用例（不改队友测试文件）|
+| `input_adapters/hand_keypoints.py` | 输入适配转发层（指向 `retargeting/tracking.py`，并在此定义队友代码缺的 `NPY_REPLAY_SOURCE`）|
 | `requirements-retargeting.txt` | 重定向依赖（含可选机械臂依赖说明）|
 
 ---
 
-## 9. 合并后修复清单（本次）
+## 9. 本轮改动清单（原则：**不修改队友的算法代码**）
 
-| # | 文件 | 问题 | 处理 | 复核方式 |
-|---|---|---|---|---|
-| 1 | `retargeting/arm.py` | 顶层 `import roboticstoolbox`，没装就**连累整个仓库**（连手部链路都跑不了）| 改为延迟导入 `require_roboticstoolbox()`，缺依赖时只在用到机械臂时报错并给出安装命令 | 卸载/不装 RTB 也能跑完第 3 节五步 + 全量测试 |
-| 2 | `tests/test_dual_arm.py` | 3 个用例因缺 TRON2A URDF 直接 **ERROR**（把测试套件搞成红的）| 加 `@unittest.skipUnless(URDF.is_file(), ...)` | `pytest tests -q` → 40 passed / 3 skipped |
-| 3 | `inspect_angle_h5.py` | `from retargeting.inspect import main`，而该函数**不存在** → 入口直接 ImportError | 重写为独立入口，支持位置参数 `<角度.h5>` 与 `--angle-h5` 两种写法 | `python inspect_angle_h5.py tmp_motion/angles_twohand.h5` → exit 0 |
-| 4 | `input_adapters/` | 包与其 `hand_keypoints.py` **从未入库**，`ModuleNotFoundError` | 补齐转发层（本文件已入库）| `pytest tests -q` 全绿 |
-| 5 | `retargeting/tracking.py` | 缺 `NPY_REPLAY_SOURCE` 常量，npy 回放路径直接报错 | 补常量 | 同上 |
-| 6 | `scripts/run_retargeting_pipeline.py` | 原链路要手敲 5 条命令、checkpoint 路径还得自己拼 | 新增一键脚本（自带 h5py 独立复核，不依赖 `retargeting` 包）| 本机 `python scripts/run_retargeting_pipeline.py` → **7/7 PASS, exit 0** |
+**先给结论（可自查）**：
 
-> 机械臂链路（`dual_teleop` 等）本身**未改逻辑**，只处理了「缺资产/缺依赖不应拖垮仓库」这一层。
+```bash
+git diff 3e4e763..HEAD --stat -- retargeting/ tests/test_dual_arm.py inspect_angle_h5.py \
+    input_adapters/npy_replay_adapter.py main_offline_dual_teleop.py
+# → 输出为空：队友已入库的源码一行未改
+```
+
+改动全部落在**新增文件**上：
+
+| # | 文件 | 为什么需要 | 复核方式 |
+|---|---|---|---|
+| 1 | `input_adapters/__init__.py`、`input_adapters/hand_keypoints.py`（**新增**）| 队友的 `npy_replay_adapter.py` 从 `input_adapters.hand_keypoints` 取 `HandWindowBuffer` / `NPY_REPLAY_SOURCE`，而该模块**从未入库**（任何提交都搜不到），一 import 就 `ModuleNotFoundError`。转发层把 `retargeting/tracking.py` 的实现按旧路径暴露出来；队友 `tracking.py` 里没有的 `NPY_REPLAY_SOURCE` 也在此定义（只是「来源」字符串标识，`tracking.py` / `hand_core.py` 都不校验取值）| `python scripts/validate_retarget_input.py tmp_motion/npy_replay_sample.npy` → `payloads=10 result=ok`, exit 0 |
+| 2 | `tests/conftest.py`（**新增**）| 队友的 `tests/test_dual_arm.py` 缺 TRON2A URDF 时 3 个用例直接 ERROR，把测试套件染红、掩盖真实失败。用 pytest 钩子标记 skip，**不动队友测试文件** | `pytest tests -q` → 40 passed / 3 skipped；`-rs` 打印原因 |
+| 3 | `scripts/run_retargeting_pipeline.py`（**新增**）| 原链路要手敲 5 条命令、checkpoint 路径还得自己拼 | `python scripts/run_retargeting_pipeline.py` → **7/7 PASS, exit 0** |
+| 4 | `scripts/make_twohand_raw_sample.py`（**新增**）| 原始采集数据不在仓库，全链路没法自测 | 第 3 节步骤 0 → 造出 240 帧未对齐数据 |
+| 5 | `requirements-retargeting.txt`（补注释）| 讲清手部必需依赖与机械臂依赖的边界 | `pip install -r requirements-retargeting.txt` 一次装齐 |
+| 6 | `README.md`、`docs/RETARGETING_PIPELINE.md`（新增/补充）| 命令、实测数字、已知缺口、自检清单 | 见本文件第 10 节 |
+
+### 9.1 已知但**有意未修**的队友代码问题（只做规避，不动源码）
+
+| 位置 | 问题 | 我们的规避方式 | 建议队友的修法 |
+|---|---|---|---|
+| `inspect_angle_h5.py` | `from retargeting.inspect import main`，但 `retargeting/inspect.py` 里只有 `inspect_angle_h5` / `run` / `configure_parser`（`grep 'def main'` 无输出）→ 该入口必然 `ImportError` | 统一用 `python -m retargeting inspect --angle-h5 <角度.h5>` | 见下方 5 行 |
+| `retargeting/tracking.py` | 只定义了 `VISIONPRO_SOURCE` / `MEDIAPIPE_APPROX_SOURCE`，没有 npy 回放需要的 `NPY_REPLAY_SOURCE` | 在 `input_adapters/hand_keypoints.py` 里定义该常量 | 把 `NPY_REPLAY_SOURCE = "npy_replay"` 加到 `tracking.py` 第 37 行旁即可 |
+| `retargeting/arm.py` | 顶层 `import roboticstoolbox`，瘦环境下 `import retargeting.dual_teleop` 会失败 | 手部链路根本不导入该模块；参考环境已装 RTB 1.4.4 | 可选：改成函数内延迟导入 |
+
+`inspect_angle_h5.py` 的建议修法（复用队友自己的 `configure_parser` + `run`，不引入新逻辑）：
+
+```python
+"""Command-line entry point for exported angle H5 inspection."""
+
+import argparse
+
+from retargeting.inspect import configure_parser, run
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(prog="inspect_angle_h5.py")
+    configure_parser(parser)
+    raise SystemExit(run(parser.parse_args()))
+```
+
+> 实测依据：把 `arm.py` 还原成队友原版（顶层 `import roboticstoolbox`）后，
+> 手部链路 `import`、`python -m retargeting inspect --angle-h5 ...`、
+> `pytest tests -q`（40 passed / 3 skipped）**全部照常通过**。
+> 说明手部流水线并不经过该模块，先前设想的「缺 RTB 会连累整个仓库」不成立，
+> 因此本轮**不再改它**（相关误判已在本节更正）。
 
 ---
 

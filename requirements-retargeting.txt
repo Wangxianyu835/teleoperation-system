@@ -17,5 +17,5 @@ pytest
 
 # 机械臂链路（可选）：只有跑 TRON2A 双臂 IK 时才需要
 # 还需要第三方 TRON2A 描述包 third_party/tron2-robot-description/...（未随仓库分发，见 docs/RETARGETING_PIPELINE.md）
-# 缺这两个东西时 tests/test_dual_arm.py 会自动跳过，手部流水线完全不受影响。
+# 缺这两个东西时，tests/test_dual_arm.py 的用例会被 tests/conftest.py 自动跳过，手部流水线完全不受影响。
 roboticstoolbox-python
