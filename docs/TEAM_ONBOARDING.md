@@ -1,7 +1,32 @@
 # 队友上手指南（TEAM ONBOARDING）
 
 > 给**新加入的队友**看的操作手册。照着一步步做，约 30 分钟能跑通。
-> **最后更新**：2026-09-12
+> **最后更新**：2026-10-01
+
+---
+
+## 第 -1 步：先读工程约定（★ 5 分钟，别跳过）
+
+**动手前必读** [`docs/CONVENTIONS.md`](CONVENTIONS.md)（本项目规则的唯一来源）。先记住这几条：
+
+| 约定 | 一句话 |
+|---|---|
+| **禁止往 C 盘写任何东西** | 装依赖前先 `. .\scripts\env_e_drive_cache.ps1`（pip 默认缓存就在 C 盘，一装就是几百 MB）；自检 `scripts\check_no_c_drive.py --strict` |
+| 不改队友已入库的算法代码 | 要兼容就**新增自己的文件**；觉得别人的代码有问题就提出来，别自己改 |
+| `.py` 里禁止非 GBK 字符 | 中文控制台会直接崩溃；提交前 `scripts\check_gbk_safe.py --strict` |
+| 改前跑基线、改后复验 | 结论要给**命令 + 退出码 + 不变量** |
+| 大资产不入库 | `lib/`、`linkerhand_sdk/`、`tmp_*/`、模型权重、视频 |
+
+一条命令自检（约 10 秒，全绿再干活）：
+
+```powershell
+cd <你的仓库目录>
+powershell -ExecutionPolicy Bypass -File scripts\preflight.ps1
+```
+
+> 说明：本仓库的 `scripts/preflight.ps1` 里的路径按王宪雨的机器写死了
+> `E:\python3.11.7\python.exe`；你若用自己的 venv，第 1 项会提示解释器不同 ——
+> 那是**提示**不是错误，其余项照样有意义。
 
 ---
 

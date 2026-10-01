@@ -311,6 +311,15 @@ if __name__ == "__main__":
 
 ### 10.1 八条命令（按顺序，全绿就是对的）
 
+> **捷径（推荐先跑这条）**：第 0、1、7 条 + 下面「额外一条」已被
+> `scripts\preflight.ps1` 打包成一条命令，加 `-Full` 还会连第 2、3 条一起跑：
+>
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File scripts\preflight.ps1 -Full
+> ```
+>
+> 规则全文与自检项总表见 [`CONVENTIONS.md`](CONVENTIONS.md)（工程约定，唯一来源）。
+
 | # | 命令 | 期望 | 不对的话说明 |
 |---|---|---|---|
 | 0 | `python -c "import sys;print(sys.executable)"` | 打印 `E:\python3.11.7\python.exe` | 若打印 `.venv\Scripts\python.exe` → 你在用空壳环境，后面必然 `No module named 'torch'` |

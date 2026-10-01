@@ -1,0 +1,49 @@
+# .clinerules —— 本仓库的工程约定（AI 自动加载版）
+#
+# 唯一来源是 docs/CONVENTIONS.md（人读版）。**两者必须一致**：冲突时以 CONVENTIONS.md 为准，
+# 并立即回来修本文件。改了约定 = 三处同步（CONVENTIONS.md / PROJECT_CONTEXT §0.1 / 本文件）。
+
+## 开工前必做（不要跳过）
+
+1. 先读 `docs/CONVENTIONS.md`（规则全文）与 `docs/PROJECT_CONTEXT.md` §0.1（硬约束摘要）。
+2. 跑一键自检，任何 `[FAIL]` 先修好再动手：
+
+   ```powershell
+   cd F:\simulation_platform
+   powershell -ExecutionPolicy Bypass -File scripts\preflight.ps1
+   ```
+3. 跑项目**只用** `E:\python3.11.7\python.exe`（仓库内 `.venv` 是空壳，用它必然 No module named 'torch'）。
+
+## 硬约束（违反了就是返工）
+
+1. **禁止往 C 盘写任何东西**：依赖、pip / HF / matplotlib / torch 缓存、临时文件都不行。
+   每个新终端先 `. .\scripts\env_e_drive_cache.ps1`（或已 `-Persist` 过），
+   自检 `E:\python3.11.7\python.exe scripts\check_no_c_drive.py --strict` 必须是 `[OK]` 退出码 0。
+   装依赖前尤其要先重定向 —— pip 默认缓存就在 `C:\Users\<你>\AppData\Local\pip\Cache`。
+2. **不改队友已入库的算法代码**（`retargeting/**`、`config/**`、`input_adapters/**`、`tests/**` 里
+   合并点 `3e4e763` 已存在的文件、`inspect_angle_h5.py`、`main_offline_dual_teleop.py`）。
+   要兼容就**新增自己的文件**（转发层 / `tests/conftest.py` 钩子 / 包装脚本）；
+   队友代码有问题就写进问题清单交回队友，不要自己改。
+3. `.py` 里**禁止非 GBK 字符**（`✓ ⚠ → ≥` 等会让中文控制台直接崩溃）；
+   提交前 `E:\python3.11.7\python.exe scripts\check_gbk_safe.py --strict`，期望退出码 0。
+4. **改前跑基线、改后跑同一套**（`pytest tests -q` 期望 40 passed / 3 skipped；
+   `scripts\run_retargeting_pipeline.py` 期望 7/7 PASS）。给用户的结论必须附
+   **命令 + 退出码 + 关键不变量**，禁止只写"已通过"。
+5. **大资产不入库**：`lib/`、`linkerhand_sdk/`、`.venv/`、`tmp_*/`、模型权重、视频；
+   只有 `robots/from_teleopbench/**` 与 `datasets/**/*.h5` 例外。
+6. **破坏性/不可逆操作先说明再执行**（删目录、`robocopy /MOVE`、`git reset --hard`、
+   `git push --force`、改**用户级**环境变量）：说清删/移什么、多少、能否恢复，能搬不删。
+7. 技术选型已冻结：**PyBullet**（不是 Isaac Sim）、**普通 Git + SSH 不用 LFS**、数据走 **HDF5 契约 A~H**。
+   要改先问用户。
+8. 密钥只放 `E:\ssh`，绝不入库、不外传；文档里不写密钥 / Token / SID 实际内容。
+
+## 工程习惯（会显著影响成败）
+
+- **中文提交信息用消息文件**：`git commit -F tmp_motion\commit_msg.txt`（PowerShell 引号会弄坏中文）。
+  提交信息格式 `类型: 说明`（feat / fix / docs / chore / data / test / refactor），一个提交一件事。
+- **判断脚本成败看退出码**（`$LASTEXITCODE`），别看被 `Select-Object` 截断的管道输出；
+  pybullet 往 stderr 打的 `pybullet build time:` 与 `b3Warning:` **不是错误**。
+  最稳写法：`cmd /c "E:\python3.11.7\python.exe scripts\xxx.py > log 2>&1"`，然后只看退出码。
+- **文档随代码更新**（PROJECT_CONTEXT §11.1 更新清单 + 文首"最后更新"日期）。
+- 临时实验产物一律丢 `tmp_*/`（已被 `.gitignore` 排除），不要污染仓库根目录。
+- 回复用户用中文，结论先给"做了什么 / 证据 / 影响"，不要把过程日志堆在前面。

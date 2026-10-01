@@ -120,7 +120,9 @@ simulation_platform/
 
 | 文档 | 内容 | 什么时候看 |
 |------|------|-----------|
-| [`docs/ENVIRONMENT_SETUP.md`](docs/ENVIRONMENT_SETUP.md) | **环境配置与工具链备忘**（解释器 / SSH / 代理 / E 盘权限 / GBK 编码约定）| ★ 换机器、重装、报环境错时 |
+| [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) | **★ 工程约定（本项目规则的唯一来源）**：不许写 C 盘 / 只用 E 盘解释器 / 不改队友代码 / GBK / 大资产不入库 / 改前跑基线… + 一键自检 `scripts\preflight.ps1` | **动手前必读**（人和 AI 都是）|
+| [`.clinerules`](.clinerules) | 上面那份约定的 **AI 自动加载版**（内容必须与 CONVENTIONS.md 一致）| 用 AI 助手改这个仓库时（自动生效）|
+| [`docs/ENVIRONMENT_SETUP.md`](docs/ENVIRONMENT_SETUP.md) | **环境配置与工具链备忘**（解释器 / SSH / 代理 / E 盘权限 / GBK 编码约定 / §2.6 C 盘零写入）| ★ 换机器、重装、报环境错时 |
 | [`docs/TEAM_ONBOARDING.md`](docs/TEAM_ONBOARDING.md) | 队友从零上手（约 30 分钟）| 新队友加入 |
 | [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md) | 接口契约 A~H（动作 / 观测 / 控制器 / HDF5）| 三方对接前必读 |
 | [`docs/OFFLINE_PIPELINE.md`](docs/OFFLINE_PIPELINE.md) | 离线数据流水线（契约 G / H）| 跑离线回放 |

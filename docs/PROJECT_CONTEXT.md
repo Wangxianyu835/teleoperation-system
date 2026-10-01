@@ -9,7 +9,8 @@
 ## 0. 给 AI 的第一段话（复制这段给新对话）
 
 ```
-请先读这两个文件，再开始工作：
+请先读这三个文件，再开始工作：
+  F:\simulation_platform\docs\CONVENTIONS.md      （★ 工程约定 / 硬约束，动手前必读，含一键自检）
   F:\simulation_platform\docs\PROJECT_CONTEXT.md   （项目背景、技术栈、决策历史）
   F:\simulation_platform\docs\ENVIRONMENT_SETUP.md （环境配置、工具链、踩过的坑）
 
@@ -19,11 +20,16 @@
 git 走 SSH（不需要代理），看 GitHub 网页要开代理。
 **不要改队友已入库的算法代码**（retargeting/ 下的训练/推理/数据/模型/config/inspect/dual_teleop/
 simulation/__main__/visionpro/mediapipe）；要兼容就新增自己的文件（见 §0.1 第 3、5 条）。
+**开工前先跑一次自检**：powershell -ExecutionPolicy Bypass -File scripts\preflight.ps1
 ```
 
 ---
 
 ## 0.1 ★ 硬约束（违反即返工，AI 助手必须逐条遵守）
+
+> **本节是摘要**；完整规则（含每条的理由、命令、检查方式、翻车记录）在
+> [`CONVENTIONS.md`](CONVENTIONS.md)（工程约定，唯一来源），AI 自动加载版在仓库根目录 `.clinerules`。
+> **一键自检**：`powershell -ExecutionPolicy Bypass -File scripts\preflight.ps1`（`-Full` 加跑测试与流水线）。
 
 | # | 约束 | 为什么 / 怎么守 |
 |---|---|---|
@@ -512,6 +518,7 @@ GitHub 用 **DataDome** 保护 `/signup` 等接口。响应头特征：`x-datado
 | 27 | 【2026-09-30】**文档可发现性收尾**：README 新增「📚 文档索引」、补齐目录结构（`scripts/` `datasets/` `native_hand.py` `filters.py`）、修正「`robots/` 未入库」的旧说法；本文件「附录：相关文件索引」与第 0 节开场白同步补上 ENVIRONMENT_SETUP；`.gitignore` 补 `tmp_*/` 并入库（此前只存在于工作区，队友 clone 后无效）|
 | 29 | 【2026-10-01】**① 撤回对队友代码的全部改动**：`retargeting/arm.py`、`retargeting/tracking.py`、`tests/test_dual_arm.py`、`inspect_angle_h5.py` 已 `git checkout 3e4e763` 还原，`git diff 3e4e763 HEAD -- retargeting/ ...` **为空**；兼容逻辑改放新增文件（`input_adapters/hand_keypoints.py` 转发层 + 缺常量兜底、`tests/conftest.py` 缺 URDF 时跳过）<br>**② 修掉「往 C 盘写东西」**：pip 把 **216.78 MB** 下载缓存写进 `C:\Users\王宪雨\AppData\Local\pip\Cache`、`huggingface_hub/hf_xet` 写进 `C:\Users\王宪雨\.cache\huggingface\xet\logs`。已建 `E:\cache\{pip,matplotlib,huggingface,torch,xdg,tmp}`、设 7 个用户级环境变量、把 **1560.54 MB / 889 个文件**的 pip 缓存整体 `robocopy /MOVE` 到 `E:\cache\pip`（缓存仍可复用，`pip cache list` 可见）；新增 `scripts/env_e_drive_cache.ps1`（含 E 盘 ACL 自愈）与 `scripts/check_no_c_drive.py`；规则成文为 §0.1 硬约束 + ENVIRONMENT_SETUP §2.6 |
 | 30 | 【2026-10-01】**更正一处误判（留档）**：上一轮我称「`roboticstoolbox 1.4.4` 本来就装着」——**错**，它是 2026-10-01 14:49 才由 `pip install` 装上的（mtime 可查）。结论（`arm.py` 无需改）仍成立，但**理由换成**：① `roboticstoolbox-python` 本来就在 `requirements-retargeting.txt` 里声明，缺依赖应装依赖、不应改队友源码；② 手部链路不导入该模块（实测还原后 `pytest` 40 passed / 3 skipped、一键流水线 7/7 全绿）|
+| 31 | 【2026-10-01】**把要求固化成「工程约定」**（用户要求：加上之前所有要求 + 不许在 C 盘存东西）：新增 **`docs/CONVENTIONS.md`**（13 条约定的唯一来源，每条含为什么 / 怎么守 / 怎么查 / 翻车记录）+ **`.clinerules`**（AI 自动加载版，以后新对话自动生效）+ **`scripts/preflight.ps1`**（一键自检 6 项：解释器 / GBK / C 盘零写入 / 队友代码零改动 / 大资产不入库 / 规则文件齐备；`-Full` 再加 pytest 与重定向流水线）。实测：正常路径 `RESULT: [OK]` 退出码 0；故意改 `retargeting/arm.py` 一行 → 第 4 项抓到 `M retargeting/arm.py` 并提示还原命令、退出码 1；`-Full` 下 pytest `40 passed, 3 skipped`、流水线 `7/7 PASS`；还原后 `git status` 干净。README / ENVIRONMENT_SETUP / TEAM_ONBOARDING / RETARGETING_PIPELINE §10.1 / 本节均已接入索引与指针 |
 
 ### 8.2 已掌握的 Git 工作流
 
@@ -611,7 +618,12 @@ $env:PYTHONPATH = 'F:\simulation_platform\lib'   # 设置后重试
 | 文件 | 说明 |
 |---|---|
 | `F:\simulation_platform\docs\PROJECT_CONTEXT.md` | **本文件**（AI 交接文档）|
-| `F:\simulation_platform\docs\ENVIRONMENT_SETUP.md` | **环境配置与工具链备忘**（解释器 / SSH / 代理 / E 盘权限 / GBK 约定）|
+| `F:\simulation_platform\docs\CONVENTIONS.md` | ★ **工程约定（本项目规则的唯一来源）**：13 条约定 + 每条的理由/命令/检查/翻车记录 + 一键自检 + 改约定的同步流程 |
+| `F:\simulation_platform\.clinerules` | 上面那份约定的 **AI 自动加载版**（与 CONVENTIONS.md 必须一致）|
+| `F:\simulation_platform\scripts\preflight.ps1` | **一键自检**（解释器 / GBK / C 盘 / 队友代码零改动 / 大资产 / 规则文件齐备，`-Full` 再加测试与流水线）|
+| `F:\simulation_platform\scripts\env_e_drive_cache.ps1` | 把 7 个缓存/临时变量重定向到 `E:\cache\*`（含 E 盘 ACL 自愈；`-Persist` 写用户级）|
+| `F:\simulation_platform\scripts\check_no_c_drive.py` | C 盘零写入自检（`--strict` 有 FAIL 即退出码 1）|
+| `F:\simulation_platform\docs\ENVIRONMENT_SETUP.md` | **环境配置与工具链备忘**（解释器 / SSH / 代理 / E 盘权限 / GBK 约定 / §2.6 C 盘零写入）|
 | `F:\simulation_platform\docs\INTERFACE_CONTRACT.md` | 接口契约 A~H（队友对接必读）|
 | `F:\simulation_platform\docs\OFFLINE_PIPELINE.md` | 离线数据流水线（契约 G / H）|
 | `F:\simulation_platform\docs\TEAM_ONBOARDING.md` | 队友从零上手（约 30 分钟）|
@@ -640,6 +652,7 @@ $env:PYTHONPATH = 'F:\simulation_platform\lib'   # 设置后重试
 | 章节 | 何时更新 |
 |---|---|
 | 文首 **「最后更新」日期** | ⚠️ **每次修改本文件都必须改** |
+| **0.1 硬约束** | 新增/修改任何规则时（**必须与 `docs/CONVENTIONS.md` 和 `.clinerules` 同步**）|
 | **3.2 已验证可运行的功能** | 新验证成功的功能（**附实测数据**）|
 | **5.1 仓库当前状态 / 5.3 提交历史** | 有新提交时 |
 | **6. 环境陷阱** | 踩到新坑并解决后 |

@@ -4,6 +4,7 @@
 > 新开 AI 对话 / 换电脑 / 重装系统时，读这一份就能把环境复原。
 >
 > **配套文档**
+> - **★ 工程约定（规则的唯一来源）→ [`CONVENTIONS.md`](CONVENTIONS.md)**（含一键自检 `scripts\preflight.ps1`）
 > - 项目背景、技术栈、决策历史 → [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md)
 > - 队友从零上手（30 分钟跑通） → [`TEAM_ONBOARDING.md`](TEAM_ONBOARDING.md)
 > - 离线数据流水线 → [`OFFLINE_PIPELINE.md`](OFFLINE_PIPELINE.md)
@@ -666,6 +667,8 @@ Get-Process | Where-Object { $_.ProcessName -match 'clash|mihomo|verge' }
 ## 10. 相关文档与文件
 
 | 文件 | 内容 |
+|------|------|
+| [`docs/CONVENTIONS.md`](CONVENTIONS.md) | **★ 工程约定（规则的唯一来源）**：13 条约定 + 一键自检用法 + 改约定的三处同步流程 |
 |---|---|
 | [`README.md`](../README.md) | 项目介绍、目录结构、使用方法、第三方声明 |
 | [`NOTICE`](../NOTICE) | 第三方开源项目的版权归属（TeleOpBench / Unitree 等）|
