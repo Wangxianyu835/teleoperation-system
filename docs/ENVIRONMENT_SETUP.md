@@ -10,11 +10,11 @@
 > - 模块接口契约 → [`INTERFACE_CONTRACT.md`](INTERFACE_CONTRACT.md)
 >
 > **文件位置**：`F:\simulation_platform\docs\ENVIRONMENT_SETUP.md`
-> **最后更新**：2026-09-30
+> **最后更新**：2026-10-01
 
 ---
 
-## 0. 30 秒速查（最常忘的 5 件事）
+## 0. 30 秒速查（最常忘的 6 件事）
 
 | # | 记住这一条 |
 |---|---|
@@ -23,6 +23,7 @@
 | 3 | **`github.com` 的 HTTPS 被阻断**：`git clone` / `push` 走 **SSH** 没问题；<br>但**看网页、点 Merge 要开代理**（见 §4）|
 | 4 | **SSH 必须用 Windows OpenSSH + 显式指定 `E:/ssh` 密钥**<br>（用户名是中文，Git 自带的 MSYS ssh 会失败，见 §3.2）|
 | 5 | **不要提交** `lib/`、`linkerhand_sdk/`、`.venv/`、`tmp_*/`<br>（已在 `.gitignore` 排除，见 §7）|
+| 6 | **★ 任何东西都不许写进 C 盘**：依赖、pip / HF / matplotlib / torch 缓存、临时文件<br>一律落 `E:\cache\*`；**新终端先跑** `. .\scripts\env_e_drive_cache.ps1`，<br>自检 `python scripts/check_no_c_drive.py --strict`（见 §2.6）|
 
 ---
 
@@ -164,6 +165,80 @@ E:\python3.11.7\python.exe test_import.py
 > 💡 **小提示**：pybullet 启动时会往 **stderr** 打印一行
 > `pybullet build time: ...`。PowerShell 会把它标成红色错误，
 > 但**这不是报错**，程序是正常的。
+
+### 2.6 ★ 禁止往 C 盘写东西（缓存 / 临时文件全部重定向到 E 盘）
+
+**规则（硬约束）**：项目相关的一切 —— 依赖、包管理器缓存、模型缓存、临时文件 ——
+**都不许落在 C 盘**。用户明确要求过（C 盘只剩 ~18.7 GB），并且这里**真实翻车过一次**。
+
+#### 翻车记录（2026-10-01）
+
+| 时间 | 发生了什么 | 落点 |
+|---|---|---|
+| 14:40 | `pip install -r requirements-retargeting.txt` 装 torch / timm / urchin 等；安装链带出 `huggingface_hub` + `hf_xet` | 包体在 `E:\python3.11.7\...` ✅，但 `hf_xet` 日志写进了 `C:\Users\王宪雨\.cache\huggingface\xet\logs\` ❌ |
+| 14:49 | 再装 `roboticstoolbox-python 1.4.4` 全家桶 | 包体在 E 盘 ✅ |
+| 14:50 | **pip 的下载缓存默认就在 C 盘** | ❌ `C:\Users\王宪雨\AppData\Local\pip\Cache` 当日新增 **234 个文件 / 216.78 MB**（该目录累计 1560 MB）|
+
+**根因**：这些工具**默认缓存目录全在 C 盘**（`%LOCALAPPDATA%\pip`、`~\.cache\huggingface`、
+`~\.cache\matplotlib`…），而环境变量没被改写。更隐蔽的是 `robot_descriptions`
+（RTB 取机器人 URDF 用）会往 `~\.cache\huggingface\hub` **联网下载机器人模型** —— 只要跑一次手臂 RTB 就会往 C 盘下模型。
+
+#### 已做的修复（本机已完成）
+
+```powershell
+# 1) 建 E 盘缓存根目录（E 盘有既有权限坑，先补 ACL；见 §5）
+icacls "E:\cache" /grant "*S-1-5-21-2886930988-4104668371-3581590174-1002:(OI)(CI)(M)" /T
+
+# 2) 把已有的 C 盘 pip 缓存整体搬过去（搬，不删内容；缓存可继续复用）
+robocopy "$env:USERPROFILE\AppData\Local\pip\Cache" "E:\cache\pip" /E /MOVE /R:1 /W:1
+
+# 3) 之后一律用脚本设环境变量（可加 -Persist 写进用户级变量）
+. .\scripts\env_e_drive_cache.ps1 -Persist
+```
+
+搬迁结果（实测）：`E:\cache\pip` = **889 个文件 / 1560.54 MB**，`C:\Users\王宪雨\AppData\Local\pip` 已空；
+`pip cache list` 仍能看到搬迁来的 wheel（如 `pybullet-3.2.7-*.whl` 67.8 MB），`pip cache info` 显示
+`Package index page cache location: e:\cache\pip\http`（1072.3 MB / 586 files）→ **缓存没有浪费，只是换了盘**。
+
+#### 环境变量对照表
+
+| 变量 | 指向 | 管什么 |
+|---|---|---|
+| `PIP_CACHE_DIR` | `E:\cache\pip` | pip 下载缓存（HTTP + wheels）|
+| `MPLCONFIGDIR` | `E:\cache\matplotlib` | matplotlib 字体/配置缓存 |
+| `HF_HOME` | `E:\cache\huggingface` | HuggingFace hub / xet（`robot_descriptions` 下机器人模型）|
+| `TORCH_HOME` | `E:\cache\torch` | `torch.hub` 权重 |
+| `XDG_CACHE_HOME` | `E:\cache\xdg` | 各类遵守 XDG 的工具 |
+| `TEMP` / `TMP` | `E:\cache\tmp` | 临时文件（含 IDE / 编译中间产物）|
+
+#### 日常用法（★ 每个新终端都要做一次）
+
+```powershell
+cd F:\simulation_platform
+. .\scripts\env_e_drive_cache.ps1          # 只影响当前终端（推荐）
+. .\scripts\env_e_drive_cache.ps1 -Check   # 只看当前状态，不做修改
+. .\scripts\env_e_drive_cache.ps1 -Persist # 额外写入用户级变量（新终端自动生效）
+
+# 自检：确认没有任何东西会落到 C 盘
+E:\python3.11.7\python.exe scripts\check_no_c_drive.py --strict
+```
+
+`env_e_drive_cache.ps1` 会自动建目录；若建目录失败（E 盘权限不继承，见 §5），
+它会**用当前用户 SID 自动补 `(OI)(CI)(M)` 再重试**，不需要手动干预。
+
+`check_no_c_drive.py` 判定：
+
+| 输出 | 含义 |
+|---|---|
+| `[OK]` | 变量指到非 C 盘，且 C 盘默认缓存目录不存在或为空 |
+| `[FAIL]` | 变量未设置（工具会自己回落到 C 盘）/ 仍指向 C 盘 / C 盘上残留**非空**缓存目录 |
+| `[WARN]` | C 盘残留目录为空（无害，建议删掉）|
+
+> ⚠️ **已知残留（无害）**：IDE（VS Code + 扩展）在命令输出过大时会写
+> `C:\Users\王宪雨\AppData\Local\Temp\cline\*.log`（每个几 KB）。这是**扩展自身行为**，
+> 环境变量改不到它；能做的就是别让单条命令刷出巨量输出，并定期清该目录。
+> 官方 Python 的 `TEMP` 已指向 E 盘，项目**编译/下载产物**不会再进 C 盘。
+
 
 ---
 
@@ -396,7 +471,7 @@ E:\ssh LAPTOP-2DCCKN0R\王宪雨:(OI)(CI)(M)          ← ★ 本次修复加上
        NT AUTHORITY\SYSTEM:(I)(OI)(CI)(F)
 ```
 
-> 📌 **已修复的目录**：`E:\ssh`、`E:\projects`
+> 📌 **已修复的目录**：`E:\ssh`、`E:\projects`、`E:\cache`（2026-10-01，缓存根目录）
 > 以后往 E 盘新建目录遇到权限问题时，照 §5.3 再做一次即可。
 
 ---
@@ -584,6 +659,7 @@ Get-Process | Where-Object { $_.ProcessName -match 'clash|mihomo|verge' }
 | 9 | 编码检查 | `python scripts/check_gbk_safe.py` → 0 处 | ☐ |
 | 10 | E 盘权限 | `icacls E:\ssh` 有 `(OI)(CI)(M)` | ☐ |
 | 11 | 手部 SDK（可选）| `linkerhand_sdk\` 存在（只有 `show_hand.py` 需要）| ☐ |
+| 12 | **C 盘零写入** | `. .\scripts\env_e_drive_cache.ps1` 后跑 `python scripts\check_no_c_drive.py --strict` → 退出码 0（见 §2.6）| ☐ |
 
 ---
 

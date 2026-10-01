@@ -2,7 +2,7 @@
 
 > **用途**：新开一个 AI 对话时，先让它读本文件，它就能立刻了解项目全貌、环境陷阱和历史决策。
 > **文件位置**：`F:\simulation_platform\docs\PROJECT_CONTEXT.md`
-> **最后更新**：2026-09-30
+> **最后更新**：2026-10-01
 
 ---
 
@@ -15,8 +15,23 @@
 
 关键前提：项目用 E:\python3.11.7\python.exe 运行（不是项目里的 .venv，那是空壳）；
 .py 文件禁止出现非 GBK 字符（提交前跑 python scripts/check_gbk_safe.py）；
+**任何东西都不许写进 C 盘**（依赖/缓存/临时文件，必须先跑 scripts/env_e_drive_cache.ps1）；
 git 走 SSH（不需要代理），看 GitHub 网页要开代理。
+**不要改队友已入库的算法代码**（retargeting/ 下的训练/推理/数据/模型/config/inspect/dual_teleop/
+simulation/__main__/visionpro/mediapipe）；要兼容就新增自己的文件（见 §0.1 第 3、5 条）。
 ```
+
+---
+
+## 0.1 ★ 硬约束（违反即返工，AI 助手必须逐条遵守）
+
+| # | 约束 | 为什么 / 怎么守 |
+|---|---|---|
+| 1 | **禁止往 C 盘写任何东西**<br>（依赖、pip/HF/matplotlib/torch 缓存、临时文件）| 用户明确要求（`C:` 只剩 18.7 GB）。默认缓存目录**全在 C 盘**，必须靠环境变量改写：<br>`PIP_CACHE_DIR` / `MPLCONFIGDIR` / `HF_HOME` / `TORCH_HOME` / `XDG_CACHE_HOME` / `TEMP` / `TMP` -> `E:\cache\*`<br>**每条新终端先跑** `. .\scripts\env_e_drive_cache.ps1`；自检 `python scripts/check_no_c_drive.py --strict`（详见 ENVIRONMENT_SETUP §2.6）|
+| 2 | **跑项目只用 `E:\python3.11.7\python.exe`** | 项目内 `.venv` 是**空壳**，用它必然 `No module named 'torch'`；曾经因此误判"环境缺 roboticstoolbox"（ENVIRONMENT_SETUP §2.2）|
+| 3 | **不改队友已入库的算法代码** | `retargeting/` 下 `arm.py`、`tracking.py`、`inference.py`、`training.py`、`data.py`、`model.py`、`config.py`、`inspect.py`、`dual_teleop.py`、`simulation.py`、`__main__.py`、`visionpro/`、`mediapipe/` **本轮零改动**。需要兼容就在**自己的新增文件**里做转发层 / conftest 钩子 / 包装脚本，并把问题清单交给队友（RETARGETING_PIPELINE §9.1）|
+| 4 | **`.py` 里禁止非 GBK 字符** | 中文控制台 GBK 会直接 `UnicodeEncodeError` **崩溃**；提交前 `python scripts/check_gbk_safe.py --strict`（ENVIRONMENT_SETUP §6）|
+| 5 | **改前先跑一遍基线，改后再跑同一套** | 自检清单见 RETARGETING_PIPELINE §10；结论必须附**退出码 + 不变量**，不要凭"看起来对"就下结论。<br>血泪教训：本轮曾因空壳 `.venv` 报错就断言"缺依赖会连累整仓"，改了队友 `arm.py`，事后实测**完全不必要**、全部回退 |
 
 ---
 
@@ -335,7 +350,7 @@ git@github.com: Permission denied (publickey).
 ```powershell
 icacls "E:\目标目录" /grant "*<用户SID>:(OI)(CI)M"
 ```
-> 本机已修复：`E:\ssh`、`E:\projects`
+> 本机已修复：`E:\ssh`、`E:\projects`、`E:\cache`（2026-10-01，缓存目录用）
 > **一劳永逸方案**（需**管理员**运行，因为 `E:\` 根目录所有者是 `NT AUTHORITY\SYSTEM`）：
 > ```powershell
 > icacls "E:\" /grant "*<用户SID>:(OI)(CI)M"
@@ -495,6 +510,8 @@ GitHub 用 **DataDome** 保护 `/signup` 等接口。响应头特征：`x-datado
 | 26 | 【2026-09-30】新增 **`docs/ENVIRONMENT_SETUP.md`**（环境配置与工具链备忘）；修复 `teleop/native_hand.py` 里残留的 `U+26A0 U+FE0F`（位于 docstring，潜伏雷），`check_gbk_safe.py --strict` 退出码归零 |
 | 28 | 【2026-09-30】**三台机器人演示打通（本轮真正的主任务）**：用户指出「文档收尾不重要，要让 GR1-T2 和 G1 也能用手部数据演示」。① 新增 `scripts/check_native_hand_motion.py` 逐关节实测运动量 → 三台全部 PASS（24/22/14 个关节都会动，稳定后跟踪误差 0.0000 rad，GR1-T2 限位截断 0.0%）；② 查出真正卡住演示的 bug —— `replay_hand_native.py --view hands` 用「整机包围盒」猜手的位置且**写死 yaw=135 / 距离 1.1 m**，而三台机器人手在世界里的方位不同（右手 x：H1-2 +0.36 / GR1-T2 **-0.19** / G1 +0.25），GR1-T2 的手在画面里只剩几个像素；已改为按【手部 AABB】取景 + 按「躯干 → 手」方位自动选 yaw，并在 `teleop/native_hand.py` 新增正式接口 `link_extent()`；③ 新增 `scripts/render_hand_snapshots.py` 用 `getCameraImage` 离屏出图（无需显示器），并内置「相邻快照像素差」自检 —— 该自检当场抓出我自己写的一个 bug：hold 排除写成「名字比索引」，导致手部关节被 500 力矩锁死、4 张快照全一样；④ README 增「三台机器人演示验收」表 + PROJECT_CONTEXT 3.2(5) |
 | 27 | 【2026-09-30】**文档可发现性收尾**：README 新增「📚 文档索引」、补齐目录结构（`scripts/` `datasets/` `native_hand.py` `filters.py`）、修正「`robots/` 未入库」的旧说法；本文件「附录：相关文件索引」与第 0 节开场白同步补上 ENVIRONMENT_SETUP；`.gitignore` 补 `tmp_*/` 并入库（此前只存在于工作区，队友 clone 后无效）|
+| 29 | 【2026-10-01】**① 撤回对队友代码的全部改动**：`retargeting/arm.py`、`retargeting/tracking.py`、`tests/test_dual_arm.py`、`inspect_angle_h5.py` 已 `git checkout 3e4e763` 还原，`git diff 3e4e763 HEAD -- retargeting/ ...` **为空**；兼容逻辑改放新增文件（`input_adapters/hand_keypoints.py` 转发层 + 缺常量兜底、`tests/conftest.py` 缺 URDF 时跳过）<br>**② 修掉「往 C 盘写东西」**：pip 把 **216.78 MB** 下载缓存写进 `C:\Users\王宪雨\AppData\Local\pip\Cache`、`huggingface_hub/hf_xet` 写进 `C:\Users\王宪雨\.cache\huggingface\xet\logs`。已建 `E:\cache\{pip,matplotlib,huggingface,torch,xdg,tmp}`、设 7 个用户级环境变量、把 **1560.54 MB / 889 个文件**的 pip 缓存整体 `robocopy /MOVE` 到 `E:\cache\pip`（缓存仍可复用，`pip cache list` 可见）；新增 `scripts/env_e_drive_cache.ps1`（含 E 盘 ACL 自愈）与 `scripts/check_no_c_drive.py`；规则成文为 §0.1 硬约束 + ENVIRONMENT_SETUP §2.6 |
+| 30 | 【2026-10-01】**更正一处误判（留档）**：上一轮我称「`roboticstoolbox 1.4.4` 本来就装着」——**错**，它是 2026-10-01 14:49 才由 `pip install` 装上的（mtime 可查）。结论（`arm.py` 无需改）仍成立，但**理由换成**：① `roboticstoolbox-python` 本来就在 `requirements-retargeting.txt` 里声明，缺依赖应装依赖、不应改队友源码；② 手部链路不导入该模块（实测还原后 `pytest` 40 passed / 3 skipped、一键流水线 7/7 全绿）|
 
 ### 8.2 已掌握的 Git 工作流
 

@@ -11,7 +11,7 @@
 > - 队友从零上手 → [`TEAM_ONBOARDING.md`](TEAM_ONBOARDING.md)
 >
 > **文件位置**：`F:\simulation_platform\docs\RETARGETING_PIPELINE.md`
-> **最后更新**：2026-09-30（实测环境：`E:\python3.11.7\python.exe`）
+> **最后更新**：2026-10-01（实测环境：`E:\python3.11.7\python.exe`）
 
 ---
 
@@ -309,17 +309,21 @@ if __name__ == "__main__":
 原则：**每一步都看「退出码 + 不变量」，不看漂亮输出**。
 所有命令都在项目根目录执行，`python` 均指 `E:\python3.11.7\python.exe`（§2.1）。
 
-### 10.1 七条命令（按顺序，全绿就是对的）
+### 10.1 八条命令（按顺序，全绿就是对的）
 
 | # | 命令 | 期望 | 不对的话说明 |
 |---|---|---|---|
 | 0 | `python -c "import sys;print(sys.executable)"` | 打印 `E:\python3.11.7\python.exe` | 若打印 `.venv\Scripts\python.exe` → 你在用空壳环境，后面必然 `No module named 'torch'` |
-| 1 | `python -m pytest tests -q` | `40 passed, 3 skipped`，退出码 0 | 出现 `ERROR`（而不是 `skipped`）→ 环境/资产有问题；`failed` → 真回归 |
-| 2 | `python scripts/run_retargeting_pipeline.py` | 末尾 `7/7 PASS`、`结论：全链路跑通`、退出码 0 | 任一步 FAIL，该步日志会打印失败命令，可单独重跑 |
-| 3 | `python -m retargeting inspect --angle-h5 tmp_motion/angles_twohand.h5` | 打印 `attr.output_shape=[18]` 等属性，退出码 0 | 文件缺属性 → 用的是未对齐数据或别的导出器 |
-| 4 | `python scripts/check_native_hand_motion.py --file tmp_motion/angles_twohand.h5` | 表格三行全 `[PASS]`，**「没动」= 0** | 「没动 > 0」= 映射或回放坏了，不能拿去答辩；「幅度偏小」随数据波动（阈值 0.05 rad），**不判失败** |
-| 5 | `python scripts/verify_hand_pipeline.py` | `7 / 7 PASS`，退出码 0 | 这是队友数据的回归验收，红了说明合并破了手部契约 |
-| 6 | `python scripts/check_gbk_safe.py --strict` | `[OK]`，退出码 0 | 改了 `.py` 里有非 GBK 字符，中文 Windows 控制台会崩 |
+| 1 | `. .\scripts\env_e_drive_cache.ps1` 然后 `python scripts/check_no_c_drive.py --strict` | `[OK]`，退出码 0 | 有 `[FAIL]` → 有工具会把缓存/临时文件写进 **C 盘**（硬约束，见 ENVIRONMENT_SETUP §2.6）|
+| 2 | `python -m pytest tests -q` | `40 passed, 3 skipped`，退出码 0 | 出现 `ERROR`（而不是 `skipped`）→ 环境/资产有问题；`failed` → 真回归 |
+| 3 | `python scripts/run_retargeting_pipeline.py` | 末尾 `7/7 PASS`、`结论：全链路跑通`、退出码 0 | 任一步 FAIL，该步日志会打印失败命令，可单独重跑 |
+| 4 | `python -m retargeting inspect --angle-h5 tmp_motion/angles_twohand.h5` | 打印 `attr.output_shape=[18]` 等属性，退出码 0 | 文件缺属性 → 用的是未对齐数据或别的导出器 |
+| 5 | `python scripts/check_native_hand_motion.py --file tmp_motion/angles_twohand.h5` | 表格三行全 `[PASS]`，**「没动」= 0** | 「没动 > 0」= 映射或回放坏了，不能拿去答辩；「幅度偏小」随数据波动（阈值 0.05 rad），**不判失败** |
+| 6 | `python scripts/verify_hand_pipeline.py` | `7 / 7 PASS`，退出码 0 | 这是队友数据的回归验收，红了说明合并破了手部契约 |
+| 7 | `python scripts/check_gbk_safe.py --strict` | `[OK]`，退出码 0 | 改了 `.py` 里有非 GBK 字符，中文 Windows 控制台会崩 |
+
+> **额外一条（不属命令，属规矩）**：`git diff 3e4e763 HEAD --stat -- retargeting/ tests/test_dual_arm.py inspect_angle_h5.py`
+> **必须为空** —— 队友已入库的算法代码零改动（见 §9 与 PROJECT_CONTEXT §0.1 第 3 条）。
 
 > 完整"README 里逐字粘贴"版本（步骤 0→5：造数据 → 对齐 → 训练 → 导出 → inspect）见第 3 节，
 > 本机已逐条复现通过（`saved_best=tmp_motion\ckpt\models\twohand_h5\linker\demo\model_best.pth` 确实存在）。

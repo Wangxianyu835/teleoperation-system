@@ -157,6 +157,20 @@ pip install -r requirements.txt
 > 换成 `E:\python3.11.7\python.exe` 即可。
 > 另外 `demo_hands_three_robots.py` 自带兜底：解释器缺依赖时会自动改用
 > 仓库内 `lib/`（`pip install -r requirements.txt -t lib` 的产物，不入库）。
+>
+> ⛔ **装依赖前先看这条**：本项目**禁止往 C 盘写任何东西**（依赖、pip / HuggingFace /
+> matplotlib / torch 缓存、临时文件都不行）。pip 的默认缓存目录就在
+> `C:\Users\<用户名>\AppData\Local\pip\Cache`，装一次依赖就会往里灌几百 MB。
+> 装之前先跑一次：
+>
+> ```powershell
+> cd F:\simulation_platform
+> . .\scripts\env_e_drive_cache.ps1          # 把缓存/临时目录改到 E:\cache\*
+> E:\python3.11.7\python.exe scripts\check_no_c_drive.py --strict   # 自检，期望 [OK]
+> E:\python3.11.7\python.exe -m pip install -r requirements-retargeting.txt
+> ```
+>
+> 细节与翻车记录见 [`docs/ENVIRONMENT_SETUP.md`](docs/ENVIRONMENT_SETUP.md) §2.6。
 
 ---
 
