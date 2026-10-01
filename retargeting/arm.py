@@ -6,11 +6,31 @@ import json
 import xml.etree.ElementTree as XmlET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from types import ModuleType
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
-from roboticstoolbox import ERobot, ET, ETS
 from scipy.spatial.transform import Rotation
+
+if TYPE_CHECKING:  # 仅供类型检查；运行期延迟导入可选依赖，见 require_roboticstoolbox()
+    from roboticstoolbox import ERobot
+
+
+def require_roboticstoolbox() -> ModuleType:
+    """延迟导入可选依赖 roboticstoolbox（只有机械臂链路需要它）。
+
+    手部重定向流水线不依赖该库；把它放在模块顶层会让整仓库在缺少该依赖时
+    连 import 都失败，所以改成调用时才导入，并给出可执行的安装命令。
+    """
+    try:
+        import roboticstoolbox
+    except ModuleNotFoundError as error:
+        raise ModuleNotFoundError(
+            "机械臂重定向需要可选依赖 roboticstoolbox-python，请先安装："
+            "python -m pip install roboticstoolbox-python"
+            "（只跑手部流水线可以不装）"
+        ) from error
+    return roboticstoolbox
 
 
 ARM_DOF = 7
@@ -80,7 +100,8 @@ def load_arm_specification(urdf_path: str | Path, side: str) -> ArmSpecification
             upper.append(float(limit.attrib["upper"]))
             velocity.append(float(limit.attrib["velocity"]))
 
-    robot = ERobot(ETS(ets), name=f"tron2a_{side}_arm")
+    toolbox = require_roboticstoolbox()
+    robot = toolbox.ERobot(toolbox.ETS(ets), name=f"tron2a_{side}_arm")
     robot.qlim = np.vstack((lower, upper))
     return ArmSpecification(
         side=side,

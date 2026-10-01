@@ -34,6 +34,7 @@ MEDIAPIPE_HAND_KEYPOINTS = 21
 # 定义几种数据来源标识，用于记录输入来源
 VISIONPRO_SOURCE = "visionpro"          # Apple Vision Pro 数据源
 MEDIAPIPE_APPROX_SOURCE = "mediapipe_approx"  # MediaPipe 近似数据源
+NPY_REPLAY_SOURCE = "npy_replay"        # .npy 录像回放数据源（离线复现用）
 
 DEFAULT_MAX_CENTER_DISPLACEMENT = 0.08
 DEFAULT_MAX_SHAPE_RMSE = 0.05

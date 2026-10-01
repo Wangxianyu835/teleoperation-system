@@ -78,7 +78,18 @@ simulation_platform/
 │   ├── native_hand.py       #   ★ L21 数据 → 机器人【原装手】降维映射
 │   └── filters.py           #   关节角平滑滤波
 │
-├── scripts/                 # 离线回放 / 验收工具（10 个）
+├── retargeting/             # ★ 队友的重定向算法（原样合并进来，可独立跑）
+│   ├── training.py          #   自监督训练（预测角度 -> FK -> 对比输入关键点）
+│   ├── inference.py         #   导出 18 维 left/right_angles（契约 H）
+│   ├── inspect.py           #   角度文件校验 / 统计
+│   ├── data.py              #   关键点数据集 + 坐标系对齐契约
+│   ├── model.py / visionpro.py / mediapipe.py / tracking.py
+│   ├── arm.py / dual_teleop.py / realtime_dual_teleop.py  # 机械臂 IK（需第三方 TRON2A URDF）
+│   └── simulation.py        #   角度 -> 关节名映射（接本平台回放）
+│
+├── input_adapters/          # 输入适配层（摄像头 / 手套 / npy 回放 -> 统一 payload）
+│
+├── scripts/                 # 离线回放 / 重定向 / 验收工具
 │   ├── replay_hand_native.py    # ★ 原装手回放（本项目主用）
 │   ├── show_hands_all.py        # ★ 三机器人并排同步屈伸（答辩用）
 │   ├── check_native_hand_motion.py  # ★ 逐关节实测"到底动了没、动了多少"
@@ -87,6 +98,9 @@ simulation_platform/
 │   ├── replay_hand_angles.py    # l21 直接回放
 │   ├── replay_actions.py        # 契约 H 动作序列回放
 │   ├── make_sample_data.py      # 生成契约 G/H 示例数据
+│   ├── make_twohand_raw_sample.py   # 生成原始（未对齐）双手关键点 H5
+│   ├── align_h5_coordinates.py  # 原始关键点 -> L21 固定坐标系
+│   ├── run_retargeting_pipeline.py  # ★ 一键跑通「原始数据 -> 训练 -> 导出 -> 回放」
 │   ├── verify_hand_pipeline.py  # 手部链路一键验收
 │   └── check_gbk_safe.py        # 提交前 GBK 安全检查
 │
@@ -110,6 +124,7 @@ simulation_platform/
 | [`docs/TEAM_ONBOARDING.md`](docs/TEAM_ONBOARDING.md) | 队友从零上手（约 30 分钟）| 新队友加入 |
 | [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md) | 接口契约 A~H（动作 / 观测 / 控制器 / HDF5）| 三方对接前必读 |
 | [`docs/OFFLINE_PIPELINE.md`](docs/OFFLINE_PIPELINE.md) | 离线数据流水线（契约 G / H）| 跑离线回放 |
+| [`docs/RETARGETING_PIPELINE.md`](docs/RETARGETING_PIPELINE.md) | **重定向流水线**（原始关键点 → 训练 → 导出 → 回放，含实测记录与已知缺口）| 跑重定向全链路 |
 | [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) | 项目背景 / 决策历史 / 待办清单 | 了解「为什么这么做」|
 
 ---
@@ -241,6 +256,36 @@ python scripts/verify_hand_pipeline.py
 
 > ⚠️ 这是**有损**映射（丢弃 `*_mcp_roll` 侧摆等原装手没有的自由度），
 > 详情与必须声明的限制见 `docs/OFFLINE_PIPELINE.md` 第 8.11 节。
+
+### 重定向全链路（原始关键点 → 训练 → 导出 → 回放）★ 队友算法已并入
+
+> 📄 详细命令、实测输出、已知缺口见 [`docs/RETARGETING_PIPELINE.md`](docs/RETARGETING_PIPELINE.md)
+
+```bash
+# ★ 一键：原始数据 -> 对齐 -> 训练 -> 导出 18 维角度 -> 校验 -> 三台机器人回放
+python scripts/run_retargeting_pipeline.py
+python scripts/run_retargeting_pipeline.py --no-replay --epochs 30
+
+# 分步（与上一行等价，便于排错）
+python scripts/make_twohand_raw_sample.py --output tmp_motion/raw_twohand.h5   # 0. 没有原始数据时自造
+python scripts/align_h5_coordinates.py --input tmp_motion/raw_twohand.h5 --output tmp_motion/aligned_twohand.h5
+python -m retargeting train  --input tmp_motion/aligned_twohand.h5 --run-name demo \
+       --epochs 3 --device cpu --checkpoint-root tmp_motion/ckpt
+python -m retargeting export --input tmp_motion/aligned_twohand.h5 \
+       --checkpoint tmp_motion/ckpt/models/twohand_h5/linker/demo/model_best.pth \
+       --output tmp_motion/angles_twohand.h5 --device cpu
+python -m retargeting inspect --angle-h5 tmp_motion/angles_twohand.h5   # 校验（帧数 / 有效帧 / 越限）
+
+# 队友已导出的 18 维文件可以直接回放，不需要训练
+python scripts/show_hands_all.py --file datasets/raw/retarget_twohand_153542.h5
+```
+
+**为什么这条链路能自己跑通**：训练是**自监督**的（网络预测角度 → 正运动学算回关键点 →
+与输入关键点对比），所以只要有原始双手关键点就能闭环，**不需要真实采集设备**。
+
+**实测（本机 2026-09-30）**：`pytest tests -q` → 40 passed / 3 skipped；
+示例数据 240 帧训练 3 轮约 12 秒；导出 240 × 18；三台机器人回放关节全部会动、0 卡死。
+机械臂 IK 那条链路还缺第三方 TRON2A URDF 资产（未随仓库分发），见上面那份文档第 6 节。
 
 ### 三台机器人演示验收（2026-09-30 实测，同一份采集数据）
 
