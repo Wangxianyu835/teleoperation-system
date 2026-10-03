@@ -8,13 +8,14 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_INPUT_H5 = PROJECT_ROOT / "input" / "aligned_visual_hand_data_20260912_153542.h5"
 DEFAULT_CHECKPOINT = (
     PROJECT_ROOT
     / "checkpoint"
     / "models"
     / "twohand_h5"
     / "linker"
-    / "coord_aligned_100ep"
+    / "my_run"
     / "model_best.pth"
 )
 DEFAULT_WARMSTART_CHECKPOINT = None

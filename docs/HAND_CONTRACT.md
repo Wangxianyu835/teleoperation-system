@@ -1,96 +1,75 @@
-# Hand-only L21 Data Contract
+# L21 手部数据契约与处理流程
 
-This is the contract declared by the current implementation. Physical coordinate interpretation, source units, and hardware-specific joint semantics are explicitly separated where the repository does not prove them.
+本文记录当前实现的数据格式与行为。物理坐标和单位证据见 [坐标说明](COORDINATE_SYSTEMS.md)，关节轴与限位见 [L21 关节契约](L21_JOINT_CONTRACT.md)。软件约定不代表已经完成物理标定。
 
-## Status vocabulary
+## 数据形状
 
-- **CODE-DEFINED**: enforced or directly constructed by current code.
-- **UNRESOLVED**: cannot be established from this repository alone and requires human/source-device confirmation.
+| 层级 | 形状 / 类型 | 含义 |
+|---|---|---|
+| MediaPipe 检测 | `(21,3)` / float32 | `hand_landmarks` 的 x/y/z；未使用 world landmarks |
+| Canonical 单帧 | `(25,3)` / float32 | 腕部归零，插入四个掌根中点，乘 source scale |
+| Canonical 窗口 | `(3,25,3)` / float32 | 按时间从旧到新排列 |
+| 模型输入 | `(B,3,25,3)` / torch.float32 | 左右手分别调用同一个共享模型 |
+| 模型输出 | `(B,18)` / torch.float32 | 弧度；dim 0 固定为零，dim 1..17 为可动关节 |
+| 训练 FK 输入 / 输出 | `(B,23)` / `(B,23,3)` | 18 维末尾补五个固定指尖零节点，得到 URDF 位置 |
+| 仿真适配 | `(17,)` 或 `(23,)` | `angle18_to_dofs` 去掉 dim 0；`angle18_to_nodes` 补五个零 |
 
-## Layered shapes and types
+18 维顺序：根占位；食指、中指、无名指、小指各依次为 MCP roll、MCP pitch、PIP；最后是拇指 CMC roll、CMC yaw、CMC pitch、MCP、IP。完整名称与限位见 [17 个 URDF 关节表](L21_JOINT_CONTRACT.md#17-movable-urdf-joints)。内部顺序尚无经验证的硬件协议映射。
 
-| Layer | Shape / dtype | Units | Coordinate frame | Semantics |
-|---|---|---|---|---|
-| MediaPipe detection | `(21,3)`, `float32` | **UNRESOLVED**; MediaPipe fields are copied as normalized `x,y,z` | **UNRESOLVED** source camera/MediaPipe frame | MP wrist, thumb 4, index 4, middle 4, ring 4, pinky 4 |
-| Vision Pro converted points | `(25,3)`, `float32` | **UNRESOLVED**; translation units are not declared | Adapter-specific signed extraction; physical frame **UNRESOLVED** | One point per streamed finger transform entry; expected 25 entries is not checked here |
-| Canonical single frame | `(25,3)`, `float32` | `scale_factor` times source units; default `1.0`; absolute unit **UNRESOLVED** | Wrist-relative; source frame unless offline alignment was pre-applied | Point 0 is zero; four non-thumb palm-root midpoints are synthetic |
-| Canonical window | `(3,25,3)`, `float32` | same as frame | same as frame | Chronological deque, oldest to newest |
-| Model batch input | `(B,3,25,3)`, `torch.float32` | same as canonical input | same as canonical input | One shared model is called separately for left and right |
-| PoseTransformer output | `(B,18)`, `torch.float32` | configured/limited as radians by `ANGLE_LIMITS`; angle-unit declaration is code/config, hardware meaning **UNRESOLVED** | Joint scalar outputs, no spatial frame | Flat L21 angle vector |
-| Training padded FK input | `(B,23)`, `torch.float32` | radians for model outputs; FK link lengths use URDF units, physical unit **UNRESOLVED** | L21 URDF graph | 18 model values + five fixed zero tip-node values |
-| FK positions | `(B,23,3)`, `torch.float32` | URDF length units, physical unit **UNRESOLVED** | FK/URDF frame; relation to source frame **UNRESOLVED** | Positions for 18 angle/root nodes plus 5 tips |
-| Exported angles H5 | `(N,18)`, `float32` | documented as rad; dim 0 fixed zero | L21 alignment attribute | Invalid rows contain held values but `*_valid` remains false |
-| Simulation hand DOFs | `(17,)`, `float32` | radians by contract/config | Hardware mapping **UNRESOLVED** | `angle18[1:]` |
-| Simulation nodes | `(23,)`, `float32` | same as angle vector | Hardware/simulator mapping **UNRESOLVED** | 18 values plus five zero placeholders |
+## 21 → 25 拓扑
 
-## Input H5 schema
+| Canonical index | 来源 / 构造 |
+|---:|---|
+| 0 | MediaPipe 0（腕部） |
+| 1–4 | MediaPipe 1–4（拇指） |
+| 5 | `(MP0 + MP5) / 2` |
+| 6–9 | MediaPipe 5–8（食指） |
+| 10 | `(MP0 + MP9) / 2` |
+| 11–14 | MediaPipe 9–12（中指） |
+| 15 | `(MP0 + MP13) / 2` |
+| 16–19 | MediaPipe 13–16（无名指） |
+| 20 | `(MP0 + MP17) / 2` |
+| 21–24 | MediaPipe 17–20（小指） |
 
-`retargeting.data.load_twohand_h5` accepts one of:
+`ensure_hand25` 接受 21 或 25 点；`wrist_relative` 减去点 0 并乘 `scale_factor`，默认 1.0。插值点不提供额外观测信息。
 
-```text
-root/frame_ids                 (N,) optional, default arange(N)
-root/timestamps                (N,) optional, default arange(N)
-root/left_hand_keypoints       (N,21,3) or (N,25,3)
-root/right_hand_keypoints      (N,21,3) or (N,25,3)
-```
+## 输入和训练 H5
 
-or exactly one group containing `l_glove_pos` and `r_glove_pos` with the same shapes, plus optional group vectors `frame_ids` and `timestamps`.
-
-Required root attribute when `require_aligned=True` (the default):
-
-```text
-coordinate_frame = "l21"
-```
-
-The README also documents `coordinate_alignment="source_to_l21_xyz"`, and the alignment script writes it, but `load_twohand_h5` does not validate that attribute. Input numeric dtype is converted to `float32`; finite values are checked per frame later, not by `_validate_hand_array` at load time.
-
-## Training H5 schema
-
-There is no separate target-angle training H5 format in this implementation. Training consumes the same aligned input H5 schema. `TwoHandH5Dataset` creates an in-memory target for each valid frame: `(1,25,3)`, equal to the newest converted frame in the three-frame window. It also creates zero-filled placeholders and boolean masks for invalid sides. The learning target is therefore keypoint geometry, not recorded L21 angles.
-
-## Output angle H5 schema
-
-Written by `retargeting.inference.run`:
+`load_twohand_h5` 接受以下根数据集，或唯一一个包含 `l_glove_pos` / `r_glove_pos` 的旧格式组：
 
 ```text
-frame_ids                 (N,)
-timestamps                (N,)
-left_angles               (N,18), float32
-right_angles              (N,18), float32
-left_valid                (N,), bool
-right_valid               (N,), bool
+left_hand_keypoints    (N,21,3) 或 (N,25,3)
+right_hand_keypoints   (N,21,3) 或 (N,25,3)
+frame_ids             (N,) 可选，默认 arange(N)
+timestamps            (N,) 可选，默认 arange(N)
 ```
 
-Attributes include `input_file`, `checkpoint`, `output_shape=(18,)`, `coordinate_alignment`, identity-tracking settings, and `invalid_angle_policy="hold_previous"`. `retargeting.simulation.iter_angle_h5` requires all six datasets, verifies shapes/finiteness, and yields held previous angles for invalid rows.
+旧格式的可选向量位于同一组。输入转换为 float32，手部非有限值由后续逐帧处理判断有效性。默认加载要求根属性 `coordinate_frame="l21"`；对齐脚本还写入 `coordinate_alignment="source_to_l21_xyz"`，但 loader 不校验后者。
 
-## 18-angle order
+训练不读取目标关节角。`TwoHandH5Dataset` 生成 `(B,3,25,3)` 输入、`(B,1,25,3)` 最新帧几何目标和逐侧布尔 valid mask；无效侧使用零占位并被 mask 排除。
 
-| Dim | Configured name | Configured range | Meaning status |
-|---:|---|---:|---|
-| 0 | `hand_base_link` | `[0,0]` | Fixed FK-root placeholder; not a wrist free DOF |
-| 1 | `index_mcp_roll` | `[-0.18,0.18]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 2 | `index_mcp_pitch` | `[0,1.57]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 3 | `index_pip` | `[0,1.57]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 4 | `middle_mcp_roll` | `[-0.18,0.18]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 5 | `middle_mcp_pitch` | `[0,1.57]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 6 | `middle_pip` | `[0,1.57]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 7 | `ring_mcp_roll` | `[-0.18,0.18]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 8 | `ring_mcp_pitch` | `[0,1.57]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 9 | `ring_pip` | `[0,1.57]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 10 | `pinky_mcp_roll` | `[-0.18,0.18]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 11 | `pinky_mcp_pitch` | `[0,1.57]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 12 | `pinky_pip` | `[0,1.57]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 13 | `thumb_cmc_roll` | `[-0.6,0.6]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 14 | `thumb_cmc_yaw` | `[0,1.6]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 15 | `thumb_cmc_pitch` | `[0,1.0]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 16 | `thumb_mcp` | `[0,1.57]` | Code name; hardware axis/sign **UNRESOLVED** |
-| 17 | `thumb_ip` | `[0,1.57]` | Code name; hardware axis/sign **UNRESOLVED** |
+## 两条输入路径
 
-The 17 movable DOFs are exactly dims `1..17` in this order. `angle18_to_dofs` implements that drop. Whether these names match the L21 hardware command protocol is **UNRESOLVED**; the repository only proves the internal config/FK order.
+离线：原始 H5 → 显式对齐 CLI → aligned H5 → `CanonicalHandProcessor` → 三帧窗口 → 共享模型 → 训练 FK/loss 或角度导出。对齐 CLI 先验证，再写同目录临时文件，关闭后原子替换；拒绝同文件输入输出及已经声明对齐的输入。失败保留已有输出。
 
-## Coordinate and mirror contract
+实时：`MediaPipeCameraAdapter` 从 BGR 帧得到 RGB 检测，读取 handedness 和 `hand_landmarks` → `CanonicalHandProcessor.update_detections` → 身份关联 → 25 点转换 → 三帧窗口 → `TwoHandRetargeter.predict`。该实验适配器未接入手部 CLI，也没有执行离线 source-to-L21 旋转。
 
-The offline alignment matrix is explicitly `[[0,-1,0],[0,0,1],[-1,0,0]]` applied as `p_source @ M.T`, equivalent to `x'=-y, y'=z, z'=-x`. This is CODE-DEFINED. The physical meaning of source axes, length units, and whether this is the correct L21 frame are **UNRESOLVED**.
+身份关联默认门限为掌心位移 0.08、腕部相对形状 RMSE 0.05。通过门限的候选按接受数量、标签匹配数量、连续性代价排序；当两手都满足门限时，标签仍可能决定分配。腕部相对 H5 丢失绝对位置，不能保证纠正标签互换。
 
-Left and right are not proven to be a single mirrored convention: offline alignment is identical for both, while Vision Pro extraction uses opposite signs. The intended left/right mirror rule is **UNRESOLVED**.
+缺失或被拒绝的侧由 processor/调用方清空三帧缓存，恢复需要三帧连续有效观测；`HandWindowBuffer` 本身不统一处理缺失重置。实时模型对缺失侧返回 `None`，保持上一姿态由下游控制器负责。
 
+PoseTransformer 使用学习得到的三帧加权聚合，并非硬编码中心帧。训练才计算 FK；离线推理检查有限值和角度限位。六个损失的尺度行为见坐标说明，稳定性与训练安全门见 [验证报告](P0_VERIFICATION_REPORT.md)。
+
+## 输出角度 H5
+
+```text
+frame_ids, timestamps  (N,)
+left_angles            (N,18), float32, rad
+right_angles           (N,18), float32, rad
+left_valid             (N,), bool
+right_valid            (N,), bool
+```
+
+属性包含输入、checkpoint、`output_shape=(18,)`、坐标/身份设置及 `invalid_angle_policy="hold_previous"`。无效行保持上一有效角度，开头无效行使用全零；valid 仍为 false。`iter_angle_h5` 检查六个数据集、形状和有限值。
+
+手部 CLI 仅提供 train/export/inspect。双臂 48D 协议是额外消费者，共享 `contracts.py` 仍包含 arm 字段，`build_retarget_output` 要求双臂和双手。扩展入口及专用 H5 格式仅在 [README](../README.md#tron2a-双臂-teleoperation) 维护。

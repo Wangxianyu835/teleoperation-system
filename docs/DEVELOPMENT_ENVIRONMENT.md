@@ -36,7 +36,7 @@ The current machine also has `opencv-python 4.13.0.92`, whose package metadata r
 
 ## Verification record
 
-On 2026-09-29, after installing the missing declared packages and applying the NumPy pin, the command below completed with `Ran 31 tests ... OK`:
+On 2026-10-03, the full suite completed with `Ran 91 tests ... OK` in the environment above. Current changes and representative checkpoint verification are recorded in [the verification report](P0_VERIFICATION_REPORT.md):
 
 ```text
 python -m unittest discover -s tests -v

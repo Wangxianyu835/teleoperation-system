@@ -401,7 +401,7 @@ def _run_epoch(
     batch_count = 0
     gradient_total = 0.0
 
-    for batch in generator.next_epoch():
+    for batch_index, batch in enumerate(generator.next_epoch(), start=1):
         if training:
             optimizer.zero_grad(set_to_none=True)
 
@@ -441,13 +441,20 @@ def _run_epoch(
             continue
         loss_total = sum(losses[side][0] for side in active_sides)
         loss_total = loss_total / len(active_sides)
+        context = f"batch={batch_index}, global_step={global_step}"
+        if not torch.isfinite(loss_total).all():
+            raise FloatingPointError(f"Non-finite total loss at {context}")
 
         if training:
             loss_total.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                model_parameters,
-                max_norm=10.0,
-            )
+            try:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model_parameters,
+                    max_norm=10.0,
+                    error_if_nonfinite=True,
+                )
+            except RuntimeError as error:
+                raise RuntimeError(f"Gradient clipping failed at {context}: {error}") from error
             optimizer.step()
             gradient_total += float(grad_norm)
             writer.add_scalar(

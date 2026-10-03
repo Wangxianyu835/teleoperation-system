@@ -9,7 +9,7 @@ import h5py
 import numpy as np
 import torch
 
-from retargeting.config import ANGLE_LIMITS, DEFAULT_CHECKPOINT, L21
+from retargeting.config import ANGLE_LIMITS, DEFAULT_CHECKPOINT, DEFAULT_INPUT_H5, L21
 from retargeting.data import (
     HAND_SIDES,
     TwoHandH5ChunkedGenerator,
@@ -143,7 +143,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("input/visual_hand_data_20260912_112108.h5"),
+        default=DEFAULT_INPUT_H5,
     )
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument(

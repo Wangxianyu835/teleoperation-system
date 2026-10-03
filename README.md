@@ -1,17 +1,17 @@
 # LinkerHand L21 双手重定向
 
-本仓库只维护一条正式链路：
+手部正式链路如下；实时摄像头适配与双臂扩展见后文：
 
 ```text
-MediaPipe / Vision Pro / 双手关键点 H5
+MediaPipe / 双手关键点 H5
 -> 左右手身份连续性检查与三帧窗口
 -> PoseTransformer
--> L21 正向运动学与训练损失
+-> L21 正向运动学与损失（仅训练）
 -> 双手 18 维角度 H5
 -> 外部仿真适配
 ```
 
-旧单手流程、真实硬件控制、Vision Pro 多进程控制、本地 PyBullet 环境和数据清洗脚本位于 `legacy/`，仅供查阅，不保证依赖完整或命令可运行。正式代码不依赖 `legacy/`。
+当前手部入口不使用历史单手和旧数据采集实现。
 
 ## 环境与命令
 
@@ -35,15 +35,17 @@ python -m retargeting export `
 默认 checkpoint 为：
 
 ```text
-checkpoint/models/twohand_h5/linker/coord_aligned_100ep/model_best.pth
+checkpoint/models/twohand_h5/linker/my_run/model_best.pth
 ```
+
+默认输入为 `input/aligned_visual_hand_data_20260912_153542.h5`。两条路径均从仓库根目录解析，不依赖开发机目录。当前本地文件已通过导出验证；录制和权重被 Git 忽略，新 checkout 需要自行提供这两个文件，或用 `--input` / `--checkpoint` 指定其他匹配的已对齐资源。
 
 训练共享左右手模型：
 
 ```powershell
 python -m retargeting train `
   --input input/aligned_visual_hand_data_20260912_153542.h5 `
-  --run-name my_run
+  --run-name my_new_run
 ```
 
 原始关键点 H5 不能直接用于训练。先生成一个新的坐标对齐文件，原始文件不会被覆盖：
@@ -54,7 +56,17 @@ python scripts/align_h5_coordinates.py `
   --output input/aligned_visual_hand_data_20260912_153542.h5
 ```
 
-该步骤对左右手都执行固定变换 `x'=-y, y'=z, z'=-x`，并在 H5 根属性中写入 `coordinate_frame=l21`。训练、推理和可视化只接受带有该标记的 aligned 文件。
+该步骤对左右手都执行固定变换 `x'=-y, y'=z, z'=-x`，并在 H5 根属性中写入 `coordinate_frame=l21`。训练和导出 loader 默认要求该标记；标记本身不能证明物理坐标正确。
+
+对齐脚本先验证输入，在同目录临时文件中完成写入并关闭，然后替换输出；验证、写入或替换失败时已有输出保持不变。已标记 L21 或声明 `coordinate_alignment` 的输入会被拒绝，避免重复或不明对齐。输入输出不能是同一路径或同一个文件的硬链接。
+
+只读坐标与尺度诊断：
+
+```powershell
+python scripts/diagnose_hand_coordinates.py --input input/aligned_visual_hand_data_20260912_153542.h5
+```
+
+该工具报告矩阵、行列式、有向体积、关键点距离、声明单位和 FK 尺度。合成测试只验证软件约定，真实坐标、左右手标签和物理尺度仍需人工验证，详见 [验证计划](docs/UNRESOLVED_VERIFICATION_PLAN.md) 和 [P0 报告](docs/P0_VERIFICATION_REPORT.md)。
 
 检查角度 H5：
 
@@ -74,7 +86,6 @@ retargeting/
   data.py            # H5 读取、三帧窗口和 valid 规则
   tracking.py        # 关键点转换、身份关联和窗口缓存
   mediapipe.py       # MediaPipe 输入适配
-  visionpro.py       # Vision Pro 输入适配
   model.py           # 双手共享模型封装
   inference.py       # checkpoint 加载、批量推理和导出
   training.py        # 训练、验证和 checkpoint 管理
@@ -87,84 +98,29 @@ model/
   losses.py
 ```
 
-## 18 维角度定义
+## 数据与仿真接口
 
-单位为弧度，顺序按手指分组。L21 有 17 个可动关节；dim 0 是与 FK 根节点 `hand_base_link` 对齐的固定零占位，不是手腕自由度。
-
-| dim | 关节名 | 语义 |
-|---:|---|---|
-| 0 | `hand_base_link` | 固定零占位 |
-| 1 | `index_mcp_roll` | 食指侧摆 |
-| 2 | `index_mcp_pitch` | 食指 MCP 屈伸 |
-| 3 | `index_pip` | 食指 PIP 屈伸 |
-| 4 | `middle_mcp_roll` | 中指侧摆 |
-| 5 | `middle_mcp_pitch` | 中指 MCP 屈伸 |
-| 6 | `middle_pip` | 中指 PIP 屈伸 |
-| 7 | `ring_mcp_roll` | 无名指侧摆 |
-| 8 | `ring_mcp_pitch` | 无名指 MCP 屈伸 |
-| 9 | `ring_pip` | 无名指 PIP 屈伸 |
-| 10 | `pinky_mcp_roll` | 小指侧摆 |
-| 11 | `pinky_mcp_pitch` | 小指 MCP 屈伸 |
-| 12 | `pinky_pip` | 小指 PIP 屈伸 |
-| 13 | `thumb_cmc_roll` | 拇指 CMC roll |
-| 14 | `thumb_cmc_yaw` | 拇指 CMC yaw |
-| 15 | `thumb_cmc_pitch` | 拇指 CMC pitch |
-| 16 | `thumb_mcp` | 拇指 MCP |
-| 17 | `thumb_ip` | 拇指 IP |
-
-仿真适配 API：
+完整手部 H5 格式、18 维关节顺序、21→25 拓扑、身份与无效帧行为统一见 [手部数据契约](docs/HAND_CONTRACT.md)。模型输出含一个固定根占位和 17 个可动关节；推理不计算训练用 FK。
 
 ```python
-from retargeting.simulation import (
-    angle18_to_dofs,
-    angle18_to_nodes,
-    iter_angle_h5,
-)
+from retargeting.simulation import angle18_to_dofs, angle18_to_nodes, iter_angle_h5
 
-dofs17 = angle18_to_dofs(angle18)    # 丢弃 dim 0
-nodes23 = angle18_to_nodes(angle18)  # 末尾补 5 个固定指尖零
+dofs17 = angle18_to_dofs(angle18)    # 去掉根占位
+nodes23 = angle18_to_nodes(angle18)  # 补五个固定指尖零节点
 ```
-
-## H5 协议
-
-输入关键点 H5：
-
-```text
-frame_ids
-timestamps
-left_hand_keypoints   (N, 21, 3) 或 (N, 25, 3)
-right_hand_keypoints  (N, 21, 3) 或 (N, 25, 3)
-
-H5 根属性：
-coordinate_frame      l21
-coordinate_alignment  source_to_l21_xyz
-```
-
-双臂离线重定向额外要求上肢观测 H5 字段：
-
-```text
-left_arm_keypoints    (N, 3, 3), shoulder / elbow / wrist
-right_arm_keypoints   (N, 3, 3), shoulder / elbow / wrist
-left_arm_valid        (N,)
-right_arm_valid       (N,)
-```
-
-输出角度 H5：
-
-```text
-frame_ids
-timestamps
-left_angles   (N, 18), float32, rad
-right_angles  (N, 18), float32, rad
-left_valid    (N,), bool
-right_valid   (N,), bool
-```
-
-身份连续性默认阈值为手掌中心位移 `0.08`、腕部相对形状 RMSE `0.05`。身份交换或异常会清空受影响侧的三帧缓存，重新积满连续有效帧后才恢复输出。无效角度帧不写零，H5 中保持上一有效姿态；开头连续无效帧使用全零中立姿态。相关属性写入 H5，`invalid_angle_policy=hold_previous`。
 
 ## TRON2A 双臂 Teleoperation
 
 TRON2A DACH 的官方资产位于 `third_party/tron2-robot-description`，当前验证版本为 `9939c22e69d27653ec0ba8a505859a2903dd1a71`。机械臂使用 Robotics Toolbox 从实际 URDF 解析 7 DOF 链、限位与速度，再通过数值 IK 输出关节角；双手继续使用现有 PoseTransformer。
+
+首次 checkout 需单独获取官方资产（不随本次修复提交）：
+
+```powershell
+git clone https://github.com/limxdynamics/tron2-robot-description.git third_party/tron2-robot-description
+git -C third_party/tron2-robot-description checkout 9939c22e69d27653ec0ba8a505859a2903dd1a71
+```
+
+双臂观测额外使用 `left_arm_keypoints` / `right_arm_keypoints`，形状 `(N,3,3)`，顺序 shoulder/elbow/wrist，及 `(N,)` 的 `left_arm_valid` / `right_arm_valid`。
 
 先根据 `config/tron2a_dach_calibration.example.json` 创建并填写实际中立位、坐标变换和 L21 安装偏置。示例文件中的零值仅用于说明格式，不能直接当作真实机器人标定。
 
@@ -213,7 +169,7 @@ python main_realtime_dual_teleop.py `
 
 | 路径 | 大小（bytes） | SHA256 |
 |---|---:|---|
-| `checkpoint/models/twohand_h5/linker/coord_aligned_100ep/model_best.pth` | 待重新训练 | - |
+| `checkpoint/models/twohand_h5/linker/my_run/model_best.pth` | 186036461 | `73de5f2d9481ecceff0725af7c094b818a707bbf6cdc0131d57f1e62c90af3bf` |
 | `checkpoint/models/thumb3/linker/model_final.pth` | 186036239 | `6A163E30EF805BAE79301230E40DA19BE059903CFE30FBD3F29A5012D15F36FF` |
 
 ## 测试
@@ -221,3 +177,14 @@ python main_realtime_dual_teleop.py `
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+当前本机全量 91 项通过；新 checkout 运行双臂测试前需要上面的官方 URDF 资产，本地录制 smoke test 还需要输入和权重。
+
+## 文档索引
+
+- [数据契约与处理流程](docs/HAND_CONTRACT.md)：形状、拓扑、输入输出及 valid 行为。
+- [坐标与单位](docs/COORDINATE_SYSTEMS.md)：软件约定、尺度路径及证据边界。
+- [L21 关节契约](docs/L21_JOINT_CONTRACT.md)：URDF 轴、限位和硬件映射差异。
+- [验证报告](docs/P0_VERIFICATION_REPORT.md)：本轮修复、测试、checkpoint 和历史指标。
+- [待验证清单](docs/UNRESOLVED_VERIFICATION_PLAN.md)：真实数据与物理实验、后续补测。
+- [开发环境](docs/DEVELOPMENT_ENVIRONMENT.md)：依赖版本与环境限制。
