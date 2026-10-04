@@ -56,7 +56,7 @@ python scripts/align_h5_coordinates.py `
   --output input/aligned_visual_hand_data_20260912_153542.h5
 ```
 
-该步骤对左右手都执行固定变换 `x'=-y, y'=z, z'=-x`，并在 H5 根属性中写入 `coordinate_frame=l21`。训练和导出 loader 默认要求该标记；标记本身不能证明物理坐标正确。
+该步骤对左右手应用 `retargeting/coordinates.py` 中当前启用的 `SOURCE_TO_L21_MATRIX`。原矩阵定义固定变换 `x'=-y, y'=z, z'=-x`；若临时改成单位矩阵，生成的数据就会采用单位矩阵。脚本仍会在 H5 根属性中写入 `coordinate_frame=l21`，因此该标记和 `coordinate_alignment` 字符串都不能用于判断实际使用了哪个矩阵。使用现有 `my_run/model_best.pth` 时，应保持原矩阵输入约定。
 
 对齐脚本先验证输入，在同目录临时文件中完成写入并关闭，然后替换输出；验证、写入或替换失败时已有输出保持不变。已标记 L21 或声明 `coordinate_alignment` 的输入会被拒绝，避免重复或不明对齐。输入输出不能是同一路径或同一个文件的硬链接。
 
@@ -74,6 +74,120 @@ python scripts/diagnose_hand_coordinates.py --input input/aligned_visual_hand_da
 python -m retargeting inspect `
   --angle-h5 output/twohand_angles_153542_aligned.h5
 ```
+
+## 原始人手与 L21 URDF FK 同步回放
+
+`D:\2026\code\mytrans\scripts\compare_zuobiaoxi_vs_origin.py` 模仿采集项目的 `read_hand_xyz.py`，在同一窗口并排播放原始 MediaPipe 人手骨架和已有预测角度驱动的 L21 FK 骨架。左栏保留原始图像 XY 投影；右栏显示 URDF 计算出的机器人节点及连线。双手模式中上排是左手，下排是右手。
+
+脚本只读取原始关键点和已导出的角度，不执行模型推理或坐标对齐。机器人侧显示骨架节点，不渲染 URDF 网格外观。运行环境需要 OpenCV GUI 支持；当前 `TransHandR` 环境已有 `cv2`。
+
+### 新录制 H5 的完整操作示例
+
+以下路径对应当前开发机。换一段录制时，保持各步骤中的采集日期与文件名一致；回放的原始 H5 和角度 H5 必须来自同一段采集。
+
+本例原始文件是 `D:\2026\code\MediaPipe\visual_hand_dataset\visual_hand_data_20261004_182606.h5`。在 PowerShell 中进入项目根目录并激活环境：
+
+```powershell
+Set-Location "D:\2026\code\mytrans"
+conda activate TransHandR
+```
+
+**0. 确认坐标矩阵。** 现有 checkpoint 的训练数据使用了原矩阵。若 `D:\2026\code\mytrans\retargeting\coordinates.py` 仍启用了调试用单位矩阵，请将 `SOURCE_TO_L21_MATRIX` 恢复为下面的定义并保存。确保只有一个实际执行的定义，避免后面的单位矩阵赋值将其覆盖。
+
+```python
+SOURCE_TO_L21_MATRIX = np.asarray(
+    (
+        (0.0, -1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (-1.0, 0.0, 0.0),
+    ),
+    dtype=np.float32,
+)
+```
+
+修改矩阵只影响之后生成的对齐数据，不会改变已经保存的 H5。单位矩阵实验应使用单独的输入与角度输出文件名。
+
+**1. 从原始录制生成对齐后的模型输入。**
+
+```powershell
+python "D:\2026\code\mytrans\scripts\align_h5_coordinates.py" `
+  --input "D:\2026\code\MediaPipe\visual_hand_dataset\visual_hand_data_20261004_182606.h5" `
+  --output "D:\2026\code\mytrans\input\aligned_visual_hand_data_20261004_182606.h5"
+```
+
+这一步进行 21→25 点转换、手腕归零和坐标变换。原始录制文件保持不变。
+
+**2. 用已有 checkpoint 导出对应角度。**
+
+```powershell
+python -m retargeting export `
+  --device cpu `
+  --disable-identity-tracking `
+  --input "D:\2026\code\mytrans\input\aligned_visual_hand_data_20261004_182606.h5" `
+  --checkpoint "D:\2026\code\mytrans\checkpoint\models\twohand_h5\linker\my_run\model_best.pth" `
+  --output "D:\2026\code\mytrans\output\manual_angles_20261004_182606_no_tracking.h5"
+```
+
+这里关闭身份跟踪，直接使用采集文件中的左右手标签，便于逐侧对照原始回放。已有导出默认会覆盖同名输出；需要保留其他实验时使用不同文件名。更换录制后必须重新生成匹配的角度文件，不能沿用上一段录制的角度。
+
+**3. 检查角度文件。**
+
+```powershell
+python -m retargeting inspect `
+  --angle-h5 "D:\2026\code\mytrans\output\manual_angles_20261004_182606_no_tracking.h5"
+```
+
+检查两侧形状为 `(总帧数, 18)`，`nonfinite=0`、`out_of_limits=0`。有效帧数可能小于采集检测帧数，因为预测需要连续三帧窗口；这些数值检查不能证明动作重定向准确。
+
+**4. 同步回放原始人手和机器人骨架。**
+
+```powershell
+python "D:\2026\code\mytrans\scripts\compare_zuobiaoxi_vs_origin.py" `
+  --source-h5 "D:\2026\code\MediaPipe\visual_hand_dataset\visual_hand_data_20261004_182606.h5" `
+  --angle-h5 "D:\2026\code\mytrans\output\manual_angles_20261004_182606_no_tracking.h5" `
+  --side both `
+  --view iso `
+  --speed 1
+```
+
+`--source-h5` 必须传原始的 21 点采集文件，不能传步骤 1 的 25 点对齐文件。`--angle-h5` 传步骤 2 导出的角度文件。脚本检查两份数据的帧数、帧编号和时间戳，并预计算整段 CPU FK 后打开窗口。
+
+### 回放控制与参数
+
+先点击回放窗口，再操作键盘：
+
+| 按键 | 功能 |
+|---|---|
+| 空格 | 暂停 / 继续 |
+| `a` / `d` | 上一帧 / 下一帧，并暂停 |
+| `1` / `2` / `3` / `4` | 机器人 YZ / XZ / XY / 斜视投影 |
+| `r` | 回到第一帧；如果当前暂停，再按空格开始播放 |
+| `s` | 保存当前并排对照 PNG |
+| `q` / Esc | 退出 |
+
+常用参数：
+
+| 参数 | 用法 |
+|---|---|
+| `--side left` / `--side right` | 只回放一侧；默认 `both` |
+| `--speed 0.5` | 相对采集时间戳半速播放；默认 `1` |
+| `--frame 100 --paused` | 从数组下标 100 开始并暂停；下标从 0 开始 |
+| `--labels` | 显示各自的节点编号；MediaPipe 和 L21 的编号体系不同 |
+| `--loop` | 播放结束后循环；默认停留在最后一帧 |
+| `--image-width 640 --image-height 480` | 原始采集图像尺寸；不同分辨率时应填写实际尺寸 |
+| `--output-dir "D:\2026\code\mytrans\picture\my_replay"` | 指定按 `s` 保存截图的目录 |
+
+默认截图目录是 `D:\2026\code\mytrans\picture\compare_zuobiaoxi_vs_origin`。不打开窗口、只导出单帧对照图的示例：
+
+```powershell
+python "D:\2026\code\mytrans\scripts\compare_zuobiaoxi_vs_origin.py" `
+  --source-h5 "D:\2026\code\MediaPipe\visual_hand_dataset\visual_hand_data_20261004_182606.h5" `
+  --angle-h5 "D:\2026\code\mytrans\output\manual_angles_20261004_182606_no_tracking.h5" `
+  --frame 100 --view iso --labels `
+  --snapshot "D:\2026\code\mytrans\picture\compare_zuobiaoxi_vs_origin\new_recording_frame_000100.png"
+```
+
+机器人栏中的 `VALID` 表示当前有效预测；`HOLD` 表示当前无效，保持最近有效角度；`ZERO` 表示此前还没有有效预测，显示零角度参考。原始栏的 `DETECTED` / `MISSING` 表示当前是否有采集关键点。回放按秒单位的时间戳调度且不丢帧，绘制较慢时会减速；这不是实时推理性能测量。两栏使用不同投影和显示比例，不能将屏幕距离当作物理误差。
 
 ## 代码结构
 
