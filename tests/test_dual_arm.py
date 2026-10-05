@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +16,10 @@ from retargeting.arm import (
 from retargeting.dual_teleop import export_robot_commands
 
 
-URDF = Path("third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf")
+URDF = Path(os.environ.get(
+    "TRON2A_TEST_URDF",
+    "third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf",
+))
 
 
 class DualArmTests(unittest.TestCase):
