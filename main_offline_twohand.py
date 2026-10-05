@@ -1,7 +1,7 @@
-"""Command-line entry point for offline two-hand angle export."""
+"""Compatibility entry; use python -m retargeting export."""
 
-from retargeting.inference import main
-
+import sys
+from retargeting.cli import main
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(["export", *sys.argv[1:]]))

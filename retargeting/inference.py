@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import argparse
+
 from pathlib import Path
 
 import h5py
 import numpy as np
 import torch
 
-from retargeting.config import ANGLE_LIMITS, DEFAULT_CHECKPOINT, L21
+from retargeting.runtime import resolve_device as _resolve_device
+from retargeting.config import (
+    ANGLE_LIMITS, DEFAULT_CHECKPOINT, DEFAULT_INPUT_H5, DEFAULT_OUTPUT_H5, L21, RUNTIME,
+)
 from retargeting.data import (
     HAND_SIDES,
     TwoHandH5ChunkedGenerator,
     TwoHandH5Dataset,
 )
-from retargeting.coordinates import COORDINATE_ALIGNMENT
 from retargeting.tracking import (
     DEFAULT_MAX_CENTER_DISPLACEMENT,
     DEFAULT_MAX_SHAPE_RMSE,
@@ -34,10 +37,12 @@ def run(args: argparse.Namespace) -> int:
         max_center_displacement=args.max_center_displacement,
         max_shape_rmse=args.max_shape_rmse,
     )
+    coordinate_alignment = dataset.coordinate_alignment
     retargeter = create_twohand_retargeter(
         model_kwargs=_model_kwargs(),
         device=device,
         checkpoint_path=str(args.checkpoint),
+        expected_coordinate_alignment=coordinate_alignment,
     )
     retargeter.eval()
 
@@ -97,7 +102,10 @@ def run(args: argparse.Namespace) -> int:
         h5_file.attrs["input_file"] = str(args.input)
         h5_file.attrs["checkpoint"] = str(args.checkpoint)
         h5_file.attrs["output_shape"] = (L21.model.output_joints,)
-        h5_file.attrs["coordinate_alignment"] = COORDINATE_ALIGNMENT
+        h5_file.attrs["coordinate_frame"] = dataset.coordinate_frame
+        h5_file.attrs["coordinate_alignment"] = coordinate_alignment
+        if dataset.source_landmark_space is not None:
+            h5_file.attrs["source_landmark_space"] = dataset.source_landmark_space
         h5_file.attrs["identity_tracking"] = not args.disable_identity_tracking
         h5_file.attrs["max_center_displacement"] = args.max_center_displacement
         h5_file.attrs["max_shape_rmse"] = args.max_shape_rmse
@@ -106,7 +114,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"device={device}")
     print(f"input={args.input}")
     print(f"checkpoint={args.checkpoint}")
-    print(f"coordinate_alignment={COORDINATE_ALIGNMENT}")
+    print(f"coordinate_alignment={coordinate_alignment}")
     print(f"output={output_path}")
     print(f"frames={frame_count}")
     for side in HAND_SIDES:
@@ -143,15 +151,15 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("input/visual_hand_data_20260912_112108.h5"),
+        default=DEFAULT_INPUT_H5,
     )
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("output/twohand_angles.h5"),
+        default=DEFAULT_OUTPUT_H5,
     )
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=RUNTIME.export_batch_size)
     parser.add_argument(
         "--scale-factor",
         type=float,
@@ -177,26 +185,6 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda"),
-        default="auto",
+        default=RUNTIME.device,
     )
     parser.set_defaults(handler=run)
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Export LinkerHand L21 angles from a two-hand H5 recording"
-    )
-    configure_parser(parser)
-    return run(parser.parse_args())
-
-
-def _resolve_device(requested: str) -> torch.device:
-    if requested == "auto":
-        requested = "cuda" if torch.cuda.is_available() else "cpu"
-    if requested == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is not available")
-    return torch.device(requested)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

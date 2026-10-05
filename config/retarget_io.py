@@ -6,8 +6,14 @@ from typing import Any
 
 import numpy as np
 
+from retargeting.contracts import (
+    HAND_SIDES, RECEPTIVE_FIELD, HAND_KEYPOINTS, HAND_COORDS,
+    validate_hand_input as _validate_hand_input,
+    legacy_visionpro_to_window,
+    build_retarget_input as _build_hand_input,
+)
 
-HAND_SIDES = ("left", "right")
+
 ARM_SIDES = ("left", "right")
 
 ACTION_ORDER = (
@@ -17,9 +23,6 @@ ACTION_ORDER = (
     "right_hand",
 )
 
-RECEPTIVE_FIELD = 3
-HAND_KEYPOINTS = 25
-HAND_COORDS = 3
 INPUT_KEY = "retarget_input"
 LEGACY_VISIONPRO_KEY = "vision_pro_data"
 
@@ -29,29 +32,8 @@ def validate_hand_input(
     side: str,
     allow_missing: bool = True,
 ) -> bool:
-    """Validate one hand input window with shape (frames, 25, 3)."""
-    if side not in HAND_SIDES:
-        raise ValueError(f"Invalid hand side: {side}")
-
-    if hand_data is None:
-        if allow_missing:
-            return True
-        raise ValueError(f"{side}_hand is missing")
-
-    if not isinstance(hand_data, np.ndarray):
-        raise TypeError(f"{side}_hand must be np.ndarray")
-
-    expected_shape = (RECEPTIVE_FIELD, HAND_KEYPOINTS, HAND_COORDS)
-    if hand_data.shape != expected_shape:
-        raise ValueError(
-            f"{side}_hand shape must be {expected_shape}, got {hand_data.shape}"
-        )
-
-    if not np.issubdtype(hand_data.dtype, np.number):
-        raise TypeError(f"{side}_hand must contain numeric values")
-    if not np.isfinite(hand_data).all():
-        raise ValueError(f"{side}_hand contains NaN or infinite values")
-    return True
+    """Delegate hand shape/finite validation to the canonical subsystem."""
+    return _validate_hand_input(hand_data, side, allow_missing=allow_missing)
 
 
 def validate_retarget_input(
@@ -93,36 +75,8 @@ def build_retarget_input(
     right_hand: np.ndarray | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the canonical payload shared by all input sources."""
-    payload: dict[str, Any] = {
-        "source": source,
-        "timestamp": timestamp,
-        "hands": {
-            "left": left_hand,
-            "right": right_hand,
-        },
-        "arms": {
-            "left": None,
-            "right": None,
-        },
-    }
-    if metadata:
-        payload["metadata"] = dict(metadata)
-    validate_retarget_input(payload)
-    return payload
-
-
-def legacy_visionpro_to_window(vision_data: np.ndarray) -> np.ndarray:
-    """Convert the old Vision Pro shared shape (25, 3, 3) to (3, 25, 3)."""
-    data = np.asarray(vision_data, dtype=np.float32)
-    if data.shape == (RECEPTIVE_FIELD, HAND_KEYPOINTS, HAND_COORDS):
-        return data
-    legacy_shape = (HAND_KEYPOINTS, RECEPTIVE_FIELD, HAND_COORDS)
-    if data.shape != legacy_shape:
-        raise ValueError(
-            f"Legacy Vision Pro data must have shape {legacy_shape}, got {data.shape}"
-        )
-    return np.transpose(data, (1, 0, 2)).copy()
+    """Use the canonical hand builder; application arm fields remain optional."""
+    return _build_hand_input(source, timestamp, left_hand, right_hand, metadata=metadata)
 
 
 def select_hand_window(

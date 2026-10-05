@@ -8,6 +8,20 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+HAND25_POINTS = 25
+TEMPORAL_WINDOW = 3
+HAND_ANGLE_DIM = 18
+HAND_DOF = 17
+FK_FIXED_TIPS = 5
+HAND_COORDINATE_DIM = 3
+DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "checkpoint"
+DEFAULT_OUTPUT_H5 = PROJECT_ROOT / "outputs" / "hand_retargeting" / "twohand_angles.h5"
+DEFAULT_REALTIME_SNAPSHOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "mediapipe_realtime.png"
+DEFAULT_REALTIME_CHECKPOINT = (
+    DEFAULT_CHECKPOINT_ROOT / "models" / "twohand_h5" / "linker" / "palm_local_v2" / "model_best.pth"
+)
+DEFAULT_MEDIAPIPE_ASSET = PROJECT_ROOT / "hand_landmarker.task"
+DEFAULT_INPUT_H5 = PROJECT_ROOT / "input" / "visual_hand_data_20260912_112108.h5"
 DEFAULT_CHECKPOINT = (
     PROJECT_ROOT
     / "checkpoint"
@@ -22,10 +36,10 @@ DEFAULT_WARMSTART_CHECKPOINT = None
 
 @dataclass(frozen=True)
 class ModelConfig:
-    receptive_field: int = 3
-    input_joints: int = 25
-    input_channels: int = 3
-    output_joints: int = 18
+    receptive_field: int = TEMPORAL_WINDOW
+    input_joints: int = HAND25_POINTS
+    input_channels: int = HAND_COORDINATE_DIM
+    output_joints: int = HAND_ANGLE_DIM
     embed_dim_ratio: int = 32
     spatial_depth: int = 6
     temporal_depth: int = 4
@@ -39,10 +53,37 @@ class ModelConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
+    epochs: int = 100
+    batch_size: int = 64
+    learning_rate: float = 0.0001
+    val_ratio: float = 0.2
+    early_stopping_patience: int = 20
+    seed: int = 1234
+    weight_decay: float = 0.01
+    optimizer_eps: float = 1e-6
+    scheduler_factor: float = 0.5
+    scheduler_patience: int = 8
+    minimum_learning_rate: float = 1e-6
+    gradient_clip_norm: float = 10.0
     loss_weights: tuple[float, ...] = (500, 500, 10, 500, 10, 500)
     collision_threshold: float = 0.010
     source_scale: float = 1.0
     robot_scale: float = 1.0
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    device: str = "auto"
+    export_batch_size: int = 256
+    camera_device: str = "cpu"
+    camera_index: int = 0
+    camera_frames: int = 300
+    view: str = "iso"
+    palm_radius: float = 0.22
+    robot_radius: float = 0.16
+
+
+RUNTIME = RuntimeConfig()
 
 
 JOINT_NAMES = (

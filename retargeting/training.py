@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+
 import logging
 import random
 import csv
@@ -32,15 +33,19 @@ except ModuleNotFoundError:
             def close(self):
                 pass
 
+from retargeting.runtime import resolve_device as _resolve_device
 from retargeting.config import (
     ANGLE_LIMITS,
     DEFAULT_WARMSTART_CHECKPOINT,
+    DEFAULT_CHECKPOINT_ROOT,
+    RUNTIME,
     EXCLUDED_COLLISION_PAIRS,
     L21,
     ROBOT_JOINTS,
     SOURCE_JOINTS,
 )
-from retargeting.coordinates import COORDINATE_ALIGNMENT
+from retargeting.coordinates import COORDINATE_FRAME, validate_coordinate_alignment
+from retargeting.model import _require_coordinate_alignment
 from retargeting.data import (
     HAND_SIDES,
     TwoHandH5ChunkedGenerator,
@@ -116,6 +121,12 @@ def run(args: argparse.Namespace) -> int:
         frame_end=frame_count,
         reset_on_gaps=True,
     )
+    coordinate_alignment = train_dataset.coordinate_alignment
+    if val_dataset.coordinate_alignment != coordinate_alignment:
+        raise ValueError(
+            "Training/validation coordinate alignment mismatch: "
+            f"training={coordinate_alignment!r}; validation={val_dataset.coordinate_alignment!r}"
+        )
     if len(train_dataset) == 0:
         raise ValueError("Training split contains no complete hand windows")
     if len(val_dataset) == 0:
@@ -128,16 +139,17 @@ def run(args: argparse.Namespace) -> int:
     print(f"validation_raw_range=[{val_start}, {frame_count})")
     print(f"train_windows={len(train_dataset)}")
     print(f"validation_windows={len(val_dataset)}")
-    print(f"coordinate_alignment={COORDINATE_ALIGNMENT}")
+    print(f"coordinate_alignment={coordinate_alignment}")
     print(f"run_name={run_name}")
     print(f"train_side_counts={train_dataset.side_counts()}")
     print(f"validation_side_counts={val_dataset.side_counts()}")
     logger.info(
-        "Loaded H5=%s raw_frames=%s train_windows=%s val_windows=%s",
+        "Loaded H5=%s raw_frames=%s train_windows=%s val_windows=%s coordinate_alignment=%s",
         h5_path,
         frame_count,
         len(train_dataset),
         len(val_dataset),
+        coordinate_alignment,
     )
 
     train_generator = TwoHandH5ChunkedGenerator(
@@ -155,22 +167,23 @@ def run(args: argparse.Namespace) -> int:
 
     model = _create_pose_model().to(device)
     if args.init_checkpoint is not None:
-        _load_checkpoint(model, args.init_checkpoint, device)
+        _load_checkpoint(model, args.init_checkpoint, device,
+                         expected_coordinate_alignment=coordinate_alignment)
         print(f"initialized_from={args.init_checkpoint}")
 
     model_parameters = list(model.parameters())
     optimizer = optim.AdamW(
         model_parameters,
         lr=args.learning_rate,
-        weight_decay=0.01,
-        eps=1e-6,
+        weight_decay=L21.training.weight_decay,
+        eps=L21.training.optimizer_eps,
     )
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="min",
-        factor=0.5,
-        patience=8,
-        min_lr=1e-6,
+        factor=L21.training.scheduler_factor,
+        patience=L21.training.scheduler_patience,
+        min_lr=L21.training.minimum_learning_rate,
     )
 
     pos_loss = nn.MSELoss()
@@ -291,6 +304,8 @@ def run(args: argparse.Namespace) -> int:
                 "val_start": val_start,
                 "run_name": run_name,
                 "init_checkpoint": args.init_checkpoint,
+                "coordinate_alignment": coordinate_alignment,
+                "source_landmark_space": train_dataset.source_landmark_space,
             }
             _save_checkpoint(
                 output_dir / "model_last.pth",
@@ -401,7 +416,7 @@ def _run_epoch(
     batch_count = 0
     gradient_total = 0.0
 
-    for batch in generator.next_epoch():
+    for batch_index, batch in enumerate(generator.next_epoch(), start=1):
         if training:
             optimizer.zero_grad(set_to_none=True)
 
@@ -441,13 +456,20 @@ def _run_epoch(
             continue
         loss_total = sum(losses[side][0] for side in active_sides)
         loss_total = loss_total / len(active_sides)
+        context = f"batch={batch_index}, global_step={global_step}"
+        if not torch.isfinite(loss_total).all():
+            raise FloatingPointError(f"Non-finite total loss at {context}")
 
         if training:
             loss_total.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                model_parameters,
-                max_norm=10.0,
-            )
+            try:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model_parameters,
+                    max_norm=L21.training.gradient_clip_norm,
+                    error_if_nonfinite=True,
+                )
+            except RuntimeError as error:
+                raise RuntimeError(f"Gradient clipping failed at {context}: {error}") from error
             optimizer.step()
             gradient_total += float(grad_norm)
             writer.add_scalar(
@@ -582,7 +604,10 @@ def _save_checkpoint(
     best_epoch,
     run_name,
     init_checkpoint,
+    coordinate_alignment,
+    source_landmark_space=None,
 ):
+    coordinate_alignment = validate_coordinate_alignment(coordinate_alignment, "Checkpoint save")
     torch.save(
         {
             "epoch": epoch,
@@ -595,7 +620,9 @@ def _save_checkpoint(
             "train_end": train_end,
             "val_start": val_start,
             "hand_sides": HAND_SIDES,
-            "coordinate_alignment": COORDINATE_ALIGNMENT,
+            "coordinate_frame": COORDINATE_FRAME,
+            "coordinate_alignment": coordinate_alignment,
+            "source_landmark_space": source_landmark_space,
             "run_name": run_name,
             "init_checkpoint": (
                 str(init_checkpoint) if init_checkpoint is not None else None
@@ -605,23 +632,13 @@ def _save_checkpoint(
     )
 
 
-def _load_checkpoint(model, checkpoint_path: Path, device):
+def _load_checkpoint(model, checkpoint_path: Path, device, expected_coordinate_alignment):
     if not checkpoint_path.is_file():
         raise FileNotFoundError(
             f"Initialization checkpoint was not found: {checkpoint_path}"
         )
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    alignment = (
-        checkpoint.get("coordinate_alignment")
-        if isinstance(checkpoint, dict)
-        else None
-    )
-    if alignment != COORDINATE_ALIGNMENT:
-        raise ValueError(
-            "Initialization checkpoint must declare "
-            f"coordinate_alignment={COORDINATE_ALIGNMENT!r}; got {alignment!r}. "
-            "Start from scratch or use a coordinate-aligned checkpoint."
-        )
+    _require_coordinate_alignment(checkpoint, str(checkpoint_path), expected_coordinate_alignment)
     state_dict = (
         checkpoint["model_pos"]
         if isinstance(checkpoint, dict) and "model_pos" in checkpoint
@@ -673,14 +690,6 @@ def _split_frame_ranges(frame_count: int, val_ratio: float, receptive_field: int
     return train_end, val_start
 
 
-def _resolve_device(requested: str) -> torch.device:
-    if requested == "auto":
-        requested = "cuda" if torch.cuda.is_available() else "cpu"
-    if requested == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is not available")
-    return torch.device(requested)
-
-
 def _set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -710,23 +719,13 @@ def _setup_logging(path: Path) -> logging.Logger:
 def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--run-name", required=True)
-    parser.add_argument("--checkpoint-root", type=Path, default=Path("checkpoint"))
+    parser.add_argument("--checkpoint-root", type=Path, default=DEFAULT_CHECKPOINT_ROOT)
     parser.add_argument("--init-checkpoint", type=Path, default=DEFAULT_WARMSTART_CHECKPOINT)
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--learning-rate", type=float, default=0.0001)
-    parser.add_argument("--val-ratio", type=float, default=0.2)
-    parser.add_argument("--early-stopping-patience", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--epochs", type=int, default=L21.training.epochs)
+    parser.add_argument("--batch-size", type=int, default=L21.training.batch_size)
+    parser.add_argument("--learning-rate", type=float, default=L21.training.learning_rate)
+    parser.add_argument("--val-ratio", type=float, default=L21.training.val_ratio)
+    parser.add_argument("--early-stopping-patience", type=int, default=L21.training.early_stopping_patience)
+    parser.add_argument("--seed", type=int, default=L21.training.seed)
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default=RUNTIME.device)
     parser.set_defaults(handler=run)
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Train the shared L21 two-hand model")
-    configure_parser(parser)
-    return run(parser.parse_args())
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

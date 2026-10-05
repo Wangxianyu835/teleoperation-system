@@ -10,6 +10,7 @@ import h5py
 import numpy as np
 
 from retargeting.contracts import HAND_SIDES
+from retargeting.config import HAND_ANGLE_DIM, FK_FIXED_TIPS
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,7 @@ def angle18_to_dofs(angle: np.ndarray) -> np.ndarray:
 
 def angle18_to_nodes(angle: np.ndarray) -> np.ndarray:
     value = _angle18(angle)
-    return np.concatenate((value, np.zeros(5, dtype=np.float32)))
+    return np.concatenate((value, np.zeros(FK_FIXED_TIPS, dtype=np.float32)))
 
 
 def iter_angle_h5(path: str | Path) -> Iterator[AngleFrame]:
@@ -56,7 +57,7 @@ def iter_angle_h5(path: str | Path) -> Iterator[AngleFrame]:
 
     frame_count = frame_ids.shape[0]
     for side in HAND_SIDES:
-        if angles[side].shape != (frame_count, 18):
+        if angles[side].shape != (frame_count, HAND_ANGLE_DIM):
             raise ValueError(f"{side}_angles must have shape ({frame_count}, 18)")
         if valid[side].shape != (frame_count,):
             raise ValueError(f"{side}_valid must have shape ({frame_count},)")
@@ -65,7 +66,7 @@ def iter_angle_h5(path: str | Path) -> Iterator[AngleFrame]:
     if timestamps.shape != (frame_count,):
         raise ValueError("timestamps length does not match frame_ids")
 
-    previous = {side: np.zeros(18, dtype=np.float32) for side in HAND_SIDES}
+    previous = {side: np.zeros(HAND_ANGLE_DIM, dtype=np.float32) for side in HAND_SIDES}
     for index in range(frame_count):
         for side in HAND_SIDES:
             if valid[side][index]:
@@ -82,7 +83,7 @@ def iter_angle_h5(path: str | Path) -> Iterator[AngleFrame]:
 
 def _angle18(angle: np.ndarray) -> np.ndarray:
     value = np.asarray(angle, dtype=np.float32).reshape(-1)
-    if value.shape != (18,):
+    if value.shape != (HAND_ANGLE_DIM,):
         raise ValueError(f"Expected 18 hand angles, got {value.shape}")
     if not np.isfinite(value).all():
         raise ValueError("Hand angles contain NaN or Inf")

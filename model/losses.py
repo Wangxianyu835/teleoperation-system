@@ -51,14 +51,34 @@ def point_plane_distance_batch(points_outside, points_on_plane, normals):
 
 
 def thumb_loss2(target_3D, source_3D, loss_function, rb_dic, source_dic):
+    """Compare thumb angles only where all four segments are resolvable.
+
+    The existing normalization epsilon (1e-12 in coordinate units) is a
+    numerical cutoff, not a physical length limit. Zero or shorter segments
+    have no reliable direction and are excluded from this term's reduction.
+    An entirely masked batch contributes a differentiable zero, not an angle.
+    """
     del rb_dic, source_dic
-    target_a = F.normalize(target_3D[:, 17] - target_3D[:, 16], dim=-1)
-    target_b = F.normalize(target_3D[:, 16] - target_3D[:, 15], dim=-1)
-    source_a = F.normalize(source_3D[:, 4] - source_3D[:, 3], dim=-1)
-    source_b = F.normalize(source_3D[:, 3] - source_3D[:, 2], dim=-1)
-    target_angle = torch.acos(torch.clamp(torch.sum(target_a * target_b, dim=-1), -1.0, 1.0))
-    source_angle = torch.acos(torch.clamp(torch.sum(source_a * source_b, dim=-1), -1.0, 1.0))
-    return loss_function(source_angle, target_angle)
+    target_segments = torch.stack((target_3D[:, 17] - target_3D[:, 16],
+                                   target_3D[:, 16] - target_3D[:, 15]), dim=1)
+    source_segments = torch.stack((source_3D[:, 4] - source_3D[:, 3],
+                                   source_3D[:, 3] - source_3D[:, 2]), dim=1)
+    if not (torch.isfinite(target_segments).all() and torch.isfinite(source_segments).all()):
+        raise ValueError("Thumb-angle segments must be finite")
+    norm_eps = 1e-12
+    valid = ((torch.linalg.vector_norm(target_segments, dim=-1) > norm_eps).all(dim=1)
+             & (torch.linalg.vector_norm(source_segments, dim=-1) > norm_eps).all(dim=1))
+    if not valid.any():
+        return (target_segments * 0.0).sum() + (source_segments * 0.0).sum()
+
+    angles = []
+    for segments in (target_segments, source_segments):
+        a, b = F.normalize(segments[valid], dim=-1, eps=norm_eps).unbind(dim=1)
+        # atan2 preserves 0/pi without acos's singular derivative at +/-1.
+        sine = torch.linalg.vector_norm(torch.cross(a, b, dim=-1), dim=-1)
+        cosine = torch.sum(a * b, dim=-1)
+        angles.append(torch.atan2(sine, cosine))
+    return loss_function(angles[1], angles[0])
 
 
 def tip_pos_loss(target_3D, source_3D, loss_function, rb_dic, source_dic):
@@ -109,7 +129,8 @@ def tip_distance_loss(target_3D, source_3D, loss_function, rb_dic, source_dic):
         target_distance = torch.norm(target_3D[:, target_tip[first]] - target_3D[:, target_tip[second]], dim=-1) * 1000.0
         source_distance = torch.norm(source_3D[:, source_tip[first]] - source_3D[:, source_tip[second]], dim=-1) * 1000.0
         total = total + loss_function(source_distance, target_distance)
-    return total / (target_3D.shape[0] * len(pairs))
+    # MSELoss already averages over the batch; only average the finger pairs.
+    return total / len(pairs)
 
 
 class RegLoss(nn.Module):

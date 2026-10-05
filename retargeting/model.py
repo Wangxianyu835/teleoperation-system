@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 
 from retargeting.contracts import HAND_SIDES, validate_retarget_input
-from retargeting.coordinates import COORDINATE_ALIGNMENT
+from retargeting.coordinates import COORDINATE_ALIGNMENT, validate_coordinate_alignment
 
 
 def build_hand_model(model_kwargs: dict[str, Any]) -> nn.Module:
@@ -25,10 +25,11 @@ def load_hand_checkpoint(
     device: torch.device | str,
     side: str | None = None,
     strict: bool = True,
+    expected_coordinate_alignment: str | None = None,
 ) -> nn.Module:
     """Load a checkpoint saved by main_train.py into one hand model."""
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    _require_coordinate_alignment(checkpoint, checkpoint_path)
+    _require_coordinate_alignment(checkpoint, checkpoint_path, expected_coordinate_alignment)
     state_dict = _state_dict_for_side(checkpoint, side)
     model.load_state_dict(state_dict, strict=strict)
     return model
@@ -84,15 +85,18 @@ def create_twohand_retargeter(
     left_checkpoint: str | None = None,
     right_checkpoint: str | None = None,
     strict: bool = True,
+    expected_coordinate_alignment: str | None = None,
 ) -> TwoHandRetargeter:
     """Create a shared two-hand model and optionally load its checkpoint."""
     model = build_hand_model(model_kwargs).to(device)
 
     if checkpoint_path is not None:
-        load_hand_checkpoint(model, checkpoint_path, device, strict=strict)
+        load_hand_checkpoint(model, checkpoint_path, device, strict=strict,
+                             expected_coordinate_alignment=expected_coordinate_alignment)
     elif left_checkpoint is not None or right_checkpoint is not None:
         selected_checkpoint = left_checkpoint or right_checkpoint
-        load_hand_checkpoint(model, selected_checkpoint, device, strict=strict)
+        load_hand_checkpoint(model, selected_checkpoint, device, strict=strict,
+                             expected_coordinate_alignment=expected_coordinate_alignment)
 
     return TwoHandRetargeter(model=model).to(device)
 
@@ -101,17 +105,24 @@ def _to_single_batch_tensor(hand_data: np.ndarray, device: torch.device | str) -
     return torch.from_numpy(hand_data.astype(np.float32)).unsqueeze(0).to(device)
 
 
-def _require_coordinate_alignment(checkpoint: object, checkpoint_path: str) -> None:
-    alignment = (
+def _require_coordinate_alignment(
+    checkpoint: object, checkpoint_path: str,
+    expected_coordinate_alignment: str | None = None,
+) -> None:
+    # Old realtime/legacy callers retain their original fixed-coordinate guard.
+    expected = validate_coordinate_alignment(
+        COORDINATE_ALIGNMENT if expected_coordinate_alignment is None else expected_coordinate_alignment,
+        "Expected input",
+    )
+    alignment = validate_coordinate_alignment((
         checkpoint.get("coordinate_alignment")
         if isinstance(checkpoint, dict)
         else None
-    )
-    if alignment != COORDINATE_ALIGNMENT:
+    ), f"Checkpoint {checkpoint_path}")
+    if alignment != expected:
         raise ValueError(
-            f"Checkpoint {checkpoint_path} is not a coordinate-aligned model; "
-            f"expected coordinate_alignment={COORDINATE_ALIGNMENT!r}, "
-            f"got {alignment!r}. Train a new model from aligned H5 data."
+            f"Checkpoint coordinate alignment mismatch ({checkpoint_path}): "
+            f"input={expected!r}; checkpoint={alignment!r}."
         )
 
 

@@ -7,11 +7,11 @@ from pathlib import Path
 
 import numpy as np
 
-from input_adapters.hand_keypoints import (
-    HandWindowBuffer,
-    MEDIAPIPE_APPROX_SOURCE,
-    NPY_REPLAY_SOURCE,
-)
+from retargeting.hand_core import CanonicalHandProcessor
+from retargeting.tracking import MEDIAPIPE_APPROX_SOURCE
+
+NPY_REPLAY_SOURCE = "npy_replay"
+
 
 
 class NpyReplayAdapter:
@@ -21,7 +21,7 @@ class NpyReplayAdapter:
         self.path = Path(path)
         self.scale_factor = scale_factor
         self._frames = np.load(self.path, allow_pickle=True)
-        self._buffer = HandWindowBuffer(scale_factor=scale_factor)
+        self._processor = CanonicalHandProcessor(scale_factor=scale_factor, track_identity=False)
         self._index = 0
 
     def __iter__(self) -> Iterator[dict]:
@@ -39,7 +39,7 @@ class NpyReplayAdapter:
             left_hand = frame.get("left_hand")
             right_hand = frame.get("right_hand")
             source = _source_for_frame(left_hand, right_hand)
-            payload = self._buffer.update(
+            payload, _ = self._processor.process(
                 left_hand=left_hand,
                 right_hand=right_hand,
                 timestamp=frame.get("timestamp"),

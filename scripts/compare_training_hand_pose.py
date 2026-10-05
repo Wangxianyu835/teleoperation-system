@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+
 from pathlib import Path
 import sys
 
@@ -20,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from model.kinematics import create_hand_kinematics
+from retargeting.runtime import resolve_device as _resolve_device
 from retargeting.config import (
     JOINT_EDGES,
     JOINT_NAMES,
@@ -70,7 +72,7 @@ def main() -> int:
         ("After", args.after_checkpoint),
     )
     predictions = {
-        title: _predict_checkpoint(path, sample, fks, device)
+        title: _predict_checkpoint(path, sample, fks, device, dataset.coordinate_alignment)
         for title, path in checkpoints
     }
 
@@ -116,11 +118,15 @@ def _predict_checkpoint(
     sample: dict,
     fks: dict,
     device: torch.device,
+    coordinate_alignment: str,
 ) -> dict:
     if not checkpoint.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
     model = build_hand_model(L21.model_kwargs()).to(device)
-    load_hand_checkpoint(model, str(checkpoint), device=device)
+    load_hand_checkpoint(
+        model, str(checkpoint), device=device,
+        expected_coordinate_alignment=coordinate_alignment,
+    )
     model.eval()
 
     result = {}
@@ -248,14 +254,6 @@ def _apply_limits(ax, limits: tuple[np.ndarray, float]) -> None:
     ax.set_xlim(center[0] - radius, center[0] + radius)
     ax.set_ylim(center[1] - radius, center[1] + radius)
     ax.set_zlim(center[2] - radius, center[2] + radius)
-
-
-def _resolve_device(requested: str) -> torch.device:
-    if requested == "auto":
-        requested = "cuda" if torch.cuda.is_available() else "cpu"
-    if requested == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is not available")
-    return torch.device(requested)
 
 
 if __name__ == "__main__":

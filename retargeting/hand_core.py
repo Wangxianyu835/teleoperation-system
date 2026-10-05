@@ -13,7 +13,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from retargeting.contracts import HAND_SIDES, build_retarget_input
+from retargeting.contracts import HAND_SIDES, RECEPTIVE_FIELD, build_retarget_input
 from retargeting.tracking import (
     DEFAULT_MAX_CENTER_DISPLACEMENT,
     DEFAULT_MAX_SHAPE_RMSE,
@@ -95,7 +95,7 @@ class CanonicalHandProcessor:
     def __init__(
         self,
         scale_factor: float = 1.0,
-        receptive_field: int = 3,
+        receptive_field: int = RECEPTIVE_FIELD,
         track_identity: bool = True,
         max_center_displacement: float = DEFAULT_MAX_CENTER_DISPLACEMENT,
         max_shape_rmse: float = DEFAULT_MAX_SHAPE_RMSE,

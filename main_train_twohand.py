@@ -1,7 +1,7 @@
-"""Command-line entry point for two-hand L21 training."""
+"""Compatibility entry; use python -m retargeting train."""
 
-from retargeting.training import main
-
+import sys
+from retargeting.cli import main
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(["train", *sys.argv[1:]]))

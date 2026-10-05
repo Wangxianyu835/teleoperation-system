@@ -6,6 +6,8 @@ from typing import Any
 
 import numpy as np
 
+from retargeting.config import HAND25_POINTS, TEMPORAL_WINDOW, HAND_COORDINATE_DIM
+
 HAND_SIDES = ("left", "right")
 ARM_SIDES = ("left", "right")
 
@@ -16,9 +18,9 @@ ACTION_ORDER = (
     "right_hand",
 )
 
-RECEPTIVE_FIELD = 3 #time window length for retargeting model input
-HAND_KEYPOINTS = 25 #number of keypoints for each hand
-HAND_COORDS = 3 #维度
+RECEPTIVE_FIELD = TEMPORAL_WINDOW
+HAND_KEYPOINTS = HAND25_POINTS
+HAND_COORDS = HAND_COORDINATE_DIM
 ARM_KEYPOINTS = 3
 INPUT_KEY = "retarget_input"
 LEGACY_VISIONPRO_KEY = "vision_pro_data"
