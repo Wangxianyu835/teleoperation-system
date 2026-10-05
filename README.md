@@ -284,3 +284,22 @@ TeleOpBench 建立在以下开源代码库之上，请访问链接查看各自�
 
 **Wangxianyu835** —— 中山大学 · 大学生创新创业训练计划
 
+---
+
+## 九、Hand retargeting 子系统（PR1）
+
+本仓库现为 production hand retargeting 的唯一源码维护入口，合入了
+`mytrans@138fc2d` 的 canonical hand 核心。系统原有双臂、机器人、仿真、任务、
+benchmark 和 recording 继续沿用本仓库的应用架构。
+
+手部链路为 MediaPipe21 → Hand25 → 坐标对齐 → `[B,3,25,3]` → PoseTransformer →
+18D（root placeholder + 17 个真实 hand DOF）。支持 legacy `source_to_l21_xyz` 与
+palm-local `palm_local_to_l21_v1`，H5 / Dataset / training / checkpoint / inference
+必须严格使用同一标识；缺失或不匹配直接失败。
+
+正式手部入口为 `python -m retargeting {align,train,export,inspect,realtime}`。
+安装、H5 schema、训练/推理、MediaPipe realtime、原生手回放及旧 wrapper 行为见
+[Hand retargeting 使用说明](docs/HAND_RETARGETING.md)。
+[PR1 合并结果](docs/PR1_HAND_CONSOLIDATION_RESULT.md)记录测试与迁移边界；
+[PR2 follow-up](docs/PR2_FOLLOW_UP.md)记录整机 command、48DOF 与 arm mapping 后续工作。
+

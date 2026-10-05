@@ -1,5 +1,10 @@
 # 项目交接文档 / AI 对话上下文
 
+> **PR1 更新（2026-10-06）**：下文为 2026-09-12 历史交接记录。本仓库现为 hand
+> retargeting 的唯一 production source of truth，mytrans 不再独立维护 production 实现。
+> 当前 hand pipeline、路径与测试以 [HAND_RETARGETING.md](HAND_RETARGETING.md) 为准；
+> 双臂/RobotCommand/48DOF 整合属于 [PR2](PR2_FOLLOW_UP.md)。
+
 > **用途**：新开一个 AI 对话时，先让它读本文件，它就能立刻了解项目全貌、环境陷阱和历史决策。
 > **文件位置**：`F:\simulation_platform\docs\PROJECT_CONTEXT.md`
 > **最后更新**：2026-09-12

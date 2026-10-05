@@ -1,5 +1,10 @@
 # 离线 Vision-based 流水线方案（OFFLINE PIPELINE）
 
+> **PR1 更新（2026-10-06）**：本文件保留早期系统离线规划与契约 G/H。当前正式 hand
+> retargeting 已在本仓库统一，使用 Hand25、三帧、18D L21 输出与严格 alignment metadata。
+> 当前 hand H5 schema 和 CLI 以 [HAND_RETARGETING.md](HAND_RETARGETING.md) 为准。
+> 下文单手 `keypoints_3d` / 系统 `actions.h5` 不能直接等同于 canonical 两手输入/角度输出。
+
 > **本文件是「离线测试」的技术规范** —— 定义数据格式与三方分工。
 > 与 `INTERFACE_CONTRACT.md` 配套使用（那份定义**内存接口**，这份定义**文件接口**）。
 >
