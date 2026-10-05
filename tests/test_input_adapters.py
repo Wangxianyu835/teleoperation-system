@@ -5,7 +5,6 @@ import numpy as np
 from retargeting.contracts import (
     HAND_KEYPOINTS,
     RECEPTIVE_FIELD,
-    legacy_visionpro_to_window,
     validate_arm_input,
     validate_retarget_input,
 )
@@ -41,11 +40,6 @@ class InputAdapterTests(unittest.TestCase):
         validate_retarget_input(payload)
         self.assertEqual(payload["hands"]["left"].shape, (3, 25, 3))
         self.assertIsNone(payload["hands"]["right"])
-
-    def test_legacy_visionpro_shape_is_normalized(self):
-        legacy = np.zeros((25, RECEPTIVE_FIELD, 3), dtype=np.float32)
-        normalized = legacy_visionpro_to_window(legacy)
-        self.assertEqual(normalized.shape, (RECEPTIVE_FIELD, 25, 3))
 
     def test_arm_contract_accepts_optional_frame_and_rejects_bad_shape(self):
         self.assertTrue(validate_arm_input(None, "left"))

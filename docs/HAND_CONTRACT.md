@@ -14,11 +14,11 @@
 | 训练 FK 输入 / 输出 | `(B,23)` / `(B,23,3)` | 18 维末尾补五个固定指尖零节点，得到 URDF 位置 |
 | 仿真适配 | `(17,)` 或 `(23,)` | `angle18_to_dofs` 去掉 dim 0；`angle18_to_nodes` 补五个零 |
 
-18 维顺序：根占位；食指、中指、无名指、小指各依次为 MCP roll、MCP pitch、PIP；最后是拇指 CMC roll、CMC yaw、CMC pitch、MCP、IP。完整名称与限位见 [17 个 URDF 关节表](L21_JOINT_CONTRACT.md#17-movable-urdf-joints)。内部顺序尚无经验证的硬件协议映射。
+18 维顺序：根占位；食指、中指、无名指、小指各依次为 MCP roll、MCP pitch、PIP；最后是拇指 CMC roll、CMC yaw、CMC pitch、MCP、IP。完整名称与限位见 [17 个 URDF 关节表](L21_JOINT_CONTRACT.md#17-个可动-urdf-关节)。内部顺序尚无经验证的硬件协议映射。
 
 ## 21 → 25 拓扑
 
-| Canonical index | 来源 / 构造 |
+| 规范化点索引 | 来源 / 构造 |
 |---:|---|
 | 0 | MediaPipe 0（腕部） |
 | 1–4 | MediaPipe 1–4（拇指） |

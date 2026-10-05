@@ -32,11 +32,11 @@ from retargeting.contracts import (
 MEDIAPIPE_HAND_KEYPOINTS = 21
 
 # 定义几种数据来源标识，用于记录输入来源
-VISIONPRO_SOURCE = "visionpro"          # Apple Vision Pro 数据源
+VISIONPRO_SOURCE = "visionpro"          # Reserved source identifier; no runtime adapter.
 MEDIAPIPE_APPROX_SOURCE = "mediapipe_approx"  # MediaPipe 近似数据源
 
-DEFAULT_MAX_CENTER_DISPLACEMENT = 0.08
-DEFAULT_MAX_SHAPE_RMSE = 0.05
+DEFAULT_MAX_CENTER_DISPLACEMENT = 0.08#默认最大手掌中心位移阈值
+DEFAULT_MAX_SHAPE_RMSE = 0.05#默认最大手部形状均方根误差阈值
 
 
 class HandIdentityTracker:

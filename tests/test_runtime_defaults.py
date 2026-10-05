@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest import mock
 
 import torch
+import h5py
 
 from retargeting.__main__ import build_parser
 from retargeting.config import PROJECT_ROOT
@@ -51,6 +52,10 @@ class RuntimeDefaultTests(unittest.TestCase):
             with mock.patch("retargeting.inference.create_twohand_retargeter", return_value=TwoHandRetargeter(StubModel())) as create:
                 self.assertEqual(run(args), 0)
             self.assertEqual(create.call_args.kwargs["checkpoint_path"], str(EXPECTED_CHECKPOINT))
+            self.assertEqual(create.call_args.kwargs["expected_coordinate_alignment"], "source_to_l21_xyz")
+            with h5py.File(output, "r") as handle:
+                self.assertEqual(handle.attrs["coordinate_alignment"], "source_to_l21_xyz")
+                self.assertEqual(handle.attrs["coordinate_frame"], "l21")
             summary = inspect_angle_h5(output)
         self.assertEqual(summary["frames"], len(ids))
         for side in ("left", "right"):

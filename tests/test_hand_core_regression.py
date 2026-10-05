@@ -92,6 +92,7 @@ class HandWindowRegressionTests(unittest.TestCase):
             h5_path = Path(temp_dir) / "hands.h5"
             with h5py.File(h5_path, "w") as h5_file:
                 h5_file.attrs["coordinate_frame"] = "l21"
+                h5_file.attrs["coordinate_alignment"] = "source_to_l21_xyz"
                 h5_file.create_dataset("frame_ids", data=np.arange(3))
                 h5_file.create_dataset("timestamps", data=np.arange(3) / 30.0)
                 h5_file.create_dataset("left_hand_keypoints", data=frames)

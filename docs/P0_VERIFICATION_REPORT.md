@@ -41,7 +41,7 @@ python -m retargeting export --device cpu --output output/autonomous_verificatio
 73de5f2d9481ecceff0725af7c094b818a707bbf6cdc0131d57f1e62c90af3bf
 ```
 
-strict load 后每侧抽取三个有效窗口，经真实模型、L21 FK、六项 loss 和 backward：
+严格加载权重后每侧抽取三个有效窗口，经真实模型、L21 FK、六项损失和反向传播：
 
 | 侧 | 帧索引 | 输入 / 输出 / FK 形状 | 梯度张量 |
 |---|---|---|---:|

@@ -40,7 +40,8 @@ from retargeting.config import (
     ROBOT_JOINTS,
     SOURCE_JOINTS,
 )
-from retargeting.coordinates import COORDINATE_ALIGNMENT
+from retargeting.coordinates import COORDINATE_FRAME, validate_coordinate_alignment
+from retargeting.model import _require_coordinate_alignment
 from retargeting.data import (
     HAND_SIDES,
     TwoHandH5ChunkedGenerator,
@@ -116,6 +117,12 @@ def run(args: argparse.Namespace) -> int:
         frame_end=frame_count,
         reset_on_gaps=True,
     )
+    coordinate_alignment = train_dataset.coordinate_alignment
+    if val_dataset.coordinate_alignment != coordinate_alignment:
+        raise ValueError(
+            "Training/validation coordinate alignment mismatch: "
+            f"training={coordinate_alignment!r}; validation={val_dataset.coordinate_alignment!r}"
+        )
     if len(train_dataset) == 0:
         raise ValueError("Training split contains no complete hand windows")
     if len(val_dataset) == 0:
@@ -128,16 +135,17 @@ def run(args: argparse.Namespace) -> int:
     print(f"validation_raw_range=[{val_start}, {frame_count})")
     print(f"train_windows={len(train_dataset)}")
     print(f"validation_windows={len(val_dataset)}")
-    print(f"coordinate_alignment={COORDINATE_ALIGNMENT}")
+    print(f"coordinate_alignment={coordinate_alignment}")
     print(f"run_name={run_name}")
     print(f"train_side_counts={train_dataset.side_counts()}")
     print(f"validation_side_counts={val_dataset.side_counts()}")
     logger.info(
-        "Loaded H5=%s raw_frames=%s train_windows=%s val_windows=%s",
+        "Loaded H5=%s raw_frames=%s train_windows=%s val_windows=%s coordinate_alignment=%s",
         h5_path,
         frame_count,
         len(train_dataset),
         len(val_dataset),
+        coordinate_alignment,
     )
 
     train_generator = TwoHandH5ChunkedGenerator(
@@ -155,7 +163,8 @@ def run(args: argparse.Namespace) -> int:
 
     model = _create_pose_model().to(device)
     if args.init_checkpoint is not None:
-        _load_checkpoint(model, args.init_checkpoint, device)
+        _load_checkpoint(model, args.init_checkpoint, device,
+                         expected_coordinate_alignment=coordinate_alignment)
         print(f"initialized_from={args.init_checkpoint}")
 
     model_parameters = list(model.parameters())
@@ -291,6 +300,8 @@ def run(args: argparse.Namespace) -> int:
                 "val_start": val_start,
                 "run_name": run_name,
                 "init_checkpoint": args.init_checkpoint,
+                "coordinate_alignment": coordinate_alignment,
+                "source_landmark_space": train_dataset.source_landmark_space,
             }
             _save_checkpoint(
                 output_dir / "model_last.pth",
@@ -589,7 +600,10 @@ def _save_checkpoint(
     best_epoch,
     run_name,
     init_checkpoint,
+    coordinate_alignment,
+    source_landmark_space=None,
 ):
+    coordinate_alignment = validate_coordinate_alignment(coordinate_alignment, "Checkpoint save")
     torch.save(
         {
             "epoch": epoch,
@@ -602,7 +616,9 @@ def _save_checkpoint(
             "train_end": train_end,
             "val_start": val_start,
             "hand_sides": HAND_SIDES,
-            "coordinate_alignment": COORDINATE_ALIGNMENT,
+            "coordinate_frame": COORDINATE_FRAME,
+            "coordinate_alignment": coordinate_alignment,
+            "source_landmark_space": source_landmark_space,
             "run_name": run_name,
             "init_checkpoint": (
                 str(init_checkpoint) if init_checkpoint is not None else None
@@ -612,23 +628,13 @@ def _save_checkpoint(
     )
 
 
-def _load_checkpoint(model, checkpoint_path: Path, device):
+def _load_checkpoint(model, checkpoint_path: Path, device, expected_coordinate_alignment):
     if not checkpoint_path.is_file():
         raise FileNotFoundError(
             f"Initialization checkpoint was not found: {checkpoint_path}"
         )
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    alignment = (
-        checkpoint.get("coordinate_alignment")
-        if isinstance(checkpoint, dict)
-        else None
-    )
-    if alignment != COORDINATE_ALIGNMENT:
-        raise ValueError(
-            "Initialization checkpoint must declare "
-            f"coordinate_alignment={COORDINATE_ALIGNMENT!r}; got {alignment!r}. "
-            "Start from scratch or use a coordinate-aligned checkpoint."
-        )
+    _require_coordinate_alignment(checkpoint, str(checkpoint_path), expected_coordinate_alignment)
     state_dict = (
         checkpoint["model_pos"]
         if isinstance(checkpoint, dict) and "model_pos" in checkpoint

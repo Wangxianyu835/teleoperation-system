@@ -53,10 +53,12 @@ python -m retargeting train `
 ```powershell
 python scripts/align_h5_coordinates.py `
   --input input/visual_hand_data_20260912_153542.h5 `
-  --output input/aligned_visual_hand_data_20260912_153542.h5
+  --output input/palm_local_visual_hand_data_20260912_153542.h5
 ```
 
-该步骤对左右手应用 `retargeting/coordinates.py` 中当前启用的 `SOURCE_TO_L21_MATRIX`。原矩阵定义固定变换 `x'=-y, y'=z, z'=-x`；若临时改成单位矩阵，生成的数据就会采用单位矩阵。脚本仍会在 H5 根属性中写入 `coordinate_frame=l21`，因此该标记和 `coordinate_alignment` 字符串都不能用于判断实际使用了哪个矩阵。使用现有 `my_run/model_best.pth` 时，应保持原矩阵输入约定。
+对齐脚本当前默认进行逐帧 palm-local 对齐：21→25 点转换、手腕归零，再从当前人手掌坐标映射到对应侧 L21 零姿态参考掌坐标。输出声明 `coordinate_frame=l21` 和 `coordinate_alignment=palm_local_to_l21_v1`；本流程不使用 legacy 固定矩阵。请使用独立文件名保留历史 legacy 数据。
+
+训练自动读取 H5 的 `coordinate_alignment` 并写入 checkpoint；导出时要求输入 H5 与 checkpoint 的声明完全一致。缺失、未知或混配均报错。新生成的 palm-local H5 应从头训练独立 run，例如 `--input input/palm_local_visual_hand_data_20260912_153542.h5 --run-name palm_local_v1`；不能与上面的旧 `my_run` checkpoint 混用。
 
 对齐脚本先验证输入，在同目录临时文件中完成写入并关闭，然后替换输出；验证、写入或替换失败时已有输出保持不变。已标记 L21 或声明 `coordinate_alignment` 的输入会被拒绝，避免重复或不明对齐。输入输出不能是同一路径或同一个文件的硬链接。
 
@@ -81,33 +83,39 @@ python -m retargeting inspect `
 
 脚本只读取原始关键点和已导出的角度，不执行模型推理或坐标对齐。机器人侧显示骨架节点，不渲染 URDF 网格外观。运行环境需要 OpenCV GUI 支持；当前 `TransHandR` 环境已有 `cv2`。
 
-### 新录制 H5 的完整操作示例
+### 直接回放已生成的 palm-local 结果
 
-以下路径对应当前开发机。换一段录制时，保持各步骤中的采集日期与文件名一致；回放的原始 H5 和角度 H5 必须来自同一段采集。
+当前开发机已用原训练录制 `20260912_153542` 从头训练独立的 `palm_local_v1`，并导出观察录制 `182606` 的角度。以下文件已生成，可以直接回放，无需重新对齐、训练或导出：
 
-本例原始文件是 `D:\2026\code\MediaPipe\visual_hand_dataset\visual_hand_data_20261004_182606.h5`。在 PowerShell 中进入项目根目录并激活环境：
+| 用途 | 文件 |
+|---|---|
+| 原始观察录制 | `D:\2026\code\MediaPipe\visual_hand_dataset\visual_hand_data_20261004_182606.h5` |
+| palm-local checkpoint | `D:\2026\code\mytrans\checkpoint\models\twohand_h5\linker\palm_local_v1\model_best.pth` |
+| 已导出角度 | `D:\2026\code\mytrans\output\palm_local_angles_20261004_182606.h5` |
+
+在 PowerShell 中进入项目根目录并激活环境，然后运行：
 
 ```powershell
 Set-Location "D:\2026\code\mytrans"
 conda activate TransHandR
+
+python "D:\2026\code\mytrans\scripts\compare_zuobiaoxi_vs_origin.py" `
+  --source-h5 "D:\2026\code\MediaPipe\visual_hand_dataset\visual_hand_data_20261004_182606.h5" `
+  --angle-h5 "D:\2026\code\mytrans\output\palm_local_angles_20261004_182606.h5" `
+  --side both `
+  --view iso `
+  --speed 1
 ```
 
-**0. 确认坐标矩阵。** 现有 checkpoint 的训练数据使用了原矩阵。若 `D:\2026\code\mytrans\retargeting\coordinates.py` 仍启用了调试用单位矩阵，请将 `SOURCE_TO_L21_MATRIX` 恢复为下面的定义并保存。确保只有一个实际执行的定义，避免后面的单位矩阵赋值将其覆盖。
+`--source-h5` 必须传原始的 21 点采集文件；`--angle-h5` 传同一录制导出的角度文件。脚本检查两份数据的帧数、帧编号和时间戳，并预计算整段 CPU FK 后打开窗口。录制和权重被 Git 忽略，其他机器需要自行提供这些文件。
 
-```python
-SOURCE_TO_L21_MATRIX = np.asarray(
-    (
-        (0.0, -1.0, 0.0),
-        (0.0, 0.0, 1.0),
-        (-1.0, 0.0, 0.0),
-    ),
-    dtype=np.float32,
-)
-```
+已生成的 `182606` 角度文件共 1227 帧，两侧形状均为 `(1227,18)`，左手有效预测 720 帧、右手 772 帧，`nonfinite=0`、`out_of_limits=0`。这些数值和成功训练、导出只验证软件链路，动作效果仍需人工观察。
 
-修改矩阵只影响之后生成的对齐数据，不会改变已经保存的 H5。单位矩阵实验应使用单独的输入与角度输出文件名。
+### 换一段录制时：先对齐、导出，再回放
 
-**1. 从原始录制生成对齐后的模型输入。**
+下面命令以 `182606` 为模板。使用新录制时，把原始 H5 路径和各输出文件名换成该录制对应的名称。已有文件不需要重做；对齐和导出成功时会替换同名输出，保留其他实验应使用独立文件名。
+
+**1. 从原始录制生成 palm-local 模型输入。**
 
 ```powershell
 python "D:\2026\code\mytrans\scripts\align_h5_coordinates.py" `
@@ -115,42 +123,53 @@ python "D:\2026\code\mytrans\scripts\align_h5_coordinates.py" `
   --output "D:\2026\code\mytrans\input\aligned_visual_hand_data_20261004_182606.h5"
 ```
 
-这一步进行 21→25 点转换、手腕归零和坐标变换。原始录制文件保持不变。
+原始录制保持只读。输出是 25 点、腕部归零的 `palm_local_to_l21_v1` 数据；无需修改 `SOURCE_TO_L21_MATRIX`。不要把已对齐 H5 再作为对齐脚本的输入。
 
-**2. 用已有 checkpoint 导出对应角度。**
+**2. 用坐标契约一致的 palm-local checkpoint 导出对应角度。**
 
 ```powershell
 python -m retargeting export `
   --device cpu `
   --disable-identity-tracking `
   --input "D:\2026\code\mytrans\input\aligned_visual_hand_data_20261004_182606.h5" `
-  --checkpoint "D:\2026\code\mytrans\checkpoint\models\twohand_h5\linker\my_run\model_best.pth" `
-  --output "D:\2026\code\mytrans\output\manual_angles_20261004_182606_no_tracking.h5"
+  --checkpoint "D:\2026\code\mytrans\checkpoint\models\twohand_h5\linker\palm_local_v1\model_best.pth" `
+  --output "D:\2026\code\mytrans\output\palm_local_angles_20261004_182606.h5"
 ```
 
-这里关闭身份跟踪，直接使用采集文件中的左右手标签，便于逐侧对照原始回放。已有导出默认会覆盖同名输出；需要保留其他实验时使用不同文件名。更换录制后必须重新生成匹配的角度文件，不能沿用上一段录制的角度。
+这里关闭身份跟踪，直接使用采集文件中的左右手标签，便于逐侧对照。更换录制后必须重新生成匹配的角度文件，不能沿用上一段录制的角度。`--device cpu` 可在 CPU 上运行；当前开发机支持 CUDA，也可使用 `--device cuda`。
+
+导出在模型推理前验证坐标契约，并将验证后的标签写入角度 H5：
+
+| 输入 H5 的 `coordinate_alignment` | checkpoint | 结果 |
+|---|---|---|
+| `source_to_l21_xyz` | 同标签的 legacy 模型，例如 `my_run` | 允许 |
+| `palm_local_to_l21_v1` | 同标签的 palm-local 模型，例如 `palm_local_v1` | 允许 |
+| `palm_local_to_l21_v1` | legacy 模型 | 报 `coordinate alignment mismatch` |
+| `source_to_l21_xyz` | palm-local 模型 | 报 `coordinate alignment mismatch` |
+
+坐标模式以文件内部 metadata 为准。保留的 legacy H5 可以继续使用匹配的旧模型；当前对齐脚本默认生成 palm-local 数据，不能将它与旧模型组合。
 
 **3. 检查角度文件。**
 
 ```powershell
 python -m retargeting inspect `
-  --angle-h5 "D:\2026\code\mytrans\output\manual_angles_20261004_182606_no_tracking.h5"
+  --angle-h5 "D:\2026\code\mytrans\output\palm_local_angles_20261004_182606.h5"
 ```
 
-检查两侧形状为 `(总帧数, 18)`，`nonfinite=0`、`out_of_limits=0`。有效帧数可能小于采集检测帧数，因为预测需要连续三帧窗口；这些数值检查不能证明动作重定向准确。
+检查两侧形状为 `(总帧数, 18)`，`nonfinite=0`、`out_of_limits=0`，以及 `attr.coordinate_alignment=palm_local_to_l21_v1`。有效帧数可能小于采集检测帧数，因为预测需要连续三帧窗口。
 
 **4. 同步回放原始人手和机器人骨架。**
 
 ```powershell
 python "D:\2026\code\mytrans\scripts\compare_zuobiaoxi_vs_origin.py" `
   --source-h5 "D:\2026\code\MediaPipe\visual_hand_dataset\visual_hand_data_20261004_182606.h5" `
-  --angle-h5 "D:\2026\code\mytrans\output\manual_angles_20261004_182606_no_tracking.h5" `
+  --angle-h5 "D:\2026\code\mytrans\output\palm_local_angles_20261004_182606.h5" `
   --side both `
   --view iso `
   --speed 1
 ```
 
-`--source-h5` 必须传原始的 21 点采集文件，不能传步骤 1 的 25 点对齐文件。`--angle-h5` 传步骤 2 导出的角度文件。脚本检查两份数据的帧数、帧编号和时间戳，并预计算整段 CPU FK 后打开窗口。
+两份回放输入必须来自同一段采集。不要将步骤 1 的 25 点对齐文件传给 `--source-h5`。
 
 ### 回放控制与参数
 
@@ -182,12 +201,23 @@ python "D:\2026\code\mytrans\scripts\compare_zuobiaoxi_vs_origin.py" `
 ```powershell
 python "D:\2026\code\mytrans\scripts\compare_zuobiaoxi_vs_origin.py" `
   --source-h5 "D:\2026\code\MediaPipe\visual_hand_dataset\visual_hand_data_20261004_182606.h5" `
-  --angle-h5 "D:\2026\code\mytrans\output\manual_angles_20261004_182606_no_tracking.h5" `
-  --frame 100 --view iso --labels `
-  --snapshot "D:\2026\code\mytrans\picture\compare_zuobiaoxi_vs_origin\new_recording_frame_000100.png"
+  --angle-h5 "D:\2026\code\mytrans\output\palm_local_angles_20261004_182606.h5" `
+  --frame 260 --view iso --labels `
+  --snapshot "D:\2026\code\mytrans\picture\compare_zuobiaoxi_vs_origin\palm_local_frame_000260.png"
 ```
 
 机器人栏中的 `VALID` 表示当前有效预测；`HOLD` 表示当前无效，保持最近有效角度；`ZERO` 表示此前还没有有效预测，显示零角度参考。原始栏的 `DETECTED` / `MISSING` 表示当前是否有采集关键点。回放按秒单位的时间戳调度且不丢帧，绘制较慢时会减速；这不是实时推理性能测量。两栏使用不同投影和显示比例，不能将屏幕距离当作物理误差。
+
+### 人工观察重点
+
+观察机器人栏为 `VALID` 的帧，分别比较：
+
+1. 手指基本不动、整手旋转时，机器人手指姿态是否稳定。
+2. 手指基本不动、翻掌时，机器人手指姿态是否稳定。
+3. 整手基本不动、握拳或张开时，机器人是否仍明显响应。
+4. 拇指展开和捏合时，机器人是否仍有对应动作。
+
+`HOLD` 帧显示的是保持的角度，不能据此判断模型消除了整手朝向。若录制中没有这些动作，需要另录对照段；出现抖动时先记录现象。
 
 ## 代码结构
 
@@ -196,7 +226,7 @@ retargeting/
   __main__.py        # train / export / inspect
   config.py          # L21、模型、损失和相对路径配置
   contracts.py       # 统一输入协议
-  coordinates.py     # 固定 source -> L21 坐标对齐
+  coordinates.py     # legacy 固定对齐、palm-local 对齐与坐标契约校验
   data.py            # H5 读取、三帧窗口和 valid 规则
   tracking.py        # 关键点转换、身份关联和窗口缓存
   mediapipe.py       # MediaPipe 输入适配
@@ -292,7 +322,7 @@ python main_realtime_dual_teleop.py `
 python -m unittest discover -s tests -v
 ```
 
-当前本机全量 91 项通过；新 checkout 运行双臂测试前需要上面的官方 URDF 资产，本地录制 smoke test 还需要输入和权重。
+最近一次本机全量运行 116 项通过；新 checkout 运行双臂测试前需要上面的官方 URDF 资产，本地录制 smoke test 还需要输入和权重。
 
 ## 文档索引
 

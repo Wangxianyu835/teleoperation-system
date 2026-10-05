@@ -175,6 +175,8 @@ def _finish_axes(ax) -> None:
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
     ax.legend(loc="upper right")
+    ax.view_init(elev=0, azim=0)
+    ax.set_proj_type("ortho")
 
 
 def _set_equal_axes(ax, points: np.ndarray) -> None:

@@ -15,7 +15,6 @@ from retargeting.data import (
     TwoHandH5ChunkedGenerator,
     TwoHandH5Dataset,
 )
-from retargeting.coordinates import COORDINATE_ALIGNMENT
 from retargeting.tracking import (
     DEFAULT_MAX_CENTER_DISPLACEMENT,
     DEFAULT_MAX_SHAPE_RMSE,
@@ -34,10 +33,12 @@ def run(args: argparse.Namespace) -> int:
         max_center_displacement=args.max_center_displacement,
         max_shape_rmse=args.max_shape_rmse,
     )
+    coordinate_alignment = dataset.coordinate_alignment
     retargeter = create_twohand_retargeter(
         model_kwargs=_model_kwargs(),
         device=device,
         checkpoint_path=str(args.checkpoint),
+        expected_coordinate_alignment=coordinate_alignment,
     )
     retargeter.eval()
 
@@ -97,7 +98,10 @@ def run(args: argparse.Namespace) -> int:
         h5_file.attrs["input_file"] = str(args.input)
         h5_file.attrs["checkpoint"] = str(args.checkpoint)
         h5_file.attrs["output_shape"] = (L21.model.output_joints,)
-        h5_file.attrs["coordinate_alignment"] = COORDINATE_ALIGNMENT
+        h5_file.attrs["coordinate_frame"] = dataset.coordinate_frame
+        h5_file.attrs["coordinate_alignment"] = coordinate_alignment
+        if dataset.source_landmark_space is not None:
+            h5_file.attrs["source_landmark_space"] = dataset.source_landmark_space
         h5_file.attrs["identity_tracking"] = not args.disable_identity_tracking
         h5_file.attrs["max_center_displacement"] = args.max_center_displacement
         h5_file.attrs["max_shape_rmse"] = args.max_shape_rmse
@@ -106,7 +110,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"device={device}")
     print(f"input={args.input}")
     print(f"checkpoint={args.checkpoint}")
-    print(f"coordinate_alignment={COORDINATE_ALIGNMENT}")
+    print(f"coordinate_alignment={coordinate_alignment}")
     print(f"output={output_path}")
     print(f"frames={frame_count}")
     for side in HAND_SIDES:

@@ -1,59 +1,44 @@
-# Coordinate Systems and Units
+# 坐标系与单位
 
-This document records the coordinate and unit evidence for the current
-Hand-only offline path. It is an audit report, not a change to the numerical
-pipeline.
+本文记录当前手部离线路径的坐标、单位及证据，不改变数值处理流程。
 
-## Status vocabulary
+## 状态含义
 
-- `CODE_DEFINED`: directly implemented or declared by repository code.
-- `DOCUMENTED`: stated by an upstream or official document.
-- `VERIFIED`: code, documentation, and a repeatable experiment agree.
-- `UNRESOLVED`: the available evidence is insufficient.
+- `CODE_DEFINED`（代码已定义）：仓库代码直接实现或声明。
+- `DOCUMENTED`（文档已说明）：上游或官方文档中的说明。
+- `VERIFIED`（已验证）：代码、文档与实际执行的可复现实验一致。
+- `UNRESOLVED`（尚未确认）：现有证据不足。
 
-No item in this report is marked `VERIFIED` unless an experiment is described
-and has actually been run.
+只有描述了实际执行的实验，才可标记为“已验证”。下方保留官方 MediaPipe 链接作为参考；前次审计访问 `ai.google.dev` 受到限制，相关上游说明仍需人工浏览核对，不能直接升级为本项目的实测结论。
 
-The official MediaPipe URLs are included below as the normative sources. Live
-fetching of `ai.google.dev` was blocked by the current sandbox, so these
-upstream statements still require a human browser check before they can be
-promoted from `DOCUMENTED` to `VERIFIED` for this project.
+## MediaPipe 输入约定
 
-## MediaPipe source contract
+已审计的本地采集脚本（独立采集项目中的 `hand capture media.py`）使用 MediaPipe Tasks Hand Landmarker 的 `VIDEO` 模式，保存 `result.hand_landmarks` 中的 `[lm.x, lm.y, lm.z]`，不读取 `result.hand_world_landmarks`。身体采集脚本使用相同路径。
 
-The locally audited collector (`hand capture media.py`, in the separate capture project) uses
-the MediaPipe Tasks Hand Landmarker in `VIDEO` mode. For each detection it
-stores `[lm.x, lm.y, lm.z]` from `result.hand_landmarks`; it does not read
-`result.hand_world_landmarks`. The body-capture script follows the same path.
-
-| Claim | Status | Evidence / consequence |
+| 核对内容 | 状态 | 证据与影响 |
 |---|---|---|
-| `x` is horizontal image position normalized by image width | `DOCUMENTED` | MediaPipe Hand Landmarker documentation: [Python guide](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker/python). The collector confirms pixel drawing with `int(lm.x * width)`. |
-| `y` is vertical image position normalized by image height | `DOCUMENTED` | Same official guide; collector uses `int(lm.y * height)`. |
-| `z` is relative depth, with the wrist as the origin and a magnitude scale roughly comparable to normalized image coordinates | `DOCUMENTED` | MediaPipe Hand Landmarker result/landmark contract. This is not a metric distance field. |
-| `hand_landmarks` are meters or another metric unit | `UNRESOLVED` | The official contract describes normalized image coordinates and relative depth, not a calibrated length unit. The repository performs no calibration. |
-| `hand_world_landmarks` are real-world 3D coordinates in meters | `DOCUMENTED` | Official Hand Landmarker output documentation describes world landmarks in meters and gives a hand-centered origin. This output is not used by this repository. |
-| Wrist is landmark index `0` and is the reference used by the source contract | `DOCUMENTED` | Official 21-landmark topology; repository `wrist_relative()` subtracts point `0`. |
-| Current code uses world landmarks | `CODE_DEFINED` | False. Both collectors read only `result.hand_landmarks`; `hand_world_landmarks` has no runtime reference in the capture path. |
-| Handedness labels are mirror-safe for the current unmirrored capture | `UNRESOLVED` | Official handedness documentation assumes a horizontally mirrored/selfie input and says labels must be swapped for a non-mirrored input. The collector explicitly does not mirror the frame (comment in the capture script), but no left/right physical-camera experiment is recorded. |
+| x 是按图像宽度归一化的水平位置 | 文档已说明 | [官方 Python 指南](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker/python)；采集脚本绘图使用 `int(lm.x * width)` |
+| y 是按图像高度归一化的垂直位置 | 文档已说明 | 同一官方指南；绘图使用 `int(lm.y * height)` |
+| z 是以腕部为参考的相对深度，数量级大致与归一化图像坐标相当 | 文档已说明 | 输出约定；这不是经过标定的物理距离 |
+| hand_landmarks 的单位是米或其他物理长度单位 | 尚未确认 | 官方约定描述归一化坐标和相对深度；仓库没有执行长度标定 |
+| hand_world_landmarks 是以米表示、以手部为中心的世界三维坐标 | 文档已说明 | 官方输出说明；当前采集路径没有使用该输出 |
+| 腕部索引为 0 | 文档已说明 | 官方 21 点拓扑；`wrist_relative()` 减去点 0 |
+| 当前代码是否使用世界关键点 | 代码已定义：未使用 | 两个采集器仅读取 `result.hand_landmarks` |
+| 当前非镜像采集下的左右手标签是否正确 | 尚未确认 | 上游 handedness 说明涉及自拍镜像假设；采集脚本明确不镜像，但尚无真实左右手摄像头实验记录 |
 
-The capture code branches on `result.handedness[i][0].category_name`, placing
-`"Left"` in `left_hand` and every other label in `right_hand`. The comment
-`不镜像！左右手正确` is local code intent, not a physical validation.
+采集代码按 `result.handedness[i][0].category_name` 分配：`"Left"` 写入 `left_hand`，其他标签写入 `right_hand`。脚本注释“不镜像！左右手正确”表达实现意图，不是物理验证证据。
 
-## Canonicalization and offline alignment
+## 关键点规范化与离线对齐
 
-The offline loader requires an H5 root attribute `coordinate_frame="l21"`.
-The explicit preprocessing CLI `scripts/align_h5_coordinates.py` performs:
+离线 loader 默认要求 H5 根属性 `coordinate_frame="l21"`。显式预处理脚本 `scripts/align_h5_coordinates.py` 依次执行：
 
-1. `ensure_hand25()` (21 points to the project 25-point topology, then wrist-relative subtraction).
-2. `align_source_hand_coordinates()` on both hands.
-3. Writes `coordinate_frame="l21"` and `coordinate_alignment="source_to_l21_xyz"`.
+1. `ensure_hand25()`：21 点转为项目的 25 点拓扑，并减去腕部位置。
+2. 对双手调用 `align_source_hand_coordinates()`。
+3. 写入 `coordinate_frame="l21"` 和 `coordinate_alignment="source_to_l21_xyz"`。
 
-The loader validates `coordinate_frame`, but does not validate the
-`coordinate_alignment` attribute. This is `CODE_DEFINED`.
+loader 只校验 coordinate_frame，不校验 coordinate_alignment；这是当前代码行为。
 
-`retargeting/coordinates.py` defines, for row vectors,
+`retargeting/coordinates.py` 对行向量定义：
 
 ```text
 p_aligned = p_source @ M.T
@@ -66,90 +51,60 @@ y' =  z
 z' = -x
 ```
 
-The transform and its name are `CODE_DEFINED`. Git history shows that commit
-`319e9f5` (2026-09-29, “加入坐标系对齐”) introduced this hard-coded matrix;
-the commit message and repository search contain no paper, upstream SDK, or
-calibration reference. Therefore its physical correctness is `UNRESOLVED`.
-The preceding refactor commit `767c2df` also does not provide an external
-derivation. It must not be treated as a verified coordinate proof.
+变换及名称已由代码定义。Git 提交 `319e9f5`（2026-09-29，“加入坐标系对齐”）引入该固定矩阵；提交说明和仓库检索未提供论文、上游 SDK 或标定来源。此前重构提交 `767c2df` 也未提供外部推导，因此物理正确性仍未确认，不能将提交历史作为验证证据。
 
-## L21 base frame evidence
+## L21 基坐标证据
 
-The active URDFs are:
+当前 URDF：
 
 - `dataset/robot/l21_left/linkerhand_l21_left.urdf`
 - `dataset/robot/l21_right/linkerhand_l21_right.urdf`
 
-Both define `hand_base_link` visual and collision origins as `xyz="0 0 0"`
-and `rpy="0 0 0"`, using `meshes/hand_base_link.STL`. This is
-`CODE_DEFINED`. The URDF has no textual declaration that +X, +Y, or +Z means
-“fingers”, “palm”, “back”, or another human anatomical direction. Mesh axes
-and joint axes alone do not uniquely establish those names, so the physical
-interpretation of +X/+Y/+Z is `UNRESOLVED` pending mesh visualization and a
-known-pose experiment.
+两者的 hand_base_link 可视和碰撞原点均为 `xyz="0 0 0"`、`rpy="0 0 0"`，使用 `meshes/hand_base_link.STL`。这是代码定义的几何信息。URDF 没有声明 +X/+Y/+Z 分别对应指向、掌面、手背等解剖方向；单靠网格轴和关节轴不能唯一确定这些含义，需要网格可视化与已知姿态实验。
 
-The complete joint-level evidence is in
-[`L21_JOINT_CONTRACT.md`](L21_JOINT_CONTRACT.md).
+完整关节证据见 [L21 关节契约](L21_JOINT_CONTRACT.md)。
 
-## Scale and units
+## 尺度与单位
 
-| Stage | What code does | Status |
+| 阶段 | 数值行为 | 状态 |
 |---|---|---|
-| MediaPipe input | Copies normalized `x,y,z` values from `hand_landmarks` | `CODE_DEFINED`; absolute unit `UNRESOLVED` |
-| `wrist_relative` | `(points - points[0:1]) * scale_factor`; default `scale_factor=1.0` | `CODE_DEFINED` |
-| H5 dataset | `CanonicalHandProcessor` converts 21→25, wrist-relativizes, and keeps the configured scale | `CODE_DEFINED` |
-| Training source scale | `L21.training.source_scale = 1.0` | `CODE_DEFINED`; physical reasonableness `UNRESOLVED` |
-| FK geometry | URDF origins are approximately `0.018` to `0.141` in the file's length units; no unit declaration is present in the repository | `CODE_DEFINED`; meters `UNRESOLVED` |
-| Training robot scale | `L21.training.robot_scale = 1.0`, passed to FK | `CODE_DEFINED`; scale matching `UNRESOLVED` |
+| MediaPipe 输入 | 复制 hand_landmarks 的归一化 x/y/z | 代码已定义；物理单位尚未确认 |
+| 腕部相对化 | `(points - points[0:1]) * scale_factor`，默认 1.0 | 代码已定义 |
+| H5 数据集 | CanonicalHandProcessor 转换 21→25，减去腕部并应用配置尺度 | 代码已定义 |
+| 训练源尺度 | `L21.training.source_scale = 1.0` | 默认值已定义；物理合理性尚未确认 |
+| FK 几何 | URDF 原点长度约为 0.018 到 0.141，文件未声明长度单位 | 数值已定义；是否为米尚未确认 |
+| 训练机器人尺度 | `L21.training.robot_scale = 1.0`，传入 FK | 默认值已定义；与源尺度是否匹配尚未确认 |
 
-There is no documented calibration step that maps a human hand span in
-normalized MediaPipe coordinates to the URDF link lengths. Consequently a
-default factor of `1.0` is only a code default, not a demonstrated metric
-match (`UNRESOLVED`).
+没有已记录的标定步骤将归一化人手跨度映射到 URDF 长度。1.0 只是默认系数，不代表已证明的物理尺度匹配。
 
-### Loss sensitivity
+### 损失对尺度的敏感性
 
-The current losses in `model/losses.py` have different scale behavior:
-
-| Loss | Implementation | Absolute-scale sensitivity |
+| 损失 | 实现 | 尺度影响 |
 |---|---|---|
-| `vec_inter_loss` | Differences between MCP/DIP vectors followed by `F.normalize` | Direction-only after normalization; largely scale-insensitive, except degenerate/near-zero vectors (`CODE_DEFINED`). |
-| `tip_pos_loss` | Tip-minus-MCP vectors followed by `F.normalize` | Direction-only after normalization; largely scale-insensitive (`CODE_DEFINED`). |
-| `thumb_loss` | Point-to-plane distances; target is multiplied by `0.9` | Sensitive to relative length scale (`CODE_DEFINED`). |
-| `tip_distance_loss` | Pairwise tip distances, each multiplied by `1000.0` | Sensitive to absolute relative scale; the multiplication is `CODE_DEFINED`, while its physical unit is `UNRESOLVED`. |
-| `thumb_loss2` | Angles between normalized thumb segment vectors | Direction/angle-only, scale-insensitive except degenerate vectors (`CODE_DEFINED`). |
-| `CollisionLoss` | Raw FK point distances compared with `threshold=0.010` | Sensitive to FK length units and scale (`CODE_DEFINED`). |
+| `vec_inter_loss` | MCP/DIP 相关向量差后使用 F.normalize | 归一化后主要比较方向；退化或近零向量例外 |
+| `tip_pos_loss` | 指尖减 MCP 后使用 F.normalize | 主要比较方向 |
+| `thumb_loss` | 点到平面距离，机器人目标距离乘 0.9 | 对相对长度尺度敏感 |
+| `tip_distance_loss` | 成对指尖距离各乘 1000.0 | 对绝对长度及两侧尺度匹配敏感；该乘数不能证明单位是毫米 |
+| `thumb_loss2` | 归一化拇指节段之间的角度 | 主要比较角度；退化向量例外 |
+| `CollisionLoss` | FK 点距与 threshold=0.010 比较 | 对 FK 长度单位和尺度敏感 |
 
-No loss normalizes all Cartesian distances to a shared hand-size measure.
-Whether the chosen source and robot scales are compatible remains
-`UNRESOLVED`.
+没有损失将全部笛卡尔距离统一归一化到手部尺寸。源尺度与机器人尺度的兼容性尚未确认。
 
-## Minimum evidence needed for `VERIFIED`
+## 已自动验证的软件性质
 
-### Automatically tested software invariants
+`test_coordinate_modes.py`、`test_coordinate_contracts.py` 和 `test_coordinate_diagnostics.py` 覆盖：
 
-`test_coordinate_modes.py`, `test_coordinate_contracts.py`, and
-`test_coordinate_diagnostics.py` verify basis mapping (+X -> -Z, +Y -> -X,
-+Z -> +Y), orthogonality, determinant +1 and detection of an injected
-determinant -1 reflection. Non-coplanar synthetic bilateral geometries preserve
-signed volume through conversion, wrist subtraction, rotation and labeled windows.
-Signed volume is an orientation probe, not a physical handedness classifier.
+- 基向量 +X→-Z、+Y→-X、+Z→+Y，矩阵正交、行列式为 +1，并识别人为注入的行列式 -1 反射。
+- 非共面合成左右手在转换、腕部相对化、旋转和带标签窗口中保留有向体积。有向体积只检查方向性，不是物理左右手分类器。
+- 腕部相对化与旋转保留距离；source_scale 传到模型窗口和最新帧目标，两侧 FK 都应用 robot_scale。
+- 共同缩放位置使指尖 MSE 乘以系数平方；碰撞阈值仍为缩放后 FK 单位中的 0.010。
 
-Wrist subtraction and rotation preserve lengths. `source_scale` reaches model
-windows and newest-frame targets; both FK sides apply `robot_scale`. A common
-position scale multiplies fingertip MSE by its square; the collision threshold
-remains 0.010 in scaled FK coordinate units. Multiplying distances by 1000 does
-not establish millimeters. Zero/numerically unresolved thumb segments are masked
-under the contract in [the verification report](P0_VERIFICATION_REPORT.md).
-
-The read-only diagnostic reports declarations, missing metadata, representative
-distances, signed volume and FK geometry without modifying the input:
+零长度或数值无法分辨的拇指节段按 [验证报告](P0_VERIFICATION_REPORT.md) 中的约定屏蔽。只读诊断报告单位声明、缺失元数据、代表距离、有向体积与 FK 几何，不修改输入：
 
 ```text
 python scripts/diagnose_hand_coordinates.py --input input/aligned_visual_hand_data_20260912_153542.h5
 ```
 
-The smallest useful experiments are listed in
-[`UNRESOLVED_VERIFICATION_PLAN.md`](UNRESOLVED_VERIFICATION_PLAN.md). Until
-they are run, this document intentionally does not claim that the current
-matrix, handedness, or scale is physically correct.
+## 物理验证所需证据
+
+最小实验见 [待验证清单](UNRESOLVED_VERIFICATION_PLAN.md)。实验完成前，不将当前矩阵、左右手标签或尺度标记为物理正确。

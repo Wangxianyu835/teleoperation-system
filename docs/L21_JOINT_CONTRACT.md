@@ -1,63 +1,46 @@
-# LinkerHand L21 Joint Contract
+# LinkerHand L21 关节契约
 
-This report is derived from the two L21 URDFs in this repository and from the
-old SDK sources preserved in Git history. It does not change FK, limits, or
-hardware code.
+本文依据仓库中的双侧 L21 URDF 和 Git 历史中的旧 SDK 源码整理，不修改 FK、限位或硬件代码。
 
-## Status vocabulary
+## 状态含义
 
-`CODE_DEFINED`, `DOCUMENTED`, `VERIFIED`, and `UNRESOLVED` have the meanings
-defined in [`COORDINATE_SYSTEMS.md`](COORDINATE_SYSTEMS.md). Historical SDK
-facts are marked `CODE_DEFINED`; they are not treated as an official current
-hardware specification.
+`CODE_DEFINED`（代码已定义）、`DOCUMENTED`（文档已说明）、`VERIFIED`（已验证）和 `UNRESOLVED`（尚未确认）沿用 [坐标说明](COORDINATE_SYSTEMS.md) 的定义。历史 SDK 行为属于代码证据，不代表当前官方硬件规范。
 
-## `hand_base_link`
+## 根节点 hand_base_link
 
-Both URDFs use `hand_base_link` as the logical root. Its visual and collision
-geometry has `origin xyz=(0,0,0), rpy=(0,0,0)` and mesh
-`meshes/hand_base_link.STL` (`CODE_DEFINED`). The URDF does not name the
-physical anatomical meaning of its axes. Therefore the physical directions of
-+X, +Y, and +Z are `UNRESOLVED`; a mesh visualization with a known pose is
-required.
+双侧 URDF 均以 `hand_base_link` 为逻辑根。可视与碰撞几何的原点为 `xyz=(0,0,0)`、`rpy=(0,0,0)`，网格为 `meshes/hand_base_link.STL`。文件未说明坐标轴的解剖含义，+X/+Y/+Z 的物理方向需要网格可视化和已知姿态实验确认。
 
-## 17 movable URDF joints
+## 17 个可动 URDF 关节
 
-The parent/child graph and limits below are read directly from both URDFs.
-Limits are identical left/right. Small origin and rpy differences are CAD
-mirror offsets and are included in the difference column.
+下表的父子关系、轴和限位直接取自双侧 URDF。左右限位一致，微小原点与 rpy 差异包含 CAD 镜像偏移。
 
-| Joint | Parent -> child | Left axis | Right axis | Lower, upper (rad in URDF) | Left/right difference |
+| 关节 | 父节点 → 子节点 | 左侧轴 | 右侧轴 | 下限、上限（弧度） | 左右差异 |
 |---|---|---:|---:|---:|---|
-| `index_mcp_roll` | `hand_base_link` -> `index_metacarpals` | `(1,0,0)` | `(1,0,0)` | `-0.18, 0.18` | Mirrored Y origin; rpy X sign flips |
-| `index_mcp_pitch` | `index_metacarpals` -> `index_proximal` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | Mirrored/small CAD origin and right rpy X offset |
-| `index_pip` | `index_proximal` -> `index_middle` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | Small origin difference |
-| `middle_mcp_roll` | `hand_base_link` -> `middle_metacarpals` | `(1,0,0)` | `(1,0,0)` | `-0.18, 0.18` | Mirrored Y origin; rpy X sign flips |
-| `middle_mcp_pitch` | `middle_metacarpals` -> `middle_proximal` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | Small origin/rpy difference |
-| `middle_pip` | `middle_proximal` -> `middle_middle` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | Negligible CAD difference |
-| `ring_mcp_roll` | `hand_base_link` -> `ring_metacarpals` | `(1,0,0)` | `(1,0,0)` | `-0.18, 0.18` | Mirrored Y origin; rpy X sign flips |
-| `ring_mcp_pitch` | `ring_metacarpals` -> `ring_proximal` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | Small origin/rpy difference |
-| `ring_pip` | `ring_proximal` -> `ring_middle` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | Negligible CAD difference |
-| `pinky_mcp_roll` | `hand_base_link` -> `pinky_metacarpals` | `(1,0,0)` | `(1,0,0)` | `-0.18, 0.18` | Mirrored Y origin; rpy X sign flips |
-| `pinky_mcp_pitch` | `pinky_metacarpals` -> `pinky_proximal` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | Small origin/rpy difference |
-| `pinky_pip` | `pinky_proximal` -> `pinky_middle` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | Negligible CAD difference |
-| `thumb_cmc_roll` | `hand_base_link` -> `thumb_metacarpals_base1` | `(-1,0,0)` | `(1,0,0)` | `-0.6, 0.6` | Axis sign flips; mirrored origin/rpy |
-| `thumb_cmc_yaw` | `thumb_metacarpals_base1` -> `thumb_metacarpals_base2` | `(0,0,1)` | `(0,0,-1)` | `0, 1.6` | Axis sign flips; origin/rpy differ |
-| `thumb_cmc_pitch` | `thumb_metacarpals_base2` -> `thumb_metacarpals` | `(0,1,0)` | `(0,-1,0)` | `0, 1.0` | Axis sign flips; large mirrored rpy change |
-| `thumb_mcp` | `thumb_metacarpals` -> `thumb_proximal` | `(0,1,0)` | `(0,-1,0)` | `0, 1.57` | Axis sign flips; origin/rpy differ |
-| `thumb_ip` | `thumb_proximal` -> `thumb_distal` | `(0,1,0)` | `(0,-1,0)` | `0, 1.57` | Axis sign flips; origin differs |
+| `index_mcp_roll` | `hand_base_link` -> `index_metacarpals` | `(1,0,0)` | `(1,0,0)` | `-0.18, 0.18` | 原点 Y 镜像；rpy 的 X 分量符号相反 |
+| `index_mcp_pitch` | `index_metacarpals` -> `index_proximal` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | 原点镜像及微小 CAD 偏差；右侧 rpy 偏移 |
+| `index_pip` | `index_proximal` -> `index_middle` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | 原点略有差异 |
+| `middle_mcp_roll` | `hand_base_link` -> `middle_metacarpals` | `(1,0,0)` | `(1,0,0)` | `-0.18, 0.18` | 原点 Y 镜像；rpy 的 X 分量符号相反 |
+| `middle_mcp_pitch` | `middle_metacarpals` -> `middle_proximal` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | 原点与 rpy 略有差异 |
+| `middle_pip` | `middle_proximal` -> `middle_middle` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | 微小 CAD 差异 |
+| `ring_mcp_roll` | `hand_base_link` -> `ring_metacarpals` | `(1,0,0)` | `(1,0,0)` | `-0.18, 0.18` | 原点 Y 镜像；rpy 的 X 分量符号相反 |
+| `ring_mcp_pitch` | `ring_metacarpals` -> `ring_proximal` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | 原点与 rpy 略有差异 |
+| `ring_pip` | `ring_proximal` -> `ring_middle` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | 微小 CAD 差异 |
+| `pinky_mcp_roll` | `hand_base_link` -> `pinky_metacarpals` | `(1,0,0)` | `(1,0,0)` | `-0.18, 0.18` | 原点 Y 镜像；rpy 的 X 分量符号相反 |
+| `pinky_mcp_pitch` | `pinky_metacarpals` -> `pinky_proximal` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | 原点与 rpy 略有差异 |
+| `pinky_pip` | `pinky_proximal` -> `pinky_middle` | `(0,1,0)` | `(0,1,0)` | `0, 1.57` | 微小 CAD 差异 |
+| `thumb_cmc_roll` | `hand_base_link` -> `thumb_metacarpals_base1` | `(-1,0,0)` | `(1,0,0)` | `-0.6, 0.6` | 轴符号相反；原点与 rpy 镜像 |
+| `thumb_cmc_yaw` | `thumb_metacarpals_base1` -> `thumb_metacarpals_base2` | `(0,0,1)` | `(0,0,-1)` | `0, 1.6` | 轴符号相反；原点与 rpy 不同 |
+| `thumb_cmc_pitch` | `thumb_metacarpals_base2` -> `thumb_metacarpals` | `(0,1,0)` | `(0,-1,0)` | `0, 1.0` | 轴符号相反；rpy 有较大镜像变化 |
+| `thumb_mcp` | `thumb_metacarpals` -> `thumb_proximal` | `(0,1,0)` | `(0,-1,0)` | `0, 1.57` | 轴符号相反；原点与 rpy 不同 |
+| `thumb_ip` | `thumb_proximal` -> `thumb_distal` | `(0,1,0)` | `(0,-1,0)` | `0, 1.57` | 轴符号相反；原点不同 |
 
-The parent, child, axis, and numeric limit values are `CODE_DEFINED`. The
-labels “roll”, “pitch”, and “yaw” are repository names; their anatomical
-meaning and positive physical direction are `UNRESOLVED` until a visualized
-known-pose test is performed.
+父子节点、轴和数值限位是代码定义的事实。roll（横滚）、pitch（俯仰）和 yaw（偏航）是仓库命名；其解剖含义和正向物理运动仍需已知姿态可视化确认。
 
-### Exact joint origins
+### 关节原点精确值
 
-The following values preserve the URDF `origin xyz` and `origin rpy` records;
-they are included so that the mirror differences are auditable rather than
-inferred from joint names.
+以下保留 URDF 的 `origin xyz` 与 `origin rpy` 原值，用于核对镜像差异，避免仅从关节名称推断。
 
-| Joint | Left xyz / rpy | Right xyz / rpy |
+| 关节 | 左侧 xyz / rpy | 右侧 xyz / rpy |
 |---|---|---|
 | `index_mcp_roll` | `0.0059834 -0.032908 0.13338` / `-0.0056645 0 0` | `0.0114834254522634 0.032907936497646 0.133378233122808` / `0.00566453071771697 0 0` |
 | `index_mcp_pitch` | `0.002358 -0.00022359 0.018075` / `0 0 0` | `-0.00314196475147223 0.000199976188793055 0.0180749331977774` / `0 -0.0785815229629661 0` |
@@ -77,42 +60,31 @@ inferred from joint names.
 | `thumb_mcp` | `-0.0039464 0 0.034242` / `0 0.026973 0` | `0.033763 0.0030005 -0.0066361` / `0 0.078877 0.023144` |
 | `thumb_ip` | `-0.0056449 0 0.045952` / `0 -0.12449 0` | `0.04616 0 -0.0035646` / `0 0.079326 0` |
 
-The two base meshes are also unrotated at the link level (`xyz=0 0 0`,
-`rpy=0 0 0`, same mesh filename). This is `CODE_DEFINED`; mesh vertex axes
-and their anatomical interpretation remain `UNRESOLVED`.
+双侧基座网格在 link 层均未旋转（xyz 和 rpy 全零，网格文件名相同）；网格顶点轴的解剖含义仍未确认。
 
-## Internal model correspondence
+## 内部模型对应关系
 
-`angle18[0]` is the fixed root placeholder. `angle18[1:]` follows the 17-joint table above exactly; training appends five fixed tip nodes for FK. This is a code-defined internal correspondence, not a hardware command mapping. Shapes, topology and H5 formats are maintained in [HAND_CONTRACT.md](HAND_CONTRACT.md).
+`angle18[0]` 是固定根占位；`angle18[1:]` 严格按上表 17 个关节排列，训练时再补五个固定指尖节点用于 FK。这是内部对应关系，不是硬件命令映射。形状、拓扑和 H5 格式见 [数据契约](HAND_CONTRACT.md)。
 
-## Hardware SDK evidence and limits
+## 硬件 SDK 证据与边界
 
-The following evidence is a read-only inspection of historical sources at
-Git tag `hand-v1-pre-cleanup`; these adapters are not used by the current hand CLI:
+下列证据来自 Git 标签 `hand-v1-pre-cleanup` 的历史源码只读审计；当前手部 CLI 不使用这些适配器：
 
 - `legacy/LinkerHand/core/can/linker_hand_l21_can.py`
 - `legacy/LinkerHand/core/rml485/linker_hand_l21_485.py`
 - `legacy/LinkerHand/utils/mapping.py`
 - `legacy/LinkerHand/config/L21_positions.yaml`
 
-The historical CAN class accepts a 25-value high-level pose. Its `joint_map`
-creates a 30-value CAN payload, leaving nine payload slots absent/zero and
-reordering the 21 values it actually maps. It sends five six-byte groups.
-The topic path instead splits the 25 values into five groups of five. The
-historical RS-485 class writes ten 8-bit angle registers. These are mutually
-inconsistent transport shapes, and neither path consumes the current internal
-17D vector.
+历史 CAN 类接受 25 个上层姿态值，joint_map 将实际映射的 21 个值重排到 30 个载荷槽，留下九个未填充/零槽，分五组六字节发送。topic 路径则将 25 个值分为五组，每组五个。历史 RS-485 类写入十个 8 位角度寄存器。这些传输格式不一致，均不直接接收当前内部 17D 向量。
 
-| Hardware question | Finding | Status |
+| 硬件问题 | 已发现的证据 | 状态 |
 |---|---|---|
-| Real L21 command vector length | Historical code exposes 25 input values for CAN, 30 packed CAN slots, and 10 RS-485 angle registers; no single current contract | `UNRESOLVED` |
-| Position order | Historical `joint_map` is the only repository mapping; it is a 25-to-30 transport reorder, not an internal17D mapping. A current 17D mapping is `MAPPING_REQUIRED`. | `UNRESOLVED` |
-| Reserved positions | Historical CAN payload contains nine unfilled slots; historical YAML also skips positions in its legacy range helpers | `CODE_DEFINED`; current hardware meaning `UNRESOLVED` |
-| Left/right limit differences | Historical YAML gives separate arrays, but the active URDF limits are identical left/right | `CODE_DEFINED`; authoritative current SDK limits `UNRESOLVED` |
-| Sign/direction | Historical YAML has side-specific `*_derict` arrays; no link to current internal axes is proven | `CODE_DEFINED`; semantic correspondence `UNRESOLVED` |
-| Unit | Active URDF limits are numerically radians by convention; historical RS-485/CAN commands are byte values (0..255), not radians | `CODE_DEFINED`; official current protocol unit `UNRESOLVED` |
-| Internal 17D -> hardware command | No mapping exists in current formal code or in the inspected historical adapter; `MAPPING_REQUIRED`. | `UNRESOLVED` |
+| 当前命令向量长度 | 历史 CAN 为 25 个输入/30 个打包槽，RS-485 为 10 个角度寄存器，没有统一的当前契约 | 尚未确认 |
+| 位置顺序 | 历史 joint_map 是 25→30 的传输重排，不是内部 17D 映射 | 需要建立映射（MAPPING_REQUIRED） |
+| 保留位置 | 历史 CAN 有九个未填充槽；历史 YAML 的范围辅助函数也跳过部分位置 | 历史代码已定义；当前硬件含义尚未确认 |
+| 左右限位差异 | 历史 YAML 有独立左右数组，当前 URDF 左右限位一致 | 代码已定义；当前 SDK 权威限位尚未确认 |
+| 符号和方向 | 历史 YAML 有逐侧 `*_derict` 数组，但未证明与内部关节轴对应 | 历史代码已定义；语义对应尚未确认 |
+| 单位 | 当前 URDF 限位按弧度约定；历史 CAN/RS-485 命令为 0..255 字节值 | 代码已定义；当前官方协议单位尚未确认 |
+| 内部 17D → 硬件命令 | 正式代码及已审计历史适配器均无此映射 | 需要建立映射（MAPPING_REQUIRED） |
 
-Do not pass `angle18[1:]` directly to hardware. A protocol-specific mapping,
-including side, order, sign, limits, unit conversion, and reserved fields,
-must be established from the current LinkerHand SDK/manual and a device test.
+接入硬件前，依据当前 LinkerHand SDK/手册和设备实验确认左右侧、顺序、符号、限位、单位换算和保留字段，建立专用映射；不要直接将 `angle18[1:]` 发送给硬件。

@@ -13,18 +13,18 @@
 | 独立录制质量 | 非训练录制评估有效输出率、限位、抖动和姿态误差；按修正目标重评旧 checkpoint，建立可比较基线 |
 | 离线与实时预处理 | 相同 21 点观测贯穿两条路径，确认标签、坐标旋转、尺度和缓存重置是否与 aligned H5 一致 |
 
-状态：`MANUAL VERIFICATION REQUIRED` / `PHYSICAL SCALE NOT VERIFIED`。保留当前变换和尺度，先取得证据再提出修改；本轮没有重训、摄像头实验或硬件操作。
+状态：需要人工验证（`MANUAL VERIFICATION REQUIRED`），物理尺度尚未验证（`PHYSICAL SCALE NOT VERIFIED`）。保留当前变换和尺度，先取得证据再提出修改；本轮没有重训、摄像头实验或硬件操作。
 
 ## 硬件接入前
 
-从当前官方 L21 SDK/手册确认命令长度、单位、左右侧限位和保留字段，在受控台架逐关节记录字节与方向、读回已知姿态。完成内部 17D → 硬件映射后再接入；历史 CAN/RS-485 代码不构成当前硬件协议证据。见 [关节契约](L21_JOINT_CONTRACT.md#hardware-sdk-evidence-and-limits)。
+从当前官方 L21 SDK/手册确认命令长度、单位、左右侧限位和保留字段，在受控台架逐关节记录字节与方向、读回已知姿态。完成内部 17D → 硬件映射后再接入；历史 CAN/RS-485 代码不构成当前硬件协议证据。见 [关节契约](L21_JOINT_CONTRACT.md#硬件-sdk-证据与边界)。
 
 ## 后续软件补测与维护
 
-- mock `MediaPipeCameraAdapter`：时间戳、handedness 解析、缺失/非有限帧后的逐侧重置与恢复。
+- 使用模拟输入核对 `MediaPipeCameraAdapter`：时间戳、左右手标签解析、缺失/非有限帧后的逐侧重置与恢复。
 - 覆盖实时完整窗口后的异常输入和起始缺失侧行为；区分模型 `None` 与下游 hold 策略。
 - 补测 `track_identity=False`；明确腕部相对输入在两侧候选都可信时的标签歧义。
-- 明确 H5 metadata 策略：目前只强制 `coordinate_frame`，不校验 alignment；标记不能证明实际执行过变换。
+- 明确 H5 元数据策略：目前只强制 `coordinate_frame`，不校验对齐属性；标记不能证明实际执行过变换。
 - 锁定可复现依赖，处理可选 OpenCV 与 NumPy 版本冲突，见 [开发环境](DEVELOPMENT_ENVIRONMENT.md)。
 
 对齐事务、root/group H5、尺度传播、T1/T2 和训练安全门已有验证。手部协议与双臂扩展仍耦合，此边界记入 [数据契约](HAND_CONTRACT.md)；本轮不重构。

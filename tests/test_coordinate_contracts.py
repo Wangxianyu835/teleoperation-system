@@ -9,7 +9,10 @@ import torch
 from model.kinematics import create_hand_kinematics
 from model.losses import CollisionLoss, tip_distance_loss
 from retargeting.config import L21, ROBOT_JOINTS, SOURCE_JOINTS
-from retargeting.coordinates import SOURCE_TO_L21_MATRIX, align_source_hand_coordinates
+from retargeting.coordinates import (
+    SOURCE_TO_L21_MATRIX, align_source_hand_coordinates,
+    align_palm_local_coordinates, build_l21_reference_basis,
+)
 from retargeting.data import TwoHandH5Dataset
 from retargeting.hand_core import CanonicalHandProcessor
 from retargeting.tracking import ensure_hand25
@@ -41,6 +44,20 @@ class CoordinateContractTests(unittest.TestCase):
         self.assertFalse(diagnostic["proper_rotation"])
         hand = ensure_hand25(synthetic_hand_pair()[0])
         self.assertAlmostEqual(signed_hand_volume(hand @ reflected.T), -signed_hand_volume(hand))
+
+    def test_palm_local_keeps_each_sides_chirality_and_fixed_wrist(self):
+        volumes = []
+        for side, raw in zip(("left", "right"), synthetic_hand_pair()):
+            points = ensure_hand25(raw)
+            aligned = align_palm_local_coordinates(points, build_l21_reference_basis(side))
+            self.assertEqual(aligned.shape, (25, 3))
+            self.assertTrue(np.isfinite(aligned).all())
+            np.testing.assert_array_equal(aligned[0], np.zeros(3))
+            before, after = signed_hand_volume(points), signed_hand_volume(aligned)
+            self.assertGreater(before * after, 0)
+            np.testing.assert_allclose(after, before, atol=1e-10, rtol=1e-5)
+            volumes.append(after)
+        self.assertLess(volumes[0] * volumes[1], 0)
 
     def test_both_chiralities_survive_conversion_alignment_and_identity_processing(self):
         raw = dict(zip(("left", "right"), synthetic_hand_pair()))
@@ -75,6 +92,7 @@ class CoordinateContractTests(unittest.TestCase):
             path = Path(directory) / "hands.h5"
             with h5py.File(path, "w") as handle:
                 handle.attrs["coordinate_frame"] = "l21"
+                handle.attrs["coordinate_alignment"] = "source_to_l21_xyz"
                 for side, points in (("left", left), ("right", right)):
                     aligned = align_source_hand_coordinates(ensure_hand25(points))
                     handle.create_dataset(f"{side}_hand_keypoints", data=np.repeat(aligned[None], 3, axis=0))

@@ -21,7 +21,6 @@ HAND_KEYPOINTS = 25 #number of keypoints for each hand
 HAND_COORDS = 3 #维度
 ARM_KEYPOINTS = 3
 INPUT_KEY = "retarget_input"
-LEGACY_VISIONPRO_KEY = "vision_pro_data"
 
 
 def validate_hand_input(
@@ -147,38 +146,6 @@ def build_retarget_input(
         payload["metadata"] = dict(metadata)
     validate_retarget_input(payload)
     return payload
-
-
-def legacy_visionpro_to_window(vision_data: np.ndarray) -> np.ndarray:
-    """Convert the old Vision Pro shared shape (25, 3, 3) to (3, 25, 3)."""
-    data = np.asarray(vision_data, dtype=np.float32)
-    if data.shape == (RECEPTIVE_FIELD, HAND_KEYPOINTS, HAND_COORDS):
-        return data
-    legacy_shape = (HAND_KEYPOINTS, RECEPTIVE_FIELD, HAND_COORDS)
-    if data.shape != legacy_shape:
-        raise ValueError(
-            f"Legacy Vision Pro data must have shape {legacy_shape}, got {data.shape}"
-        )
-    return np.transpose(data, (1, 0, 2)).copy()
-
-
-def select_hand_window(
-    retarget_input: dict[str, Any],
-    preferred_side: str = "left",
-) -> tuple[str, np.ndarray] | None:
-    """Select one complete hand window for the current single-hand model."""
-    if preferred_side not in HAND_SIDES:
-        raise ValueError(f"Invalid preferred side: {preferred_side}")
-
-    validate_retarget_input(retarget_input)
-    sides = (preferred_side,) + tuple(
-        side for side in HAND_SIDES if side != preferred_side
-    )
-    for side in sides:
-        hand = retarget_input["hands"][side]
-        if hand is not None:
-            return side, hand
-    return None
 
 
 def build_action(

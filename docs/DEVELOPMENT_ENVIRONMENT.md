@@ -1,6 +1,6 @@
-# Development Environment
+# 开发环境
 
-The tested environment for the current test suite is:
+当前测试套件使用的已验证环境：
 
 ```text
 Python                 3.12.4
@@ -16,15 +16,17 @@ roboticstoolbox-python 1.4.2
 spatialmath-python     1.1.18
 ```
 
-The minimal ABI fix is the NumPy pin in `requirements.txt`:
+## NumPy 二进制兼容性
+
+最小 ABI 修复是在 `requirements.txt` 固定：
 
 ```text
 numpy==1.26.4
 ```
 
-The existing SciPy 1.13.1, h5py 3.11.0, and trimesh 5.1.0 combination imports and runs successfully with NumPy 1.26.4 on Python 3.12. No model, retargeting, coordinate, contract, or test changes are required.
+Python 3.12 下，现有 SciPy 1.13.1、h5py 3.11.0 和 trimesh 5.1.0 与 NumPy 1.26.4 组合可正常导入和运行。该环境修复无需改动模型、重定向、坐标、数据契约或测试代码。
 
-The repository does not currently contain a fully locked dependency file. Until one is added, install the declared requirements into a clean Python 3.12 environment, then install the teleoperation requirements when running the arm tests:
+仓库尚无完整的依赖锁定文件。建议在干净的 Python 3.12 环境安装声明依赖；运行双臂测试时还需安装遥操作依赖并按 README 获取官方 URDF 资产：
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -32,14 +34,16 @@ python -m pip install -r requirements-teleop.txt
 python -m unittest discover -s tests -v
 ```
 
-The current machine also has `opencv-python 4.13.0.92`, whose package metadata requires NumPy>=2. It is not declared in this repository and is not imported by the current tests because the MediaPipe adapter imports OpenCV lazily. Consequently `pip check` reports that unrelated optional-environment conflict even though the complete test suite passes. If camera/MediaPipe execution is added to the supported environment, use an OpenCV release compatible with NumPy 1.26 (or maintain that adapter in a separate environment); that is outside this test-environment repair.
+## 可选摄像头依赖
 
-## Verification record
+当前机器另有 `opencv-python 4.13.0.92`，其包元数据要求 NumPy>=2。仓库未声明它，当前测试也不会导入它，因为 MediaPipe 适配器延迟导入 OpenCV。因此即使全量测试通过，`pip check` 仍会报告该可选环境冲突。支持实际摄像头/MediaPipe 运行时，应选择兼容 NumPy 1.26 的 OpenCV 版本，或使用独立环境；该问题不属于前次测试环境修复。
 
-On 2026-10-03, the full suite completed with `Ran 91 tests ... OK` in the environment above. Current changes and representative checkpoint verification are recorded in [the verification report](P0_VERIFICATION_REPORT.md):
+## 验证记录
+
+2026-10-03，上述环境运行全量套件得到 `Ran 91 tests ... OK`。改动与代表性 checkpoint 核对见 [验证报告](P0_VERIFICATION_REPORT.md)。执行命令：
 
 ```text
 python -m unittest discover -s tests -v
 ```
 
-The initial failure was NumPy 2.2.6 against binary extensions built for the NumPy 1.x ABI. After changing only NumPy to 1.26.4, the ABI errors disappeared. The other installed packages were retained at the versions listed above; `einops`, `timm`, and `roboticstoolbox-python==1.4.2` were installed because they were declared by the repository but missing from the environment.
+最初故障来自 NumPy 2.2.6 与按 NumPy 1.x ABI 构建的二进制扩展不兼容。仅将 NumPy 改为 1.26.4 后，ABI 错误消失，其他现有包保留上表版本。einops、timm 和 roboticstoolbox-python==1.4.2 原已声明但缺失，因此补充安装。本次中文化未重新运行测试。

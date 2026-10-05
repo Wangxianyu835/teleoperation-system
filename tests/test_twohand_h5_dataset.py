@@ -25,6 +25,7 @@ class TwoHandH5DatasetTests(unittest.TestCase):
         right[6] = 0
         with h5py.File(path, "w") as h5_file:
             h5_file.attrs["coordinate_frame"] = "l21"
+            h5_file.attrs["coordinate_alignment"] = "source_to_l21_xyz"
             h5_file.create_dataset("frame_ids", data=np.arange(frame_count))
             h5_file.create_dataset(
                 "timestamps",
@@ -94,6 +95,7 @@ class TwoHandH5DatasetTests(unittest.TestCase):
             right[7] = 0
             with h5py.File(path, "w") as h5_file:
                 h5_file.attrs["coordinate_frame"] = "l21"
+                h5_file.attrs["coordinate_alignment"] = "source_to_l21_xyz"
                 h5_file.create_dataset("frame_ids", data=np.arange(8))
                 h5_file.create_dataset("timestamps", data=np.arange(8) / 30.0)
                 h5_file.create_dataset("left_hand_keypoints", data=left)
