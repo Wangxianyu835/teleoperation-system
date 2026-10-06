@@ -2,6 +2,8 @@
 
 > **PR1 更新（2026-10-06）**：下文为 2026-09-12 历史交接记录。本仓库现为 hand
 > retargeting 的唯一 production source of truth，mytrans 不再独立维护 production 实现。
+> **请先读 [总体架构与端到端链路](SYSTEM_ARCHITECTURE.md)**，了解最终方向、当前文件职责、
+> 实际连接状态、人工验证和已确认问题；所有说明从 [文档索引](README.md)进入。
 > 当前 hand pipeline、路径与测试以 [HAND_RETARGETING.md](HAND_RETARGETING.md) 为准；
 > 双臂/RobotCommand/48DOF 整合属于 [PR2](PR2_FOLLOW_UP.md)。
 

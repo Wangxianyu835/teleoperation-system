@@ -2,6 +2,7 @@
 
 > **PR1 更新（2026-10-06）**：本文件保留早期系统离线规划与契约 G/H。当前正式 hand
 > retargeting 已在本仓库统一，使用 Hand25、三帧、18D L21 输出与严格 alignment metadata。
+> 当前完整架构、各消费协议和人工验收见 [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md)。
 > 当前 hand H5 schema 和 CLI 以 [HAND_RETARGETING.md](HAND_RETARGETING.md) 为准。
 > 下文单手 `keypoints_3d` / 系统 `actions.h5` 不能直接等同于 canonical 两手输入/角度输出。
 

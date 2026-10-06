@@ -1,5 +1,10 @@
 # 队友上手指南（TEAM ONBOARDING）
 
+> **当前入口（2026-10-06）**：本文保留早期团队/Git 上手流程。当前代码结构、链路、
+> 解释器与依赖状态请先读 [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md)，
+> hand 操作见 [HAND_RETARGETING.md](HAND_RETARGETING.md)，全部文档见 [索引](README.md)。
+> 下文旧路径、文件数量和 Python 3.11/application-only 安装步骤不代表完整 hand 环境已复现。
+
 > 给**新加入的队友**看的操作手册。照着一步步做，约 30 分钟能跑通。
 > **最后更新**：2026-09-12
 

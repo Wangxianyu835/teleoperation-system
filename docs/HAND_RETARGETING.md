@@ -162,7 +162,8 @@ GUI 中身体显示为浅灰，左手蓝色、右手橙色。`--speed 0.5` 按�
 因此长时间全量播放会包含不少停顿。下面路径只适用于本机已有导出：
 
 ```powershell
-& 'D:\Anaconda\envs\TransHandR\python.exe' 'D:\2026\code\teleoperation-system-retargeting\scripts\replay_hand_native.py' --file 'D:\2026\code\teleoperation-system-retargeting\outputs\hand_retargeting\palm_angles.h5' --robot h1_2 --hand both --render --view left-hand --start-frame 2640 --end-frame 2940 --speed 0.5 --loop 0 --no-repair
+conda activate teleoperation
+python 'D:\2026\code\teleoperation-system-retargeting\scripts\replay_hand_native.py' --file 'D:\2026\code\teleoperation-system-retargeting\outputs\hand_retargeting\palm_angles.h5' --robot h1_2 --hand both --render --view left-hand --start-frame 2640 --end-frame 2940 --speed 0.5 --loop 0 --no-repair
 ```
 
 该记录没有动作名称标签，不能仅凭角度赋予“握拳”“捏合”等类别。此次观察还发现

@@ -1,5 +1,10 @@
 # 接口契约（INTERFACE CONTRACT）
 
+> **阅读范围（2026-10-06）**：本文保留早期系统接口；本次只增加当前文档入口，
+> 不改动下文契约条款。当前整体链路/接口差异见 [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md)，
+> canonical 两手 Hand25/3-frame/18D 与 strict alignment 以 [HAND_RETARGETING.md](HAND_RETARGETING.md)
+> 为准；整机 command/order/validity 统一工作见 [PR2_FOLLOW_UP.md](PR2_FOLLOW_UP.md)。
+
 > **本文件是团队协作的「技术合同」** —— 三人各自开发时必须遵守这里的定义。
 > 任何修改都需要三人确认后同步更新本文件。
 >

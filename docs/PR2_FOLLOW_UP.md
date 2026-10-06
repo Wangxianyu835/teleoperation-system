@@ -1,5 +1,7 @@
 # PR2 follow-up: application command and arm integration
 
+当前总体链路、文件职责及随后发现的入口问题见 [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md)。
+
 PR1 仅合并 canonical hand implementation。以下均为目标 baseline 已存在的系统边界，
 保持原有行为；PR2 应在 canonical 手部链路之上统一应用协议，避免再次复制 hand 算法。
 

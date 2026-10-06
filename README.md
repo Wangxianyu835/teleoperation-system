@@ -5,12 +5,23 @@
 基于 **PyBullet** 的双臂灵巧手遥操作仿真平台，面向双臂人形机器人的
 **遥操作数据采集** 与 **动作重定向算法** 验证。
 
+**最终方向**：实现真实输入 → 手部/双臂重定向 → 明确的机器人命令与关节映射 →
+仿真任务执行 → 同步记录 → 可复现评估的闭环。当前手部核心已完成 PR1 合并，
+实时整机连接、command 统一、真实设备/物理验证仍需推进。
+
+请先阅读 [总体架构与端到端链路](docs/SYSTEM_ARCHITECTURE.md)：包含当前代码内容、
+逐文件职责、重点链路、人工验证和已确认问题。所有说明文档统一从
+[docs 文档索引](docs/README.md)进入。
+
 ---
 
 ## 一、项目简介
 
 本项目搭建了一个面向双臂人形机器人的遥操作仿真平台，提供 **30 个分层操作任务**，
 用于验证「VR / 数据手套 → 动作重定向 → 双臂机器人 → 任务执行 → 数据采集」这条完整链路。
+
+下面的遥操作图是项目方向，当前旧 VR/手套接口使用 mock，正式 hand realtime
+只输出模型预测；各模块的实际连接状态以总体架构说明为准。
 
 ### 遥操作流水线
 
@@ -48,39 +59,25 @@ LinkerHand 数据手套 ───────────┘
 ## 二、目录结构
 
 ```
-simulation_platform/
-├── main.py                  # 主入口（任务选择 / demo / benchmark）
-├── demo_teleop.py           # 无控制器演示模式
-├── show_all.py              # 并排展示 H1-2 / GR1-T2 / G1 三种机器人
-├── show_hand.py             # LinkerHand 灵巧手独立展示
-├── test_camera.py           # 摄像头采集测试
-├── test_import.py           # 模块导入自检
-├── requirements.txt         # Python 依赖
-│
-├── envs/                    # 仿真环境
-│   ├── simulation_env.py    #   环境核心类（集成机器人/任务/记录/随机化）
-│   ├── robot_loader.py      #   机器人模型加载
-│   ├── sensor_recorder.py   #   观测数据记录（状态/相机流/物体元数据）
-│   └── domain_randomizer.py #   域随机化（光照/摩擦/纹理/位置）
-│
-├── tasks/                   # 任务库
-│   ├── all_tasks.py         #   全部 30 个分层任务实现
-│   ├── base_task.py         #   任务基类
-│   └── task_registry.py     #   任务注册表
-│
-├── teleop/                  # 遥操作接口
-│   ├── teleop_pipeline.py   #   完整遥操作流水线
-│   ├── vr_interface.py      #   Vision Pro 手腕追踪 → 关节角度
-│   ├── hand_interface.py    #   灵巧手驱动接口
-│   ├── camera_interface.py  #   摄像头采集
-│   └── pipeline_data.py     #   流水线数据结构
-│
-├── utils/
-│   └── metrics.py           # 评估指标（成功率 / 完成时间）
-│
-├── robots/                  # 机器人模型资产（不入库，见第六节）
-├── lib/                     # 本地依赖目录（不入库）
-└── linkerhand_sdk/          # 第三方 SDK（不入库，见第六节）
+teleoperation-system/
+├── main.py / main_*         # 应用入口、hand CLI wrappers、双臂入口
+├── retargeting/             # canonical hand 与保留的 arm/command 服务
+├── model/                   # PoseTransformer、L21 FK、loss
+├── input_adapters/          # NPY replay 等应用输入
+├── config/                  # 应用契约、TRON2A 示例 calibration
+├── envs/                    # benchmark 环境、robot loader、记录、随机化
+├── teleop/                  # 旧遥操作框架、原生手映射与回放滤波
+├── simulation/              # TRON2A + L21 PyBullet 场景
+├── tasks/                   # 30 个任务类、基类与注册
+├── utils/                   # 成功率、完成时间统计
+├── scripts/                 # 回放、诊断和可视化
+├── tests/                   # hand/coordinate/应用边界回归
+├── docs/                    # 架构、使用、协议与验收说明
+├── robots/from_teleopbench/ # 已入库机器人模型
+├── dataset/robot/           # 已有 L21 FK/手部资产
+├── datasets/                # 系统协作数据
+├── data/ / outputs/         # 本地记录、训练与推理产物（忽略）
+└── requirements*.txt        # 按 application/hand 用途分类的依赖
 ```
 
 ---
@@ -112,14 +109,22 @@ python -m retargeting --help
 
 ### 基础入口
 
+先激活正式环境 `conda activate teleoperation`。PR1.5 已修复 `main.py` 的动作维度
+初始化、单独 `--demo` 不执行以及 inspect wrapper 的 import 错误，见架构说明第 8 节。
+`--demo` 默认运行 pushcube 三次，可用 `--task` 指定任务；`--benchmark` 与 demo/task 互斥。
+入口验证建议加 `--no-record`。默认逐步缓存双相机图像的长程 smoke 未通过验收，
+出现高内存占用与一次 native crash，详见 [PR1.5 结果](docs/PR15_APPLICATION_ENTRY_RESULT.md)。
+
 ```bash
 python test_import.py                       # 环境自检（6 项，建议先跑这个）
-python main.py                              # 列出所有任务并交互式选择
-python main.py --task pushcube              # 运行指定任务
-python main.py --demo                       # 演示模式（无控制器）
-python main.py --benchmark --trials 3       # 对 Level 1 任务做基准测试
-python main.py --task pushcube --no-render  # 无头模式
-python main.py --robot gr1_t2 --task pickcube   # 切换机器人
+python scripts/replay_actions.py --dummy --robot h1_2 --task pushcube --no-render --steps 40
+python scripts/replay_actions.py --dummy --robot h1_2 --task pushcube --render --steps 240
+python scripts/replay_actions.py --describe --robot gr1_t2
+python -m retargeting --help                # 正式手部 CLI
+python main.py --help                       # 查看已有应用入口参数
+python main.py --demo --no-render --no-record # 实际运行三次演示
+python main.py --task pushcube --robot h1_2 --no-render --no-record
+python inspect_angle_h5.py --angle-h5 outputs/env_checks/palm_angles.h5
 
 python show_all.py                          # 并排展示三种机器人
 python show_hand.py                         # 展示 LinkerHand 灵巧手
@@ -129,6 +134,10 @@ python test_camera.py                       # 测试摄像头
 ### 离线 Vision 流水线（核心工作流）
 
 > 📄 详见 [`docs/OFFLINE_PIPELINE.md`](docs/OFFLINE_PIPELINE.md)　|　接口定义见 [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md)
+
+本节回放的是系统 actions 协议。当前正式 hand H5 → 模型 → angles H5 链路见
+[总体架构第 3 节](docs/SYSTEM_ARCHITECTURE.md)和 [hand 使用说明](docs/HAND_RETARGETING.md)。
+早期契约 G 的单手示例不是 canonical 两手训练输入。
 
 ```bash
 # 查看某机器人的动作空间定义（38/36/28 维的完整关节映射）
@@ -204,7 +213,8 @@ python scripts/verify_hand_pipeline.py
 若仍报错，说明本地缺少 `linkerhand_sdk`，按第六节获取即可。
 
 **Q：克隆后运行报找不到 URDF？**
-`robots/` 目录未入库，需按第六节自行获取模型资产。
+`robots/from_teleopbench/` 与已有 L21 FK 资产已入库；先检查具体失败路径。
+TRON2A description、LinkerHand SDK 等外部资产仍需按使用分支自行配置，见第六节与总体架构说明。
 
 ---
 
