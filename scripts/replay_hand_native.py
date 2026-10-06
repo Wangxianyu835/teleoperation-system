@@ -105,7 +105,30 @@ def compute_robot_extent(p, robot_id, cid):
     return (lo + hi) / 2.0, float(np.max(hi - lo)), float(hi[2])
 
 
-def setup_camera(p, view, robot_id, cid, hand_pose=None):
+def hand_extent(p, robot_id, cid, link_ids):
+    """Frame the actual finger links rather than an estimate of body height."""
+    boxes = [p.getAABB(robot_id, index, physicsClientId=cid) for index in link_ids]
+    if not boxes:
+        raise ValueError('No mapped hand links are available for the close-up')
+    lo = np.min([box[0] for box in boxes], axis=0)
+    hi = np.max([box[1] for box in boxes], axis=0)
+    return (lo + hi) / 2, float(np.max(hi - lo))
+
+
+def style_hands(p, robot_id, cid, plans):
+    """Display-only colors; retain the recorded targets and native mapping."""
+    for index in range(-1, p.getNumJoints(robot_id, physicsClientId=cid)):
+        p.changeVisualShape(robot_id, index, rgbaColor=[0.72, 0.76, 0.82, 1.0],
+                            textureUniqueId=-1, physicsClientId=cid)
+    for side, (mapping, _arr, _valid, names) in plans.items():
+        color = (0.28, 0.70, 1.0, 1.0) if side == 'left' else (1.0, 0.62, 0.22, 1.0)
+        for _dim, name, *_ in mapping:
+            p.changeVisualShape(robot_id, names[name], rgbaColor=color,
+                                textureUniqueId=-1, specularColor=[0.15] * 3,
+                                physicsClientId=cid)
+
+
+def setup_camera(p, view, robot_id, cid, hand_pose=None, hand_links=None):
     """按 --view 设置相机；full/front/side 都自动框住整机
 
     Args:
@@ -120,13 +143,19 @@ def setup_camera(p, view, robot_id, cid, hand_pose=None):
     # 1.6 倍留白：1.35 时机器人的脚/头会贴到画面边缘，看起来"卡边"
     auto = max(1.2, size * 1.6 / (2.0 * np.tan(np.radians(fov_v / 2.0))))
 
-    if view == 'hands':
-        tgt = list(hand_pose) if hand_pose else [ctr[0], ctr[1], top * 0.85]
-        p.resetDebugVisualizerCamera(cameraDistance=1.1, cameraYaw=135,
-                                     cameraPitch=-15,
+    if view in ('hands', 'left-hand', 'right-hand'):
+        if hand_links:
+            center, hand_size = hand_extent(p, robot_id, cid, hand_links)
+            tgt = center.tolist()
+            distance = max(0.26, hand_size * 1.7)
+        else:
+            tgt = list(hand_pose) if hand_pose is not None else [ctr[0], ctr[1], top * 0.85]
+            distance = 1.1
+        p.resetDebugVisualizerCamera(cameraDistance=distance, cameraYaw=135,
+                                     cameraPitch=-12,
                                      cameraTargetPosition=tgt,
                                      physicsClientId=cid)
-        return tgt, '手部特写'
+        return tgt, f'{view}（实际手部中心，距离 {distance:.2f} m）'
 
     yaw = {'full': 135.0, 'front': 0.0, 'side': 90.0}[view]
     tgt = [ctr[0], ctr[1], ctr[2]]
@@ -153,9 +182,9 @@ def main():
                     choices=['left', 'right', 'both'])
     ap.add_argument('--render', action='store_true', help='GUI 可视化')
     ap.add_argument('--view', default='full',
-                    choices=['full', 'front', 'side', 'hands'],
-                    help='相机视角：full=整机(默认,自动框住整个机器人) / '
-                         'front=正面 / side=侧面 / hands=手部特写')
+                    choices=['full', 'front', 'side', 'hands', 'left-hand', 'right-hand'],
+                    help='full=整机 / front=正面 / side=侧面 / hands=双手 / '
+                         'left-hand=左手特写 / right-hand=右手特写')
     ap.add_argument('--loop', type=int, default=1,
                     help='播放几遍（默认 1；设 0 表示无限循环，方便演示）')
     ap.add_argument('--limit-mode', default='clamp',
@@ -165,6 +194,10 @@ def main():
                          'rescale=按比例缩放（保运动形状但改变语义，'
                          '用于判断"是不是被限位卡住了"）')
     ap.add_argument('--speed', type=float, default=1.0)
+    ap.add_argument('--start-frame', type=int, default=0,
+                    help='start at this zero-based recording frame')
+    ap.add_argument('--end-frame', type=int,
+                    help='stop before this zero-based frame (default: recording end)')
     ap.add_argument('--substeps', type=int, default=0,
                     help='每帧数据推进多少个物理步（默认 0 = 自动匹配数据时间，'
                          '约 8 步）。设小了会变成慢动作且关节滞后')
@@ -172,6 +205,12 @@ def main():
                     help='只打印映射报告，不启动回放')
     ap.add_argument('--no-repair', action='store_true')
     args = ap.parse_args()
+    if not np.isfinite(args.speed) or args.speed <= 0:
+        ap.error('--speed must be finite and positive')
+    if args.loop < 0 or args.substeps < 0:
+        ap.error('--loop and --substeps must be nonnegative')
+    if args.view in ('left-hand', 'right-hand') and args.hand not in ('both', args.view[:-5]):
+        ap.error('the selected close-up side must also be selected by --hand')
 
     print('=' * 96)
     print('原装手回放：18 维数据 -> 机器人自带灵巧手（降维映射）')
@@ -179,11 +218,19 @@ def main():
     print(f'机器人 = {args.robot}   手 = {args.hand}   数据 = {args.file}')
 
     data = load_data(args.file)
+    frame_count = len(data['timestamps'])
+    end_frame = frame_count if args.end_frame is None else args.end_frame
+    if not 0 <= args.start_frame < end_frame <= frame_count:
+        ap.error(f'frame range must satisfy 0 <= start < end <= {frame_count}')
+    recording_start = args.start_frame
+    timestamps = data['timestamps'][recording_start:end_frame]
+    print(f'  原始帧区间 [{recording_start}, {end_frame})；速度 {args.speed:g}x')
     from envs import RobotLoader
 
     cid = p.connect(p.GUI if args.render else p.DIRECT)
     if args.render:
         p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
+        p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 0, physicsClientId=cid)
     p.setAdditionalSearchPath(pybullet_data.getDataPath(),
                               physicsClientId=cid)
     p.setGravity(0, 0, -9.81, physicsClientId=cid)
@@ -238,7 +285,10 @@ def main():
                 print(f'  已【线性插值】修复塌零帧: {interp}')
             if not held and not interp:
                 print('  未检出需要修复的帧  [OK]')
-        plans[side] = (mapping, arr, val, names)
+        # Keep detection/repair on the full stream so selecting a clip does not
+        # change the targets for the same original recording frame.
+        plans[side] = (mapping, arr[recording_start:end_frame],
+                       val[recording_start:end_frame], names)
 
     if args.report:
         p.disconnect(cid)
@@ -248,9 +298,13 @@ def main():
 
     # ---- 相机：自动框住【整机】----
     if args.render:
+        style_hands(p, robot_id, cid, plans)
         ctr, _size, top = compute_robot_extent(p, robot_id, cid)
         hand_target = [float(ctr[0]), float(ctr[1]), float(top * 0.85)]
-        _tgtl, desc = setup_camera(p, args.view, robot_id, cid, hand_target)
+        focus = list(plans) if args.view == 'hands' else [args.view[:-5]] if args.view.endswith('-hand') else []
+        hand_links = [plans[side][3][name] for side in focus
+                      for _dim, name, *_ in plans[side][0]]
+        _tgtl, desc = setup_camera(p, args.view, robot_id, cid, hand_target, hand_links)
         print()
         print(f'  相机视角：{desc}')
         print('  鼠标：左键旋转 / 右键平移 / 滚轮缩放')
@@ -275,9 +329,9 @@ def main():
     print(f'  已锁住 {len(hold_ids)} 个非手部关节'
           f'（手臂/腿/腰，数据里没有它们）')
 
-    T = len(data['timestamps'])
-    t0 = data['timestamps'][0]
-    frame_dt = (float(np.median(np.diff(data['timestamps'])))
+    T = len(timestamps)
+    t0 = timestamps[0]
+    frame_dt = (float(np.median(np.diff(timestamps)))
                 if T > 1 else 1.0 / 30.0)
     dt = 1.0 / 240.0
     substeps = (args.substeps if args.substeps > 0
@@ -301,6 +355,7 @@ def main():
     try:
         while args.loop == 0 or rounds < args.loop:
             rounds += 1
+            loop_started = time.monotonic()
             if args.render and args.loop != 1:
                 more = ('（无限循环，Ctrl+C 退出）' if args.loop == 0
                         else f'/{args.loop}')
@@ -332,7 +387,7 @@ def main():
                                 else f'共 {args.loop} 遍')
                     hud_id = p.addUserDebugText(
                         f'{args.robot}  |  第 {rounds} 遍（{loop_txt}）'
-                        f'  |  数据帧 {i+1}/{T}  |  '
+                        f'  |  原始帧 {recording_start+i}（片段 {i+1}/{T}）  |  '
                         f'手部映射  左 {cov.get("left", "-")}  '
                         f'右 {cov.get("right", "-")}\n'
                         f'手指：队友重定向输出（L21 -> 原装手）      '
@@ -341,8 +396,11 @@ def main():
                         lifeTime=0, replaceItemUniqueId=hud_id,
                         physicsClientId=cid)
                 if args.render:
-                    wait = (data['timestamps'][i] - t0) / max(args.speed, 1e-6)
-                    time.sleep(max(0.0, min(wait, 0.05)))
+                    # Schedule against wall time; the old absolute per-frame
+                    # sleep was capped at 50 ms and made --speed ineffective.
+                    wait = (timestamps[i] - t0) / args.speed - (time.monotonic() - loop_started)
+                    if wait > 0:
+                        time.sleep(wait)
                 if (i + 1) % 200 == 0:
                     print(f'    ... {i+1}/{T}')
     except p.error as exc:

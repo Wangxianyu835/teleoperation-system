@@ -1,5 +1,8 @@
 # Canonical hand-retargeting subsystem
 
+全项目的最终方向、各条端到端链路、逐文件职责与人工验证/已确认问题见
+[SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md)；全部说明见 [文档索引](README.md)。
+
 teleoperation-system 是 production hand retargeting 的唯一源码维护仓库。本子系统合入自
 `mytrans@138fc2d9cc11580421c7094c5f4b8c703a690b82`；mytrans 只保留历史参考，后续
 production 修复、训练协议和推理接口均在本仓库维护。机器人、双臂、任务、benchmark、
@@ -143,6 +146,28 @@ flatten order 与 validity 的统一工作见 [PR2 follow-up](PR2_FOLLOW_UP.md)�
 ```powershell
 python scripts/replay_hand_native.py --file outputs/hand_retargeting/palm_angles.h5 --robot h1_2 --hand both --loop 1 --no-repair --substeps 1
 ```
+
+### GUI 中看清手部动作
+
+`--view left-hand` / `right-hand` 按实际手指 link 的包围盒取景；`hands` 同时框住两手。
+GUI 中身体显示为浅灰，左手蓝色、右手橙色。`--speed 0.5` 按记录时间戳以半速播放，
+`--loop 0` 无限循环；`--start-frame` 从零计数，`--end-frame` 不包含该帧。
+这些选项只调整观察和播放，不放大关节角度，不改变预测或原生手映射。
+修改脚本后须关闭旧 GUI 并重新运行。
+选择片段前先对完整记录运行原有 identity detection / repair，随后只裁切播放区间，
+保证同一原始帧的目标角不因片段边界改变。使用 `--no-repair` 时仍直接使用导出值。
+
+本机 `palm_angles.h5` 的左手第 2640–2939 帧对应约 95–105 秒，300 帧均有有效预测，
+适合先观察四指屈伸。完整记录约 224 秒，两侧仅约一半帧有效；无效帧保持前一次输出，
+因此长时间全量播放会包含不少停顿。下面路径只适用于本机已有导出：
+
+```powershell
+& 'D:\Anaconda\envs\TransHandR\python.exe' 'D:\2026\code\teleoperation-system-retargeting\scripts\replay_hand_native.py' --file 'D:\2026\code\teleoperation-system-retargeting\outputs\hand_retargeting\palm_angles.h5' --robot h1_2 --hand both --render --view left-hand --start-frame 2640 --end-frame 2940 --speed 0.5 --loop 0 --no-repair
+```
+
+该记录没有动作名称标签，不能仅凭角度赋予“握拳”“捏合”等类别。此次观察还发现
+L21 拇指 `cmc_pitch` 和 `ip` 预测变化很小，需要对照原始关键点、L21 FK 与原生手目标
+姿态继续验证模型效果。目标姿态展示不等于实际物理执行的关节测量。
 
 ## 验证
 
