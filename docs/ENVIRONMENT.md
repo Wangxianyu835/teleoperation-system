@@ -4,8 +4,52 @@
 本机解释器是 `D:\Anaconda\envs\teleoperation\python.exe`；PyCharm 的 Project Interpreter
 请选择该文件，Working directory 选择项目根。
 
+**当前正式环境已支持 CUDA**：Torch `2.14.1+cu130`、torchvision `0.29.1+cu130`，
+CUDA runtime 13.0。首次 ENV-1 CPU 安装和重建记录保留在本文后半部分；当前状态以
+下面的 CUDA 验证为准。
+
 旧 `TransHandR` 是只读 reference baseline，保留供比较；仓库 `.venv` 不是正式验证基线。
 本轮没有修改 hand/arm 算法、RobotCommand、坐标或 checkpoint 协议。
+
+## CUDA 当前状态（2026-10-06）
+
+用户使用 PyTorch 官方 CUDA 13.0 wheel 自行替换了正式 `teleoperation` 中的 CPU
+Torch/torchvision；无需同时保留两个 Torch 发行版。旧 TransHandR 和 CPU 重建用的
+`teleoperation-repro` 保持不变。本轮没有下载或安装其他依赖。
+
+| 项目 | 实测结果 |
+| --- | --- |
+| Python / Torch / torchvision | 3.10.20 / 2.14.1+cu130 / 0.29.1+cu130 |
+| GPU / driver | NVIDIA GeForce RTX 4050 Laptop GPU / 581.80 |
+| `torch.version.cuda` / `torch.cuda.is_available()` | 13.0 / True |
+| CPU / CUDA tensor | PASS / PASS，GPU 实际运算成功 |
+| pip check / OpenCV | PASS / 仅 contrib 4.11.0.86 |
+| full unittest | total 166；passed 165；skipped 1；failed 0；errors 0 |
+| application self-check | PASS，无 FAIL 或 traceback |
+| real CUDA hand export | 6515 帧，左右 `(6515,18)`，alignment=palm_local_to_l21_v1 |
+| validity / finite / limits | 左 valid=3566、右=3197，与 CPU mask 一致；非有限值与越 L21 限位均为 0 |
+| CPU/GPU 数值对比 | 左最大差异 `5.6624413e-6 rad`，右 `6.7353249e-6 rad`；invalid hold_previous 保持一致 |
+| GPU training smoke | 40 帧 synthetic palm-local 数据，真实完成 1 epoch；有限 train/val loss，best/last checkpoint 写出 |
+| full CUDA training | NOT VALIDATED；一次 smoke 不代表完整训练收敛或真实精度 |
+| 当前 CUDA 声明的从零重建 | NOT VALIDATED；原 CPU 声明的重建通过记录不能替代 CUDA 声明的重建 |
+
+CUDA 输出：`outputs/cuda_checks/palm_angles_cuda.h5`。版本/import 路径和数值比较在
+`outputs/cuda_checks/`；完整 suite、应用检查和训练/导出日志分别在
+`outputs/env_checks/cuda_runtime_*`、`cuda_training.*` 和 `cuda_hand_export.*`。
+所有 H5、checkpoint 与日志都被 Git 忽略。
+
+复现用户已执行的 wheel 替换命令（本机已完成，不需再次运行）：
+
+```powershell
+$projectPython='D:\Anaconda\envs\teleoperation\python.exe'
+& $projectPython -m pip install torch==2.14.1+cu130 torchvision==0.29.1+cu130 --index-url https://download.pytorch.org/whl/cu130
+& $projectPython -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(torch.ones(3, device='cuda'))"
+& $projectPython -m pip check
+```
+
+wheel 来源为 [PyTorch 官方 CUDA 13.0 index](https://download.pytorch.org/whl/cu130/)。
+正式 `environment.yml` 加入该源并固定带 `+cu130` 的 Torch 与匹配的 torchvision，
+防止以后按声明重建时重新解析到 CPU wheel。
 
 ## 使用与重建
 
@@ -44,17 +88,19 @@ python -m pip check
 验证声明能独立重建时，创建另一个名称，保留正式环境：
 
 ```powershell
-conda env create -n teleoperation-repro -f environment.yml
-conda activate teleoperation-repro
+conda env create -n teleoperation-cuda-repro -f environment.yml
+conda activate teleoperation-cuda-repro
 python --version
 python -m pip check
 python -m retargeting --help
 ```
 
-`environment.yml` 固定 Python 3.10.20 和已验证的 15 个直接 pip 依赖，并引用仓库的
-development/camera requirements。没有本机路径、mytrans 路径、缓存或环境导出。
+`environment.yml` 固定 Python 3.10.20、已验证的 15 个直接 pip 依赖及匹配 Torch 的
+torchvision wheel，并引用仓库的 development/camera requirements。其 PyTorch 官方
+extra index 与 `+cu130` pins 明确选择 CUDA 13.0；其余依赖仍可从 PyPI 解析。
+没有本机路径、mytrans 路径、缓存或环境导出。
 间接依赖由 pip 解析，这不是完整 transitive lock；当前验收平台是 Windows x86_64。
-未经验证的平台、CUDA wheel 和后续依赖组合不能自动视为已验收。
+其他平台、其他 CUDA wheel 和后续依赖组合不能自动视为已验收。
 
 本机 Conda 24.11.3 的 `conda.exe` 在受限执行器中启动失败，使用
 `D:\Anaconda\python.exe -m conda` 成功完成相同操作；这不是项目 Python 依赖失败。
@@ -77,7 +123,7 @@ development/camera requirements。没有本机路径、mytrans 路径、缓存�
 声明收敛到 NumPy 1.26.4 / SciPy 1.13.1，最终 `pip check` 正常。
 
 ```powershell
-# 本轮首次创建与安装的等价命令；通常直接使用 environment.yml 即可。
+# 首次 CPU 环境验收的安装记录；正式重建请使用 environment.yml。
 conda create -n teleoperation python=3.10.20 pip -y
 conda activate teleoperation
 python -m pip install --upgrade pip
@@ -92,9 +138,10 @@ python -m pip install -r requirements-retargeting-camera.txt
 PyBullet 使用 pip 的缓存 wheel 安装；新环境没有 clone 或复制旧环境目录。
 其他 Windows 机器若没有匹配 wheel 且 pip 转为源码构建，需要可用的 C++ 编译工具链。
 
-## 验证范围与结果
+## 首次 ENV-1 CPU 验证范围与结果（历史记录）
 
-ENV-1 实测日期：2026-10-06。完整日志、命令、exit code 和数值结果位于本机
+ENV-1 首次 CPU 实测日期：2026-10-06，以下表格记录替换 CUDA wheel 之前的状态。
+完整日志、命令、exit code 和数值结果位于本机
 `outputs/env_checks/`，该目录被 Git 忽略。
 
 | 验证 | TransHandR reference | 新 teleoperation |
@@ -107,7 +154,7 @@ ENV-1 实测日期：2026-10-06。完整日志、命令、exit code 和数值结
 | package CLI help | PASS | PASS |
 | `test_import.py` | PASS，无 FAIL / traceback | PASS，无 FAIL / traceback；包含 300 步应用 smoke |
 | CPU Torch tensor | PASS | PASS |
-| CUDA basic | PASS，RTX 4050，CUDA 13.0 | unavailable，当前为 CPU wheel |
+| CUDA basic | PASS，RTX 4050，CUDA 13.0 | unavailable，当时为 CPU wheel |
 | full CUDA training | NOT VALIDATED | NOT VALIDATED |
 
 唯一 skip 是测试默认项目路径没有历史 palm-local checkpoint。
@@ -155,6 +202,17 @@ python scripts/replay_hand_native.py --file $angleOutput --robot h1_2 --hand bot
 python scripts/replay_actions.py --dummy --robot h1_2 --task pushcube --no-render --steps 40
 ```
 
+使用 GPU 导出时显式选择设备；换一个输出路径以保留 CPU 对照：
+
+```powershell
+$cudaAngles='D:\2026\code\teleoperation-system-retargeting\outputs\cuda_checks\palm_angles_cuda.h5'
+python -m retargeting export --input $handInput --checkpoint $handCheckpoint --output $cudaAngles --device cuda
+python -m retargeting inspect --angle-h5 $cudaAngles
+```
+
+训练同样追加 `--device cuda`；相机 realtime 支持该选项，真实相机尚未验收。
+PyBullet 回放读取角度结果，其物理引擎不会因 Torch CUDA 启用而自动转为 GPU 计算。
+
 Windows FK 测试会创建临时 hardlink；受限工具阻止该文件操作时，需要允许该测试操作，
 不能修改 FK 来绕开。换机器时请替换外部资源路径，保持其 coordinate/checkpoint 声明一致。
 
@@ -166,7 +224,7 @@ python scripts/replay_hand_native.py --file $angleOutput --robot h1_2 --hand bot
 
 该片段仅对应上述本机数据；其他录制重新选择帧区间。
 
-## Git 范围与原有工作
+## 首次 ENV-1 的 Git 范围与原有工作
 
 开始时 branch：`refactor/consolidate-hand-retargeting`。
 Git baseline：`328287dda7d56ffb512eb16d278f1f235f1d3b3c`。
@@ -192,7 +250,7 @@ README 通过仅更新环境章节的 index patch 暂存；已有架构/回放�
 最终提交 ID、diff stat、status 与 30 项交付记录见本机
 `outputs/env_checks/ENV_1_REPORT.md`；环境重建结果见下方实测附录。
 
-## 实测附录：包版本与 import 路径
+## 实测附录：首次 CPU 包版本与 import 路径（历史记录）
 
 下表的路径后缀来自实际 `module.__file__`。reference 前缀是
 `D:\Anaconda\envs\TransHandR\lib\site-packages\`，新环境前缀是
@@ -226,9 +284,10 @@ TransHandR 能工作，是因为其实际 imports、CPU 数值路径、完整 te
 已通过，而不是因为它符合所有仓库声明。新环境遵守现有 NumPy/SciPy/OpenCV 约束，
 也通过同一测试与真实 artifact 数值比较，因此没有证据需要放宽原约束。
 
-## 实测附录：从声明重建
+## 实测附录：首次 CPU 声明重建（历史记录）
 
-`teleoperation-repro` 已仅依据 `environment.yml` + 仓库 requirements 从零建立，
+`teleoperation-repro` 已仅依据提交 `7df7cc2` 的 CPU `environment.yml` + 仓库
+requirements 从零建立，仍保留 CPU wheel，不代表现在 CUDA 声明已重建验收。
 没有 clone TransHandR 或 teleoperation，也没有额外补装依赖。使用了正常包下载缓存，
 未复制任何旧环境的 site-packages。
 
@@ -243,4 +302,5 @@ TransHandR 能工作，是因为其实际 imports、CPU 数值路径、完整 te
 | 直接依赖 pins 与 requirements | 15 个直接依赖均符合正式声明与原 requirements |
 
 `teleoperation` 和 `teleoperation-repro` 均保留；正式使用前者，后者用于重建核查。
-**Ready for PR1.5：YES（CPU 环境验收）**。这不代表实时整机、相机或实物效果已验收。
+**Ready for PR1.5：YES（首次 CPU 环境验收）**。CUDA 追加验证见本文开头；这不代表
+完整训练、实时整机、相机或实物效果已验收。

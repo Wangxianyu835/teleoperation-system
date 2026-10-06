@@ -92,7 +92,8 @@ simulation_platform/
 - 从仓库根按 [environment.yml](environment.yml) 重建。完整安装包括 application、
   hand runtime/training、camera/tools 与 Robotics Toolbox；requirements 保持原约束。
 - 已验证 CPU hand 导出、完整 tests、PyBullet、双臂 FK/IK 与 camera imports。
-  当前 Torch 为 CPU wheel，CUDA unavailable；完整 CUDA training 与真实摄像头未验收。
+  当前 Torch 为 `2.14.1+cu130`，RTX 4050 上 CUDA 导出与 1 epoch 训练 smoke 通过；
+  完整 CUDA training 与真实摄像头未验收。
 - 旧 TransHandR 保留为 reference baseline；仓库 `.venv` 不是正式环境。
   详细版本、验证结果和资源要求见 [环境说明](docs/ENVIRONMENT.md)。
 
