@@ -12,9 +12,7 @@ import sys
 import os
 import argparse
 import time
-
-# 动作空间维度（由机器人决定，运行期在 main() 里按 env.action_dim 覆盖）
-_ACTION_DIM = 38
+from functools import partial
 
 # 确保项目目录在Python路径中
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -25,7 +23,7 @@ from tasks import list_tasks, get_task, get_tasks_by_level
 from envs import SimulationEnv
 
 
-def demo_controller(obs):
+def demo_controller(obs, *, env):
     """演示用简单控制器：左右臂交替摆动 + 手指缓慢开合
 
     注意 动作向量长度由机器人决定（H1-2=38 / GR1-T2=36 / G1=28），
@@ -35,8 +33,13 @@ def demo_controller(obs):
     真实遥操作时，把这里换成重定向算法的输出（obs -> action）。
     """
     import numpy as np
+    # run_episode() owns reset/robot loading. Read the current robot's action
+    # space here, after that reset, rather than caching an uninitialized value.
+    action_dim = env.action_dim
+    if action_dim is None:
+        raise RuntimeError('demo_controller requires env.reset() before generating actions')
     t = time.time()
-    action = np.zeros(_ACTION_DIM)
+    action = np.zeros(action_dim)
     s = 0.3 * np.sin(t * 2.0)
     # 左臂 7 关节（索引 0~6）
     action[0] = s                          # shoulder_pitch
@@ -47,7 +50,7 @@ def demo_controller(obs):
     action[8] = 0.2 * np.sin(t * 1.5 + 3.0)
     action[10] = 0.5 * np.sin(t * 1.8 + 1.0)   # elbow
     # 手部（索引 14 之后）：缓慢开合
-    if _ACTION_DIM > 14:
+    if action_dim > 14:
         action[14:] = 0.3 + 0.2 * np.sin(t * 1.2)
     return action
 
@@ -90,15 +93,18 @@ def main():
                         help='无GUI渲染（无头模式）')
     parser.add_argument('--no-record', action='store_true',
                         help='不记录数据')
-    parser.add_argument('--demo', action='store_true',
-                        help='演示模式')
-    parser.add_argument('--benchmark', action='store_true',
-                        help='基准测试模式')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--demo', action='store_true',
+                       help='运行 3 次正弦波演示；默认 pushcube，可用 --task 指定任务')
+    modes.add_argument('--benchmark', action='store_true',
+                       help='对 Level 1 任务进行基准测试；不能与 --task 同用')
     parser.add_argument('--trials', type=int, default=5,
                         help='基准测试每个任务的试验次数')
     parser.add_argument('--data-dir', type=str, default='./data/',
                         help='数据存储目录')
     args = parser.parse_args()
+    if args.benchmark and args.task is not None:
+        parser.error('--benchmark cannot be combined with --task')
 
     # 交互模式
     choice = None   # 注意 必须初始化：带 --task/--demo/--benchmark 时不会进入下面的交互分支
@@ -128,6 +134,9 @@ def main():
     if choice in ('quit', 'exit'):
         return
 
+    if args.demo and args.task is None:
+        args.task = 'pushcube'
+
     # 创建仿真环境
     env = SimulationEnv(
         robot_type=args.robot,
@@ -137,10 +146,9 @@ def main():
         data_dir=args.data_dir,
     )
 
-    # 让 demo_controller 使用当前机器人的真实动作维度
-    global _ACTION_DIM
-    _ACTION_DIM = getattr(env, 'action_dim', 38)
-    print(f"  动作空间维度: {_ACTION_DIM}")
+    # Bind the environment without resetting it; each episode performs exactly
+    # one reset, then the callback reads its actual action space.
+    controller = partial(demo_controller, env=env)
 
     try:
         if args.task:
@@ -152,15 +160,15 @@ def main():
             # 运行任务
             if args.demo:
                 print("\n[演示模式] 使用简单正弦波控制器...")
-                env.evaluate_task(num_trials=3, controller=demo_controller)
+                env.evaluate_task(num_trials=3, controller=controller)
             else:
-                env.run_episode(controller=demo_controller)
+                env.run_episode(controller=controller)
         elif args.benchmark:
             print(f"\n[基准测试模式] 测试 Level 1 任务...")
             level1_tasks = get_tasks_by_level(1)
             env.benchmark_all_tasks(
                 task_list=level1_tasks,
-                controller=demo_controller,
+                controller=controller,
                 num_trials=args.trials,
             )
 

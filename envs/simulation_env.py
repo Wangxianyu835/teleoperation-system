@@ -111,7 +111,9 @@ class SimulationEnv:
 
     def _load_ground(self):
         """加载地面"""
-        p.loadURDF("plane.urdf", physicsClientId=self.client)
+        # RobotLoader changes the search path; subsequent episode resets must
+        # still resolve the same ground asset without depending on that path.
+        p.loadURDF(f"{pybullet_data.getDataPath()}/plane.urdf", physicsClientId=self.client)
 
     def step(self, action: np.ndarray = None, duration: float = 1.0 / 240.0):
         """
