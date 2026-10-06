@@ -87,20 +87,22 @@ simulation_platform/
 
 ## 三、环境要求
 
-- **Python 3.11**
-- 依赖（见 `requirements.txt`）：
+- 正式环境为 **Conda `teleoperation` / Python 3.10.20**；本机解释器：
+  `D:\Anaconda\envs\teleoperation\python.exe`，PyCharm 也使用此路径。
+- 从仓库根按 [environment.yml](environment.yml) 重建。完整安装包括 application、
+  hand runtime/training、camera/tools 与 Robotics Toolbox；requirements 保持原约束。
+- 已验证 CPU hand 导出、完整 tests、PyBullet、双臂 FK/IK 与 camera imports。
+  当前 Torch 为 CPU wheel，CUDA unavailable；完整 CUDA training 与真实摄像头未验收。
+- 旧 TransHandR 保留为 reference baseline；仓库 `.venv` 不是正式环境。
+  详细版本、验证结果和资源要求见 [环境说明](docs/ENVIRONMENT.md)。
 
-```
-pybullet>=3.2.0
-numpy>=1.24.0
-h5py>=3.10.0
-scipy>=1.10.0
-```
-
-安装：
-
-```bash
-pip install -r requirements.txt
+```powershell
+# 本机已创建环境，只需 activate；首次安装执行 env create。
+conda env create -f environment.yml
+conda activate teleoperation
+python -c "import sys; print(sys.executable)"
+python -m pip check
+python -m retargeting --help
 ```
 
 ---

@@ -1,0 +1,28 @@
+# Validated on Windows x86_64: ENV-1, 2026-10-06.
+# Run conda env create -f environment.yml from the repository root.
+# Project requirements define coverage; pins record validated direct dependencies.
+# This is not a complete transitive dependency or CUDA lock.
+name: teleoperation
+channels:
+  - defaults
+dependencies:
+  - python=3.10.20
+  - pip
+  - pip:
+      - -r requirements-dev.txt
+      - -r requirements-retargeting-camera.txt
+      - numpy==1.26.4
+      - scipy==1.13.1
+      - h5py==3.16.0
+      - pybullet==3.2.7
+      - torch==2.14.1
+      - einops==0.8.2
+      - timm==1.0.30
+      - urchin==0.0.30
+      - trimesh==5.1.1
+      - tensorboard==2.21.0
+      - matplotlib==3.10.9
+      - opencv-contrib-python==4.11.0.86
+      - roboticstoolbox-python==1.4.2
+      - spatialmath-python==1.1.18
+      - mediapipe==0.10.35
