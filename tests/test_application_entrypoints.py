@@ -28,12 +28,13 @@ import json
 import sys
 import numpy as np
 from envs import SimulationEnv
-audit = {"resets": 0, "steps": 0, "tasks": [], "shapes": []}
+audit = {"resets": 0, "steps": 0, "tasks": [], "shapes": [], "record_modes": []}
 reset, step, episode = SimulationEnv.reset, SimulationEnv.step, SimulationEnv.run_episode
 def checked_reset(self, *args, **kwargs):
     reset(self, *args, **kwargs)
     audit["resets"] += 1
     audit["tasks"].append(self.task_name)
+    audit["record_modes"].append(self.record)
 def checked_step(self, action, *args, **kwargs):
     assert self.robot_id is not None and self.action_dim is not None
     assert isinstance(action, np.ndarray) and action.shape == (self.action_dim,)
@@ -115,6 +116,14 @@ class ApplicationEntrypointTests(unittest.TestCase):
         self.assertEqual(audit["resets"], 3)
         self.assertEqual(audit["steps"], 15)
         self.assertEqual(len(audit["shapes"]), 15)
+
+    def test_demo_default_recording_executes_bounded_real_steps(self):
+        result = self.run_cli("--demo", "--no-render")
+        audit = self.audit_cli(result)
+        self.assertEqual(audit["tasks"], ["pushcube"] * 3)
+        self.assertEqual(audit["record_modes"], [True] * 3)
+        self.assertEqual(audit["resets"], 3)
+        self.assertEqual(audit["steps"], 15)
 
     def test_explicit_task_selects_demo_task_and_task_alone_runs_one_episode(self):
         for options, trials in ((["--demo", "--task", "pickcube"], 3), (["--task", "pickcube"], 1)):
