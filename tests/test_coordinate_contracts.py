@@ -6,17 +6,17 @@ import h5py
 import numpy as np
 import torch
 
-from model.kinematics import create_hand_kinematics
-from model.losses import CollisionLoss, tip_distance_loss
-from retargeting.config import L21, ROBOT_JOINTS, SOURCE_JOINTS
-from retargeting.coordinates import (
+from teleoperation.retargeting.hand.kinematics import create_hand_kinematics
+from teleoperation.learning.losses import CollisionLoss, tip_distance_loss
+from teleoperation.retargeting.hand.config import L21, ROBOT_JOINTS, SOURCE_JOINTS
+from teleoperation.retargeting.hand.coordinates import (
     SOURCE_TO_L21_MATRIX, align_source_hand_coordinates,
     align_palm_local_coordinates, build_l21_reference_basis,
 )
-from retargeting.data import TwoHandH5Dataset
-from retargeting.hand_core import CanonicalHandProcessor
-from retargeting.tracking import ensure_hand25
-from scripts.diagnose_hand_coordinates import signed_hand_volume, transform_diagnostics
+from teleoperation.learning.dataset import TwoHandH5Dataset
+from teleoperation.apps.hand_processing import CanonicalHandPipeline
+from teleoperation.retargeting.hand.topology import ensure_hand25
+from teleoperation.apps.diagnostics.diagnose_hand_coordinates import signed_hand_volume, transform_diagnostics
 
 
 def synthetic_hand_pair():
@@ -64,7 +64,7 @@ class CoordinateContractTests(unittest.TestCase):
         canonical = {side: ensure_hand25(points) for side, points in raw.items()}
         self.assertLess(signed_hand_volume(canonical["left"]) * signed_hand_volume(canonical["right"]), 0)
         aligned = {side: align_source_hand_coordinates(points) for side, points in canonical.items()}
-        processor = CanonicalHandProcessor()
+        processor = CanonicalHandPipeline()
         for _ in range(3):
             payload = processor.update(aligned["left"], aligned["right"])
         for side in ("left", "right"):
@@ -72,7 +72,7 @@ class CoordinateContractTests(unittest.TestCase):
             np.testing.assert_allclose(payload["hands"][side][-1], aligned[side], atol=1e-7)
         # Absolute source positions disambiguate a label exchange. Wrist-relative
         # H5 points discard that evidence; do not claim an ambiguous swap is solved.
-        raw_processor = CanonicalHandProcessor()
+        raw_processor = CanonicalHandPipeline()
         for _ in range(3):
             raw_processor.update(raw["left"], raw["right"])
         payload = raw_processor.update(raw["right"], raw["left"])

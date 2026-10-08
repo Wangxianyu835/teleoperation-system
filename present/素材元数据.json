@@ -1,0 +1,728 @@
+{
+  "generated_for": "2026-10-07",
+  "repository_head_at_start": "c57c165",
+  "inputs": [
+    {
+      "original_path": "D:\\2026\\code\\teleoperation-system-retargeting\\outputs\\hand_retargeting\\palm_angles.h5",
+      "sha256": "295de7fefbce282510b14995e74598e3f6e40a6ebaf9f207edf7b6cf107fea94"
+    },
+    {
+      "original_path": "D:\\2026\\code\\mytrans\\input\\palm_local_visual_hand_data_20261005_002654.h5",
+      "sha256": "d49f3689873564f31a0f1ef1b64f13c021b4217c94af8e125c5c54b88d35946f"
+    },
+    {
+      "original_path": "D:\\2026\\code\\mytrans\\checkpoint\\models\\twohand_h5\\linker\\palm_local_v2\\model_best.pth",
+      "sha256": "84ec9c132fc50957006c7fec03a2e03a743c04b35cab1e8ac40c708860adfcaf"
+    }
+  ],
+  "alignment": "palm_local_to_l21_v1",
+  "angle_metadata": {
+    "checkpoint": "D:\\2026\\code\\mytrans\\checkpoint\\models\\twohand_h5\\linker\\palm_local_v2\\model_best.pth",
+    "coordinate_alignment": "palm_local_to_l21_v1",
+    "coordinate_frame": "l21",
+    "identity_tracking": true,
+    "input_file": "D:\\2026\\code\\mytrans\\input\\palm_local_visual_hand_data_20261005_002654.h5",
+    "invalid_angle_policy": "hold_previous",
+    "max_center_displacement": 0.08,
+    "max_shape_rmse": 0.05,
+    "output_shape": [
+      18
+    ],
+    "source_landmark_space": "mediapipe_normalized"
+  },
+  "rendering": "PyBullet DIRECT / ER_TINY_RENDERER / resetJointState targets, no physics stepping",
+  "mapping": "native map_frame(limit_mode=clamp); no repair, rescale, interpolation or model retraining",
+  "sampling": "15 fps; latest original frame at each output timestamp; original angles unchanged",
+  "versions": {
+    "torch": "2.14.1+cu130",
+    "pybullet": "3.2.7",
+    "numpy": "1.26.4",
+    "h5py": "3.16.0",
+    "Pillow": "12.3.0",
+    "opencv-contrib-python": "4.11.0.86"
+  },
+  "segments": {
+    "left": {
+      "start_frame_inclusive": 2640,
+      "end_frame_exclusive": 2940,
+      "source_duration_seconds": 9.955000000000013,
+      "valid_frames": 300,
+      "output_frames": 150,
+      "selected_source_indices": [
+        2640,
+        2642,
+        2644,
+        2646,
+        2648,
+        2650,
+        2652,
+        2654,
+        2656,
+        2658,
+        2660,
+        2662,
+        2663,
+        2666,
+        2668,
+        2670,
+        2672,
+        2674,
+        2676,
+        2678,
+        2680,
+        2682,
+        2684,
+        2686,
+        2688,
+        2690,
+        2692,
+        2694,
+        2696,
+        2698,
+        2699,
+        2702,
+        2704,
+        2706,
+        2708,
+        2710,
+        2712,
+        2714,
+        2716,
+        2718,
+        2720,
+        2722,
+        2723,
+        2725,
+        2728,
+        2730,
+        2732,
+        2734,
+        2735,
+        2738,
+        2740,
+        2742,
+        2744,
+        2746,
+        2747,
+        2750,
+        2752,
+        2754,
+        2756,
+        2758,
+        2760,
+        2762,
+        2764,
+        2766,
+        2768,
+        2770,
+        2772,
+        2774,
+        2776,
+        2778,
+        2780,
+        2782,
+        2783,
+        2786,
+        2788,
+        2790,
+        2792,
+        2794,
+        2796,
+        2798,
+        2800,
+        2802,
+        2804,
+        2806,
+        2807,
+        2809,
+        2812,
+        2814,
+        2816,
+        2818,
+        2820,
+        2822,
+        2824,
+        2826,
+        2828,
+        2830,
+        2832,
+        2834,
+        2836,
+        2838,
+        2840,
+        2842,
+        2843,
+        2845,
+        2848,
+        2850,
+        2852,
+        2854,
+        2855,
+        2858,
+        2860,
+        2862,
+        2864,
+        2866,
+        2868,
+        2870,
+        2872,
+        2874,
+        2876,
+        2878,
+        2879,
+        2882,
+        2884,
+        2886,
+        2888,
+        2890,
+        2892,
+        2894,
+        2896,
+        2898,
+        2900,
+        2902,
+        2903,
+        2906,
+        2908,
+        2910,
+        2912,
+        2914,
+        2916,
+        2918,
+        2920,
+        2922,
+        2924,
+        2926,
+        2927,
+        2930,
+        2932,
+        2934,
+        2936,
+        2938
+      ],
+      "source_start_seconds": 94.975
+    },
+    "right": {
+      "start_frame_inclusive": 3465,
+      "end_frame_exclusive": 3765,
+      "source_duration_seconds": 9.989999999999995,
+      "valid_frames": 300,
+      "output_frames": 150,
+      "selected_source_indices": [
+        3465,
+        3467,
+        3468,
+        3470,
+        3472,
+        3474,
+        3476,
+        3479,
+        3480,
+        3482,
+        3484,
+        3486,
+        3489,
+        3491,
+        3492,
+        3494,
+        3496,
+        3498,
+        3501,
+        3503,
+        3504,
+        3506,
+        3508,
+        3510,
+        3512,
+        3515,
+        3516,
+        3518,
+        3520,
+        3522,
+        3525,
+        3527,
+        3528,
+        3530,
+        3532,
+        3534,
+        3536,
+        3539,
+        3540,
+        3542,
+        3544,
+        3546,
+        3548,
+        3551,
+        3552,
+        3554,
+        3556,
+        3558,
+        3561,
+        3563,
+        3564,
+        3566,
+        3568,
+        3570,
+        3572,
+        3575,
+        3576,
+        3578,
+        3580,
+        3582,
+        3585,
+        3587,
+        3588,
+        3590,
+        3592,
+        3594,
+        3597,
+        3599,
+        3600,
+        3602,
+        3604,
+        3606,
+        3609,
+        3611,
+        3612,
+        3614,
+        3616,
+        3618,
+        3621,
+        3623,
+        3624,
+        3626,
+        3628,
+        3630,
+        3632,
+        3635,
+        3636,
+        3638,
+        3640,
+        3642,
+        3645,
+        3647,
+        3648,
+        3650,
+        3652,
+        3654,
+        3657,
+        3659,
+        3660,
+        3662,
+        3664,
+        3666,
+        3668,
+        3671,
+        3672,
+        3674,
+        3676,
+        3678,
+        3680,
+        3683,
+        3684,
+        3686,
+        3688,
+        3690,
+        3693,
+        3695,
+        3696,
+        3698,
+        3699,
+        3701,
+        3704,
+        3706,
+        3707,
+        3709,
+        3711,
+        3713,
+        3715,
+        3718,
+        3719,
+        3721,
+        3724,
+        3726,
+        3728,
+        3730,
+        3731,
+        3733,
+        3735,
+        3737,
+        3740,
+        3741,
+        3743,
+        3745,
+        3747,
+        3749,
+        3752,
+        3753,
+        3755,
+        3757,
+        3760,
+        3762
+      ],
+      "source_start_seconds": 122.461
+    }
+  },
+  "evidence": {
+    "basis": "Existing validation artifacts; this build does not rerun the full suite",
+    "artifacts": {
+      "test_suite": {
+        "repository_relative_source": "outputs/pr15_checks/final_suite.log",
+        "sha256": "4769c4298ffc3ffe3a1d8fbcffc7f194749ad23607ac3cdb7f99352b5f0e5b52"
+      },
+      "export_comparison": {
+        "repository_relative_source": "outputs/cuda_checks/export_comparison.json",
+        "sha256": "ec6474282e98a478d872109e3ebbba0f633d6cf83f5090e43f90f5a13b78acbd"
+      },
+      "recording_footprint": {
+        "repository_relative_source": "outputs/pr15_checks/recording_footprint.json",
+        "sha256": "00f31198daadf597424454be1c80de99eee0f8771c1b21050be73cdd64067ff0"
+      }
+    },
+    "tests": {
+      "total": 181,
+      "passed": 180,
+      "skipped": 1,
+      "failed": 0,
+      "errors": 0,
+      "skip_reason": "local palm_local_v2 checkpoint unavailable"
+    },
+    "cpu_gpu_comparison": {
+      "left": {
+        "shape": [
+          6515,
+          18
+        ],
+        "valid": 3566,
+        "finite": true,
+        "cpu_gpu_max_abs_difference_rad": 5.662441253662109e-06
+      },
+      "right": {
+        "shape": [
+          6515,
+          18
+        ],
+        "valid": 3197,
+        "finite": true,
+        "cpu_gpu_max_abs_difference_rad": 6.735324859619141e-06
+      }
+    },
+    "recording_footprint": {
+      "python": "D:\\Anaconda\\envs\\teleoperation\\python.exe",
+      "steps": 5,
+      "cameras": {
+        "camera_rgb": {
+          "rgb": {
+            "container": "tuple",
+            "length": 307200
+          },
+          "depth": {
+            "container": "tuple",
+            "length": 76800
+          },
+          "seg": {
+            "container": "tuple",
+            "length": 76800
+          }
+        },
+        "head_camera_rgb": {
+          "rgb": {
+            "container": "tuple",
+            "length": 307200
+          },
+          "depth": {
+            "container": "tuple",
+            "length": 76800
+          },
+          "seg": {
+            "container": "tuple",
+            "length": 76800
+          }
+        }
+      },
+      "camera_bytes_five_steps": 55302270,
+      "marginal_camera_bytes_per_step": 11059968,
+      "projected_camera_bytes_at_10000_steps": 110599680000,
+      "projected_camera_gib_at_10000_steps": 103.00397872924805
+    }
+  },
+  "protected_input_hashes_unchanged": true,
+  "images": [
+    {
+      "file": "01_three_robots.png",
+      "size": [
+        1600,
+        1000
+      ],
+      "sha256": "f1e214a698b1575baae5b2d7a7c38daaac65734b7fc79b530bc2069ea2fbc3bd"
+    },
+    {
+      "file": "02_native_hands.png",
+      "size": [
+        1600,
+        1000
+      ],
+      "sha256": "9ad0d818a4703f0fd10db572dcf7ec54e1ef918aa0426b83e92d7c2297da0f42"
+    },
+    {
+      "file": "03_system_flow.png",
+      "size": [
+        1600,
+        1000
+      ],
+      "sha256": "4fa99fcd2e5760100671f863b9752fb34dc347cb6601157b59026d3b2c463b93"
+    },
+    {
+      "file": "04_hand_pipeline.png",
+      "size": [
+        1600,
+        1000
+      ],
+      "sha256": "eabd8e498a14c17edb2266e68d9010b3b31c76c7d2b3a976cb672414f2630312"
+    },
+    {
+      "file": "05_task_levels.png",
+      "size": [
+        1600,
+        1000
+      ],
+      "sha256": "97b408d1ef48214594364819d42a32bb24698cd8e6d1d44b28bd334d12ec7bd1"
+    },
+    {
+      "file": "06_task_scenes.png",
+      "size": [
+        1600,
+        1000
+      ],
+      "sha256": "ddf56a7d300207f916dbda2afab2338e6666d2bbbe7e219ccca7443e7222bee9"
+    },
+    {
+      "file": "07_left_comparison.png",
+      "size": [
+        1600,
+        1000
+      ],
+      "sha256": "0d4afcf107776f7e667ff49b6657c4c6e596817760ccf0791dd637f71cadd471"
+    },
+    {
+      "file": "08_right_comparison.png",
+      "size": [
+        1600,
+        1000
+      ],
+      "sha256": "a9321de5a4265337b9bab984feab46667c5e0cfca9130bdb071b50fb80285eca"
+    },
+    {
+      "file": "09_dof_coverage.png",
+      "size": [
+        1600,
+        1000
+      ],
+      "sha256": "9f3ac2c27d700ecf104528b4ed6728cb511eab0e5eefc65ee4a10fc64057cc16"
+    },
+    {
+      "file": "10_validation.png",
+      "size": [
+        1600,
+        1000
+      ],
+      "sha256": "151a0c45d220eafbb7cd24c37af51c18ccea15f16854334b5d8e844e01b67959"
+    }
+  ],
+  "outputs": [
+    {
+      "relative_path": "images/01_three_robots.png",
+      "bytes": 146596,
+      "sha256": "f1e214a698b1575baae5b2d7a7c38daaac65734b7fc79b530bc2069ea2fbc3bd"
+    },
+    {
+      "relative_path": "images/02_native_hands.png",
+      "bytes": 198495,
+      "sha256": "9ad0d818a4703f0fd10db572dcf7ec54e1ef918aa0426b83e92d7c2297da0f42"
+    },
+    {
+      "relative_path": "images/03_system_flow.png",
+      "bytes": 144424,
+      "sha256": "4fa99fcd2e5760100671f863b9752fb34dc347cb6601157b59026d3b2c463b93"
+    },
+    {
+      "relative_path": "images/04_hand_pipeline.png",
+      "bytes": 118845,
+      "sha256": "eabd8e498a14c17edb2266e68d9010b3b31c76c7d2b3a976cb672414f2630312"
+    },
+    {
+      "relative_path": "images/05_task_levels.png",
+      "bytes": 87120,
+      "sha256": "97b408d1ef48214594364819d42a32bb24698cd8e6d1d44b28bd334d12ec7bd1"
+    },
+    {
+      "relative_path": "images/06_task_scenes.png",
+      "bytes": 107864,
+      "sha256": "ddf56a7d300207f916dbda2afab2338e6666d2bbbe7e219ccca7443e7222bee9"
+    },
+    {
+      "relative_path": "images/07_left_comparison.png",
+      "bytes": 137871,
+      "sha256": "0d4afcf107776f7e667ff49b6657c4c6e596817760ccf0791dd637f71cadd471"
+    },
+    {
+      "relative_path": "images/08_right_comparison.png",
+      "bytes": 123308,
+      "sha256": "a9321de5a4265337b9bab984feab46667c5e0cfca9130bdb071b50fb80285eca"
+    },
+    {
+      "relative_path": "images/09_dof_coverage.png",
+      "bytes": 95347,
+      "sha256": "9f3ac2c27d700ecf104528b4ed6728cb511eab0e5eefc65ee4a10fc64057cc16"
+    },
+    {
+      "relative_path": "images/10_validation.png",
+      "bytes": 147582,
+      "sha256": "151a0c45d220eafbb7cd24c37af51c18ccea15f16854334b5d8e844e01b67959"
+    },
+    {
+      "relative_path": "videos/left_comparison.gif",
+      "bytes": 1848380,
+      "sha256": "fc483fd2adf7ff68c24470ad7dc637a87fe8f2ffa2814b94209d33bf8aa6a084"
+    },
+    {
+      "relative_path": "videos/left_comparison.mp4",
+      "bytes": 4001320,
+      "sha256": "dc9b4f29dc91c50a6f3175a991e8d6a66d7fba2bf59f1a113b5df72748341062"
+    },
+    {
+      "relative_path": "videos/left_comparison_poster.jpg",
+      "bytes": 135023,
+      "sha256": "cae6bbcbf4142f74b681eeb17bf88d4b33bbc7d04c49269caa7f4e68f4475706"
+    },
+    {
+      "relative_path": "videos/right_comparison.gif",
+      "bytes": 1797462,
+      "sha256": "51bcc844449be9e02197d6154364ed221650a0feb621b58b64caf0b75bb7737f"
+    },
+    {
+      "relative_path": "videos/right_comparison.mp4",
+      "bytes": 3648576,
+      "sha256": "7fb26d2df0ec3c9ea22b5df1219c9003c24591f3c4412c0a1ffb6aa189f8f843"
+    },
+    {
+      "relative_path": "videos/right_comparison_poster.jpg",
+      "bytes": 138351,
+      "sha256": "c226bc7449f594724b0bd6b4ee5c2379f9a68ce6fdef64b0f503789fc7562c3e"
+    },
+    {
+      "relative_path": "videos/three_robots_left.gif",
+      "bytes": 2192380,
+      "sha256": "3a53385b42c5280747b1da8f88f11c8d44c8887af5712485273429571749bb59"
+    },
+    {
+      "relative_path": "videos/three_robots_left.mp4",
+      "bytes": 4595172,
+      "sha256": "83beeabbd4fe879c27b1e5103919d87f442c6d13fec632b7da6b4a995ebe109b"
+    },
+    {
+      "relative_path": "videos/three_robots_left_poster.jpg",
+      "bytes": 150083,
+      "sha256": "1f04296d66a02199e156555043d1a68d78684dfe06935d150d8b9cee0a3a7b5e"
+    },
+    {
+      "relative_path": "videos/three_robots_right.gif",
+      "bytes": 2069866,
+      "sha256": "34de7bbfca3f5526208f6edeee970f2dcf6c7a76cd77ead99b158d45a9833f02"
+    },
+    {
+      "relative_path": "videos/three_robots_right.mp4",
+      "bytes": 4133190,
+      "sha256": "f3287ac9d86d16dce5670da6fafee3acd267f5fd669cc4a474f91a248b9dccfb"
+    },
+    {
+      "relative_path": "videos/three_robots_right_poster.jpg",
+      "bytes": 148746,
+      "sha256": "354f12787762f65fa8f2881670785afedf1a6603281f0046f8f716ff6066707b"
+    }
+  ],
+  "videos": [
+    {
+      "file": "left_comparison.mp4",
+      "codec": "H.264 / avc1",
+      "encoder_backend": "MSMF",
+      "fps": 15,
+      "frames": 150,
+      "duration_seconds": 10.0,
+      "width": 1280,
+      "height": 720,
+      "gif_fps": 5,
+      "silent": true
+    },
+    {
+      "file": "three_robots_left.mp4",
+      "codec": "H.264 / avc1",
+      "encoder_backend": "MSMF",
+      "fps": 15,
+      "frames": 150,
+      "duration_seconds": 10.0,
+      "width": 1280,
+      "height": 720,
+      "gif_fps": 5,
+      "silent": true
+    },
+    {
+      "file": "right_comparison.mp4",
+      "codec": "H.264 / avc1",
+      "encoder_backend": "MSMF",
+      "fps": 15,
+      "frames": 150,
+      "duration_seconds": 10.0,
+      "width": 1280,
+      "height": 720,
+      "gif_fps": 5,
+      "silent": true
+    },
+    {
+      "file": "three_robots_right.mp4",
+      "codec": "H.264 / avc1",
+      "encoder_backend": "MSMF",
+      "fps": 15,
+      "frames": 150,
+      "duration_seconds": 10.0,
+      "width": 1280,
+      "height": 720,
+      "gif_fps": 5,
+      "silent": true
+    }
+  ],
+  "video_validation": [
+    {
+      "file": "left_comparison.mp4",
+      "decoded_frames": 150,
+      "fps": 15.0,
+      "duration_seconds": 10.0,
+      "decoded_codec": "h264",
+      "begin_middle_end_ok": true
+    },
+    {
+      "file": "right_comparison.mp4",
+      "decoded_frames": 150,
+      "fps": 15.0,
+      "duration_seconds": 10.0,
+      "decoded_codec": "h264",
+      "begin_middle_end_ok": true
+    },
+    {
+      "file": "three_robots_left.mp4",
+      "decoded_frames": 150,
+      "fps": 15.0,
+      "duration_seconds": 10.0,
+      "decoded_codec": "h264",
+      "begin_middle_end_ok": true
+    },
+    {
+      "file": "three_robots_right.mp4",
+      "decoded_frames": 150,
+      "fps": 15.0,
+      "duration_seconds": 10.0,
+      "decoded_codec": "h264",
+      "begin_middle_end_ok": true
+    }
+  ]
+}

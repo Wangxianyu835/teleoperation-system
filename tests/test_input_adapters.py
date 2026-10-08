@@ -2,18 +2,16 @@ import unittest
 
 import numpy as np
 
-from retargeting.contracts import (
+from teleoperation.contracts.validation import (
     HAND_KEYPOINTS,
     RECEPTIVE_FIELD,
     legacy_visionpro_to_window,
     validate_arm_input,
     validate_retarget_input,
 )
-from retargeting.tracking import (
-    HandIdentityTracker,
-    HandWindowBuffer,
-    mediapipe21_to_hand25,
-)
+from teleoperation.retargeting.hand.tracking import HandIdentityTracker
+from tests.support import CanonicalWindowFixture
+from teleoperation.retargeting.hand.topology import mediapipe21_to_hand25
 
 
 class InputAdapterTests(unittest.TestCase):
@@ -30,7 +28,7 @@ class InputAdapterTests(unittest.TestCase):
         )
 
     def test_window_buffer_keeps_missing_hand_explicit(self):
-        buffer = HandWindowBuffer()
+        buffer = CanonicalWindowFixture()
         points = np.zeros((21, 3), dtype=np.float32)
 
         self.assertIsNone(buffer.update(left_hand=points, source="test"))

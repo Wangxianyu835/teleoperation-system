@@ -3,28 +3,28 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from retargeting.__main__ import build_parser
-from retargeting.config import DEFAULT_CHECKPOINT
-from retargeting.inference import _resolve_device
-from retargeting.inspect import inspect_angle_h5
+from teleoperation.cli import build_parser
+from teleoperation.paths import DEFAULT_CHECKPOINT
+from teleoperation.apps.hand_export import _resolve_device
+from teleoperation.apps.hand_inspect import inspect_angle_h5
 
 
 class CliTests(unittest.TestCase):
     def test_export_uses_the_retained_checkpoint_by_default(self):
-        args = build_parser().parse_args(["export"])
+        args = build_parser().parse_args(["hand", "export"])
         self.assertEqual(args.checkpoint, DEFAULT_CHECKPOINT)
 
     def test_all_public_commands_are_registered(self):
         parser = build_parser()
-        self.assertEqual(parser.parse_args(["export"]).command, "export")
+        self.assertEqual(parser.parse_args(["hand", "export"]).command, "export")
         self.assertEqual(
             parser.parse_args(
-                ["train", "--input", "input.h5", "--run-name", "test"]
+                ["hand", "train", "--input", "input.h5", "--run-name", "test"]
             ).command,
             "train",
         )
         self.assertEqual(
-            parser.parse_args(["inspect", "--angle-h5", "angles.h5"]).command,
+            parser.parse_args(["hand", "inspect", "--angle-h5", "angles.h5"]).command,
             "inspect",
         )
 

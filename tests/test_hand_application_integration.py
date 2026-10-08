@@ -6,27 +6,26 @@ import unittest
 
 import numpy as np
 
-from config import retarget_io as application
-from input_adapters.npy_replay_adapter import NpyReplayAdapter
-from retargeting import contracts
-from retargeting.config import HAND_ANGLE_DIM, HAND_DOF, L21, PROJECT_ROOT
-from retargeting.hand_core import CanonicalHandProcessor
-from retargeting.simulation import angle18_to_dofs
-from retargeting.visionpro import VisionProAdapter
-from teleop.native_hand import DIM_NAMES, NATIVE_MAP, PREFIX, build_mapping, map_frame
+from teleoperation.contracts import validation as application
+from teleoperation.apps.hand_processing import NpyReplayWorkflow
+from teleoperation.contracts import validation as contracts
+from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM, HAND_DOF, L21
+from teleoperation.paths import PROJECT_ROOT
+from teleoperation.apps.hand_processing import CanonicalHandPipeline
+from teleoperation.retargeting.hand.angles import angle18_to_dofs
+from teleoperation.apps.visionpro import VisionProWorkflow
+from teleoperation.robots.native_hand import DIM_NAMES, NATIVE_MAP, PREFIX, build_mapping
+from teleoperation.apps.replay.hand_support import map_frame
 from tests.test_coordinate_contracts import synthetic_hand_pair
 
 
 class HandApplicationIntegrationTests(unittest.TestCase):
-    def test_application_hand_validation_delegates_to_canonical_contract(self):
-        self.assertIs(application._validate_hand_input, contracts.validate_hand_input)
-        self.assertIs(application.legacy_visionpro_to_window, contracts.legacy_visionpro_to_window)
-        self.assertEqual(application.HAND_KEYPOINTS, 25)
-        self.assertEqual(application.RECEPTIVE_FIELD, 3)
+    def test_application_uses_observation_contract_validation(self):
+        self.assertEqual(contracts.HAND_KEYPOINTS, 25)
         with self.assertRaisesRegex(ValueError, "shape"):
-            application.validate_hand_input(np.zeros((3, 21, 3)), "left")
+            contracts.validate_hand_input(np.zeros((3, 21, 3)), "left")
         with self.assertRaisesRegex(ValueError, "NaN"):
-            application.validate_hand_input(np.full((3, 25, 3), np.nan), "right")
+            contracts.validate_hand_input(np.full((3, 25, 3), np.nan), "right")
 
     def test_npy_replay_uses_canonical_processor_and_resets_missing_side(self):
         points = synthetic_hand_pair()[0]
@@ -35,12 +34,12 @@ class HandApplicationIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "capture.npy"
             np.save(path, np.asarray(frames, dtype=object))
-            adapter = NpyReplayAdapter(path)
-            self.assertIsInstance(adapter._processor, CanonicalHandProcessor)
+            adapter = NpyReplayWorkflow(path)
+            self.assertIsInstance(adapter.pipeline, CanonicalHandPipeline)
             payloads = list(adapter)
         self.assertEqual([item["metadata"]["frame_id"] for item in payloads], [2, 6])
         for payload in payloads:
-            self.assertTrue(application.validate_retarget_input(payload))
+            self.assertTrue(contracts.validate_retarget_input(payload))
             self.assertEqual(payload["hands"]["left"].shape, (3, 25, 3))
             self.assertIsNone(payload["hands"]["right"])
             np.testing.assert_array_equal(payload["hands"]["left"][:, 0], 0)
@@ -53,7 +52,7 @@ class HandApplicationIntegrationTests(unittest.TestCase):
             def get_latest(self):
                 return {"left_fingers": transforms}
 
-        adapter = VisionProAdapter("unused", streamer=Stream())
+        adapter = VisionProWorkflow("unused", streamer=Stream())
         self.assertIsNone(adapter.next_input())
         self.assertIsNone(adapter.next_input())
         payload = adapter.next_input()
@@ -78,13 +77,16 @@ class HandApplicationIntegrationTests(unittest.TestCase):
                     self.assertEqual(DIM_NAMES[index], L21.hand_kinematics_config()["joints_name"][index])
 
     def test_destination_checkpoint_default_and_application_packing_are_retained(self):
-        from retargeting.cli import build_parser
-        args = build_parser().parse_args(["export"])
+        from teleoperation.cli import build_parser
+        args = build_parser().parse_args(["hand", "export"])
         self.assertEqual(args.checkpoint, PROJECT_ROOT / "checkpoint/models/twohand_h5/linker/coord_aligned_100ep/model_best.pth")
-        self.assertEqual(application.ACTION_ORDER, contracts.ACTION_ORDER)
+        self.assertEqual(contracts.ACTION_ORDER, ("left_arm", "left_hand", "right_arm", "right_hand"))
         # Existing app helper accepts partial commands; fixed destination helper
         # still rejects absent arms. PR1 deliberately preserves both PR2 concerns.
         hand = np.zeros(17, dtype=np.float32)
-        self.assertEqual(application.build_action(None, hand, None, hand).shape, (34,))
+        self.assertEqual(pack_partial_limb_vector(None, hand, None, hand).values.shape, (34,))
         with self.assertRaisesRegex(ValueError, "left_arm"):
-            contracts.build_action(None, hand, None, hand)
+            pack_tron2a_l21_action(None, hand, None, hand)
+
+from teleoperation.robots.partial import pack_partial_limb_vector
+from teleoperation.robots.action_mapping import pack_tron2a_l21_action

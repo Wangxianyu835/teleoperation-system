@@ -8,14 +8,12 @@ from unittest import mock
 import h5py
 import numpy as np
 import torch
-from model.kinematics import create_hand_kinematics
+from teleoperation.retargeting.hand.kinematics import create_hand_kinematics
 
-from retargeting.coordinates import (
-    PALM_LOCAL_METADATA, PalmBasisError,
-    align_palm_local_coordinates, build_l21_reference_basis,
-)
-from retargeting.tracking import ensure_hand25
-from retargeting.preprocessing import align_h5
+from teleoperation.contracts.coordinates import PALM_LOCAL_METADATA
+from teleoperation.retargeting.hand.coordinates import PalmBasisError, align_palm_local_coordinates, build_l21_reference_basis
+from teleoperation.retargeting.hand.topology import ensure_hand25
+from teleoperation.apps.hand_align import align_h5
 from tests.test_coordinate_contracts import synthetic_hand_pair
 
 
@@ -140,8 +138,8 @@ class AlignmentTransactionTests(unittest.TestCase):
                         del handle[key]
                         handle.create_dataset(key, data=value)
                 before = self.source.read_bytes()
-                with mock.patch("model.kinematics.create_hand_kinematics", wraps=create_hand_kinematics) as factory:
-                    with mock.patch("retargeting.coordinates.align_source_hand_coordinates", side_effect=AssertionError("legacy matrix must not be called")):
+                with mock.patch("teleoperation.retargeting.hand.kinematics.create_hand_kinematics", wraps=create_hand_kinematics) as factory:
+                    with mock.patch("teleoperation.retargeting.hand.coordinates.align_source_hand_coordinates", side_effect=AssertionError("legacy matrix must not be called")):
                         report = align_h5(self.source, self.destination)
                 self.assertEqual(factory.call_count, 2)
                 self.assertEqual(report["frames"], 4)
@@ -186,13 +184,13 @@ class AlignmentTransactionTests(unittest.TestCase):
         fake_fk.forward.return_value = (None, None, torch.zeros((1, 23, 3)))
         for side in ("left", "right"):
             with self.subTest(side=side):
-                with mock.patch("model.kinematics.create_hand_kinematics", return_value=fake_fk):
+                with mock.patch("teleoperation.retargeting.hand.kinematics.create_hand_kinematics", return_value=fake_fk):
                     with self.assertRaises(PalmBasisError) as context:
                         build_l21_reference_basis(side)
                 message = str(context.exception)
                 for expected in (f"side={side}", "(0, 1, 4, 7, 10)", "positions=", "longitudinal"):
                     self.assertIn(expected, message)
-        with mock.patch("model.kinematics.create_hand_kinematics", return_value=fake_fk):
+        with mock.patch("teleoperation.retargeting.hand.kinematics.create_hand_kinematics", return_value=fake_fk):
             with mock.patch("os.replace") as replace:
                 with self.assertRaises(PalmBasisError):
                     align_h5(self.source, self.destination)

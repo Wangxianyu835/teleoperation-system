@@ -4,9 +4,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from retargeting.hand_core import HandWindow
-from retargeting.model import TwoHandRetargeter
-from retargeting.retargeter import HandCommand, HandRetargeter, PoseTransformerRetargeter
+from teleoperation.contracts.hand import HandWindow
+from teleoperation.retargeting.hand.predictor import TwoHandRetargeter
+from teleoperation.contracts.hand import HandRetargetResult
+from teleoperation.retargeting.hand.interface import HandRetargeter, PoseTransformerRetargeter
 
 
 class DummyRetargetModel(nn.Module):
@@ -32,11 +33,11 @@ class PoseTransformerRetargeterTests(unittest.TestCase):
         self.assertIsInstance(adapter, HandRetargeter)
         command = adapter.retarget(_window(left, right))
 
-        self.assertIsInstance(command, HandCommand)
+        self.assertIsInstance(command, HandRetargetResult)
         self.assertTrue(command.left_valid)
         self.assertTrue(command.right_valid)
-        self.assertEqual(command.left_angles.shape, (18,))
-        self.assertEqual(command.right_angles.shape, (18,))
+        self.assertEqual(command.left_angles.values.shape, (18,))
+        self.assertEqual(command.right_angles.values.shape, (18,))
         self.assertEqual(command.timestamp, 1.25)
 
     def test_validity_follows_missing_window_sides(self):
@@ -60,8 +61,8 @@ class PoseTransformerRetargeterTests(unittest.TestCase):
         expected = old.predict(window.to_payload(), device="cpu")["hands"]
         actual = adapter.retarget(window)
 
-        np.testing.assert_array_equal(actual.left_angles, expected["left"])
-        np.testing.assert_array_equal(actual.right_angles, expected["right"])
+        np.testing.assert_array_equal(actual.left_angles.values, expected["left"])
+        np.testing.assert_array_equal(actual.right_angles.values, expected["right"])
 
     def test_reset_preserves_stateless_model_output(self):
         adapter = PoseTransformerRetargeter(TwoHandRetargeter(DummyRetargetModel()))
@@ -72,7 +73,7 @@ class PoseTransformerRetargeterTests(unittest.TestCase):
         adapter.reset()
         after = adapter.retarget(window)
 
-        np.testing.assert_array_equal(before.left_angles, after.left_angles)
+        np.testing.assert_array_equal(before.left_angles.values, after.left_angles.values)
         self.assertEqual(before.left_valid, after.left_valid)
         self.assertEqual(before.right_valid, after.right_valid)
 

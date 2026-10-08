@@ -36,17 +36,11 @@ lib/
 linkerhand_sdk/
 
 # ---------- 机器人模型资产 ----------
-# 只放行代码实际使用的 from_teleopbench（★ 已入库，用普通 Git 管理，未用 LFS）
-# 其余子目录（arms/ assembly/ h1_paper/ h1_with_hand/ hands/ linker_hand/ xarm7_ability/）
-# 代码未引用，不入库（共约 274 MB）
-#
-# 注意：不能用 `robots/` 整体排除 —— gitignore 规定「父目录被排除后
-#       无法再重新包含其子文件」，必须用 `robots/*` + `!robots/xxx/`
-robots/*
-!robots/from_teleopbench/
+# 正式资源位于 assets/robots，随仓库管理；旧本地资源目录不入库。
+/robots/
 
 # ---------- 运行产物 / 采集数据 ----------
-data/
+/data/
 outputs/
 logs/
 
@@ -60,6 +54,11 @@ _*.log
 *.npz
 *.mp4
 *.avi
+
+# 阶段汇报视频是交付素材，允许随 present 成果包入库
+!present/videos/*.mp4
+present/*.log
+present/qa/
 
 # ★ 但 datasets/ 下的数据必须放行 ★
 #   契约 G（human_hand.h5）与契约 H（actions.h5）靠 Git 交换，
@@ -80,3 +79,6 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 $RECYCLE.BIN/
+
+# Persistence package contains source code, not runtime datasets.
+!src/teleoperation/data/

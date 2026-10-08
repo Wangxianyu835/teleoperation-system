@@ -6,7 +6,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from scripts.diagnose_hand_coordinates import diagnose_h5
+from teleoperation.apps.diagnostics.diagnose_hand_coordinates import diagnose_h5
 from tests.test_coordinate_contracts import synthetic_hand_pair
 
 

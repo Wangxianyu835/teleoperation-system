@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>双臂灵巧手遥操作 · 阶段成果</title>
+  <style>
+    :root { color-scheme: light; --ink:#142b48; --blue:#2878ca; --muted:#586a81; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#f2f5fa; color:var(--ink); font-family:"Microsoft YaHei",system-ui,sans-serif; line-height:1.7; }
+    main { max-width:1320px; margin:auto; padding:36px 28px 70px; }
+    .eyebrow { font-size:14px; font-weight:700; color:var(--blue); letter-spacing:1px; }
+    h1 { font-size:clamp(28px,4vw,48px); line-height:1.3; margin:12px 0; }
+    h2 { font-size:28px; margin:48px 0 10px; }
+    h3 { font-size:21px; margin:0 0 8px; }
+    p { margin:8px 0 16px; }
+    a { color:#236bb4; text-underline-offset:4px; }
+    .sub, figcaption, .note { color:var(--muted); }
+    nav { display:flex; gap:12px; flex-wrap:wrap; margin:24px 0; }
+    nav a { text-decoration:none; border:1px solid #cbd9ea; border-radius:24px; padding:8px 20px; background:white; }
+    .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:24px 0; }
+    .stat { background:white; border-radius:16px; padding:18px 24px; }
+    .stat strong { display:block; font-size:32px; color:#138b87; line-height:1.25; }
+    .stat span { font-size:14px; }
+    .hero, figure, .video-card { background:white; border-radius:18px; overflow:hidden; border:1px solid #e0e7f1; }
+    .hero img { display:block; width:100%; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:22px; }
+    figure { margin:0; }
+    figure a { display:block; }
+    figure img { display:block; width:100%; height:auto; }
+    figcaption { padding:14px 18px 18px; font-size:14px; }
+    figcaption b { display:block; color:var(--ink); font-size:17px; }
+    .video-card { padding:20px; }
+    video { width:100%; display:block; background:#e9eff6; border-radius:12px; aspect-ratio:16/9; }
+    .video-card p { font-size:14px; color:var(--muted); }
+    .links { display:flex; flex-wrap:wrap; gap:18px; margin:12px 0; font-size:14px; }
+    details { background:#f2f5fa; border-radius:10px; padding:10px; }
+    summary { cursor:pointer; font-size:14px; color:var(--blue); }
+    details img { display:block; margin-top:12px; width:100%; border-radius:8px; }
+    .boundary { border-left:4px solid #d38425; background:#fff5e8; padding:18px 22px; border-radius:0 12px 12px 0; margin:24px 0; }
+    footer { border-top:1px solid #d5dfeb; margin-top:48px; padding-top:18px; font-size:13px; color:var(--muted); }
+    @media(max-width:760px) { main { padding:24px 16px 48px; } .grid { grid-template-columns:1fr; } .stats { grid-template-columns:repeat(2,1fr); } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">中山大学 · 大学生创新创业训练计划 · 2026-10-07</div>
+    <h1>双臂灵巧手遥操作<br>平台、重定向与阶段验证</h1>
+    <p class="sub">三机器人仿真与统一手部工程链路。10 张图片、4 段短视频，来自现有代码和真实记录。</p>
+    <nav aria-label="材料导航">
+      <a href="#videos">播放短视频</a><a href="#images">查看图片</a>
+      <a href="项目阶段成果.md">完整汇报正文</a><a href="素材说明.md">素材来源</a><a href="README.md">材料总览</a>
+    </nav>
+    <div class="stats">
+      <div class="stat"><strong>3</strong><span>机器人仿真模型</span></div>
+      <div class="stat"><strong>30</strong><span>四级任务定义</span></div>
+      <div class="stat"><strong>180</strong><span>已有回归通过 / 1 跳过</span></div>
+      <div class="stat"><strong>6515</strong><span>真实记录导出帧</span></div>
+    </div>
+    <div class="hero"><img src="images/01_three_robots.png" alt="H1-2、GR1-T2、G1 三机器人仿真全景" width="1600" height="1000"></div>
+    <div class="boundary">当前阶段已具备离线手部处理、角度导出和原生手映射展示。实时整机连接、模型精度、全部任务成功率、真实设备及长程记录仍待验收。</div>
+  </header>
+
+  <section id="videos">
+    <h2>四段短视频</h2>
+    <p class="note">每段 10 秒，H.264 MP4 / 720p / 15 fps / 无声。GIF 为低帧率预览。图中是直接设置的关节目标姿态，手臂保持原姿态。</p>
+    <div class="grid">
+      <article class="video-card">
+        <h3>01 左手：输入 → 预测 → 映射</h3>
+        <p>真实记录 [2640,2940)，左手 300 个连续有效帧。三面板独立显示尺度，保留输入与预测差异。</p>
+        <video controls playsinline preload="metadata" poster="videos/left_comparison_poster.jpg" aria-label="左手三面板对比"><source src="videos/left_comparison.mp4" type="video/mp4">请用下方链接打开 MP4 或 GIF。</video>
+        <div class="links"><a href="videos/left_comparison.mp4" download>下载 MP4</a><a href="videos/left_comparison_poster.jpg">封面</a><a href="videos/left_comparison.gif">打开 GIF</a></div>
+        <details open><summary>GIF 动态预览（5 fps）</summary><img src="videos/left_comparison.gif" alt="左手输入、L21 FK 与 H1 原生手目标姿态动画" width="640" height="360" loading="lazy"></details>
+      </article>
+      <article class="video-card">
+        <h3>02 右手：输入 → 预测 → 映射</h3>
+        <p>真实记录 [3465,3765)，右手 300 个连续有效帧。与左手视频取自不同时间段。</p>
+        <video controls playsinline preload="metadata" poster="videos/right_comparison_poster.jpg" aria-label="右手三面板对比"><source src="videos/right_comparison.mp4" type="video/mp4">请用下方链接打开 MP4 或 GIF。</video>
+        <div class="links"><a href="videos/right_comparison.mp4" download>下载 MP4</a><a href="videos/right_comparison_poster.jpg">封面</a><a href="videos/right_comparison.gif">打开 GIF</a></div>
+        <details open><summary>GIF 动态预览（5 fps）</summary><img src="videos/right_comparison.gif" alt="右手输入、L21 FK 与 H1 原生手目标姿态动画" width="640" height="360" loading="lazy"></details>
+      </article>
+      <article class="video-card">
+        <h3>03 同一左手角度，三种原装手</h3>
+        <p>三台机器人同时显示整机缩略图与手部特写。自由度保留 12 / 11 / 7，默认原生限位裁剪。</p>
+        <video controls playsinline preload="metadata" poster="videos/three_robots_left_poster.jpg" aria-label="三机器人左手映射"><source src="videos/three_robots_left.mp4" type="video/mp4">请用下方链接打开 MP4 或 GIF。</video>
+        <div class="links"><a href="videos/three_robots_left.mp4" download>下载 MP4</a><a href="videos/three_robots_left_poster.jpg">封面</a><a href="videos/three_robots_left.gif">打开 GIF</a></div>
+        <details open><summary>GIF 动态预览（5 fps）</summary><img src="videos/three_robots_left.gif" alt="H1-2、GR1-T2、G1 左手目标姿态同步动画" width="640" height="360" loading="lazy"></details>
+      </article>
+      <article class="video-card">
+        <h3>04 同一右手角度，三种原装手</h3>
+        <p>按各自原生关节名称和符号映射，保留原装手结构。覆盖率衡量表达范围，不是准确率。</p>
+        <video controls playsinline preload="metadata" poster="videos/three_robots_right_poster.jpg" aria-label="三机器人右手映射"><source src="videos/three_robots_right.mp4" type="video/mp4">请用下方链接打开 MP4 或 GIF。</video>
+        <div class="links"><a href="videos/three_robots_right.mp4" download>下载 MP4</a><a href="videos/three_robots_right_poster.jpg">封面</a><a href="videos/three_robots_right.gif">打开 GIF</a></div>
+        <details open><summary>GIF 动态预览（5 fps）</summary><img src="videos/three_robots_right.gif" alt="H1-2、GR1-T2、G1 右手目标姿态同步动画" width="640" height="360" loading="lazy"></details>
+      </article>
+    </div>
+  </section>
+
+  <section id="images">
+    <h2>十张成果图片</h2>
+    <p class="note">点击图片打开 1600×1000 原图，可直接用于阶段报告或演示文稿。</p>
+    <div class="grid">
+      <figure><a href="images/01_three_robots.png"><img src="images/01_three_robots.png" alt="三机器人仿真全景" loading="lazy" width="1600" height="1000"></a><figcaption><b>01 三机器人统一仿真</b>机器人模型、原装手与各自动作空间。</figcaption></figure>
+      <figure><a href="images/02_native_hands.png"><img src="images/02_native_hands.png" alt="原装灵巧手特写" loading="lazy" width="1600" height="1000"></a><figcaption><b>02 三种原装手</b>蓝色左手、橙色右手；实际 URDF 与映射目标姿态。</figcaption></figure>
+      <figure><a href="images/03_system_flow.png"><img src="images/03_system_flow.png" alt="当前系统链路" loading="lazy" width="1600" height="1000"></a><figcaption><b>03 当前链路与待整合连接</b>实线已有链路，虚线待整合或验收。</figcaption></figure>
+      <figure><a href="images/04_hand_pipeline.png"><img src="images/04_hand_pipeline.png" alt="手部重定向流程" loading="lazy" width="1600" height="1000"></a><figcaption><b>04 统一手部流程</b>Hand25、掌面坐标对齐、三帧模型输入及 18D 输出。</figcaption></figure>
+      <figure><a href="images/05_task_levels.png"><img src="images/05_task_levels.png" alt="四级任务体系" loading="lazy" width="1600" height="1000"></a><figcaption><b>05 四级 30 个任务定义</b>数量 5 / 11 / 9 / 5，尚未全部逐项验收。</figcaption></figure>
+      <figure><a href="images/06_task_scenes.png"><img src="images/06_task_scenes.png" alt="四个代表任务初始场景" loading="lazy" width="1600" height="1000"></a><figcaption><b>06 实际代码生成的任务场景</b>reset 后初始场景，未执行完成任务的控制策略。</figcaption></figure>
+      <figure><a href="images/07_left_comparison.png"><img src="images/07_left_comparison.png" alt="左手输入预测映射对比" loading="lazy" width="1600" height="1000"></a><figcaption><b>07 左手同帧对比</b>输入、预测 FK、H1 目标手姿态，保留预测差异。</figcaption></figure>
+      <figure><a href="images/08_right_comparison.png"><img src="images/08_right_comparison.png" alt="右手输入预测映射对比" loading="lazy" width="1600" height="1000"></a><figcaption><b>08 右手同帧对比</b>独立显示尺度，支持后续质量诊断。</figcaption></figure>
+      <figure><a href="images/09_dof_coverage.png"><img src="images/09_dof_coverage.png" alt="自由度覆盖率" loading="lazy" width="1600" height="1000"></a><figcaption><b>09 原装手有损映射</b>自由度覆盖率 71% / 65% / 41%，不代表重定向精度。</figcaption></figure>
+      <figure><a href="images/10_validation.png"><img src="images/10_validation.png" alt="工程验证结果" loading="lazy" width="1600" height="1000"></a><figcaption><b>10 工程与数值验证</b>180 项通过、6515 帧导出、CPU / GPU 差异；来自已有验收日志。</figcaption></figure>
+    </div>
+  </section>
+  <footer>本页可离线打开，无外部库、网络请求或上传。原始记录、checkpoint 与生成版本见素材说明；本项目参考 TeleOpBench 与 LinkerHand 相关开源资源。</footer>
+</main>
+</body>
+</html>

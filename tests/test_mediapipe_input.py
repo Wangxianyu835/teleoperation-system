@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from retargeting.inputs.mediapipe import MediaPipeCameraInput, parse_result
+from teleoperation.inputs.mediapipe import MediaPipeCameraInput, parse_result
 
 
 def hand(offset=0.0):
@@ -187,7 +187,7 @@ class MediaPipeCameraLifecycleTests(unittest.TestCase):
 
     def test_rgb_video_timestamp_and_frame_metadata(self):
         camera = self.camera()
-        with patch("retargeting.inputs.mediapipe.time.time", return_value=100.125):
+        with patch("teleoperation.inputs.mediapipe.time.time", return_value=100.125):
             output = camera.next_frame()
         self.cv2.cvtColor.assert_called_once_with(self.bgr, 99)
         image, timestamp = self.landmarker.detect_for_video.call_args.args
@@ -223,7 +223,7 @@ class MediaPipeCameraLifecycleTests(unittest.TestCase):
 
     def test_repeated_or_backward_clock_keeps_video_timestamps_increasing(self):
         camera = self.camera()
-        with patch("retargeting.inputs.mediapipe.time.time", side_effect=[100, 100, 99, 101]):
+        with patch("teleoperation.inputs.mediapipe.time.time", side_effect=[100, 100, 99, 101]):
             frames = [camera.next_frame() for _ in range(4)]
         self.assertEqual([frame["timestamp"] for frame in frames], [100000, 100001, 100002, 101000])
         self.assertEqual([frame["metadata"]["frame_index"] for frame in frames], [0, 1, 2, 3])

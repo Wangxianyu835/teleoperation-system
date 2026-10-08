@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "teleoperation-system-retargeting"
+version = "0.1.0"
+description = "Modular dual-arm and dexterous-hand teleoperation"
+requires-python = ">=3.10"
+
+[project.scripts]
+teleoperation = "teleoperation.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -8,12 +8,9 @@ import h5py
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from retargeting.arm import (
-    RoboticsToolboxArmIK,
-    _forearm_rotation,
-    load_arm_specification,
-)
-from retargeting.dual_teleop import export_robot_commands
+from teleoperation.retargeting.arm.ik import RoboticsToolboxArmIK, load_arm_specification
+from teleoperation.retargeting.arm.retargeter import _forearm_rotation
+from teleoperation.apps.dual_export import export_robot_commands
 
 
 URDF = Path(os.environ.get(
@@ -34,7 +31,7 @@ class DualArmTests(unittest.TestCase):
     def test_ik_accepts_previous_solution_for_its_current_pose(self):
         specification = load_arm_specification(URDF, "left")
         zero = np.zeros(7)
-        result = RoboticsToolboxArmIK(specification).solve(specification.robot.fkine(zero).A, zero, zero)
+        result = RoboticsToolboxArmIK(specification).solve(target_pose_from_matrix(specification.robot.fkine(zero).A, "left"), zero, zero)
         self.assertTrue(result.success)
         np.testing.assert_allclose(result.q, zero)
 
@@ -85,3 +82,7 @@ class DualArmTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+from teleoperation.retargeting.arm.ik import target_pose_from_matrix
+
+from teleoperation.retargeting.arm.ik import target_pose_from_matrix

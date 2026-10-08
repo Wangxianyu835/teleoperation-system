@@ -6,22 +6,18 @@ from unittest.mock import Mock, patch
 import numpy as np
 import torch
 
-from retargeting.coordinates import (
-    PALM_LOCAL_COORDINATE_ALIGNMENT,
-    PalmBasisError,
-    align_palm_local_coordinates,
-    build_l21_reference_basis,
-)
-from retargeting.mediapipe import (
-    MediaPipeCameraAdapter,
-    MediaPipePalmLocalProcessor,
+from teleoperation.contracts.coordinates import PALM_LOCAL_COORDINATE_ALIGNMENT
+from teleoperation.retargeting.hand.coordinates import PalmBasisError, align_palm_local_coordinates, build_l21_reference_basis
+from teleoperation.apps.hand_realtime import (
+    MediaPipeCameraWorkflow,
+    MediaPipePalmLocalPipeline,
     PALM_LOCAL_V2_CHECKPOINT,
     load_palm_local_retargeter,
 )
-from retargeting.tracking import ensure_hand25
+from teleoperation.retargeting.hand.topology import ensure_hand25
 from tests.test_coordinate_contracts import synthetic_hand_pair
 from tests.test_mediapipe_input import result as detection_result
-from retargeting.inputs.mediapipe import parse_result
+from teleoperation.inputs.mediapipe import parse_result
 
 
 SIDES = ("left", "right")
@@ -98,7 +94,7 @@ class MediaPipeRealtimeTests(unittest.TestCase):
         max_error = 0.0
         for name, sequence in sequences().items():
             with self.subTest(sequence=name):
-                processor = MediaPipePalmLocalProcessor()
+                processor = MediaPipePalmLocalPipeline()
                 reference = offline_reference(sequence, self.bases)
                 for frame, (expected_current, expected_windows) in zip(sequence, reference):
                     payload = processor.process_frame(frame)
@@ -130,12 +126,12 @@ class MediaPipeRealtimeTests(unittest.TestCase):
         print(f"offline/realtime max palm-local coordinate error={max_error:.9g}")
 
     def test_A1_A2_None_A4_A5_A6_resets_immediately_and_keeps_only_new_frames(self):
-        processor = MediaPipePalmLocalProcessor()
+        processor = MediaPipePalmLocalPipeline()
         frames = sequences()["A1_A2_None_A4_A5_A6"]
         for frame in frames[:2]:
             self.assertIsNone(processor.process_frame(frame))
         self.assertIsNone(processor.process_frame(frames[2]))
-        self.assertEqual(len(processor._buffer._buffers["left"]), 0)
+        self.assertEqual(len(processor.buffer._buffers["left"]), 0)
         self.assertIsNone(processor.current_hands["left"])
         self.assertIsNone(processor.process_frame(frames[3]))
         self.assertIsNone(processor.process_frame(frames[4]))
@@ -157,7 +153,7 @@ class MediaPipeRealtimeTests(unittest.TestCase):
                               np.full((21, 3), 1e100), np.zeros((25, 3)), "invalid"]
             for invalid in invalid_values:
                 with self.subTest(side=side, invalid=str(invalid)[:35]):
-                    processor = MediaPipePalmLocalProcessor()
+                    processor = MediaPipePalmLocalPipeline()
                     for i in range(3):
                         processor.process_frame(raw_frame(i))
                     missing = raw_frame(3)
@@ -165,7 +161,7 @@ class MediaPipeRealtimeTests(unittest.TestCase):
                     payload = processor.process_frame(missing)
                     self.assertIsNone(payload["hands"][side])
                     self.assertEqual(processor.valid_streak[side], 0)
-                    self.assertEqual(len(processor._buffer._buffers[side]), 0)
+                    self.assertEqual(len(processor.buffer._buffers[side]), 0)
                     self.assertEqual(payload["hands"][other].shape, (3, 25, 3))
                     self.assertEqual(processor.valid_streak[other], 3)
                     recovered = []
@@ -180,11 +176,11 @@ class MediaPipeRealtimeTests(unittest.TestCase):
                             np.testing.assert_array_equal(payload["hands"][side], np.stack(recovered))
 
     def test_palm_basis_exception_is_side_local(self):
-        processor = MediaPipePalmLocalProcessor()
+        processor = MediaPipePalmLocalPipeline()
         for i in range(3):
             processor.process_frame(raw_frame(i))
         right = align_palm_local_coordinates(ensure_hand25(raw_frame(3)["right"]), self.bases["right"])
-        with patch("retargeting.mediapipe.align_palm_local_coordinates",
+        with patch("teleoperation.retargeting.hand.processing.align_palm_local_coordinates",
                    side_effect=[PalmBasisError("degenerate source"), right]):
             payload = processor.process_frame(raw_frame(3))
         self.assertIsNone(payload["hands"]["left"])
@@ -193,34 +189,34 @@ class MediaPipeRealtimeTests(unittest.TestCase):
 
     def test_each_basis_built_once_and_alignment_precedes_buffer_without_tracking(self):
         events = []
-        with patch("retargeting.mediapipe.build_l21_reference_basis", side_effect=lambda side: self.bases[side]) as basis:
-            processor = MediaPipePalmLocalProcessor()
+        with patch("teleoperation.retargeting.hand.processing.build_l21_reference_basis", side_effect=lambda side: self.bases[side]) as basis:
+            processor = MediaPipePalmLocalPipeline()
             self.assertEqual(basis.call_count, 2)
             self.assertEqual([call.args[0] for call in basis.call_args_list], list(SIDES))
-            original_append = processor._buffer.update_canonical
+            original_append = processor.buffer.append
             def convert(points):
                 events.append("convert")
                 return ensure_hand25(points)
             def align(points, robot):
                 events.append("align_left" if robot is self.bases["left"] else "align_right")
                 return align_palm_local_coordinates(points, robot)
-            def append(**kwargs):
+            def append(frame):
                 events.append("append")
                 for side in SIDES:
-                    np.testing.assert_array_equal(kwargs[f"{side}_hand"], processor.current_hands[side])
-                return original_append(**kwargs)
-            with patch("retargeting.mediapipe.ensure_hand25", side_effect=convert), \
-                 patch("retargeting.mediapipe.align_palm_local_coordinates", side_effect=align), \
-                 patch.object(processor._buffer, "update_canonical", side_effect=append), \
-                 patch("retargeting.tracking.HandIdentityTracker", side_effect=AssertionError("identity tracker called")), \
-                 patch("retargeting.coordinates.align_source_hand_coordinates", side_effect=AssertionError("legacy alignment called")):
+                    np.testing.assert_array_equal(frame.hands[side], processor.current_hands[side])
+                return original_append(frame)
+            with patch("teleoperation.retargeting.hand.processing.ensure_hand25", side_effect=convert), \
+                 patch("teleoperation.retargeting.hand.processing.align_palm_local_coordinates", side_effect=align), \
+                 patch.object(processor.buffer, "append", side_effect=append), \
+                 patch("teleoperation.retargeting.hand.tracking.HandIdentityTracker", side_effect=AssertionError("identity tracker called")), \
+                 patch("teleoperation.retargeting.hand.coordinates.align_source_hand_coordinates", side_effect=AssertionError("legacy alignment called")):
                 for i in range(5):
                     processor.process_frame(raw_frame(i))
             self.assertEqual(events, ["convert", "align_left", "convert", "align_right", "append"] * 5)
             self.assertEqual(basis.call_count, 2)
 
     def test_media_pipe_sides_are_trusted_after_label_swap_or_position_jump(self):
-        processor = MediaPipePalmLocalProcessor()
+        processor = MediaPipePalmLocalPipeline()
         for i in range(3):
             processor.process_frame(raw_frame(i))
         frame = raw_frame(3)
@@ -237,9 +233,9 @@ class MediaPipeRealtimeTests(unittest.TestCase):
             frame["timestamp"] = 100000 + i * 33
             frame["metadata"]["timestamp_unit"] = "unix_ms"
         raw.next_frame.side_effect = frames
-        with patch("retargeting.mediapipe.MediaPipeCameraInput", return_value=raw) as camera, \
-             patch("retargeting.mediapipe.time.time", side_effect=[100, 100.1, 100.2, 100.3]):
-            with MediaPipeCameraAdapter("model.task", camera_index=2) as adapter:
+        with patch("teleoperation.apps.hand_realtime.MediaPipeCameraInput", return_value=raw) as camera, \
+             patch("teleoperation.apps.hand_realtime.time.time", side_effect=[100, 100.1, 100.2, 100.3]):
+            with MediaPipeCameraWorkflow("model.task", camera_index=2) as adapter:
                 self.assertIsNone(adapter.next_input())
                 self.assertIsNone(adapter.next_input())
                 payload = adapter.next_input()
@@ -255,8 +251,8 @@ class MediaPipeRealtimeTests(unittest.TestCase):
     def test_capture_error_does_not_leave_old_windows(self):
         raw = Mock()
         raw.next_frame.side_effect = [raw_frame(i) for i in range(3)] + [RuntimeError("capture failed")]
-        with patch("retargeting.mediapipe.MediaPipeCameraInput", return_value=raw):
-            adapter = MediaPipeCameraAdapter("model.task")
+        with patch("teleoperation.apps.hand_realtime.MediaPipeCameraInput", return_value=raw):
+            adapter = MediaPipeCameraWorkflow("model.task")
             for _ in range(3):
                 adapter.next_input()
             with self.assertRaisesRegex(RuntimeError, "capture failed"):
@@ -266,7 +262,7 @@ class MediaPipeRealtimeTests(unittest.TestCase):
         raw.release.assert_called_once()
 
     def test_duplicate_raw_labels_clear_history_and_restart_three_valid_frames(self):
-        processor = MediaPipePalmLocalProcessor()
+        processor = MediaPipePalmLocalPipeline()
         for i in range(3):
             processor.process_frame(raw_frame(i))
         duplicate = parse_result(detection_result(["Right", "Right"]), 1000,
@@ -283,19 +279,19 @@ class MediaPipeRealtimeTests(unittest.TestCase):
             np.testing.assert_array_equal(payload["hands"][side], expected)
 
     def test_robot_reference_failure_is_fatal_before_camera_open(self):
-        with patch("retargeting.mediapipe.build_l21_reference_basis", side_effect=PalmBasisError("robot reference")), \
-             patch("retargeting.mediapipe.MediaPipeCameraInput") as camera:
+        with patch("teleoperation.retargeting.hand.processing.build_l21_reference_basis", side_effect=PalmBasisError("robot reference")), \
+             patch("teleoperation.apps.hand_realtime.MediaPipeCameraInput") as camera:
             with self.assertRaisesRegex(PalmBasisError, "robot reference"):
-                MediaPipeCameraAdapter("model.task")
+                MediaPipeCameraWorkflow("model.task")
         camera.assert_not_called()
 
     def test_scale_normalization_and_changed_capture_confidence_are_rejected(self):
         for kwargs in ({"scale_factor": 2}, {"min_confidence": 0.9}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
-                MediaPipeCameraAdapter("model.task", **kwargs)
+                MediaPipeCameraWorkflow("model.task", **kwargs)
 
     def test_checkpoint_loader_always_requests_palm_local_alignment(self):
-        with patch("retargeting.model.create_twohand_retargeter") as create:
+        with patch("teleoperation.retargeting.hand.predictor.create_twohand_retargeter") as create:
             load_palm_local_retargeter()
         self.assertEqual(create.call_args.kwargs["checkpoint_path"], str(PALM_LOCAL_V2_CHECKPOINT))
         self.assertEqual(create.call_args.kwargs["expected_coordinate_alignment"], PALM_LOCAL_COORDINATE_ALIGNMENT)
@@ -303,8 +299,8 @@ class MediaPipeRealtimeTests(unittest.TestCase):
     def test_legacy_missing_and_unknown_checkpoint_alignment_fail_before_state_loading(self):
         for alignment in ("source_to_l21_xyz", None, "palm_local_to_l21_v2"):
             with self.subTest(alignment=alignment), \
-                 patch("retargeting.model.build_hand_model", return_value=torch.nn.Linear(1, 1)), \
-                 patch("retargeting.model.torch.load", return_value={"coordinate_alignment": alignment}):
+                 patch("teleoperation.retargeting.hand.predictor.build_hand_model", return_value=torch.nn.Linear(1, 1)), \
+                 patch("teleoperation.retargeting.hand.checkpoint.read_checkpoint", return_value={"coordinate_alignment": alignment}):
                 with self.assertRaisesRegex(ValueError, "alignment"):
                     load_palm_local_retargeter()
 
@@ -339,7 +335,7 @@ class PalmLocalV2AngleEquivalenceTests(unittest.TestCase):
                         self.assertEqual(predicted.shape, (len(indices), 18))
                         self.assertTrue(np.isfinite(predicted).all())
                         expected_angles[side] = dict(zip(indices, predicted))
-                processor = MediaPipePalmLocalProcessor()
+                processor = MediaPipePalmLocalPipeline()
                 for index, frame in enumerate(sequence):
                     payload = processor.process_frame(frame)
                     actual = {side: None for side in SIDES} if payload is None else self.model.predict(payload, "cpu")["hands"]

@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from retargeting.training import LOSS_NAMES, _run_epoch
+from teleoperation.learning.trainer import LOSS_NAMES, _run_epoch
 
 
 class TrainingSafetyTests(unittest.TestCase):
@@ -37,7 +37,7 @@ class TrainingSafetyTests(unittest.TestCase):
             loss = loss_factory(predicted)
             return (loss,) * len(LOSS_NAMES)
 
-        with patch("retargeting.training._masked_hand_loss", side_effect=fake_hand_loss):
+        with patch("teleoperation.learning.trainer._masked_hand_loss", side_effect=fake_hand_loss):
             return _run_epoch(
                 model=model, generator=generator, device="cpu",
                 pos_loss=nn.MSELoss(), vec_loss=None,

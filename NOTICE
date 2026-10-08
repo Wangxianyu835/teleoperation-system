@@ -25,7 +25,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-本项目 `robots/from_teleopbench/` 下的 H1-2 / GR1-T2 / G1 模型资产
+本项目 `assets/robots/from_teleopbench/` 下的 H1-2 / GR1-T2 / G1 模型资产
 来自 TeleOpBench，该目录未包含在本仓库中，需自行从上游获取。
 
 TeleOpBench 建立在以下开源代码库之上，请访问链接查看各自的许可证：

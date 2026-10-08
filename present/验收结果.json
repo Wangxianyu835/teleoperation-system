@@ -1,0 +1,213 @@
+{
+  "material_date": "2026-10-07",
+  "checks": {
+    "counts": {
+      "images": 10,
+      "mp4": 4,
+      "gif": 4,
+      "poster": 4
+    },
+    "image_formats": [
+      {
+        "file": "01_three_robots.png",
+        "size": [
+          1600,
+          1000
+        ],
+        "format": "PNG"
+      },
+      {
+        "file": "02_native_hands.png",
+        "size": [
+          1600,
+          1000
+        ],
+        "format": "PNG"
+      },
+      {
+        "file": "03_system_flow.png",
+        "size": [
+          1600,
+          1000
+        ],
+        "format": "PNG"
+      },
+      {
+        "file": "04_hand_pipeline.png",
+        "size": [
+          1600,
+          1000
+        ],
+        "format": "PNG"
+      },
+      {
+        "file": "05_task_levels.png",
+        "size": [
+          1600,
+          1000
+        ],
+        "format": "PNG"
+      },
+      {
+        "file": "06_task_scenes.png",
+        "size": [
+          1600,
+          1000
+        ],
+        "format": "PNG"
+      },
+      {
+        "file": "07_left_comparison.png",
+        "size": [
+          1600,
+          1000
+        ],
+        "format": "PNG"
+      },
+      {
+        "file": "08_right_comparison.png",
+        "size": [
+          1600,
+          1000
+        ],
+        "format": "PNG"
+      },
+      {
+        "file": "09_dof_coverage.png",
+        "size": [
+          1600,
+          1000
+        ],
+        "format": "PNG"
+      },
+      {
+        "file": "10_validation.png",
+        "size": [
+          1600,
+          1000
+        ],
+        "format": "PNG"
+      }
+    ],
+    "videos": [
+      {
+        "file": "left_comparison.mp4",
+        "decoded_frames": 150,
+        "fps": 15.0,
+        "duration_seconds": 10.0,
+        "codec": "h264",
+        "sample_frames_checked": [
+          0,
+          75,
+          149
+        ],
+        "body_mean_abs_change": 3.748304756072668
+      },
+      {
+        "file": "right_comparison.mp4",
+        "decoded_frames": 150,
+        "fps": 15.0,
+        "duration_seconds": 10.0,
+        "codec": "h264",
+        "sample_frames_checked": [
+          0,
+          75,
+          149
+        ],
+        "body_mean_abs_change": 4.606559501939171
+      },
+      {
+        "file": "three_robots_left.mp4",
+        "decoded_frames": 150,
+        "fps": 15.0,
+        "duration_seconds": 10.0,
+        "codec": "h264",
+        "sample_frames_checked": [
+          0,
+          75,
+          149
+        ],
+        "body_mean_abs_change": 3.903151663604817
+      },
+      {
+        "file": "three_robots_right.mp4",
+        "decoded_frames": 150,
+        "fps": 15.0,
+        "duration_seconds": 10.0,
+        "codec": "h264",
+        "sample_frames_checked": [
+          0,
+          75,
+          149
+        ],
+        "body_mean_abs_change": 4.568721167585221
+      }
+    ],
+    "gifs": [
+      {
+        "file": "left_comparison.gif",
+        "frames": 50,
+        "duration_ms": 10000,
+        "loop": 0
+      },
+      {
+        "file": "right_comparison.gif",
+        "frames": 50,
+        "duration_ms": 10000,
+        "loop": 0
+      },
+      {
+        "file": "three_robots_left.gif",
+        "frames": 50,
+        "duration_ms": 10000,
+        "loop": 0
+      },
+      {
+        "file": "three_robots_right.gif",
+        "frames": 50,
+        "duration_ms": 10000,
+        "loop": 0
+      }
+    ],
+    "output_hashes_match_manifest": true,
+    "protected_inputs": [
+      {
+        "name": "palm_angles.h5",
+        "sha256": "295de7fefbce282510b14995e74598e3f6e40a6ebaf9f207edf7b6cf107fea94",
+        "unchanged": true
+      },
+      {
+        "name": "palm_local_visual_hand_data_20261005_002654.h5",
+        "sha256": "d49f3689873564f31a0f1ef1b64f13c021b4217c94af8e125c5c54b88d35946f",
+        "unchanged": true
+      },
+      {
+        "name": "model_best.pth",
+        "sha256": "84ec9c132fc50957006c7fec03a2e03a743c04b35cab1e8ac40c708860adfcaf",
+        "unchanged": true
+      }
+    ],
+    "relative_links": {
+      "checked": 96,
+      "html_video_elements": 4,
+      "broken": 0,
+      "external_dependencies": 0
+    },
+    "evidence": {
+      "tests": {
+        "total": 181,
+        "passed": 180,
+        "skipped": 1,
+        "failed": 0,
+        "errors": 0,
+        "skip_reason": "local palm_local_v2 checkpoint unavailable"
+      },
+      "valid_frames": {
+        "left": 3566,
+        "right": 3197
+      }
+    }
+  },
+  "visual_review": "Recorded separately in 素材说明.md; this script checks structural and numeric validity only.",
+  "passed": true
+}

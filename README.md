@@ -1,318 +1,114 @@
-# 大创 —— 遥操作系统
+# 遥操作与重定向项目
 
-> 中山大学 · 大学生创新创业训练计划项目
+项目包含 L21 手部重定向、TRON2A 双臂 IK，以及 H1-2、GR1-T2、G1 的 PyBullet 任务和回放。生产代码统一位于 `src/teleoperation`。
 
-基于 **PyBullet** 的双臂灵巧手遥操作仿真平台，面向双臂人形机器人的
-**遥操作数据采集** 与 **动作重定向算法** 验证。
+**阶段汇报与答辩材料**：[present 成果包](present/README.md)，完整汇报正文见 [项目阶段成果](present/项目阶段成果.md)。
 
-**最终方向**：实现真实输入 → 手部/双臂重定向 → 明确的机器人命令与关节映射 →
-仿真任务执行 → 同步记录 → 可复现评估的闭环。当前手部核心已完成 PR1 合并，
-实时整机连接、command 统一、真实设备/物理验证仍需推进。
+## 安装
 
-请先阅读 [总体架构与端到端链路](docs/SYSTEM_ARCHITECTURE.md)：包含当前代码内容、
-逐文件职责、重点链路、人工验证和已确认问题。所有说明文档统一从
-[docs 文档索引](docs/README.md)进入。
-
----
-
-## 一、项目简介
-
-本项目搭建了一个面向双臂人形机器人的遥操作仿真平台，提供 **30 个分层操作任务**，
-用于验证「VR / 数据手套 → 动作重定向 → 双臂机器人 → 任务执行 → 数据采集」这条完整链路。
-
-下面的遥操作图是项目方向，当前旧 VR/手套接口使用 mock，正式 hand realtime
-只输出模型预测；各模块的实际连接状态以总体架构说明为准。
-
-### 遥操作流水线
-
-```
-Apple Vision Pro（手腕追踪） ──┐
-                              ├──► 坐标转换 / IK ──► 双臂关节角度
-LinkerHand 数据手套 ───────────┘
-                                    │
-                                    ▼
-                            灵巧手关节（重定向）
-                                    │
-                                    ▼
-              PyBullet 仿真环境 ──► 任务执行 ──► 传感器数据记录
-```
-
-### 分层任务体系（共 30 个）
-
-| 层级 | 类别 | 任务数 |
-|------|------|--------|
-| Level 1 | 基础拾取放置 | 5 |
-| Level 2 | 工具操作 | 11 |
-| Level 3 | 双手协作 | 9 |
-| Level 4 | 长时域序列 | 5 |
-
-### 支持的机器人模型
-
-| 机器人 | 说明 |
-|--------|------|
-| **H1-2** | Unitree 人形机器人（55 关节） |
-| **GR1-T2** | Fourier 人形机器人 |
-| **G1** | Unitree 人形机器人 |
-
----
-
-## 二、目录结构
-
-```
-teleoperation-system/
-├── main.py / main_*         # 应用入口、hand CLI wrappers、双臂入口
-├── retargeting/             # canonical hand 与保留的 arm/command 服务
-├── model/                   # PoseTransformer、L21 FK、loss
-├── input_adapters/          # NPY replay 等应用输入
-├── config/                  # 应用契约、TRON2A 示例 calibration
-├── envs/                    # benchmark 环境、robot loader、记录、随机化
-├── teleop/                  # 旧遥操作框架、原生手映射与回放滤波
-├── simulation/              # TRON2A + L21 PyBullet 场景
-├── tasks/                   # 30 个任务类、基类与注册
-├── utils/                   # 成功率、完成时间统计
-├── scripts/                 # 回放、诊断和可视化
-├── tests/                   # hand/coordinate/应用边界回归
-├── docs/                    # 架构、使用、协议与验收说明
-├── robots/from_teleopbench/ # 已入库机器人模型
-├── dataset/robot/           # 已有 L21 FK/手部资产
-├── datasets/                # 系统协作数据
-├── data/ / outputs/         # 本地记录、训练与推理产物（忽略）
-└── requirements*.txt        # 按 application/hand 用途分类的依赖
-```
-
----
-
-## 三、环境要求
-
-- 正式环境为 **Conda `teleoperation` / Python 3.10.20**；本机解释器：
-  `D:\Anaconda\envs\teleoperation\python.exe`，PyCharm 也使用此路径。
-- 从仓库根按 [environment.yml](environment.yml) 重建。完整安装包括 application、
-  hand runtime/training、camera/tools 与 Robotics Toolbox；requirements 保持原约束。
-- 已验证 CPU hand 导出、完整 tests、PyBullet、双臂 FK/IK 与 camera imports。
-  当前 Torch 为 `2.14.1+cu130`，RTX 4050 上 CUDA 导出与 1 epoch 训练 smoke 通过；
-  完整 CUDA training 与真实摄像头未验收。
-- 旧 TransHandR 保留为 reference baseline；仓库 `.venv` 不是正式环境。
-  详细版本、验证结果和资源要求见 [环境说明](docs/ENVIRONMENT.md)。
+沿用现有 Conda 环境和 requirements 版本，不升级依赖。在已有环境中执行：
 
 ```powershell
-# 本机已创建环境，只需 activate；首次安装执行 env create。
-conda env create -f environment.yml
 conda activate teleoperation
-python -c "import sys; print(sys.executable)"
-python -m pip check
-python -m retargeting --help
+python -m pip install -e . --no-deps
+python -m teleoperation --help
 ```
 
----
+要求 Python 3.10 或更新版本。若当前环境已安装 setuptools，可加 `--no-build-isolation` 完全使用现有构建依赖。
 
-## 四、使用方法
+未安装时可临时使用源码：
 
-### 基础入口
-
-先激活正式环境 `conda activate teleoperation`。PR1.5 已修复 `main.py` 的动作维度
-初始化、单独 `--demo` 不执行以及 inspect wrapper 的 import 错误，见架构说明第 8 节。
-`--demo` 默认运行 pushcube 三次，可用 `--task` 指定任务；`--benchmark` 与 demo/task 互斥。
-入口验证建议加 `--no-record`。默认逐步缓存双相机图像的长程 smoke 未通过验收，
-出现高内存占用与一次 native crash，详见 [PR1.5 结果](docs/PR15_APPLICATION_ENTRY_RESULT.md)。
-
-```bash
-python test_import.py                       # 环境自检（6 项，建议先跑这个）
-python scripts/replay_actions.py --dummy --robot h1_2 --task pushcube --no-render --steps 40
-python scripts/replay_actions.py --dummy --robot h1_2 --task pushcube --render --steps 240
-python scripts/replay_actions.py --describe --robot gr1_t2
-python -m retargeting --help                # 正式手部 CLI
-python main.py --help                       # 查看已有应用入口参数
-python main.py --demo --no-render --no-record # 实际运行三次演示
-python main.py --task pushcube --robot h1_2 --no-render --no-record
-python inspect_angle_h5.py --angle-h5 outputs/env_checks/palm_angles.h5
-
-python show_all.py                          # 并排展示三种机器人
-python show_hand.py                         # 展示 LinkerHand 灵巧手
-python test_camera.py                       # 测试摄像头
+```powershell
+$env:PYTHONPATH = Join-Path (Get-Location).Path 'src'
+python -m teleoperation --help
 ```
 
-### 离线 Vision 流水线（核心工作流）
+安装后 `teleoperation ...` 和 `python -m teleoperation ...` 使用同一个 CLI。帮助页仅解析参数，不启动设备、网络或仿真。
 
-> 📄 详见 [`docs/OFFLINE_PIPELINE.md`](docs/OFFLINE_PIPELINE.md)　|　接口定义见 [`docs/INTERFACE_CONTRACT.md`](docs/INTERFACE_CONTRACT.md)
+## 常用命令
 
-本节回放的是系统 actions 协议。当前正式 hand H5 → 模型 → angles H5 链路见
-[总体架构第 3 节](docs/SYSTEM_ARCHITECTURE.md)和 [hand 使用说明](docs/HAND_RETARGETING.md)。
-早期契约 G 的单手示例不是 canonical 两手训练输入。
+```powershell
+# H5 对齐：另存输出，保留原文件
+python -m teleoperation hand align --input raw.h5 --output aligned.h5
 
-```bash
-# 查看某机器人的动作空间定义（38/36/28 维的完整关节映射）
-python scripts/replay_actions.py --describe --robot h1_2
+# 训练、恢复初始化和导出
+python -m teleoperation hand train --input aligned.h5 --run-name experiment --device cpu
+python -m teleoperation hand train --input aligned.h5 --run-name experiment2 --init-checkpoint model_best.pth
+python -m teleoperation hand export --input aligned.h5 --checkpoint model_best.pth --output angles.h5 --device cpu
+python -m teleoperation hand inspect --angle-h5 angles.h5
 
-# 用假数据验证整条链路（不需要真实数据）
-python scripts/replay_actions.py --dummy --robot h1_2 --task pushcube --no-render
+# MediaPipe：原始点 -> palm-local -> 三帧窗口 -> 18D 结果
+python -m teleoperation hand realtime --frames 300
+python -m teleoperation hand realtime --visualize --frames 300
 
-# 回放重定向算法输出的动作序列（契约H 格式）
-python scripts/replay_actions.py --file datasets/actions/xxx.h5
+# 原生机器人动作文件，以及 L21 角度到原装手的回放
+python -m teleoperation replay actions --file actions.h5 --robot h1_2 --no-render
+python -m teleoperation replay native-hand --file angles.h5 --robot h1_2 --hand both
+python -m teleoperation replay l21-hand --file angles.h5 --headless-replay
+python -m teleoperation replay mounted-hand --file angles.h5 --robot g1 --hand both
 
-# 带可视化
-python scripts/replay_actions.py --file xxx.h5 --render
-
-# 生成契约 G/H 的示例数据文件
-python scripts/make_sample_data.py --kind all
+# 仿真任务与关节演示
+python -m teleoperation sim run --task pushcube --robot h1_2 --no-render --no-record
+python -m teleoperation sim demo-joints
 ```
 
-### 手部回放（队友重定向输出 → 机器人手）★ 本项目主用
+双臂链路使用明确的 TRON2A 标定和 URDF：
 
-> 映射模块：`teleop/native_hand.py`　|　决策记录：`docs/PROJECT_CONTEXT.md` 第 18 节
-
-```bash
-# ★ 用机器人【原装】灵巧手回放（本项目采用，不换手）
-python scripts/replay_hand_native.py --robot h1_2   --hand both --render
-python scripts/replay_hand_native.py --robot gr1_t2 --hand both --render
-python scripts/replay_hand_native.py --robot g1     --hand both --render
-
-# 演示用：整机视角 + 无限循环（相机自动框住整个机器人）
-python scripts/replay_hand_native.py --robot h1_2 --hand both --render --view full --loop 0
-#   --view full(默认,整机) / front(正面) / side(侧面) / hands(手部特写)
-#   --loop 0 = 无限循环；--loop 3 = 播 3 遍
-
-# ★ 答辩/报告用：三台机器人并排，各自原装手按同一份数据同步屈伸
-python scripts/show_hands_all.py --render --loop 0
-python scripts/show_hands_all.py --render --view front --loop 0
-
-# 只看映射报告（覆盖率 / 丢弃哪些自由度 / 每个关节的符号方向）
-python scripts/replay_hand_native.py --robot h1_2 --hand both --report
-
-# 备用：把 LinkerHand l21 装到机器人腕部（无损，但需要"换手"）
-python scripts/replay_hand_on_robot.py --robot h1_2 --hand both --render
-
-# 一键验收（6 项：数据结构 / 有效帧 / 坏帧检测器 / 限位 / 回放 / 原装手映射）
-python scripts/verify_hand_pipeline.py
+```powershell
+python -m teleoperation dual export --observations observation.h5 --angle-h5 angles.h5 --calibration configs/tron2a_dach_calibration.example.json --output commands.h5 --urdf robot.urdf
+python -m teleoperation dual realtime --adapter my_input:factory --calibration calibration.json --urdf robot.urdf
+python -m teleoperation dual replay --command-h5 commands.h5 --calibration calibration.json --urdf robot.urdf
 ```
 
-**各机器人原装手能表达多少自由度**（数据是 L21 的 17 维）：
+`dual realtime` 的 factory 返回 `InputSource` 或原始组合观测迭代器，具体字段见 [contracts](docs/contracts.md)。示例标定文件需要结合实际设备填写，不代表已经完成实体标定。
 
-| 机器人 | 原装手 | 可表达 | 覆盖率 |
-|---|---|---|---|
-| H1-2 | Inspire | 12/17 | 71% |
-| GR1-T2 | Fourier 原生手 | 11/17 | 65% |
-| G1 | 轻量三指手 | 7/17 | 41% |
+检查与展示统一使用 `tools`：
 
-> ⚠️ 这是**有损**映射（丢弃 `*_mcp_roll` 侧摆等原装手没有的自由度），
-> 详情与必须声明的限制见 `docs/OFFLINE_PIPELINE.md` 第 8.11 节。
-
-### 离线流水线三方分工
-
-```
-队友B 采集手部数据  →  队友A 做重定向  →  仿真平台回放
-  (契约G)               (契约H)          (replay_actions.py)
- human_hand.h5          actions.h5
+```powershell
+python -m teleoperation tools --help
+python -m teleoperation tools show-robots
+python -m teleoperation tools show-all-hands --file angles.h5
+python -m teleoperation tools check-camera
+python -m teleoperation tools check-environment
 ```
 
----
+## 代码导航
 
-## 五、常见问题
+| 要修改的内容 | 位置 |
+|---|---|
+| 观测、结果、动作类型与校验 | `contracts/` |
+| 相机、MediaPipe、Vision Pro、逐帧回放 | `inputs/` |
+| 坐标、拓扑、跟踪、窗口、手部模型与 FK | `retargeting/hand/` |
+| 标定、双臂目标、IK、安全控制 | `retargeting/arm/` |
+| 原生手映射、机器人规格和动作编码 | `robots/` |
+| 物理环境、加载、状态采集、任务 | `simulation/` |
+| Dataset、loss、优化计算与训练报告 | `learning/` |
+| H5/NPY/NPZ、checkpoint、标定、事务与记录 | `data/` |
+| 完整工作流、循环、资源释放、同步 | `apps/` |
+| 绘图、诊断报告显示 | `tools/` |
 
-**Q：`show_hand.py` 报路径错误？**
-以前是硬编码绝对路径，现已改为**基于脚本位置动态定位**（见 `HAND_DIR`）。
-若仍报错，说明本地缺少 `linkerhand_sdk`，按第六节获取即可。
+阅读主链路从 `apps/hand_processing.py`、`apps/hand_realtime.py`、`apps/dual.py` 和 `apps/simulation.py` 开始。[架构说明](docs/architecture.md)解释依赖方向，[contracts](docs/contracts.md)解释数据含义。
 
-**Q：克隆后运行报找不到 URDF？**
-`robots/from_teleopbench/` 与已有 L21 FK 资产已入库；先检查具体失败路径。
-TRON2A description、LinkerHand SDK 等外部资产仍需按使用分支自行配置，见第六节与总体架构说明。
+## 资源与当前能力
 
----
+机器人资产位于 `assets/robots/from_teleopbench`，L21 位于 `assets/robots/l21/{left,right}`，标定示例位于 `configs`。默认路径由 `teleoperation.paths` 定位，用户传入的相对路径按当前工作目录解释。历史数据、checkpoint 和输出保持原位置，不自动迁移或重写。
 
-## 六、机器人模型资产
+MediaPipe 需要相应依赖、摄像头与 `hand_landmarker.task`。`show-hand` 沿用外部 `linkerhand_sdk` 的展示资源。TRON2A 的外部 URDF/mesh 沿用 `third_party/tron2-robot-description/...` 默认位置，也可显式指定 `--urdf`。
 
-> **好消息：`robots/from_teleopbench/`（181 MB）已纳入 Git 仓库**，
-> `git clone` 后**自动获得**，无需额外下载。
->
-> （早期版本未入库、需要手动获取 —— 现已改为直接入库。原因见下文说明。）
+手部网络仍输出 18D，去除 root placeholder 后才是 L21 的 17 个执行关节。TRON2A/L21 命令是 48D，H1/GR1/G1 原生动作分别为 38/36/28D。当前没有经过验证的跨机器人手臂转换；原生手回放保持手臂中性姿态。完整实时整机闭环、硬件驱动与录制性能优化仍属于后续功能工作。
 
-### 关于「为什么不用 Git LFS」
+## 手动验证
 
-**Git LFS 的文件传输强制走 HTTPS**，而本项目的网络环境对 `github.com` 的 HTTPS
-存在**SNI 定向干扰**（需要代理才能通），但 **SSH（22 端口）稳定可用**。
+本轮按要求直接迁移，没有使用冻结基线进行比较，也没有执行迁移后的训练、推理或物理回归。已完成的检查范围是语法、模块导入、CLI 帮助、包构建和静态依赖边界。数值一致性及硬件行为需要后续验证。
 
-| 方案 | 传输协议 | 需要代理？ | 队友上手 |
-|---|---|---|---|
-| Git LFS | HTTPS | ⚠️ **必须常开代理** + 有 1GB/月流量配额 | 需装 git-lfs + 配代理 |
-| **普通 Git（本项目采用）** | **SSH** | ✅ **不需要** | `git clone` 一步到位 |
-
-**代价**：仓库体积约 181 MB（远低于 GitHub 的 1 GB 警告线 / 5 GB 硬限）。
-
-### 仍然需要自行获取的部分
-
-以下内容体积过大或属第三方，**未入库**：
-
-| 目录 | 体积 | 获取方式 |
-|---|---|---|
-| `lib/` | 335 MB | `pip install -r requirements.txt` |
-| `linkerhand_sdk/` | 1013 MB | ⬇️ 见下方 |
-| `robots/` 的其他子目录 | 274 MB | 代码未引用，**不需要** |
-
-#### `linkerhand_sdk/` —— 灵巧手 SDK
-
-`show_hand.py` 从该 SDK 读取灵巧手模型：
-
-```bash
-git clone https://gitee.com/ericbrunt/linkerhand_telop_python.git linkerhand_sdk
+```powershell
+python -m unittest discover -s tests -v
+python -m unittest tests.architecture.test_boundaries -v
+python -m teleoperation replay actions --dummy --steps 120 --robot h1_2 --no-render
+python -m teleoperation replay actions --dummy --steps 120 --robot gr1_t2 --no-render
+python -m teleoperation replay actions --dummy --steps 120 --robot g1 --no-render
 ```
 
-### `robots/` 目录内容说明
+完整测试中的 TRON2A 测试需要外部 URDF。可用环境变量 `TRON2A_TEST_URDF` 指定位置；资源缺失仍明确失败，不新增跳过规则。然后检查 CPU 小规模训练、初始化恢复、导出、H5 对齐事务、相机失效恢复和实际回放。
 
-| 子目录 | 体积 | 是否入库 | 说明 |
-|---|---|---|---|
-| **`from_teleopbench/`** | **181 MB** | ✅ **已入库** | H1-2 / GR1-T2 / G1 三种模型（代码实际使用）|
-| `arms/` `assembly/` `h1_paper/` `h1_with_hand/` `hands/` `linker_hand/` `xarm7_ability/` | 274 MB | ❌ | 代码未引用，可由 `.gitignore` 排除 |
-
-
----
-
-## 七、第三方开源声明
-
-本项目的部分设计参考与机器人模型资产来自以下开源项目，在此致谢：
-
-| 项目 | 作者 / 组织 | 许可证 |
-|------|-------------|--------|
-| TeleOpBench | Unitree Robotics（HangZhou YuShu TECHNOLOGY CO.,LTD.） | Apache-2.0 |
-| LinkerHand SDK | ericbrunt (brunt888) | 见原仓库 |
-
-详见仓库根目录的 [`NOTICE`](NOTICE) 文件。
-
-TeleOpBench 建立在以下开源代码库之上，请访问链接查看各自的许可证：
-
-1. https://github.com/OpenTeleVision/TeleVision
-2. https://github.com/dexsuite/dex-retargeting
-3. https://github.com/vuer-ai/vuer
-4. https://github.com/stack-of-tasks/pinocchio
-5. https://github.com/casadi/casadi
-6. https://github.com/meshcat-dev/meshcat-python
-7. https://github.com/zeromq/pyzmq
-8. https://github.com/unitreerobotics/unitree_dds_wrapper
-9. https://github.com/tonyzhaozh/act
-10. https://github.com/facebookresearch/detr
-11. https://github.com/Dingry/BunnyVisionPro
-12. https://github.com/unitreerobotics/unitree_sdk2_python
-
----
-
-## 八、作者
-
-**Wangxianyu835** —— 中山大学 · 大学生创新创业训练计划
-
----
-
-## 九、Hand retargeting 子系统（PR1）
-
-本仓库现为 production hand retargeting 的唯一源码维护入口，合入了
-`mytrans@138fc2d` 的 canonical hand 核心。系统原有双臂、机器人、仿真、任务、
-benchmark 和 recording 继续沿用本仓库的应用架构。
-
-手部链路为 MediaPipe21 → Hand25 → 坐标对齐 → `[B,3,25,3]` → PoseTransformer →
-18D（root placeholder + 17 个真实 hand DOF）。支持 legacy `source_to_l21_xyz` 与
-palm-local `palm_local_to_l21_v1`，H5 / Dataset / training / checkpoint / inference
-必须严格使用同一标识；缺失或不匹配直接失败。
-
-正式手部入口为 `python -m retargeting {align,train,export,inspect,realtime}`。
-安装、H5 schema、训练/推理、MediaPipe realtime、原生手回放及旧 wrapper 行为见
-[Hand retargeting 使用说明](docs/HAND_RETARGETING.md)。
-[PR1 合并结果](docs/PR1_HAND_CONSOLIDATION_RESULT.md)记录测试与迁移边界；
-[PR2 follow-up](docs/PR2_FOLLOW_UP.md)记录整机 command、48DOF 与 arm mapping 后续工作。
-
+旧根脚本与旧 Python 包入口已退役。旧文档保存在 [docs/archive](docs/archive)，其中的历史命令仅供追溯。

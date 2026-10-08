@@ -13,9 +13,10 @@ from unittest import mock
 
 import numpy as np
 
-import main as application
-from envs import SimulationEnv
-from tasks import get_tasks_by_level
+from teleoperation.apps import benchmark as application
+from teleoperation.simulation.environment import SimulationEnv
+from teleoperation.apps import simulation as sessions
+from teleoperation.simulation.tasks import get_tasks_by_level
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,9 +28,10 @@ BOUNDED_CLI = r'''
 import json
 import sys
 import numpy as np
-from envs import SimulationEnv
+from teleoperation.simulation.environment import SimulationEnv
+from teleoperation.apps import simulation as sessions
 audit = {"resets": 0, "steps": 0, "tasks": [], "shapes": [], "record_modes": []}
-reset, step, episode = SimulationEnv.reset, SimulationEnv.step, SimulationEnv.run_episode
+reset, step, episode = SimulationEnv.reset, SimulationEnv.step, sessions.run_episode
 def checked_reset(self, *args, **kwargs):
     reset(self, *args, **kwargs)
     audit["resets"] += 1
@@ -45,10 +47,12 @@ def checked_step(self, action, *args, **kwargs):
 def bounded_episode(self, *args, **kwargs):
     kwargs["max_steps"] = 5
     return episode(self, *args, **kwargs)
-SimulationEnv.reset, SimulationEnv.step, SimulationEnv.run_episode = checked_reset, checked_step, bounded_episode
-import main
-sys.argv = ["main.py", *sys.argv[1:]]
-main.main()
+SimulationEnv.reset, SimulationEnv.step, sessions.run_episode = checked_reset, checked_step, bounded_episode
+from teleoperation.apps import benchmark as main
+main.run_episode = bounded_episode
+sys.argv = ["teleoperation", "sim", "run", *sys.argv[1:]]
+from teleoperation.cli import main as cli_main
+cli_main()
 print("ENTRYPOINT_AUDIT=" + json.dumps(audit))
 '''
 
@@ -58,7 +62,7 @@ class ApplicationEntrypointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             for robot in ("h1_2", "gr1_t2", "g1"):
                 with self.subTest(robot=robot), contextlib.redirect_stdout(io.StringIO()):
-                    env = SimulationEnv(robot_type=robot, render=False, record=False, data_dir=temp)
+                    env = sessions.create_environment(robot_type=robot, render=False, record=False, data_dir=temp)
                     try:
                         self.assertIsNone(env.action_dim)
                         self.assertEqual(env.action_joint_names, [])
@@ -81,9 +85,9 @@ class ApplicationEntrypointTests(unittest.TestCase):
                             return action
 
                         with mock.patch.object(env, "reset", wraps=env.reset) as reset, \
-                                mock.patch.object(env.recorder, "reset", wraps=env.recorder.reset) as recorder_reset, \
+                                mock.patch.object(env.recording.recorder, "reset", wraps=env.recording.recorder.reset) as recorder_reset, \
                                 mock.patch.object(env, "step", wraps=env.step) as step:
-                            env.run_episode(controller=checked_controller, max_steps=5, randomize=False)
+                            sessions.run_episode(env, controller=checked_controller, max_steps=5, randomize=False)
                         reset.assert_called_once_with(randomize=False)
                         recorder_reset.assert_called_once()
                         self.assertEqual(step.call_count, 5)
@@ -93,7 +97,7 @@ class ApplicationEntrypointTests(unittest.TestCase):
 
     def run_cli(self, *args, bounded=True, stdin=None):
         with tempfile.TemporaryDirectory() as temp:
-            prefix = ["-c", BOUNDED_CLI] if bounded else ["main.py"]
+            prefix = ["-c", BOUNDED_CLI] if bounded else ["-m", "teleoperation", "sim", "run"]
             return subprocess.run(
                 [sys.executable, "-B", *prefix, *args, "--data-dir", temp],
                 cwd=ROOT, input=stdin, capture_output=True, text=True,
@@ -135,10 +139,10 @@ class ApplicationEntrypointTests(unittest.TestCase):
 
     def test_benchmark_retains_level_one_task_selection(self):
         audit = self.audit_cli(self.run_cli("--benchmark", "--trials", "1", "--no-render", "--no-record"))
-        tasks = get_tasks_by_level(1)
-        self.assertEqual(audit["tasks"], tasks)
-        self.assertEqual(audit["resets"], len(tasks))
-        self.assertEqual(audit["steps"], 5 * len(tasks))
+        selected_tasks = get_tasks_by_level(1)
+        self.assertEqual(audit["tasks"], selected_tasks)
+        self.assertEqual(audit["resets"], len(selected_tasks))
+        self.assertEqual(audit["steps"], 5 * len(selected_tasks))
 
     def test_conflicting_modes_fail_before_environment_creation(self):
         for options in (("--demo", "--benchmark"), ("--task", "pushcube", "--benchmark")):

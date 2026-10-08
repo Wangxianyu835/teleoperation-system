@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from retargeting.inference import _hold_last_valid_angles, _valid_angle_rows
+from teleoperation.retargeting.hand.exporting import _hold_last_valid_angles, _valid_angle_rows
 
 
 class OfflineTwoHandTests(unittest.TestCase):

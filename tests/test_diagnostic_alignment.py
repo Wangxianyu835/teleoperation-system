@@ -11,10 +11,10 @@ import h5py
 import numpy as np
 import torch
 
-from retargeting.coordinates import COORDINATE_ALIGNMENT as LEGACY, PALM_LOCAL_COORDINATE_ALIGNMENT as PALM
-from retargeting.tracking import ensure_hand25
-from scripts import compare_training_hand_pose as comparison
-from scripts.verify_p0 import verify
+from teleoperation.contracts.coordinates import COORDINATE_ALIGNMENT as LEGACY, PALM_LOCAL_COORDINATE_ALIGNMENT as PALM
+from teleoperation.retargeting.hand.topology import ensure_hand25
+from teleoperation.apps.diagnostics import compare_training_hand_pose as comparison
+from teleoperation.apps.diagnostics.verify_p0 import verify
 from tests.test_coordinate_contracts import synthetic_hand_pair
 from tests.test_coordinate_pipeline import CountingModel
 
@@ -54,7 +54,7 @@ class DiagnosticAlignmentTests(unittest.TestCase):
                 model = CountingModel()
                 torch.save({"model_pos": model.state_dict(), "coordinate_alignment": actual}, checkpoint)
                 with self.subTest(expected=expected, actual=actual), \
-                        mock.patch("retargeting.model.build_hand_model", return_value=model), \
+                        mock.patch("teleoperation.retargeting.hand.predictor.build_hand_model", return_value=model), \
                         contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaisesRegex(ValueError, "coordinate alignment mismatch"):
                         verify(source, checkpoint)

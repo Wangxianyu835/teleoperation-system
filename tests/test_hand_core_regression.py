@@ -6,19 +6,17 @@ import h5py
 import numpy as np
 import torch
 
-from model.pose_transformer import PoseTransformer
-from retargeting.data import TwoHandH5Dataset
-from retargeting.inference import _hold_last_valid_angles
-from retargeting.hand_core import CanonicalHandProcessor
-from retargeting.simulation import angle18_to_dofs, iter_angle_h5
-from retargeting.tracking import (
-    HAND_KEYPOINTS,
-    HandIdentityTracker,
-    HandWindowBuffer,
-    mediapipe21_to_hand25,
-    wrist_relative,
-)
-from tests.hand_fixtures import (
+from teleoperation.retargeting.hand.transformer import PoseTransformer
+from teleoperation.learning.dataset import TwoHandH5Dataset
+from teleoperation.retargeting.hand.exporting import _hold_last_valid_angles
+from teleoperation.apps.hand_processing import CanonicalHandPipeline
+from teleoperation.retargeting.hand.angles import angle18_to_dofs
+from teleoperation.apps.replay.canonical import iter_angle_h5
+from teleoperation.contracts.constants import HAND_KEYPOINTS
+from teleoperation.retargeting.hand.tracking import HandIdentityTracker
+from tests.support import CanonicalWindowFixture
+from teleoperation.retargeting.hand.topology import mediapipe21_to_hand25, wrist_relative
+from tests.fixtures.hands import (
     continuous_three_frames,
     fixed_mediapipe_hand,
     identity_jump,
@@ -72,7 +70,7 @@ class MediaPipeConversionRegressionTests(unittest.TestCase):
 
 class HandWindowRegressionTests(unittest.TestCase):
     def test_window_requires_three_frames_and_preserves_chronological_order(self):
-        buffer = HandWindowBuffer()
+        buffer = CanonicalWindowFixture()
         frames = continuous_three_frames()
 
         self.assertIsNone(buffer.update(left_hand=frames[0], source="test"))
@@ -102,7 +100,7 @@ class HandWindowRegressionTests(unittest.TestCase):
                 )
             h5_window = TwoHandH5Dataset(h5_path).samples[0]["left_input"]
 
-        realtime_style = CanonicalHandProcessor()
+        realtime_style = CanonicalHandPipeline()
         realtime_payload = None
 
         for index, frame in enumerate(frames):
@@ -119,7 +117,7 @@ class HandWindowRegressionTests(unittest.TestCase):
         np.testing.assert_array_equal(h5_window, realtime_window)
 
     def test_missing_left_and_missing_right_stay_explicit(self):
-        right_only = HandWindowBuffer()
+        right_only = CanonicalWindowFixture()
         for _ in range(2):
             self.assertIsNone(
                 right_only.update(
@@ -136,7 +134,7 @@ class HandWindowRegressionTests(unittest.TestCase):
         self.assertIsNone(right_payload["hands"]["left"])
         self.assertEqual(right_payload["hands"]["right"].shape, (3, 25, 3))
 
-        left_only = HandWindowBuffer()
+        left_only = CanonicalWindowFixture()
         for _ in range(2):
             self.assertIsNone(
                 left_only.update(
@@ -157,7 +155,7 @@ class HandWindowRegressionTests(unittest.TestCase):
 class IdentityResetRegressionTests(unittest.TestCase):
     def test_jump_is_rejected_side_buffer_is_cleared_and_recovery_needs_three_frames(self):
         tracker = HandIdentityTracker()
-        buffer = HandWindowBuffer()
+        buffer = CanonicalWindowFixture()
         normal = fixed_mediapipe_hand()
 
         for frame in continuous_three_frames():

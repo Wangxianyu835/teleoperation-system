@@ -17,25 +17,25 @@
 # ============================================================
 
 # 二进制资产：原样存储，不转换换行符，也不尝试 diff
-robots/**/*.stl    binary
-robots/**/*.STL    binary
-robots/**/*.obj    binary
-robots/**/*.dae    binary
-robots/**/*.mtl    binary
-robots/**/*.usd    binary
-robots/**/*.usda   binary
-robots/**/*.usdc   binary
-robots/**/*.glb    binary
-robots/**/*.gltf   binary
-robots/**/*.onnx   binary
-robots/**/*.pt     binary
-robots/**/*.pth    binary
-robots/**/*.ckpt   binary
-robots/**/*.png    binary
-robots/**/*.jpg    binary
-robots/**/*.jpeg   binary
-robots/**/*.tga    binary
-robots/**/*.zip    binary
+assets/robots/**/*.stl    binary
+assets/robots/**/*.STL    binary
+assets/robots/**/*.obj    binary
+assets/robots/**/*.dae    binary
+assets/robots/**/*.mtl    binary
+assets/robots/**/*.usd    binary
+assets/robots/**/*.usda   binary
+assets/robots/**/*.usdc   binary
+assets/robots/**/*.glb    binary
+assets/robots/**/*.gltf   binary
+assets/robots/**/*.onnx   binary
+assets/robots/**/*.pt     binary
+assets/robots/**/*.pth    binary
+assets/robots/**/*.ckpt   binary
+assets/robots/**/*.png    binary
+assets/robots/**/*.jpg    binary
+assets/robots/**/*.jpeg   binary
+assets/robots/**/*.tga    binary
+assets/robots/**/*.zip    binary
 
 # 注意：.urdf / .xml / .yml / .md 是【纯文本】，保持默认处理，
 #       这样它们的 diff 和版本对比才有意义。

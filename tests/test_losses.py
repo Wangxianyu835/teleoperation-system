@@ -4,8 +4,8 @@ import unittest
 import torch
 import torch.nn as nn
 
-from model.losses import thumb_loss2, tip_distance_loss
-from retargeting.config import ROBOT_JOINTS, SOURCE_JOINTS
+from teleoperation.learning.losses import thumb_loss2, tip_distance_loss
+from teleoperation.retargeting.hand.config import ROBOT_JOINTS, SOURCE_JOINTS
 
 
 class TipDistanceLossTests(unittest.TestCase):

@@ -5,7 +5,8 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from retargeting.simulation import angle18_to_dofs, angle18_to_nodes, iter_angle_h5
+from teleoperation.retargeting.hand.angles import angle18_to_dofs, angle18_to_nodes
+from teleoperation.apps.replay.canonical import iter_angle_h5
 
 
 class SimulationAdapterTests(unittest.TestCase):

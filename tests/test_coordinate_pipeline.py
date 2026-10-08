@@ -11,16 +11,15 @@ import h5py
 import numpy as np
 import torch
 
-from retargeting.__main__ import build_parser
-from retargeting.coordinates import (
-    COORDINATE_ALIGNMENT as LEGACY,
-    PALM_LOCAL_COORDINATE_ALIGNMENT as PALM,
-)
-from retargeting.data import TwoHandH5Dataset, load_twohand_h5, read_coordinate_alignment
-from retargeting.inference import run as export
-from retargeting.model import create_twohand_retargeter, load_hand_checkpoint
-from retargeting.training import LOSS_NAMES, _load_checkpoint, _save_checkpoint, run as train
-from retargeting.tracking import ensure_hand25
+from teleoperation.cli import build_parser
+from teleoperation.contracts.coordinates import COORDINATE_ALIGNMENT as LEGACY, PALM_LOCAL_COORDINATE_ALIGNMENT as PALM
+from teleoperation.learning.dataset import TwoHandH5Dataset
+from teleoperation.data.hand_h5 import load_twohand_h5, read_coordinate_alignment
+from teleoperation.apps.hand_export import run as export
+from teleoperation.retargeting.hand.predictor import create_twohand_retargeter, load_hand_checkpoint
+from teleoperation.learning.trainer import LOSS_NAMES
+from teleoperation.apps.training import _load_checkpoint, _save_checkpoint, run as train
+from teleoperation.retargeting.hand.topology import ensure_hand25
 from tests.test_coordinate_contracts import synthetic_hand_pair
 
 
@@ -65,7 +64,7 @@ class CoordinatePipelineTests(unittest.TestCase):
 
     def export_args(self):
         return build_parser().parse_args([
-            "export", "--input", str(self.input), "--checkpoint", str(self.checkpoint),
+            "hand", "export", "--input", str(self.input), "--checkpoint", str(self.checkpoint),
             "--output", str(self.output), "--device", "cpu", "--disable-identity-tracking",
         ])
 
@@ -107,7 +106,7 @@ class CoordinatePipelineTests(unittest.TestCase):
                 self.write_checkpoint(checkpoint_alignment)
                 self.output.write_bytes(b"existing output must survive mismatch")
                 model = CountingModel()
-                with mock.patch("retargeting.model.build_hand_model", return_value=model):
+                with mock.patch("teleoperation.retargeting.hand.predictor.build_hand_model", return_value=model):
                     with contextlib.redirect_stdout(io.StringIO()) as stdout:
                         if accepted:
                             self.assertEqual(export(self.export_args()), 0)
@@ -156,7 +155,7 @@ class CoordinatePipelineTests(unittest.TestCase):
         self.write_checkpoint(PALM)
         for keyword in ("checkpoint_path", "left_checkpoint", "right_checkpoint"):
             with self.subTest(keyword=keyword):
-                with mock.patch("retargeting.model.build_hand_model", return_value=CountingModel()):
+                with mock.patch("teleoperation.retargeting.hand.predictor.build_hand_model", return_value=CountingModel()):
                     retargeter = create_twohand_retargeter({}, "cpu", **{keyword: str(self.checkpoint)}, expected_coordinate_alignment=PALM)
                 self.assertIsInstance(retargeter.model, CountingModel)
 
@@ -197,7 +196,7 @@ class CoordinatePipelineTests(unittest.TestCase):
                 self.write_h5(alignment, count=40)
                 run_name = "test_" + alignment
                 args = build_parser().parse_args([
-                    "train", "--input", str(self.input), "--run-name", run_name,
+                    "hand", "train", "--input", str(self.input), "--run-name", run_name,
                     "--checkpoint-root", str(self.root / "runs"), "--epochs", "1", "--device", "cpu",
                 ])
                 stats = dict(total=1., vec=.1, pos=.1, collision=.1, thumb=.1, tip_distance=.1, thumb2=.1,
@@ -205,17 +204,17 @@ class CoordinatePipelineTests(unittest.TestCase):
                 for side in ("left", "right"):
                     for name in LOSS_NAMES:
                         stats[f"{side}_{name}"] = stats[name]
-                with mock.patch("retargeting.training._create_pose_model", return_value=CountingModel()), \
-                     mock.patch("retargeting.training._create_hand_fks", return_value={}), \
-                     mock.patch("retargeting.training._create_collision_loss", return_value=None), \
-                     mock.patch("retargeting.training._run_epoch", return_value=(stats, 0)), \
-                     mock.patch("retargeting.training.SummaryWriter"), \
+                with mock.patch("teleoperation.apps.training._create_pose_model", return_value=CountingModel()), \
+                     mock.patch("teleoperation.apps.training._create_hand_fks", return_value={}), \
+                     mock.patch("teleoperation.apps.training._create_collision_loss", return_value=None), \
+                     mock.patch("teleoperation.apps.training._run_epoch", return_value=(stats, 0)), \
+                     mock.patch("teleoperation.apps.training.SummaryWriter"), \
                      contextlib.redirect_stdout(io.StringIO()) as stdout:
                     try:
                         self.assertEqual(train(args), 0)
                     finally:
                         # Windows cannot remove a directory with an open log.
-                        logger = logging.getLogger("retargeting.training")
+                        logger = logging.getLogger("teleoperation.learning.trainer")
                         for handler in list(logger.handlers):
                             handler.close()
                             logger.removeHandler(handler)
@@ -226,7 +225,7 @@ class CoordinatePipelineTests(unittest.TestCase):
                 log = self.root / "runs/logs/twohand_h5/linker" / run_name / "training.log"
                 self.assertIn(f"coordinate_alignment={alignment}", log.read_text(encoding="utf-8"))
                 self.checkpoint = saved_path
-                with mock.patch("retargeting.model.build_hand_model", return_value=CountingModel()), contextlib.redirect_stdout(io.StringIO()):
+                with mock.patch("teleoperation.retargeting.hand.predictor.build_hand_model", return_value=CountingModel()), contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(export(self.export_args()), 0)
                 with h5py.File(self.output, "r") as handle:
                     self.assertEqual(handle.attrs["coordinate_alignment"], alignment)

@@ -5,11 +5,8 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from retargeting.data import (
-    TwoHandH5ChunkedGenerator,
-    TwoHandH5Dataset,
-    load_twohand_h5,
-)
+from teleoperation.learning.dataset import TwoHandH5ChunkedGenerator, TwoHandH5Dataset
+from teleoperation.data.hand_h5 import load_twohand_h5
 
 
 class TwoHandH5DatasetTests(unittest.TestCase):

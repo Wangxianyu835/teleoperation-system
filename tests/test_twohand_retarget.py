@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from retargeting.model import TwoHandRetargeter
+from teleoperation.retargeting.hand.predictor import TwoHandRetargeter
 
 
 class DummyRetargetModel(nn.Module):

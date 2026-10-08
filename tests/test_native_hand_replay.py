@@ -13,7 +13,7 @@ import h5py
 import numpy as np
 import pybullet as p
 
-from scripts import replay_hand_native as replay
+from teleoperation.apps.replay import replay_hand_native as replay
 
 
 class NativeHandReplayTests(unittest.TestCase):
@@ -45,16 +45,16 @@ class NativeHandReplayTests(unittest.TestCase):
         clock = [0.0]
         steps = [0]
         real_connect, real_step = p.connect, p.stepSimulation
-        real_map, real_motor = replay.map_frame, p.setJointMotorControl2
+        real_map, real_motor = replay.NativeHandAdapter.map, p.setJointMotorControl2
 
         def connect(_mode):
             cid = real_connect(p.DIRECT)
             clients.append(cid)
             return cid
 
-        def map_frame(angle, mapping, **kwargs):
-            result = real_map(angle, mapping, **kwargs)
-            mapped.append((angle.copy(), result[0].copy(), result[1]))
+        def map_frame(adapter, dofs):
+            result = real_map(adapter, dofs)
+            mapped.append((np.r_[0.0, dofs.values].copy(), result[0].copy(), result[1]))
             return result
 
         def motor(body, index, mode, **kwargs):
@@ -78,11 +78,11 @@ class NativeHandReplayTests(unittest.TestCase):
                     mock.patch.object(p, "stepSimulation", side_effect=step), \
                     mock.patch.object(p, "setJointMotorControl2", side_effect=motor), \
                     mock.patch.object(p, "resetDebugVisualizerCamera", side_effect=lambda **k: cameras.append(k)), \
-                    mock.patch.object(replay, "map_frame", side_effect=map_frame), \
+                    mock.patch.object(replay.NativeHandAdapter, "map", autospec=True, side_effect=map_frame), \
                     mock.patch.object(replay.time, "monotonic", side_effect=lambda: clock[0]), \
                     mock.patch.object(replay.time, "sleep", side_effect=sleep), \
                     contextlib.redirect_stdout(io.StringIO()):
-                replay.main()
+                cli_main(["replay", "native-hand", *argv[1:]])
         finally:
             for cid in clients:
                 try:
@@ -150,10 +150,12 @@ class NativeHandReplayTests(unittest.TestCase):
                     mock.patch.object(p, "connect") as connect, \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:
-                    replay.main()
+                    cli_main(["replay", "native-hand", *argv[1:]])
                 self.assertEqual(error.exception.code, 2)
                 connect.assert_not_called()
 
 
 if __name__ == "__main__":
     unittest.main()
+
+from teleoperation.cli import main as cli_main

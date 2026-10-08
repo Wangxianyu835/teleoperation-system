@@ -1,17 +1,9 @@
 import unittest
 
 import numpy as np
-from retargeting.coordinates import (
-    COORDINATE_FRAME,
-    SOURCE_TO_L21_MATRIX,
-    align_source_hand_coordinates,
-    PALM_BASIS_EPS,
-    PalmBasisError,
-    align_palm_local_coordinates,
-    build_l21_reference_basis,
-    build_palm_basis,
-)
-from retargeting.tracking import ensure_hand25
+from teleoperation.contracts.coordinates import COORDINATE_FRAME
+from teleoperation.retargeting.hand.coordinates import SOURCE_TO_L21_MATRIX, align_source_hand_coordinates, PALM_BASIS_EPS, PalmBasisError, align_palm_local_coordinates, build_l21_reference_basis, build_palm_basis
+from teleoperation.retargeting.hand.topology import ensure_hand25
 from tests.test_coordinate_contracts import synthetic_hand_pair
 from scipy.spatial.transform import Rotation
 

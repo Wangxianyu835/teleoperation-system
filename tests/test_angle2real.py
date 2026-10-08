@@ -5,15 +5,15 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from retargeting.config import L21
-from model.kinematics import create_hand_kinematics, parse_urdf_to_joints
+from teleoperation.retargeting.hand.config import L21
+from teleoperation.retargeting.hand.kinematics import create_hand_kinematics, parse_urdf_to_joints
 
 hand_cfg = L21.hand_kinematics_config()
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LEFT_URDF = REPO_ROOT / "dataset" / "robot" / "l21_left" / "linkerhand_l21_left.urdf"
-RIGHT_URDF = REPO_ROOT / "dataset" / "robot" / "l21_right" / "linkerhand_l21_right.urdf"
+LEFT_URDF = REPO_ROOT / "assets" / "robots" / "l21" / "left" / "linkerhand_l21_left.urdf"
+RIGHT_URDF = REPO_ROOT / "assets" / "robots" / "l21" / "right" / "linkerhand_l21_right.urdf"
 
 MINIMAL_URDF = """\
 <?xml version="1.0"?>
