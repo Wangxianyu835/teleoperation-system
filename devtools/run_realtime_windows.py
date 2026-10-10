@@ -29,19 +29,32 @@ Run -> Edit Configurations -> Python -> 新建：
     E:\\python3.11.7\\python.exe devtools\\run_realtime_windows.py
     E:\\python3.11.7\\python.exe devtools\\run_realtime_windows.py --scene hands
     E:\\python3.11.7\\python.exe devtools\\run_realtime_windows.py --check      # 只体检
+    E:\\python3.11.7\\python.exe devtools\\run_realtime_windows.py --preview-window-pos 500,80
 
 两个窗口
 --------
 1. 摄像头窗口（OpenCV 预览，默认左右镜像；按 q / Esc 退出）；
 2. PyBullet 窗口：默认 ``--scene robots`` = H1-2 / GR1-T2 / G1 三台并排（原装手）。
 
-退出码：0 = 有手输出过角度；1 = 全程没手（真实入口的设计如此）；3 = 解释器/依赖/模型文件不对。
-``--check`` 的退出码：0 = 解释器/依赖/模型都对（相机读不到只 WARN）；3 = 有硬问题。
+窗口位置：PyBullet 窗口先出现且尺寸大，OpenCV 窗口按系统默认位置出现时容易被它整个盖住
+（IDE 里跑最典型的症状就是"只看见机器人窗口"）。所以入口会把摄像头窗口挪到
+``--preview-window-pos``（默认 ``20,60``）并置顶，并把它的**实际屏幕矩形**打进日志；
+本文件在进程结束后还会读报告回一句 ``camera window stayed open at (...)`` 或
+``the camera window did NOT stay open: <原因>``。``--preview-no-topmost`` 关掉置顶。
+
+解释器：本文件除了缺依赖会重跑到 E:，还会检查 ``cv2`` 有没有 GUI ——
+headless 版 wheel（``GUI: NONE``）能读摄像头但开不了窗口，只跑仿真时看起来"正常"，
+正是"只有机器人窗口"的原因之一。
+
+退出码：0 = 有手输出过角度；1 = 全程没手（真实入口的设计如此）；3 = 解释器/依赖/模型文件不对
+（含 cv2 打不开窗口）。``--check`` 的退出码：0 = 解释器/依赖/窗口支持/模型都对
+（相机读不到只 WARN）；3 = 有硬问题。
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -116,6 +129,40 @@ def missing_modules() -> list[str]:
     return missing
 
 
+def gui_support() -> tuple[bool, str]:
+    """cv2 能不能开窗口。
+
+    headless 版 wheel（``opencv-python-headless``）能读摄像头却**开不了窗口**，
+    依赖检查会通过，然后入口里 ``imshow`` 报错、只打一行 note 就继续跑仿真
+    （症状：只看得到 PyBullet 窗口）。这里读 build info 的 ``GUI:`` 行把它抓出来；
+    只读字符串，不开窗口、不碰相机，所以不会挂住。
+    """
+    try:
+        import cv2
+    except Exception as error:  # noqa: BLE001
+        return False, f"import cv2 failed: {type(error).__name__}: {error}"
+    if not hasattr(cv2, "imshow"):
+        return False, "this cv2 has no imshow"
+    try:
+        info = cv2.getBuildInformation()
+    except Exception as error:  # noqa: BLE001 - 老版本没有这个方法：不拦
+        return True, f"unknown (getBuildInformation failed: {type(error).__name__})"
+    for line in info.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("GUI"):
+            value = stripped.split(":", 1)[-1].strip()
+            if value.upper().startswith("NONE"):
+                return False, ("headless build (GUI: NONE): it can read the camera but "
+                               "cannot open a window")
+            return True, value or "yes"
+    return True, "unknown (no GUI line in build info)"
+
+
+def wants_window(argv: list[str]) -> bool:
+    """没写 ``--no-preview`` / ``--headless`` 就打算开摄像头窗口（也就需要 GUI）。"""
+    return not any(item in ("--no-preview", "--headless") for item in argv)
+
+
 def relaunch_with_canonical_python(argv: list[str]) -> "int | None":
     """解释器不对（缺 pybullet/cv2/mediapipe）时，用 E: 的解释器重跑本文件。
 
@@ -124,15 +171,22 @@ def relaunch_with_canonical_python(argv: list[str]) -> "int | None":
     if os.environ.get(REEXEC_FLAG) == "1":
         return None
     missing = missing_modules()
-    if not missing:
+    problem = ""
+    if missing:
+        problem = f"lacks: {', '.join(missing)}"
+    elif wants_window(argv):
+        ok, detail = gui_support()
+        if not ok:
+            problem = f"cannot open a GUI window: {detail}"
+    if not problem:
         return None
-    log("WARN", f"current interpreter {sys.executable} lacks: {', '.join(missing)}")
+    log("WARN", f"current interpreter {sys.executable} {problem}")
     if not CANONICAL_PYTHON.is_file():
         log("FAIL", f"canonical interpreter not found: {CANONICAL_PYTHON}")
         log("INFO", "run this file with any interpreter that has pybullet+cv2+mediapipe")
         return 3
     if Path(sys.executable).resolve() == CANONICAL_PYTHON.resolve():
-        log("FAIL", f"{CANONICAL_PYTHON} itself lacks: {', '.join(missing)}")
+        log("FAIL", f"{CANONICAL_PYTHON} itself cannot do it: {problem}")
         return 3
     env = dict(os.environ)
     env[REEXEC_FLAG] = "1"
@@ -167,8 +221,8 @@ def probe_cameras(max_index: int = 3) -> list[int]:
     return usable
 
 
-def run_check() -> int:
-    """体检：解释器 / 依赖 / 仓库布局 / 模型文件 / 相机。不开任何窗口。"""
+def run_check(want_window: bool = True) -> int:
+    """体检：解释器 / 依赖 / 窗口支持 / 仓库布局 / 模型文件 / 相机。不开任何窗口。"""
     log("INFO", f"interpreter : {sys.executable}")
     log("INFO", f"version     : {sys.version.split()[0]}")
     log("INFO", f"repo root   : {ROOT}")
@@ -181,6 +235,15 @@ def run_check() -> int:
         log("FAIL", f"missing modules: {', '.join(missing)}")
         return 3
     log("OK", f"modules present: {', '.join(REQUIRED_MODULES)}")
+    gui_ok, gui_detail = gui_support()
+    if gui_ok:
+        log("OK", f"cv2 window support: {gui_detail}")
+    elif want_window:
+        log("FAIL", f"cv2 cannot open a window in this interpreter: {gui_detail}")
+        log("INFO", f"use {CANONICAL_PYTHON}, or add --no-preview to skip the camera window")
+        return 3
+    else:
+        log("WARN", f"cv2 window support: {gui_detail} (fine with --no-preview)")
     try:
         from teleoperation.apps.realtime_hand_sim import resolve_model_asset
     except Exception as error:  # noqa: BLE001 - 体检要把原因原样报出来
@@ -207,6 +270,32 @@ def run_check() -> int:
     return 0
 
 
+def summarise_camera_window(report: Path, want_window: bool) -> None:
+    """跑完读一眼报告里的 ``preview`` 块：摄像头窗口到底开没开、开在哪。
+
+    入口在预览失败时只打一行 note 就继续跑仿真（设计如此：不拖累重定向与仿真），
+    所以在 IDE 里很容易"只看见机器人窗口"。这里在进程结束后明确回一句结论。
+    """
+    if not want_window:
+        return
+    try:
+        data = json.loads(Path(report).read_text(encoding="utf-8"))
+    except Exception as error:  # noqa: BLE001
+        log("WARN", f"cannot read report {report}: {type(error).__name__}: {error}")
+        return
+    preview = data.get("preview") or {}
+    if not preview:
+        return
+    if preview.get("window"):
+        log("OK", f"camera window stayed open at {preview.get('window_rect')} "
+                  f"(mirrored={preview.get('mirrored')})")
+        return
+    log("WARN", f"the camera window did NOT stay open: "
+                f"{preview.get('note') or 'unknown reason'}")
+    log("INFO", f"retry with: {CANONICAL_PYTHON} {Path(__file__).name} "
+                f"--preview-window-pos 20,60")
+
+
 def main(argv: list[str]) -> int:
     check = "--check" in argv
     argv = [item for item in argv if item != "--check"]
@@ -220,12 +309,22 @@ def main(argv: list[str]) -> int:
         log("INFO", "running inside the re-executed process (E: interpreter)")
 
     if check:
-        return run_check()
+        return run_check(want_window=wants_window(argv))
 
-    from teleoperation.apps.realtime_hand_sim import build_parser
+    from teleoperation.apps.realtime_hand_sim import PREVIEW_WINDOW, build_parser
     from teleoperation.apps.realtime_hand_sim import main as sim_main
 
+    log("INFO", f"interpreter : {sys.executable}")
+    log("INFO", f"repo root   : {ROOT}")
+    gui_ok, gui_detail = gui_support()
+    if gui_ok:
+        log("OK", f"cv2 window support: {gui_detail}")
+    else:
+        log("WARN", f"cv2 window support: {gui_detail}")
+        log("INFO", "PyBullet 窗口照常显示，但摄像头窗口不会出现：用 E: 的解释器重跑")
+
     extra = list(argv)
+    report: "Path | None" = None
     if not any(item == "--report" or item.startswith("--report=") for item in extra):
         REPORT_DIR.mkdir(parents=True, exist_ok=True)
         report = REPORT_DIR / f"run_{time.strftime('%Y%m%d_%H%M%S')}.json"
@@ -235,11 +334,17 @@ def main(argv: list[str]) -> int:
     args = build_parser().parse_args(extra)
     log("INFO", "two windows: camera preview + PyBullet; press q/Esc in the camera "
                 "window (or close PyBullet) to stop")
+    if getattr(args, "preview_window_pos", None) is not None:
+        log("INFO", f"the camera window is moved to {args.preview_window_pos} and kept "
+                    f"on top; look for the window titled {PREVIEW_WINDOW!r}")
     if getattr(args, "backend", "auto") != "checkpoint":
         log("INFO", f"backend={getattr(args, 'backend', 'auto')} is weight-free: hold your "
                     f"hand open for about {getattr(args, 'calibration_frames', 15)} frames "
                     f"so it can calibrate")
-    return int(sim_main(args))
+    status = int(sim_main(args))
+    if report is not None:
+        summarise_camera_window(report, want_window=wants_window(argv))
+    return status
 
 
 if __name__ == "__main__":
