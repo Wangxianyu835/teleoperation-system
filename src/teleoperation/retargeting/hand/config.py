@@ -41,11 +41,19 @@ class TrainingConfig:
     scheduler_patience: int = 8
     minimum_learning_rate: float = 1e-6
     gradient_clip_norm: float = 10.0
-    loss_weights: tuple[float, ...] = (500, 500, 10, 500, 10, 500)
+    loss_weights: tuple[float, ...] = (500, 500, 10, 500, 0.01, 500)
     collision_threshold: float = 0.010
     source_scale: float = 1.0
     robot_scale: float = 1.0
-
+"""
+    loss_weights 按顺序对应：
+    1. vec：手指向量方向损失
+    2. pos：指尖位置方向损失
+    3. collision：手指碰撞损失
+    4. thumb：拇指到掌平面的距离损失
+    5. tip_distance：各指指尖之间的距离损失
+    6. thumb2：拇指关节段夹角损失
+"""
 
 @dataclass(frozen=True)
 class RuntimeConfig:

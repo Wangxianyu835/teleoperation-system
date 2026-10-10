@@ -6,6 +6,8 @@ Provide the original ``hand_landmarker.task`` via ``model_asset_path`` when it
 is not in the working directory. Importing this module does not open a camera,
 import OpenCV/MediaPipe, or download a model.
 
+mediapipe检测关键点
+
 Demo (Ctrl+C stops capture)::
 
     python -m teleoperation hand realtime --model-asset-path PATH --frames 300
@@ -19,7 +21,7 @@ import time
 import numpy as np
 
 
-MODEL_PATH = "hand_landmarker.task"
+MODEL_PATH = Path("D:/2026/code/teleoperation-system-retargeting/datasets/hand_landmarker.task")
 IMAGE_WIDTH = 640
 IMAGE_HEIGHT = 480
 CAM_FPS = 30
@@ -103,7 +105,9 @@ class MediaPipeCameraInput:
         fps: int = CAM_FPS,
         *,
         invalid_hand_as_missing: bool = False,
+        include_image: bool = False,
     ):
+        #mediapipe的真实模型路径
         model_path = Path(model_asset_path)
         if not model_path.is_file():
             raise FileNotFoundError(f"MediaPipe hand model not found: {model_path}")
@@ -119,6 +123,7 @@ class MediaPipeCameraInput:
         self._frame_index = 0
         self._last_timestamp_ms = None
         self._invalid_hand_as_missing = invalid_hand_as_missing
+        self._include_image = include_image
         options = mp.tasks.vision.HandLandmarkerOptions(
             base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path)),
             running_mode=mp.tasks.vision.RunningMode.VIDEO,
@@ -166,6 +171,8 @@ backward, to satisfy the landmarker's increasing-timestamp requirement.
             }, invalid_hand_as_missing=self._invalid_hand_as_missing)
             self._last_timestamp_ms = timestamp_ms
             self._frame_index += 1
+            if self._include_image:
+                output["image_bgr"] = frame
             return output
         except BaseException:
             self.release()

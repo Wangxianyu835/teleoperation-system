@@ -1,6 +1,6 @@
 # 架构与模块边界
 
-生产包是 `src/teleoperation`。完整工作流仅在 `apps` 中组装，CLI 使用静态命令注册并延迟导入应用 handler。
+生产包是 `src/teleoperation`。完整工作流仅在 `applications` 中组装，CLI 使用静态命令注册并延迟导入应用 handler。
 
 ```mermaid
 flowchart LR
@@ -47,9 +47,9 @@ MediaPipe / VisionPro / Replay
 
 `apps/hand_processing.py` 清楚展示采集、单帧处理与缓冲之间的连接。`CanonicalHandProcessor` 只持有 identity tracking 等单帧状态；`TemporalBuffer` 只持有已规范化帧。处理器与缓冲器分别重置。
 
-MediaPipe palm-local 使用独立的 `MediaPipePalmLocalProcessor`：逐帧对齐，不启用 identity tracking，单侧失效立即清空该侧历史。其应用组合在 `apps/hand_realtime.py`。原始 Unix 毫秒保留在 input；relative seconds 仍由应用用原先的 `round(time.time() - start, 3)` 计算。
+MediaPipe palm-local 使用独立的 `MediaPipePalmLocalProcessor`：逐帧对齐，不启用 identity tracking，单侧失效立即清空该侧历史。hand 与 dual 复用 `apps/hand_processing.py` 的 `MediaPipePalmLocalPipeline`。原始 Unix 毫秒保留在 input；relative seconds 仍由 hand 摄像头应用用原先的 `round(time.time() - start, 3)` 计算。
 
-NPY 保留关闭跟踪、缩放和缺失清空行为；H5 Dataset 保留跟踪配置、frame gap 重置、timeline 和 mask；Vision Pro 输入返回原始矩阵，坐标提取发生在 retargeting/topology，没有新样本时不更新缓冲。dual realtime 保留原有坐标 guard 与处理策略，不自动选择 palm-local。
+NPY 保留关闭跟踪、缩放和缺失清空行为；H5 Dataset 保留跟踪配置、frame gap 重置、timeline 和 mask；Vision Pro 输入返回原始矩阵，坐标提取发生在 retargeting/topology，没有新样本时不更新缓冲。dual realtime 显式选择 legacy 或 palm-local；输入声明与预处理、checkpoint 必须精确匹配，未知空间拒绝处理。
 
 `retargeting/hand/angles.py` 保留原有 float32 的 18→17 转换。原生回放先保留 float64 修复与平滑，再通过 `L21HandAngles.native_mapping_dofs()` 仅切掉占位维。原生映射仍依据原 18D 索引，取 17DOF 时显式使用索引减一。
 
@@ -120,6 +120,8 @@ checkpoint 的文件序列化位于 `data/checkpoint`，state_dict 选择、严�
 
 不保留旧路径 Python wrapper。静态架构测试检查直接导入、重导出后的传递依赖、受控动态导入和 partial 的生产调用位置。
 
-## 本轮验证范围
+## 目录迁移时的验证范围（历史）
 
 按用户最新要求不使用冻结基线进行验收。仅执行语法、导入、CLI 帮助、包构建与架构规则检查；没有执行迁移后的数值或物理回归。现有行为测试保留并迁移导入、mock 目标和命令，容差不放宽。后续由用户运行完整 unittest 和真实工作流。摄像头、CUDA 与外部 TRON2A URDF/mesh 的运行情况仍需实际验证。
+
+后续 current-state 数值回归、物理 smoke 与实时坐标契约修复的实际结果见 [2026-10-09 验收报告](current-state-validation-2026-10-09.md)。

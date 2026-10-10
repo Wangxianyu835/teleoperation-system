@@ -5,18 +5,42 @@ from pathlib import Path
 from teleoperation.paths import *
 from teleoperation.retargeting.hand.config import L21, RUNTIME, ANGLE_LIMITS
 from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
+from .checkpoints import add_checkpoint_arguments
 PALM_LOCAL_V2_CHECKPOINT = DEFAULT_REALTIME_CHECKPOINT
 ROOT = str(PROJECT_ROOT)
+
+def hand_record(parser: argparse.ArgumentParser) -> None:
+    destination = parser.add_mutually_exclusive_group()
+    destination.add_argument("--output", type=Path,
+                             help="explicit raw filename, overriding automatic time/side naming")
+    destination.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "datasets" / "raw",
+                             help="directory for visual_hand_data_<side>_<YYYYMMDD_HHMMSS>.h5")
+    parser.add_argument("--aligned-output", type=Path,
+                        help="training H5 path; default: aligned_<raw filename>")
+    parser.add_argument("--hand-side", choices=("left", "right", "both"), default="both",
+                        help="hand(s) to record and include in automatic filename (default: both)")
+    parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET)
+    parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
+    parser.add_argument("--width", type=int, default=640)
+    parser.add_argument("--height", type=int, default=480)
+    parser.add_argument("--fps", type=int, default=30, help="requested camera FPS")
+    parser.add_argument("--no-preview", action="store_true",
+                        help="record without the camera/landmark preview window")
+    parser.add_argument("--frames", type=int, default=0,
+                        help="capture N frames; 0 records until q/Esc, window close or Ctrl+C")
+    parser.set_defaults(_handler="teleoperation.applications.offline_h5_record:run")
 
 def hand_align(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.set_defaults(_handler="teleoperation.apps.hand:align")
+    parser.set_defaults(_handler="teleoperation.applications.hand:align")
 
 
 def hand_train(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--run-name", required=True)
+    parser.add_argument("--hand-side", choices=("left", "right", "shared"), default="shared",
+                        help="train a dedicated left/right model or a shared model (default)")
     parser.add_argument("--checkpoint-root", type=Path, default=DEFAULT_CHECKPOINT_ROOT)
     parser.add_argument("--init-checkpoint", type=Path, default=DEFAULT_WARMSTART_CHECKPOINT)
     parser.add_argument("--epochs", type=int, default=L21.training.epochs)
@@ -26,7 +50,7 @@ def hand_train(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--early-stopping-patience", type=int, default=L21.training.early_stopping_patience)
     parser.add_argument("--seed", type=int, default=L21.training.seed)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default=RUNTIME.device)
-    parser.set_defaults(_handler="teleoperation.apps.training:run")
+    parser.set_defaults(_handler="teleoperation.applications.training:run")
 
 
 def hand_export(parser: argparse.ArgumentParser) -> None:
@@ -35,7 +59,7 @@ def hand_export(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=DEFAULT_INPUT_H5,
     )
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
+    add_checkpoint_arguments(parser, default=DEFAULT_CHECKPOINT)
     parser.add_argument(
         "--output",
         type=Path,
@@ -69,17 +93,17 @@ def hand_export(parser: argparse.ArgumentParser) -> None:
         choices=("auto", "cpu", "cuda"),
         default=RUNTIME.device,
     )
-    parser.set_defaults(_handler="teleoperation.apps.hand:export")
+    parser.set_defaults(_handler="teleoperation.applications.hand:export")
 
 
 def hand_inspect(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--angle-h5", type=Path, required=True)
-    parser.set_defaults(_handler="teleoperation.apps.hand:inspect")
+    parser.set_defaults(_handler="teleoperation.applications.hand:inspect")
 
 
 def hand_realtime(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET)
-    parser.add_argument("--checkpoint", type=Path, default=PALM_LOCAL_V2_CHECKPOINT)
+    add_checkpoint_arguments(parser, default=PALM_LOCAL_V2_CHECKPOINT)
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
     parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)
     parser.add_argument("--frames", type=int, default=RUNTIME.camera_frames,
@@ -91,7 +115,7 @@ def hand_realtime(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--labels", action="store_true")
     parser.add_argument("--headless", action="store_true", help="render without opening a GUI")
     parser.add_argument("--snapshot", type=Path, help="save the final rendered frame as PNG")
-    parser.set_defaults(_handler="teleoperation.apps.hand:realtime")
+    parser.set_defaults(_handler="teleoperation.applications.hand:realtime")
 
 
 def sim_run(parser):
@@ -114,10 +138,10 @@ def sim_run(parser):
                         help='基准测试每个任务的试验次数')
     parser.add_argument('--data-dir', type=str, default=str(DEFAULT_DATA_DIR),
                         help='数据存储目录')
-    parser.set_defaults(_handler="teleoperation.apps.benchmark:main")
+    parser.set_defaults(_handler="teleoperation.applications.benchmark:main")
 
 def sim_demo_joints(parser):
-    parser.set_defaults(_handler="teleoperation.apps.demo.joints:main")
+    parser.set_defaults(_handler="teleoperation.applications.demo.joints:main")
 
 def dual_export(parser):
     parser = parser
@@ -126,16 +150,18 @@ def dual_export(parser):
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF)
-    parser.set_defaults(_handler="teleoperation.apps.dual_export_cli:main")
+    parser.set_defaults(_handler="teleoperation.applications.dual_export_cli:main")
 
 def dual_realtime(parser):
     parser = parser
     parser.add_argument("--adapter", required=True, help="module:factory returning an InputSource or iterable of raw combined observations")
     parser.add_argument("--calibration", required=True)
     parser.add_argument("--urdf", default=str(DEFAULT_TRON2A_URDF))
-    parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
+    add_checkpoint_arguments(parser, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
-    parser.set_defaults(_handler="teleoperation.apps.dual_realtime:main")
+    parser.add_argument("--hand-preprocessing", choices=("legacy", "palm-local"), default="legacy",
+                        help="Explicit hand coordinate contract; checkpoint must match exactly")
+    parser.set_defaults(_handler="teleoperation.applications.dual_realtime:main")
 
 def dual_replay(parser):
     parser = parser
@@ -144,7 +170,7 @@ def dual_replay(parser):
     parser.add_argument("--calibration", required=True)
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--fps", type=float, default=30.0)
-    parser.set_defaults(_handler="teleoperation.apps.dual_replay:main")
+    parser.set_defaults(_handler="teleoperation.applications.dual_replay:main")
 
 def replay_actions(parser):
     ap = parser
@@ -166,7 +192,7 @@ def replay_actions(parser):
                     help='回放时启用域随机化（默认关闭，保证可复现）')
     ap.add_argument('--steps', type=int, default=480,
                     help='--dummy 模式生成的步数')
-    parser.set_defaults(_handler="teleoperation.apps.replay.replay_actions:main")
+    parser.set_defaults(_handler="teleoperation.applications.replay.replay_actions:main")
 
 def replay_native_hand(parser):
     ap = parser
@@ -200,7 +226,7 @@ def replay_native_hand(parser):
     ap.add_argument('--report', action='store_true',
                     help='只打印映射报告，不启动回放')
     ap.add_argument('--no-repair', action='store_true')
-    parser.set_defaults(_handler="teleoperation.apps.replay.replay_hand_native:main")
+    parser.set_defaults(_handler="teleoperation.applications.replay.replay_hand_native:main")
 
 def replay_l21_hand(parser):
     ap = parser
@@ -235,7 +261,7 @@ def replay_l21_hand(parser):
     ap.add_argument('--fps', type=float, default=30.0,
                     help='数据帧率（用于滤波器 dt 与指标换算，默认 30）')
     ap.add_argument('--speed', type=float, default=1.0, help='播放倍速')
-    parser.set_defaults(_handler="teleoperation.apps.replay.replay_hand_angles:main")
+    parser.set_defaults(_handler="teleoperation.applications.replay.replay_hand_angles:main")
 
 def replay_mounted_hand(parser):
     ap = parser
@@ -267,46 +293,42 @@ def replay_mounted_hand(parser):
                          '（最准但慢 4 倍）。'
                          '实测关节 29 ms 就能走完 1.5 rad，'
                          '所以 8 步足够跟上，视觉上只滞后约 4 帧')
-    parser.set_defaults(_handler="teleoperation.apps.replay.replay_hand_on_robot:main")
+    parser.set_defaults(_handler="teleoperation.applications.replay.replay_hand_on_robot:main")
 
 def tools_show_robots(parser):
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.show_robots:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.show_robots:main")
 
 def tools_show_hand(parser):
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.show_hand:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.show_hand:main")
 
 def tools_check_environment(parser):
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.check_environment:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.check_environment:main")
 
 def tools_check_camera(parser):
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.check_camera:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.check_camera:main")
 
 def tools_check_gbk_safe(parser):
     ap = parser
     ap.add_argument('--strict', action='store_true',
                     help='有违规时返回退出码 1（用于 CI / 提交前检查）')
     ap.add_argument('--root', default='.', help='扫描根目录（默认当前）')
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.check_gbk_safe:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.check_gbk_safe:main")
 
 def tools_compare_training_hand_pose(parser):
     parser = parser
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--frame", type=int, required=True)
-    parser.add_argument(
-        "--before-checkpoint",
-        type=Path,
-        required=True,
-    )
-    parser.add_argument("--after-checkpoint", type=Path, required=True)
+    add_checkpoint_arguments(parser, prefix="before", required=True)
+    add_checkpoint_arguments(parser, prefix="after", required=True)
     parser.add_argument("--output", type=Path, default=Path("picture/training_compare.png"))
     parser.add_argument("--device", choices=("cpu", "cuda", "auto"), default="cpu")
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.compare_training_hand_pose:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.compare_training_hand_pose:main")
 
 def tools_diagnose_hand_coordinates(parser):
     parser = parser
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--sample-count", type=int, default=5)
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.diagnose_hand_coordinates:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.diagnose_hand_coordinates:main")
 
 def tools_make_sample_data(parser):
     ap = parser
@@ -318,7 +340,7 @@ def tools_make_sample_data(parser):
     ap.add_argument('--robot', type=str, default='h1_2',
                     choices=['h1_2', 'gr1_t2', 'g1'])
     ap.add_argument('--task', type=str, default='pushcube')
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.make_sample_data:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.make_sample_data:main")
 
 def tools_show_all_hands(parser):
     ap = parser
@@ -331,26 +353,26 @@ def tools_show_all_hands(parser):
                     help='播放几遍（0 = 无限循环）')
     ap.add_argument('--substeps', type=int, default=0)
     ap.add_argument('--no-repair', action='store_true')
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.show_hands_all:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.show_hands_all:main")
 
 def tools_validate_retarget_input(parser):
     parser = parser
     parser.add_argument("path", type=Path, help="Path to a hand .npy replay file")
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.validate_retarget_input:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.validate_retarget_input:main")
 
 def tools_verify_hand_pipeline(parser):
     ap = parser
     ap.add_argument('--file', default=os.path.join(
         ROOT, 'datasets', 'raw', 'retarget_twohand_153542.h5'))
     ap.add_argument('--render', action='store_true', help='最后打开 GUI')
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.verify_hand_pipeline:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.verify_hand_pipeline:main")
 
 def tools_verify_p0(parser):
     parser = parser
     parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--checkpoint", type=Path, required=True)
+    add_checkpoint_arguments(parser, required=True)
     parser.add_argument("--sample-count", type=int, default=3)
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.verify_p0:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.verify_p0:main")
 
 def tools_visualize_hand_keypoints(parser):
     parser = parser
@@ -390,7 +412,7 @@ def tools_visualize_hand_keypoints(parser):
         action="store_true",
         help="Skip frames with no valid hand keypoints instead of stopping.",
     )
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.visualize_hand_keypoints:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.visualize_hand_keypoints:main")
 
 def tools_visualize_l21_fk(parser):
     parser = parser
@@ -411,4 +433,4 @@ def tools_visualize_l21_fk(parser):
         action="store_true",
         help="Label each point with its joint name instead of its index.",
     )
-    parser.set_defaults(_handler="teleoperation.apps.diagnostics.visualize_l21_fk:main")
+    parser.set_defaults(_handler="teleoperation.applications.diagnostics.visualize_l21_fk:main")

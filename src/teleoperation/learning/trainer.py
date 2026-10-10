@@ -87,13 +87,17 @@ def _run_epoch(
     global_step,
     logger,
     training,
+    hand_side="shared",
 ):
+    if hand_side not in (*HAND_SIDES, "shared"):
+        raise ValueError(f"Unknown hand side: {hand_side!r}")
+    active_hand_sides = HAND_SIDES if hand_side == "shared" else (hand_side,)
     totals = {name: 0.0 for name in LOSS_NAMES}
     side_totals = {
         side: {name: 0.0 for name in LOSS_NAMES}
-        for side in HAND_SIDES
+        for side in active_hand_sides
     }
-    side_counts = {side: 0 for side in HAND_SIDES}
+    side_counts = {side: 0 for side in active_hand_sides}
     total_count = 0
     batch_count = 0
     gradient_total = 0.0
@@ -104,7 +108,7 @@ def _run_epoch(
 
         losses = {}
         masks = {}
-        for side in HAND_SIDES:
+        for side in active_hand_sides:
             masks[side] = torch.as_tensor(
                 batch[f"{side}_valid"],
                 dtype=torch.bool,
@@ -133,7 +137,7 @@ def _run_epoch(
                 zero = next(model.parameters()).sum() * 0.0
                 losses[side] = (zero,) * len(LOSS_NAMES)
 
-        active_sides = [side for side in HAND_SIDES if masks[side].any()]
+        active_sides = [side for side in active_hand_sides if masks[side].any()]
         if not active_sides:
             continue
         loss_total = sum(losses[side][0] for side in active_sides)
@@ -163,7 +167,7 @@ def _run_epoch(
         batch_count += 1
         global_step += 1
         batch_valid_count = 0
-        for side in HAND_SIDES:
+        for side in active_hand_sides:
             count = int(masks[side].sum().item())
             side_counts[side] += count
             batch_valid_count += count
@@ -189,7 +193,7 @@ def _run_epoch(
     divisor = max(total_count, 1)
     stats = {name: totals[name] / divisor for name in LOSS_NAMES}
     stats["gradient_norm"] = gradient_total / max(batch_count, 1)
-    for side in HAND_SIDES:
+    for side in active_hand_sides:
         side_divisor = max(side_counts[side], 1)
         for name in LOSS_NAMES:
             stats[f"{side}_{name}"] = (

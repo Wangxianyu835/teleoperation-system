@@ -112,6 +112,14 @@ SimulationEnv.step 保留 action=None；非空动作必须为有限、正确维�
 
 Vision Pro raw 必须声明 transforms25。HandWindow 或模型窗口不能冒充输入；采集 factory 不应隐藏 processor、buffer 或模型。
 
+`dual realtime --hand-preprocessing legacy|palm-local` 显式选择模型输入契约，默认保留 legacy。
+MediaPipe 原始输入需要 `source="mediapipe_approx"`、`metadata.source_landmark_space="mediapipe_normalized"` 和 landmarks21 编码，使用 `palm-local` 及相同坐标声明的 checkpoint。
+已经对齐的 landmarks 必须声明 `metadata.coordinate_frame="l21"` 与 `metadata.coordinate_alignment`；palm-local 已对齐输入必须为 `(25,3)`，直接进入缓冲，不再对齐。
+Legacy 保留原 CanonicalHandProcessor 的拓扑、wrist-relative 与 identity tracking 行为；接受明确声明的 legacy landmarks，或 `source="visionpro"` 的原始 transforms25。
+未知输入空间、预处理/数据/checkpoint 不匹配均报错。单侧 palm-local 非有限或退化输入清除该侧历史，恢复须重新积累三帧。
+加载 checkpoint 后，`TwoHandRetargeter.predict` 在模型调用前逐次核对 HandWindow 声明与加载时确认的 alignment 完全相同。
+手部 frame timestamp 与 timestamp_unit 原样进入 HandWindow；hand 摄像头应用仍把 raw Unix 毫秒另存为 raw_timestamp_ms 并产生 relative seconds。dual 的 command timestamp 沿用上身观测的秒时间戳，adapter 应明确声明并同步两个时间线。
+
 ## 文件格式与声明
 
 `data/hand_h5.py` 保留 root 格式的 `left_hand_keypoints/right_hand_keypoints`，以及历史 group 格式的 `l_glove_pos/r_glove_pos`。训练输入要求显式 `coordinate_frame=l21` 和受支持的 coordinate_alignment；未知声明不自动补全。

@@ -42,7 +42,12 @@ def render(raw_frame, palms, payload, angles, robot_points, streaks, reasons,
     timestamp = raw_frame["timestamp"]
     text(header, f"frame={frame_index}  timestamp={timestamp} unix_ms  FPS={fps:.1f}  "
          f"view={args.view.upper()}  zoom={zoom:.2f}", (14, 22), scale=0.57)
-    text(header, f"{args.checkpoint.parent.name}/{args.checkpoint.name} | palm_local_to_l21_v1 | "
+    if getattr(args, "left_checkpoint", None) is not None:
+        label = " | ".join(f"{side}={Path(getattr(args, side + '_checkpoint')).parent.name}/{Path(getattr(args, side + '_checkpoint')).name}" for side in SIDES)
+    else:
+        checkpoint = Path(args.checkpoint)
+        label = f"{checkpoint.parent.name}/{checkpoint.name}"
+    text(header, f"{label} | palm_local_to_l21_v1 | "
          "identity tracking OFF | fixed display scales",
          (14, 45), scale=0.48)
     text(header, "q/Esc quit | 1 YZ  2 XZ  3 XY  4 ISO | w window traces | +/- zoom | s PNG", (14, 68), scale=0.48)

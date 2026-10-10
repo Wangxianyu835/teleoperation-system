@@ -27,7 +27,7 @@ from teleoperation.simulation.robot_loader import RobotLoader, read_joint_ranges
 from teleoperation.retargeting.hand.kinematics import create_hand_kinematics
 from teleoperation.retargeting.hand.config import L21, JOINT_EDGES, JOINT_NAMES
 from teleoperation.retargeting.hand.coordinates import build_l21_reference_basis
-from teleoperation.apps.replay.replay_hand_native import style_hands
+from teleoperation.applications.replay.replay_hand_native import style_hands
 from teleoperation.contracts.hand import L21HandAngles
 from teleoperation.robots.native_hand import NativeHandAdapter, build_mapping
 

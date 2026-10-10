@@ -180,6 +180,7 @@ class TwoHandH5ChunkedGenerator:
         batch_size: int,
         shuffle: bool = True,
         random_seed: int = 1234,
+        hand_side: str | None = None,
     ):
         self.dataset = dataset
         self.batch_size = int(batch_size)
@@ -187,15 +188,21 @@ class TwoHandH5ChunkedGenerator:
             raise ValueError("batch_size must be positive")
         self.shuffle = bool(shuffle)
         self.random = np.random.RandomState(random_seed)
+        if hand_side is not None and hand_side not in HAND_SIDES:
+            raise ValueError(f"Unknown hand side: {hand_side!r}")
+        self.indices = np.asarray([
+            index for index, sample in enumerate(dataset.samples)
+            if hand_side is None or sample[f"{hand_side}_valid"]
+        ], dtype=np.int64)
         self.num_batches = (
-            len(dataset) + self.batch_size - 1
+            len(self.indices) + self.batch_size - 1
         ) // self.batch_size
 
     def num_frames(self) -> int:
-        return len(self.dataset)
+        return len(self.indices)
 
     def next_epoch(self):
-        indices = np.arange(len(self.dataset))
+        indices = self.indices.copy()
         if self.shuffle:
             self.random.shuffle(indices)
 

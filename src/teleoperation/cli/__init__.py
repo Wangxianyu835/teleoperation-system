@@ -1,12 +1,13 @@
-"""A single CLI; all workflow execution is dispatched to apps."""
+"""A single CLI; all workflow execution is dispatched to applications."""
 import argparse
 from importlib import import_module
 from .registry import COMMANDS
+from .checkpoints import CheckpointArgumentParser
 
 
 def build_parser():
     from . import schemas
-    parser = argparse.ArgumentParser(prog="python -m teleoperation")
+    parser = CheckpointArgumentParser(prog="python -m teleoperation")
     groups = parser.add_subparsers(dest="group", required=True)
     commands = {}
     for group, name, configure, handler in COMMANDS:
