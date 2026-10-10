@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+from datetime import datetime
 import os
 from pathlib import Path
 import time
@@ -10,6 +12,11 @@ from teleoperation.data.world_landmark_recording import (
     write_world_landmark_recording,
 )
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
+
+
+ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_MODEL = ROOT / "hand_landmarker.task"
+DEFAULT_OUTPUT_DIR = ROOT / "outputs" / "world_landmarks"
 
 
 def run(args, *, fast_exit: bool = False) -> int:
@@ -99,3 +106,31 @@ def main(args=None) -> int:
     if args is None:
         raise TypeError("Use teleoperation.cli.main() to parse command arguments")
     return run(args, fast_exit=bool(getattr(args, "fast_exit", False)))
+
+
+def _direct_args():
+    parser = argparse.ArgumentParser(
+        description="Record MediaPipe hand_world_landmarks (metres) to H5."
+    )
+    parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument("--camera-index", type=int, default=0)
+    parser.add_argument("--frames", type=int, default=60)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--width", type=int, default=640)
+    parser.add_argument("--height", type=int, default=480)
+    parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--max-fps", type=float, default=10.0)
+    parser.add_argument(
+        "--preview",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    args = parser.parse_args()
+    if args.output is None:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.output = DEFAULT_OUTPUT_DIR / f"world_landmarks_{stamp}.h5"
+    return args
+
+
+if __name__ == "__main__":
+    raise SystemExit(run(_direct_args(), fast_exit=True))

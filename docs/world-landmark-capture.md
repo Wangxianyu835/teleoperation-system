@@ -39,6 +39,12 @@ python record_world_landmarks.py --frames 30 --max-fps 5
 python record_world_landmarks.py
 ```
 
+也可以直接运行内部入口文件：
+
+```text
+src/teleoperation/apps/world_landmark_capture.py
+```
+
 ## 新代码位置
 
 | 文件 | 作用 |

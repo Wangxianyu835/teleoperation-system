@@ -139,6 +139,25 @@ class WorldLandmarkRecordingTests(unittest.TestCase):
         self.assertIn("--no-preview", result.stdout)
         self.assertIn("--max-fps", result.stdout)
 
+    def test_capture_module_is_directly_runnable(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(ROOT / "src" / "teleoperation" / "apps" / "world_landmark_capture.py"),
+                "--help",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--frames", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
