@@ -162,6 +162,34 @@ $py='E:\python3.11.7\python.exe'
 & $py -m teleoperation.apps.realtime_hand_sim --no-preview          # 只要 PyBullet 窗口
 ```
 
+**在 PyCharm 里按运行键（`devtools/run_realtime_windows.py`，2026-10-10 新增）**：
+上面的命令要求"解释器 = `E:\python3.11.7\python.exe` + `PYTHONPATH` 带 `src` + 工作目录 =
+仓库根 + 缓存不在 C 盘"四条同时成立，而 PyCharm 点 Run 时通常一条都不满足（仓库里的 `.venv`
+是**空壳**，连 `python.exe` 都没有，PyCharm 却常把它当默认 SDK）。这个入口把这四条补齐：
+
+```powershell
+$py='E:\python3.11.7\python.exe'
+& $py devtools\run_realtime_windows.py                    # 等价于上面的默认两窗口
+& $py devtools\run_realtime_windows.py --scene hands      # 换成 L21 手场景
+& $py devtools\run_realtime_windows.py --check            # 只体检（解释器/依赖/模型/相机），不开窗口
+```
+
+- PyCharm 配置：Script path 指向该文件，Working directory = `F:\simulation_platform_cs`，
+  Parameters 留空即可；**解释器选错也能起来** —— 它发现当前解释器缺
+  `cv2`/`mediapipe`/`pybullet` 时会打印 `[WARN] current interpreter ... lacks: ...`，然后用
+  `E:\python3.11.7\python.exe` 把自己重跑一遍（`TP_REALTIME_LAUNCHER_REEXEC=1` 防递归）。
+- 它还会：把 `sys.path` 加上 `src`、把工作目录切回仓库根（PyCharm 默认是脚本所在目录）、
+  把「没设或指向 C:」的缓存/临时变量指到 `E:\cache`（已有的好值只打印 `[KEEP]` 不动）、
+  默认写一份报告到 `outputs\tmp_realtime\run_<时间戳>.json`（退出码与真实入口一致：0 = 有手
+  输出过角度；1 = 全程没手；3 = 环境不对）。
+- 实测 2026-10-10（`E:\python3.11.7\python.exe`）：`--check` 退出码 `0`（`modules present`、
+  `model asset .../outputs/hand_landmarker.task (7819105 bytes)`、`cameras readable: [0]`）；
+  工作目录被故意设成 `devtools` 时打印 `working directory ... -> F:\simulation_platform_cs`
+  且退出码仍为 `0`；用缺依赖的 `Python312\python.exe` 启动时先 `[WARN] ... lacks: cv2,
+  mediapipe, pybullet` 再 `[OK] re-running with E:\python3.11.7\python.exe`，退出码 `0`；
+  `--headless --frames 3` 退出码 `1`（画面里没手，设计如此）并写出 5983 字节报告
+  （`backend=geometric`、`scene=three_robots`、`physics_dt=0.0041667`）。
+
 - 窗口内容：骨架用 `tools/plotting.py` 的 `COLORS` / `SOURCE_EDGES`（指尖橙色），左上角一行
   `frame= / fps= / raw= / valid= / invalid= / calibration=`，没有手时左下角红字
   `no hand detected`。默认左右镜像（像照镜子），`--preview-no-mirror` 关掉；
