@@ -153,6 +153,7 @@ class MediaPipeCameraInput:
         self._camera_index = camera_index
         self._frame_index = 0
         self._last_timestamp_ms = None
+        self.last_bgr = None
         self._invalid_hand_as_missing = invalid_hand_as_missing
         previous = Path.cwd()
         try:
@@ -197,6 +198,7 @@ under ``world_left`` and ``world_right``.
             success, frame = self._cap.read()
             if not success or frame is None or frame.size == 0:
                 raise RuntimeError(f"Frame read failed for camera {self._camera_index}")
+            self.last_bgr = frame
             frame_rgb = self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2RGB)
             mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=frame_rgb)
             timestamp_ms = int(time.time() * 1000)

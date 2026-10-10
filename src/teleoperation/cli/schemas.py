@@ -102,6 +102,12 @@ def hand_record_world(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument(
+        "--preview",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="show the camera window while recording (press q to stop early)",
+    )
     parser.set_defaults(_handler="teleoperation.apps.world_landmark_capture:main")
 
 

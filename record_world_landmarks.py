@@ -27,6 +27,12 @@ def parse_args():
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument(
+        "--preview",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="show the camera window while recording (press q to stop early)",
+    )
     args = parser.parse_args()
     if args.output is None:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

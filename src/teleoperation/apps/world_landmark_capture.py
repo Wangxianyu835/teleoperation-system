@@ -19,6 +19,8 @@ def run(args) -> int:
         raise ValueError("--output must end with .h5 or .hdf5")
 
     captured = []
+    preview = bool(getattr(args, "preview", True))
+    window_name = "World Landmark Capture"
     try:
         with MediaPipeCameraInput(
             model_asset_path=args.model_asset_path,
@@ -34,10 +36,21 @@ def run(args) -> int:
                     frame.get("metadata", {}).get("frame_index", index)
                 )
                 captured.append(frame)
+                if preview:
+                    import cv2
+
+                    cv2.imshow(window_name, camera.last_bgr)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
                 if (index + 1) % 30 == 0:
                     print(f"captured={index + 1}/{frame_count}", flush=True)
     except KeyboardInterrupt:
         print("capture interrupted; saving collected frames", flush=True)
+    finally:
+        if preview:
+            import cv2
+
+            cv2.destroyAllWindows()
 
     if not captured:
         raise RuntimeError("No world landmark frames were captured")
