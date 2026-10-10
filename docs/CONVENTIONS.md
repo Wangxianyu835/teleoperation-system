@@ -101,11 +101,13 @@ $env:PYTHONPATH = "$pwd\src"
 E:\python3.11.7\python.exe -m teleoperation --help          # 期望退出码 0
 ```
 
-**怎么查**：`preflight.ps1` 第 1 项；有 conda 用它（`[OK]`），没有就 `[WARN]` 并回落（不是失败）。
+**怎么查**：`devtools/preflight.ps1` 第 1 项；有 conda 用它（`[OK]`），没有就 `[WARN]` 并回落（不是失败）。
 
 **不要用**：仓库内 `.venv`（空壳，`python -m teleoperation` 必然 `No module named 'torch'`）、
-Anaconda base、`py` 启动器。PATH 上的 `python` 现在是 `F:\simulation_platform\.venv\Scripts\python.exe`，
-**看到这个就说明你该用全路径**。
+Anaconda base、`py` 启动器。PATH 上的 `python` 现在是 `F:\simulation_platform\.venv\Scripts\python.exe`
+（**旧仓库** `F:\simulation_platform` 的路径；`F:\simulation_platform_cs` 自己不装 `.venv`），
+**看到这个就说明你该用全路径**。`devtools/preflight.ps1` 第 1 项对这种情况只报 `[WARN]`
+（脚本自己始终用全路径 `$py`，所以不影响退出码 `0`），但**人**别裸敲 `python`。
 
 ---
 
@@ -319,7 +321,7 @@ git commit -F outputs\tmp_commit\msg.txt
 
 | # | 检查 | 依据 | 失败时怎么办 |
 |---|---|---|---|
-| 1 | 解释器（conda `teleoperation` 优先，回落 `E:\python3.11.7\python.exe` + `PYTHONPATH=src`）| 约定 2 | 装好 conda，或用回落解释器并注明 |
+| 1 | 解释器（conda `teleoperation` 优先，回落 `E:\python3.11.7\python.exe` + `PYTHONPATH=src`；PATH 上的裸 `python` 若指向 `.venv` 只报 `[WARN]`）| 约定 2 | 装好 conda，或用回落解释器并注明；命令一律写全路径 |
 | 2 | `.py` 非 GBK 字符（`devtools/check_gbk_safe.py --strict`）| 约定 4 | 把 `✓ → ≥ ⚠` 换成 `[OK] -> >= !` |
 | 2b | 同一规则走队友 CLI：`python -m teleoperation tools check-gbk-safe --strict` | 约定 4 | 同上（他这份是出货树的权威检查）|
 | 3 | C 盘零写（`devtools/check_no_c_drive.py --strict`：7 个环境变量 + 7 处默认缓存位置）| 约定 1 | `. .\devtools\env_e_drive_cache.ps1 -Persist`；或 `preflight.ps1 -Fix`（只改当前进程）|

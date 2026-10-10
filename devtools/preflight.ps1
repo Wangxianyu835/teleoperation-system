@@ -111,13 +111,16 @@ if ($py -and (Test-Path (Join-Path $repo 'src\teleoperation'))) {
     $env:PYTHONPATH = Join-Path $repo 'src'
     Say '[INFO]' "PYTHONPATH=$($env:PYTHONPATH)"
 }
+# NOTE: this used to test `-like '*\.venv\*'`, but PowerShell can report the
+# source with mixed separators ('...\.venv/Scripts\python.exe'), so the test
+# silently never fired.  Match on either separator.  It is a WARN and not a
+# FAIL because this script always invokes the interpreter by full path ($py):
+# a broken 'python' on PATH only hurts a human typing it by hand.
 $cmd = Get-Command python -ErrorAction SilentlyContinue
-if ($cmd) {
-    if ($cmd.Source -like '*\.venv\*') {
-        Fail "PATH 'python' resolves to $($cmd.Source) -- that .venv is an EMPTY shell, use the full path"
-    } else {
-        Say '[INFO]' "PATH 'python' resolves to $($cmd.Source)"
-    }
+if ($cmd -and ($cmd.Source -match '[\\/]\.venv[\\/]')) {
+    Warn "PATH 'python' resolves to $($cmd.Source) -- that .venv is an EMPTY shell; always call the interpreter by full path (`$py)"
+} elseif ($cmd) {
+    Say '[INFO]' "PATH 'python' resolves to $($cmd.Source)"
 }
 
 # --- 2. GBK safety (rule 4) ----------------------------------------------
