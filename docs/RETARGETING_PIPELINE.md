@@ -178,17 +178,35 @@ $py='E:\python3.11.7\python.exe'
   Parameters 留空即可；**解释器选错也能起来** —— 它发现当前解释器缺
   `cv2`/`mediapipe`/`pybullet` 时会打印 `[WARN] current interpreter ... lacks: ...`，然后用
   `E:\python3.11.7\python.exe` 把自己重跑一遍（`TP_REALTIME_LAUNCHER_REEXEC=1` 防递归）。
+  缺依赖之外还会查 **cv2 有没有 GUI**：headless 版 wheel（`GUI: NONE`）能读摄像头却开不了
+  窗口，只跑仿真时看起来"正常"，正是"只看得到机器人窗口"的原因之一；这种情况同样重跑到 E:
+  （`--check` 里对应 `[OK] cv2 window support: WIN32UI` / `[FAIL] cv2 cannot open a window`）。
 - 它还会：把 `sys.path` 加上 `src`、把工作目录切回仓库根（PyCharm 默认是脚本所在目录）、
   把「没设或指向 C:」的缓存/临时变量指到 `E:\cache`（已有的好值只打印 `[KEEP]` 不动）、
   默认写一份报告到 `outputs\tmp_realtime\run_<时间戳>.json`（退出码与真实入口一致：0 = 有手
   输出过角度；1 = 全程没手；3 = 环境不对）。
+- 摄像头窗口"看不见"怎么修（2026-10-10）：OpenCV 窗口原先按系统默认位置出现，而 PyBullet 窗口
+  先建、更大，在 IDE 里跑很容易被整个盖住（症状 = 只有机器人窗口在跑）。现在第一帧画完就把窗口
+  挪到 `--preview-window-pos`（默认 `20,60`；`none` = 保留系统默认）并 `WND_PROP_TOPMOST` 置顶，
+  同时打印它的**实际屏幕矩形**：`camera window placed at 28,91 (640x480) [always on top],
+  screen ... title='camera: MediaPipe 21-landmark input (q/Esc quits)'`；矩形落在可见桌面之外会再打
+  一行 `WARNING: the camera window is outside the visible desktop`。`--preview-no-topmost` 关掉置顶。
+  跑完启动器还会读报告回一句 `[OK] camera window stayed open at [x, y, w, h]` 或
+  `[WARN] the camera window did NOT stay open: <原因>` —— 下次"只看见机器人窗口"，先看这两行。
 - 实测 2026-10-10（`E:\python3.11.7\python.exe`）：`--check` 退出码 `0`（`modules present`、
   `model asset .../outputs/hand_landmarker.task (7819105 bytes)`、`cameras readable: [0]`）；
   工作目录被故意设成 `devtools` 时打印 `working directory ... -> F:\simulation_platform_cs`
   且退出码仍为 `0`；用缺依赖的 `Python312\python.exe` 启动时先 `[WARN] ... lacks: cv2,
   mediapipe, pybullet` 再 `[OK] re-running with E:\python3.11.7\python.exe`，退出码 `0`；
   `--headless --frames 3` 退出码 `1`（画面里没手，设计如此）并写出 5983 字节报告
-  （`backend=geometric`、`scene=three_robots`、`physics_dt=0.0041667`）。
+  （`backend=geometric`、`scene=three_robots`、`physics_dt=0.0041667`）；同日新增的窗口检查会多
+  打印一行 `[OK] cv2 window support: WIN32UI`（退出码仍 `0`）。
+
+- 只看见 PyBullet 窗口时的三步自查：① 日志有没有 `camera window: on (mirrored) ... title=...`
+  （有 = 窗口确实开了，去任务栏找那个标题，或看 `camera window placed at` 给的坐标）；
+  ② 有没有 `cv2 window support` 那行（`GUI: NONE` = headless 版 OpenCV，换个解释器即可）；
+  ③ 结尾 `camera preview: window=on/off ... note=` —— `note` 非空就是 `imshow` 在那个解释器里
+  真的失败了，`note` 为空而窗口又看不到，就去 `--preview-window-pos` 指定的坐标找。
 
 - 窗口内容：骨架用 `tools/plotting.py` 的 `COLORS` / `SOURCE_EDGES`（指尖橙色），左上角一行
   `frame= / fps= / raw= / valid= / invalid= / calibration=`，没有手时左下角红字
@@ -241,6 +259,17 @@ $py='E:\python3.11.7\python.exe'
     且代理存下的正是检测器读到的那一帧）；B 段用 `visual_hand_data_20260912_112108.h5` 的真实
     21 点画出 3 张 PNG（`outputs\tmp_probe\preview_selfcheck\`：第 26 帧左手张开、第 349 帧握拳、
     第 400 帧双手，左手蓝 / 右手绿 / 指尖橙）。
+  - 摄像头窗口可见性（2026-10-10 修后 GUI 实跑，日志见 `outputs\tmp_preview_probe\`，探针产物不入库）：
+    `devtools\run_realtime_windows.py --frames 25` -> 退出码 `1`（镜头里没手，设计如此）；日志
+    `placed at 28,91 (640x480) [always on top], screen 1707x1067`、`camera preview: window=on
+    mirror=on ... rect=(28, 91, 640, 480)`、启动器 `[OK] camera window stayed open at
+    [28, 91, 640, 480] (mirrored=True)`。`--frames 25 --preview-window-pos 300,200
+    --preview-no-topmost` -> 退出码 `1`，`placed at 308,231 (640x480)`（= 请求的 300,200 加窗口边框
+    8,31）、且**没有** `[always on top]` 标记 —— 两个开关都确实生效。
+  - 预览分支的无显示器验证：`--headless --frames 30 --preview-dump-dir outputs\tmp_preview_probe
+    --preview-dump-frames 3`：退出码 `1`，`camera preview: window=off ... dumped_png=3`，写出 3 张
+    约 280 KB 的带骨架 PNG —— 证明 `_PreviewCapture` 代理、`annotate`/HUD、dump 三者在 `--headless`
+    下都正常（这条仍是不接显示器时唯一的预览证据）。
   - 取景现状（人工步骤，只能由用户完成）：预览窗口显示本机摄像头当前**对着天花板斜上方**
     （画面里是墙面、挂钟和头顶头发），所以 `raw=0`。要出效果需要调整摄像头角度或把手抬到镜头
     正前方；预览窗口会立刻显示手在不在画面里，不用再猜。
