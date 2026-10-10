@@ -185,7 +185,8 @@ def main(args=None):
                               physicsClientId=cid)
     p.setGravity(0, 0, -9.81, physicsClientId=cid)
     p.setTimeStep(1.0 / 240.0, physicsClientId=cid)
-    p.loadURDF('plane.urdf', physicsClientId=cid)
+    from teleoperation.simulation.urdf_loader import create_ground
+    create_ground(p, physicsClientId=cid)
 
     loader = RobotLoader(cid)
     robot_id = loader.load_robot(args.robot)['robot']

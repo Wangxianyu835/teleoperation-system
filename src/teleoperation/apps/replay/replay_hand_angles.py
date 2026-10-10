@@ -33,6 +33,7 @@ import time
 import numpy as np
 
 from teleoperation.paths import PROJECT_ROOT
+from teleoperation.simulation.urdf_loader import load_urdf
 ROOT = str(PROJECT_ROOT)
 
 try:
@@ -125,8 +126,8 @@ def replay_pybullet(angles, valid, timestamps, urdf_path, urdf_dir,
     p.setAdditionalSearchPath(urdf_dir, physicsClientId=cid)
     p.setGravity(0, 0, -9.81)
     p.setTimeStep(1.0 / 240.0)
-    rid = p.loadURDF(urdf_path, base_pos, useFixedBase=True,
-                     physicsClientId=cid)
+    rid = load_urdf(urdf_path, basePosition=base_pos, useFixedBase=True,
+                    physicsClientId=cid)
 
     if gui:
         # 把手放到视野中央（否则 20cm 的手在默认视角下几乎看不见）

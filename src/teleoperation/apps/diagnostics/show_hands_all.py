@@ -83,7 +83,8 @@ def main(args=None):
     p.setAdditionalSearchPath(pybullet_data.getDataPath(),
                               physicsClientId=cid)
     p.setGravity(0, 0, -9.81, physicsClientId=cid)
-    p.loadURDF('plane.urdf', physicsClientId=cid)
+    from teleoperation.simulation.urdf_loader import create_ground
+    create_ground(p, physicsClientId=cid)
 
     loader = RobotLoader(cid)
     scenes = []          # [(name, rid, plans, hold_ids, hold_tgt, hud, cov)]

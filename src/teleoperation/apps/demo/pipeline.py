@@ -13,6 +13,7 @@ import pybullet_data
 
 # 导入项目模块
 from teleoperation.simulation.robot_loader import RobotLoader
+from teleoperation.simulation.urdf_loader import create_ground
 from teleoperation.data.recorder import SensorRecorder
 from teleoperation.simulation.sensors import SimulationSensors
 from teleoperation.simulation.randomization import DomainRandomizer
@@ -98,7 +99,7 @@ class TeleopPipeline:
     def setup_scene(self):
         """初始化场景：地面 + 机器人 + 任务"""
         # 地面
-        p.loadURDF("plane.urdf", physicsClientId=self.client)
+        create_ground(p, physicsClientId=self.client)
 
         # 加载机器人
         print(f"\n[Pipeline] 加载机器人...")

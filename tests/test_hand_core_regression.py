@@ -161,12 +161,12 @@ class IdentityResetRegressionTests(unittest.TestCase):
         for frame in continuous_three_frames():
             tracked = tracker.update_detections([("left", frame)])
             buffer.update(left_hand=tracked["left"], source="test")
-        self.assertIsNotNone(buffer._window_or_none("left"))
+        self.assertIsNotNone(buffer.buffer._window_or_none("left"))
 
         rejected = tracker.update_detections([("left", identity_jump())])
         self.assertIsNone(rejected["left"])
         buffer.reset_side("left")
-        self.assertIsNone(buffer._window_or_none("left"))
+        self.assertIsNone(buffer.buffer._window_or_none("left"))
 
         for index in range(2):
             tracked = tracker.update_detections([("left", normal)])

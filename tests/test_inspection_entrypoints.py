@@ -1,6 +1,7 @@
 """Both supported CLI entry forms preserve inspection and error output."""
 
 from pathlib import Path
+import os
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ class InspectEntrypointTests(unittest.TestCase):
         return [subprocess.run(
             [sys.executable, "-B", *entry, *args], cwd=ROOT,
             capture_output=True, text=True, encoding="utf-8", timeout=30,
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
         ) for entry in (["-c", 'from teleoperation.cli import main; import sys; raise SystemExit(main(["hand", "inspect", *sys.argv[1:]]))'], ["-m", "teleoperation", "hand", "inspect"])]
 
     def test_help_is_canonical(self):

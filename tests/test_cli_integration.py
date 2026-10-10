@@ -96,7 +96,8 @@ class CliIntegrationTests(unittest.TestCase):
                     "hand", "realtime", "--visualize", "--headless", "--frames", "7", "--snapshot", str(image),
                 ]), 0)
             self.assertTrue(image.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
-            self.assertEqual(cv2.imread(str(image)).shape, (740, 1260, 3))
+            decoded = cv2.imdecode(np.fromfile(str(image), dtype=np.uint8), cv2.IMREAD_COLOR)
+            self.assertEqual(decoded.shape, (740, 1260, 3))
         capture.close.assert_called_once()
         self.assertEqual(model.forward_calls, 7)
         self.assertIn("'left': 2", output.getvalue())

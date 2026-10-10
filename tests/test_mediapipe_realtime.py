@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from teleoperation.contracts.coordinates import PALM_LOCAL_COORDINATE_ALIGNMENT
+from teleoperation.contracts.observations import RawHandFrame
 from teleoperation.retargeting.hand.coordinates import PalmBasisError, align_palm_local_coordinates, build_l21_reference_basis
 from teleoperation.apps.hand_realtime import (
     MediaPipeCameraWorkflow,
@@ -232,7 +233,15 @@ class MediaPipeRealtimeTests(unittest.TestCase):
         for i, frame in enumerate(frames):
             frame["timestamp"] = 100000 + i * 33
             frame["metadata"]["timestamp_unit"] = "unix_ms"
-        raw.next_frame.side_effect = frames
+        raw.next_observation.side_effect = [
+            RawHandFrame(
+                {side: frame[side] for side in SIDES},
+                frame["timestamp"],
+                "mediapipe_approx",
+                dict(frame["metadata"]),
+            )
+            for frame in frames
+        ]
         with patch("teleoperation.apps.hand_realtime.MediaPipeCameraInput", return_value=raw) as camera, \
              patch("teleoperation.apps.hand_realtime.time.time", side_effect=[100, 100.1, 100.2, 100.3]):
             with MediaPipeCameraWorkflow("model.task", camera_index=2) as adapter:
@@ -242,15 +251,26 @@ class MediaPipeRealtimeTests(unittest.TestCase):
                 self.assertEqual(payload["timestamp"], 0.3)
                 self.assertEqual(payload["metadata"]["raw_timestamp_ms"], 100066)
                 self.assertEqual(payload["metadata"]["timestamp_unit"], "relative_seconds")
-                self.assertIs(adapter.last_raw_frame, frames[-1])
+                self.assertEqual(adapter.last_raw_frame["timestamp"], frames[-1]["timestamp"])
+                self.assertEqual(adapter.last_raw_frame["metadata"], frames[-1]["metadata"])
+                for side in SIDES:
+                    np.testing.assert_array_equal(adapter.last_raw_frame[side], frames[-1][side])
             camera.assert_called_once_with(model_asset_path="model.task", camera_index=2,
                                            width=640, height=480, fps=30, invalid_hand_as_missing=True)
-        raw.release.assert_called_once()
+        raw.close.assert_called_once()
         self.assertEqual(adapter.processor.valid_streak, {"left": 0, "right": 0})
 
     def test_capture_error_does_not_leave_old_windows(self):
         raw = Mock()
-        raw.next_frame.side_effect = [raw_frame(i) for i in range(3)] + [RuntimeError("capture failed")]
+        raw.next_observation.side_effect = [
+            RawHandFrame(
+                {side: frame[side] for side in SIDES},
+                frame["timestamp"],
+                "mediapipe_approx",
+                dict(frame["metadata"]),
+            )
+            for frame in (raw_frame(i) for i in range(3))
+        ] + [RuntimeError("capture failed")]
         with patch("teleoperation.apps.hand_realtime.MediaPipeCameraInput", return_value=raw):
             adapter = MediaPipeCameraWorkflow("model.task")
             for _ in range(3):
@@ -259,7 +279,7 @@ class MediaPipeRealtimeTests(unittest.TestCase):
                 adapter.next_input()
         self.assertEqual(adapter.processor.valid_streak, {"left": 0, "right": 0})
         self.assertIsNone(adapter.last_raw_frame)
-        raw.release.assert_called_once()
+        raw.close.assert_called_once()
 
     def test_duplicate_raw_labels_clear_history_and_restart_three_valid_frames(self):
         processor = MediaPipePalmLocalPipeline()

@@ -11,6 +11,7 @@
 import sys, os, time
 import pybullet as p, pybullet_data, numpy as np
 from teleoperation.simulation.robot_loader import RobotLoader
+from teleoperation.simulation.urdf_loader import create_ground
 from teleoperation.simulation.tasks.registry import get_task
 from teleoperation.apps.demo.types import H1DemoJointCommand
 from teleoperation.evaluation.metrics import MetricsTracker
@@ -46,7 +47,7 @@ def main(args=None):
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     p.setGravity(0, 0, -9.81)
     p.setTimeStep(1.0 / 240.0)
-    p.loadURDF("plane.urdf")
+    create_ground(p)
 
     # 加载 H1-2 机器人
     loader = RobotLoader(client)

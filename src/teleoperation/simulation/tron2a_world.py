@@ -10,6 +10,7 @@ import numpy as np
 from teleoperation.robots.specification import TRON2A_ARM_JOINTS, TRON2A_EE_LINKS
 from teleoperation.contracts.commands import Tron2AL21Command
 from teleoperation.retargeting.hand.config import L21
+from .urdf_loader import load_urdf
 
 
 class Tron2ADualArmWorld:
@@ -40,7 +41,7 @@ class Tron2ADualArmWorld:
             mount = np.asarray(self.hand_mount_pose.get(side, [0, 0, 0, 0, 0, 0, 1]), dtype=np.float32)
             if mount.shape != (7,):
                 raise ValueError(f"{side} hand mount pose must have shape (7,)")
-            body = self.p.loadURDF(str(urdf), useFixedBase=False, physicsClientId=self.client)
+            body = load_urdf(urdf, useFixedBase=False, physicsClientId=self.client)
             self.p.createConstraint(
                 self.robot, self.ee_indices[side], body, -1, self.p.JOINT_FIXED,
                 [0, 0, 0],

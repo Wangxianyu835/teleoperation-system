@@ -4,6 +4,7 @@ import contextlib
 from functools import partial
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -102,6 +103,7 @@ class ApplicationEntrypointTests(unittest.TestCase):
                 [sys.executable, "-B", *prefix, *args, "--data-dir", temp],
                 cwd=ROOT, input=stdin, capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=60,
+                env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
             )
 
     def audit_cli(self, result):

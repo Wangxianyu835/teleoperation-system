@@ -150,7 +150,7 @@ class NativeHandReplayTests(unittest.TestCase):
                     mock.patch.object(p, "connect") as connect, \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:
-                    cli_main(["replay", "native-hand", *argv[1:]])
+                    cli_main(["replay", "native-hand", *sys.argv[1:]])
                 self.assertEqual(error.exception.code, 2)
                 connect.assert_not_called()
 
