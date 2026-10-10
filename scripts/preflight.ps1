@@ -194,8 +194,11 @@ if ($Full) {
     $pipeExit = $LASTEXITCODE
     $pass = (Get-Content $pipeLog -Encoding UTF8 | Select-String '\[PASS\]').Count
     $bad2 = (Get-Content $pipeLog -Encoding UTF8 | Select-String '\[FAIL\]').Count
-    if ($pipeExit -eq 0 -and $bad2 -eq 0) { Pass "run_retargeting_pipeline.py -> exit 0  ($pass/7 PASS)" }
-    else { Fail "run_retargeting_pipeline.py -> exit $pipeExit  (PASS=$pass FAIL=$bad2)"; Write-Host "        log: $pipeLog" }
+    $skip = (Get-Content $pipeLog -Encoding UTF8 | Select-String '\[SKIP\]').Count
+    if ($pipeExit -eq 0 -and $bad2 -eq 0) {
+        Pass "run_retargeting_pipeline.py -> exit 0  (PASS=$pass FAIL=0 SKIP=$skip; 6 or 7 steps -- step 0 is skipped when the raw sample already exists)"
+    }
+    else { Fail "run_retargeting_pipeline.py -> exit $pipeExit  (PASS=$pass FAIL=$bad2 SKIP=$skip)"; Write-Host "        log: $pipeLog" }
 } else {
     Head '7) full baseline (rule 5) -- SKIPPED'
     Say '[INFO]' 'run with -Full before and after any change (pytest + retargeting pipeline)'

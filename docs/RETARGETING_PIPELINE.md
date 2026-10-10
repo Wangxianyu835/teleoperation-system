@@ -187,7 +187,7 @@ python scripts/verify_hand_pipeline.py       # 默认用 datasets/raw/retarget_t
 | 队友数据回归验收 | `python scripts/verify_hand_pipeline.py` | **7 / 7 PASS** |
 | 原装手运动量 | `python scripts/check_native_hand_motion.py --file <角度.h5> --quiet` | **「没动」= 0，三台全 `[PASS]`**；可映射关节 H1-2 24 / GR1-T2 22 / G1 14。会动数随数据波动：自造 240 帧示例 = 24/22/14 全动；队友 557 帧真实数据 = 22（+2 项「幅度偏小」）/ 22 / 14 |
 | 三台机器人回放 | `python scripts/show_hands_all.py --file <角度.h5>` | 240 帧完成，退出码 0 |
-| 一键脚本 | `python scripts/run_retargeting_pipeline.py` | **7/7 PASS，exit 0**（本轮新脚本复查，产物在 `tmp_motion/pipeline/`）|
+| 一键脚本 | `python scripts/run_retargeting_pipeline.py` | **`FAIL=0`，exit 0**（首次运行 7 项全 PASS；`tmp_motion/pipeline/raw_twohand.h5` 已存在时第 0 步打 `[SKIP]`，汇总 `PASS=6 FAIL=0 SKIP=1`，仍算通过。产物在 `tmp_motion/pipeline/`）|
 | 训练前后对比图 | `python scripts/compare_training_hand_pose.py --input <对齐.h5> --frame 120 --before-checkpoint <ckpt> --after-checkpoint <ckpt> --device cpu` | 生成 690 KB `compare_hand_pose.png`，exit 0（确认该队友脚本可正常导入并运行）|
 
 > **提示**：用 PowerShell 的 `| Select-Object -Last N` 截断这些脚本的输出时，
@@ -269,7 +269,7 @@ git diff 3e4e763..HEAD --stat -- retargeting/ tests/test_dual_arm.py inspect_ang
 |---|---|---|---|
 | 1 | `input_adapters/__init__.py`、`input_adapters/hand_keypoints.py`（**新增**）| 队友的 `npy_replay_adapter.py` 从 `input_adapters.hand_keypoints` 取 `HandWindowBuffer` / `NPY_REPLAY_SOURCE`，而该模块**从未入库**（任何提交都搜不到），一 import 就 `ModuleNotFoundError`。转发层把 `retargeting/tracking.py` 的实现按旧路径暴露出来；队友 `tracking.py` 里没有的 `NPY_REPLAY_SOURCE` 也在此定义（只是「来源」字符串标识，`tracking.py` / `hand_core.py` 都不校验取值）| ① `python scripts/make_npy_replay_sample.py` → 造样本（12 帧，`frames=12 expected_payloads=10`，exit 0）<br>② `python scripts/validate_retarget_input.py tmp_motion/npy_replay_sample.npy` → `payloads=10 / source=mediapipe_approx / left_shape=(3, 25, 3) / right_shape=(3, 25, 3) / result=ok`，**exit 0**（实测 2026-10-10）<br>单手：① 加 `--frames 8 --drop-right --out tmp_motion/npy_replay_smoke.npy` ② 再校验 → `payloads=6 / right_shape=None / result=ok`，exit 0。规律：**payload 数 = 帧数 - 2**（`HandWindowBuffer` 攒满 3 帧才吐一个 payload）。样本文件**不入库**（`tmp_*/`），必须由脚本现场生成 |
 | 2 | `tests/conftest.py`（**新增**）| 队友的 `tests/test_dual_arm.py` 缺 TRON2A URDF 时 3 个用例直接 ERROR，把测试套件染红、掩盖真实失败。用 pytest 钩子标记 skip，**不动队友测试文件** | `pytest tests -q` → 40 passed / 3 skipped；`-rs` 打印原因 |
-| 3 | `scripts/run_retargeting_pipeline.py`（**新增**）| 原链路要手敲 5 条命令、checkpoint 路径还得自己拼 | `python scripts/run_retargeting_pipeline.py` → **7/7 PASS, exit 0** |
+| 3 | `scripts/run_retargeting_pipeline.py`（**新增**）| 原链路要手敲 5 条命令、checkpoint 路径还得自己拼 | `python scripts/run_retargeting_pipeline.py` → **`FAIL=0`, exit 0**（首次 7 项全 PASS；raw 已存在时 `PASS=6 + 1 SKIP`）|
 | 4 | `scripts/make_twohand_raw_sample.py`（**新增**）| 原始采集数据不在仓库，全链路没法自测 | 第 3 节步骤 0 → 造出 240 帧未对齐数据 |
 | 5 | `requirements-retargeting.txt`（补注释）| 讲清手部必需依赖与机械臂依赖的边界 | `pip install -r requirements-retargeting.txt` 一次装齐 |
 | 6 | `README.md`、`docs/RETARGETING_PIPELINE.md`（新增/补充）| 命令、实测数字、已知缺口、自检清单 | 见本文件第 10 节 |
@@ -327,7 +327,7 @@ if __name__ == "__main__":
 | 0 | `python -c "import sys;print(sys.executable)"` | 打印 `E:\python3.11.7\python.exe` | 若打印 `.venv\Scripts\python.exe` → 你在用空壳环境，后面必然 `No module named 'torch'` |
 | 1 | `. .\scripts\env_e_drive_cache.ps1` 然后 `python scripts/check_no_c_drive.py --strict` | `[OK]`，退出码 0 | 有 `[FAIL]` → 有工具会把缓存/临时文件写进 **C 盘**（硬约束，见 ENVIRONMENT_SETUP §2.6）|
 | 2 | `python -m pytest tests -q` | `40 passed, 3 skipped`，退出码 0 | 出现 `ERROR`（而不是 `skipped`）→ 环境/资产有问题；`failed` → 真回归 |
-| 3 | `python scripts/run_retargeting_pipeline.py` | 末尾 `7/7 PASS`、`结论：全链路跑通`、退出码 0 | 任一步 FAIL，该步日志会打印失败命令，可单独重跑 |
+| 3 | `python scripts/run_retargeting_pipeline.py` | 末尾 `结论：全链路跑通`、`FAIL=0`、退出码 0（PASS 数 7，或 raw 已存在时 `6 PASS + 1 SKIP`）| 任一步 `[FAIL]`：该步日志会打印失败命令，可单独重跑。`[SKIP]`（第 0 步复用已有 raw）**不是失败**，别被数字吓到 |
 | 4 | `python -m retargeting inspect --angle-h5 tmp_motion/angles_twohand.h5` | 打印 `attr.output_shape=[18]` 等属性，退出码 0 | 文件缺属性 → 用的是未对齐数据或别的导出器 |
 | 5 | `python scripts/check_native_hand_motion.py --file tmp_motion/angles_twohand.h5` | 表格三行全 `[PASS]`，**「没动」= 0** | 「没动 > 0」= 映射或回放坏了，不能拿去答辩；「幅度偏小」随数据波动（阈值 0.05 rad），**不判失败** |
 | 6 | `python scripts/verify_hand_pipeline.py` | `7 / 7 PASS`，退出码 0 | 这是队友数据的回归验收，红了说明合并破了手部契约 |

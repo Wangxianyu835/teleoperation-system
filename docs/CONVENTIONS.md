@@ -174,7 +174,7 @@ E:\python3.11.7\python.exe scripts\check_gbk_safe.py --strict   # 期望退出�
 **怎么守**：
 
 1. **改前**：`scripts/preflight.ps1 -Full`，把 `pytest tests -q` 与重定向流水线的结果**记下来**
-   （例如 `40 passed, 3 skipped`、`7/7 PASS`）；
+   （例如 `40 passed, 3 skipped`、流水线 `FAIL=0` 且退出码 0）；
 2. 动手改；
 3. **改后**：跑**同一套**命令，逐项对比；
 4. 交付结论必须同时给出：**命令** + **退出码** + **关键不变量**（数量 / 维度 / 误差等），不许只写"已通过"。
@@ -186,6 +186,13 @@ $py = 'E:\python3.11.7\python.exe'
 & $py -m pytest tests -q;                  "PYTEST_EXIT=$LASTEXITCODE"
 & $py scripts\run_retargeting_pipeline.py;  "PIPELINE_EXIT=$LASTEXITCODE"
 ```
+
+**计数会变，但不是回归（2026-10-10 实测）**：`run_retargeting_pipeline.py` 的第 0 步
+（造原始数据）在 `raw_twohand.h5` **已存在**时会跳过，所以汇总可能是
+`PASS=7 FAIL=0 SKIP=0`（首次运行）或 `PASS=6 FAIL=0 SKIP=1`（第二次起）。
+判据只看 **`FAIL=0` + 退出码 0**，不要盯"x/7"：本轮就误以为 `6/7` 是掉了一项，
+实际是 SKIP。脚本现在会打印 `[SKIP]` 行 + `统计：PASS=.. FAIL=.. SKIP=..`，
+`preflight.ps1` 也不再写死 `/7`。
 
 **违反后果**：得出错误结论（本轮真实翻车：由"`.venv` 报错"推出"缺依赖会连累整仓"，
 据此改了队友 `arm.py`，实测完全不必要、全部回退）。
@@ -324,7 +331,7 @@ powershell -ExecutionPolicy Bypass -File scripts\preflight.ps1 -Base 3e4e763   #
 | 4 | 队友已入库代码零改动（`git diff <基线>`，只算**基线里已存在**的文件）| 约定 3 |
 | 5 | 没有把 `lib/ linkerhand_sdk/ .venv/ data/ outputs/ logs/` 或大资产（>5 MB / 权重 / 视频 / h5）加进暂存区 | 约定 7 |
 | 6 | `.clinerules` 与 `docs/CONVENTIONS.md` 都在 | 约定 12 |
-| 7 | `-Full` 时：`pytest tests -q`（期望 `40 passed, 3 skipped`）+ `run_retargeting_pipeline.py`（期望 `7/7 PASS`）| 约定 5 |
+| 7 | `-Full` 时：`pytest tests -q`（期望 `40 passed, 3 skipped`）+ `run_retargeting_pipeline.py`（期望 `FAIL=0`、退出码 0；PASS 数 7 或 6+1 SKIP —— 第 0 步 `[SKIP]` 不是失败）| 约定 5 |
 
 **输出约定**：每项一行 `[OK  ] / [WARN] / [FAIL]`，最后一行是 `RESULT: [OK] ...` 或 `RESULT: [FAIL] ...`；
 有 `FAIL` 时退出码 `1`。脚本自身的输出**全是 ASCII**（PowerShell 5.1 在 GBK 控制台读 `.ps1` 会把中文字面量弄坏），
@@ -332,7 +339,14 @@ powershell -ExecutionPolicy Bypass -File scripts\preflight.ps1 -Base 3e4e763   #
 
 **实测（2026-10-01）**：正常路径 `RESULT: [OK]`、退出码 `0`；
 故意在 `retargeting/arm.py` 末尾加一行 → 第 4 项抓到 `M retargeting/arm.py` 并给出还原命令、退出码 `1`；
-`-Full` 下 pytest `40 passed, 3 skipped`、流水线 `7/7 PASS`。
+`-Full` 下 pytest `40 passed, 3 skipped`、流水线首次运行 `7/7 PASS`。
+
+**实测（2026-10-10，口径修正）**：`-Full` 的输出改为
+`run_retargeting_pipeline.py -> exit 0  (PASS=6 FAIL=0 SKIP=1; 6 or 7 steps ...)` ——
+因为 `tmp_motion/pipeline/raw_twohand.h5` 已存在，第 0 步按设计跳过（旧版把这一步从汇总里
+整个省略、`preflight.ps1` 又硬编码 `$pass/7`，看起来像"7 项里挂了一项"）。同一天用**全新目录**
+`--work-dir tmp_motion/pipeline_fresh0` 复跑，得到 `PASS=7 FAIL=0 SKIP=0`；两个分支都是
+`结论：全链路跑通`、退出码 `0`。
 
 ---
 
@@ -363,5 +377,6 @@ powershell -ExecutionPolicy Bypass -File scripts\preflight.ps1 -Base 3e4e763   #
 | 日期 | 版本 | 变更 |
 |---|---|---|
 | 2026-10-01 | 第 1 版 | 汇总历史要求（解释器 / 不改队友代码 / GBK / SSH / 不入库 / 基线复验）+ 新增「禁止往 C 盘写东西」；新增 `scripts/preflight.ps1` 与 `.clinerules` |
+| 2026-10-10 | 第 2 版 | 更正约定 5 的**基线口径**：`run_retargeting_pipeline.py` 汇总区分 `[SKIP]` 与 `[FAIL]`（第 0 步复用已有 raw 时打 SKIP），判据改为 `FAIL=0` + 退出码 0（PASS 数 7 或 6+1）；`preflight.ps1` 不再写死 `/7`；补两条实测（复用 raw / 全新目录）|
 
 

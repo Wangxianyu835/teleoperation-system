@@ -16,6 +16,12 @@
 
 产物全部落在 --work-dir（默认 tmp_motion/pipeline）：
     raw_twohand.h5 / aligned_twohand.h5 / angles_twohand.h5 / ckpt/models/twohand_h5/...
+
+关于"几步"（看汇总别被数字吓到）：
+    第 0 步（造原始数据）只在 raw_twohand.h5 **不存在**时执行；已存在则打
+    `[SKIP] 生成示例原始数据`（复用已有文件，不再重造）。所以汇总里 PASS 可能是
+    **7**（首次运行）或 **6 + 1 SKIP**（第二次起），两种都算通过 ——
+    判据是 `FAIL=0` 且退出码 0，不是"必须看到 7/7"。
 """
 from __future__ import annotations
 
@@ -107,8 +113,10 @@ def main():
     checkpoint = checkpoint_root / "models" / "twohand_h5" / "linker" / RUN_NAME / "model_best.pth"
 
     results = []
+    skipped = []
     if raw_path.is_file():
         print(f"原始数据已存在，跳过生成：{raw_path}")
+        skipped.append(("生成示例原始数据", f"复用已有 raw：{raw_path}"))
     else:
         results.append(("生成示例原始数据", run_step(
             "第 0 步：生成原始（未对齐）双手关键点",
@@ -116,7 +124,7 @@ def main():
              "--output", raw_path, "--frames", args.frames],
         )))
         if not results[-1][1]:
-            return _summary(results)
+            return _summary(results, skipped=skipped)
 
     results.append(("对齐坐标系", run_step(
         "第 1 步：原始数据 -> L21 固定坐标系",
@@ -124,7 +132,7 @@ def main():
          "--input", raw_path, "--output", aligned_path],
     )))
     if not results[-1][1]:
-        return _summary(results)
+        return _summary(results, skipped=skipped)
 
     results.append(("训练模型", run_step(
         "第 2 步：自监督训练（预测角度 -> FK -> 对比输入关键点）",
@@ -134,7 +142,7 @@ def main():
          "--device", args.device, "--checkpoint-root", checkpoint_root],
     )))
     if not results[-1][1]:
-        return _summary(results)
+        return _summary(results, skipped=skipped)
 
     results.append(("导出角度", run_step(
         "第 3 步：用 checkpoint 导出 18 维 left/right_angles",
@@ -143,13 +151,13 @@ def main():
          "--output", angles_path, "--device", args.device],
     )))
     if not results[-1][1]:
-        return _summary(results)
+        return _summary(results, skipped=skipped)
 
     banner("第 4 步：校验角度文件（结构 + 有效帧）")
     verified = angles_path.is_file() and verify_angles(angles_path)
     results.append(("校验角度文件", verified))
     if not verified:
-        return _summary(results)
+        return _summary(results, skipped=skipped)
 
     results.append(("官方 inspect 校验", run_step(
         "第 4b 步：python -m retargeting inspect",
@@ -164,13 +172,20 @@ def main():
             [python, ROOT / "scripts" / "show_hands_all.py", "--file", angles_path],
         )))
 
-    return _summary(results, angles_path)
+    return _summary(results, angles_path, skipped)
 
 
-def _summary(results, angles_path=None):
+def _summary(results, angles_path=None, skipped=None):
+    skipped = list(skipped or [])
     banner("流水线汇总")
     for title, ok in results:
         print(f"  [{'PASS' if ok else 'FAIL'}] {title}")
+    for title, why in skipped:
+        print(f"  [SKIP] {title}（{why}）")
+    passed = sum(1 for _, ok in results if ok)
+    failed = len(results) - passed
+    print(f"  统计：PASS={passed} FAIL={failed} SKIP={len(skipped)}"
+          f"（共 {len(results) + len(skipped)} 项；SKIP = 产物已存在，有意跳过，不是失败）")
     ok_all = all(item[1] for item in results) if results else False
     if angles_path is not None:
         print(f"\n  角度文件：{angles_path}")
