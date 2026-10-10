@@ -3,6 +3,18 @@
 这条链路只负责采集 MediaPipe `hand_world_landmarks` 并写入独立 H5，
 不加载重定向模型、不生成机器人角度、不进入仿真。
 
+## 模型文件
+
+首次使用先下载官方 Hand Landmarker 模型到项目根目录：
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" `
+  -OutFile "hand_landmarker.task"
+```
+
+该文件是外部模型资产，已加入 `.gitignore`，不要提交到仓库。
+
 ## 新代码位置
 
 | 文件 | 作用 |

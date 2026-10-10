@@ -73,6 +73,7 @@ present/qa/
 *.pth
 *.ckpt
 *.onnx
+hand_landmarker.task
 
 # ---------- 系统文件 ----------
 Thumbs.db
