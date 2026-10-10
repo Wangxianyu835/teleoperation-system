@@ -48,6 +48,12 @@ left、深色 right），左上角一行是帧数/帧率/有效角度帧数/开�
 ``--preview-dump-dir DIR --preview-dump-frames N`` 会把前 N 帧带骨架的画面存成 PNG，
 用来在没有显示器的环境里核对（这两个开关在 ``--headless`` 下也能用）。
 
+窗口位置：PyBullet 的窗口先出现、尺寸又大，默认位置的 OpenCV 窗口容易被它整个盖住
+（IDE 里跑尤其常见，"只看见机器人"）。因此第一帧画完就 ``moveWindow`` 到
+``--preview-window-pos``（默认 ``20,60``，``none`` = 保留系统默认）并
+``WND_PROP_TOPMOST`` 置顶，同时打印窗口的**实际屏幕矩形**；矩形落在可见桌面之外时
+再补一行警告并告诉你怎么挪。``--preview-no-topmost`` 关掉置顶。
+
 输入层（``inputs/mediapipe.py``，队友文件）只返回关键点、不暴露 BGR 图像，
 CONVENTIONS 约定 3 又不允许改队友文件，因此这里给它内部的 ``cv2.VideoCapture``
 套了一层**只读代理**（``_PreviewCapture``）取图：``read()`` 原样透传，管线的像素
@@ -349,6 +355,38 @@ def attach_preview_capture(workflow):
     return proxy.sink
 
 
+def _desktop_size():
+    """Windows 虚拟桌面像素尺寸（多屏时是并集）；非 Windows 或取不到时返回 ``None``。"""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        return int(user32.GetSystemMetrics(78)), int(user32.GetSystemMetrics(79))
+    except Exception:  # noqa: BLE001 - 取不到尺寸就不做越界检查
+        return None
+
+
+def _window_pos(text: str):
+    """``"20,60"`` -> ``(20, 60)``；``"none"`` -> ``None``（保留系统默认位置）。
+
+    给 ``--preview-window-pos`` 用：把摄像头窗口钉在确定的屏幕坐标上，避免它落在
+    屏幕外或被 PyBullet 窗口整个盖住（IDE 里跑时的典型症状：只看见机器人窗口）。
+    """
+    value = text.strip().lower()
+    if value in ("none", "default", "off"):
+        return None
+    parts = value.replace(" ", "").split(",")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("expected X,Y such as 20,60 (or 'none')")
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "X and Y must be integers, for example 20,60") from None
+
+
 class CameraPreview:
     """摄像头窗口：原始画面 + 21 点骨架 + 一行状态（纯显示，像素不回灌算法）。
 
@@ -357,7 +395,8 @@ class CameraPreview:
     """
 
     def __init__(self, sink, sides, *, show_window=True, mirror=True,
-                 dump_dir=None, dump_frames=0, window_name=PREVIEW_WINDOW):
+                 dump_dir=None, dump_frames=0, window_name=PREVIEW_WINDOW,
+                 window_pos=(20, 60), topmost=True):
         import cv2
 
         from teleoperation.tools.plotting import COLORS, SOURCE_EDGES, draw_skeleton, text
@@ -370,6 +409,11 @@ class CameraPreview:
         self.show = bool(show_window)
         self.mirror = bool(mirror)
         self.window_name = window_name
+        self.window_pos = None if window_pos is None else tuple(window_pos)
+        self.topmost = bool(topmost)
+        self.screen = _desktop_size()
+        self.rect = None
+        self._placed = False
         self.dump_dir = None if dump_dir is None else Path(dump_dir)
         self.dump_frames = int(dump_frames)
         self.dumped = 0
@@ -423,6 +467,9 @@ class CameraPreview:
             return
         try:
             self._cv2.imshow(self.window_name, canvas)
+            if not self._placed:
+                # 窗口此时才真正存在，这里挪位置/置顶最可靠（先 imshow 再 move）。
+                self._place(canvas)
             key = self._cv2.waitKey(1) & 0xFF
         except self._cv2.error as error:      # 没有桌面 / 没有 HighGUI 支持
             self.show = False
@@ -437,6 +484,50 @@ class CameraPreview:
                 self.quit_requested = True
         except self._cv2.error:
             self.quit_requested = True
+
+    def _place(self, canvas):
+        """把窗口挪到确定可见的位置并置顶，再打印它的实际屏幕矩形。
+
+        PyBullet 的窗口先创建且尺寸更大，OpenCV 窗口按系统默认位置（多屏时可能落在
+        副屏或屏幕外）出现，很容易"看不见窗口但程序在跑"。这里把它钉在
+        ``--preview-window-pos`` 并置顶，同时把矩形打进日志，方便事后核对。
+        """
+        self._placed = True
+        height, width = canvas.shape[:2]
+        try:
+            if self.window_pos is not None:
+                self._cv2.moveWindow(self.window_name, int(self.window_pos[0]),
+                                     int(self.window_pos[1]))
+            self._cv2.resizeWindow(self.window_name, width, height)
+            self._cv2.imshow(self.window_name, canvas)
+            if self.topmost:
+                self._cv2.setWindowProperty(self.window_name, self._cv2.WND_PROP_TOPMOST, 1)
+                self._cv2.imshow(self.window_name, canvas)
+        except AttributeError:
+            # 老 OpenCV 没有 WND_PROP_TOPMOST：位置已经挪过，继续跑
+            pass
+        except self._cv2.error as error:
+            print(f"note: cannot position the camera window ({error}); leaving it as is",
+                  flush=True)
+        try:
+            self.rect = tuple(int(value) for value in
+                              self._cv2.getWindowImageRect(self.window_name))
+        except Exception:  # noqa: BLE001 - 有的后端不支持查询矩形
+            self.rect = None
+        where = "unknown" if self.rect is None else \
+            f"{self.rect[0]},{self.rect[1]} ({self.rect[2]}x{self.rect[3]})"
+        screen = "" if self.screen is None else f", screen {self.screen[0]}x{self.screen[1]}"
+        print(f"camera window placed at {where}"
+              f"{' [always on top]' if self.topmost else ''}{screen} "
+              f"title={self.window_name!r}", flush=True)
+        if self.rect is not None and self.screen is not None:
+            x, y, w, h = self.rect
+            off = (w <= 0 or h <= 0 or x + w < 40 or y + h < 40
+                   or x > self.screen[0] - 40 or y > self.screen[1] - 40)
+            if off:
+                print(f"WARNING: the camera window is outside the visible desktop "
+                      f"(rect={self.rect}, screen={self.screen}); pass "
+                      f"--preview-window-pos 20,60 to move it.", flush=True)
 
     def close(self):
         """关窗口；显示失败也不影响主链路与统计。"""
@@ -461,12 +552,17 @@ def build_preview(args, workflow, sides):
     preview = CameraPreview(sink, sides, show_window=want_window,
                             mirror=not args.preview_no_mirror,
                             dump_dir=args.preview_dump_dir,
-                            dump_frames=args.preview_dump_frames)
+                            dump_frames=args.preview_dump_frames,
+                            window_pos=args.preview_window_pos,
+                            topmost=not args.preview_no_topmost)
     dump = (""
             if preview.dump_dir is None
             else f", dumping first {preview.dump_frames} frames to {preview.dump_dir}")
     print(f"camera window: {'on' if preview.show else 'off'}"
-          f"{' (mirrored)' if preview.mirror else ''}{dump}", flush=True)
+          f"{' (mirrored)' if preview.mirror else ''}{dump}"
+          f", title={preview.window_name!r}"
+          f"{'' if preview.window_pos is None else f', position={preview.window_pos}'}",
+          flush=True)
     return preview
 
 
@@ -617,6 +713,7 @@ def run(args) -> int:
     if preview is not None:
         print(f"camera preview: window={'on' if preview.show else 'off'} "
               f"mirror={'on' if preview.mirror else 'off'} dumped_png={preview.dumped}"
+              f"{'' if preview.rect is None else f' rect={preview.rect}'}"
               f"{'' if not preview.note else ' note=' + preview.note}", flush=True)
     report = {
         "backend": backend,
@@ -632,6 +729,10 @@ def run(args) -> int:
             "mirrored": bool(preview.mirror),
             "dumped_png": int(preview.dumped),
             "dump_dir": None if preview.dump_dir is None else str(preview.dump_dir),
+            "window_name": preview.window_name,
+            "window_pos": None if preview.window_pos is None else list(preview.window_pos),
+            "window_rect": None if preview.rect is None else list(preview.rect),
+            "topmost": bool(preview.topmost),
             "note": preview.note,
         },
         "processed_frames": processed,
@@ -757,6 +858,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="do not open the camera window (PyBullet window only)")
     parser.add_argument("--preview-no-mirror", action="store_true",
                         help="show the camera image unmirrored (default is mirror-like)")
+    parser.add_argument("--preview-window-pos", type=_window_pos, default=(20, 60),
+                        metavar="X,Y",
+                        help="screen position X,Y for the camera window so PyBullet cannot "
+                             "hide it (default 20,60; pass 'none' to keep the system default)")
+    parser.add_argument("--preview-no-topmost", action="store_true",
+                        help="do not keep the camera window always-on-top (default is on top)")
     parser.add_argument("--preview-dump-dir", type=Path, default=None,
                         help="also write the first --preview-dump-frames annotated frames here")
     parser.add_argument("--preview-dump-frames", type=int, default=5)
