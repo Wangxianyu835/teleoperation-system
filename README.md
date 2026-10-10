@@ -99,6 +99,7 @@ simulation_platform/
 │   ├── replay_actions.py        # 契约 H 动作序列回放
 │   ├── make_sample_data.py      # 生成契约 G/H 示例数据
 │   ├── make_twohand_raw_sample.py   # 生成原始（未对齐）双手关键点 H5
+│   ├── make_npy_replay_sample.py    # 生成 .npy 回放样本（复核 npy 适配器链路）
 │   ├── align_h5_coordinates.py  # 原始关键点 -> L21 固定坐标系
 │   ├── run_retargeting_pipeline.py  # ★ 一键跑通「原始数据 -> 训练 -> 导出 -> 回放」
 │   ├── verify_hand_pipeline.py  # 手部链路一键验收

@@ -2,7 +2,7 @@
 
 > **用途**：新开一个 AI 对话时，先让它读本文件，它就能立刻了解项目全貌、环境陷阱和历史决策。
 > **文件位置**：`F:\simulation_platform\docs\PROJECT_CONTEXT.md`
-> **最后更新**：2026-10-01
+> **最后更新**：2026-10-10
 
 ---
 
@@ -519,6 +519,7 @@ GitHub 用 **DataDome** 保护 `/signup` 等接口。响应头特征：`x-datado
 | 29 | 【2026-10-01】**① 撤回对队友代码的全部改动**：`retargeting/arm.py`、`retargeting/tracking.py`、`tests/test_dual_arm.py`、`inspect_angle_h5.py` 已 `git checkout 3e4e763` 还原，`git diff 3e4e763 HEAD -- retargeting/ ...` **为空**；兼容逻辑改放新增文件（`input_adapters/hand_keypoints.py` 转发层 + 缺常量兜底、`tests/conftest.py` 缺 URDF 时跳过）<br>**② 修掉「往 C 盘写东西」**：pip 把 **216.78 MB** 下载缓存写进 `C:\Users\王宪雨\AppData\Local\pip\Cache`、`huggingface_hub/hf_xet` 写进 `C:\Users\王宪雨\.cache\huggingface\xet\logs`。已建 `E:\cache\{pip,matplotlib,huggingface,torch,xdg,tmp}`、设 7 个用户级环境变量、把 **1560.54 MB / 889 个文件**的 pip 缓存整体 `robocopy /MOVE` 到 `E:\cache\pip`（缓存仍可复用，`pip cache list` 可见）；新增 `scripts/env_e_drive_cache.ps1`（含 E 盘 ACL 自愈）与 `scripts/check_no_c_drive.py`；规则成文为 §0.1 硬约束 + ENVIRONMENT_SETUP §2.6 |
 | 30 | 【2026-10-01】**更正一处误判（留档）**：上一轮我称「`roboticstoolbox 1.4.4` 本来就装着」——**错**，它是 2026-10-01 14:49 才由 `pip install` 装上的（mtime 可查）。结论（`arm.py` 无需改）仍成立，但**理由换成**：① `roboticstoolbox-python` 本来就在 `requirements-retargeting.txt` 里声明，缺依赖应装依赖、不应改队友源码；② 手部链路不导入该模块（实测还原后 `pytest` 40 passed / 3 skipped、一键流水线 7/7 全绿）|
 | 31 | 【2026-10-01】**把要求固化成「工程约定」**（用户要求：加上之前所有要求 + 不许在 C 盘存东西）：新增 **`docs/CONVENTIONS.md`**（13 条约定的唯一来源，每条含为什么 / 怎么守 / 怎么查 / 翻车记录）+ **`.clinerules`**（AI 自动加载版，以后新对话自动生效）+ **`scripts/preflight.ps1`**（一键自检 6 项：解释器 / GBK / C 盘零写入 / 队友代码零改动 / 大资产不入库 / 规则文件齐备；`-Full` 再加 pytest 与重定向流水线）。实测：正常路径 `RESULT: [OK]` 退出码 0；故意改 `retargeting/arm.py` 一行 → 第 4 项抓到 `M retargeting/arm.py` 并提示还原命令、退出码 1；`-Full` 下 pytest `40 passed, 3 skipped`、流水线 `7/7 PASS`；还原后 `git status` 干净。README / ENVIRONMENT_SETUP / TEAM_ONBOARDING / RETARGETING_PIPELINE §10.1 / 本节均已接入索引与指针 |
+| 32 | 【2026-10-10】**把第 9 节的复核命令变成队友真能跑的**（上一轮遗留项收尾）：原表格第 1 条写「`python scripts/validate_retarget_input.py tmp_motion/npy_replay_sample.npy` → `payloads=10 result=ok`」，但**样本文件不在仓库**（`tmp_*/` 被 .gitignore 排除），生成它的脚本也只躺在 `tmp_motion/` 里 —— 别人 clone 后跑这条必然 `FileNotFoundError`（"数字是对的、命令是死的"）。① 先**实测复现**，确认表格数字无误：双手 12 帧 → `payloads=10 / source=mediapipe_approx / left_shape=(3, 25, 3) / right_shape=(3, 25, 3) / result=ok`，**退出码 0**；单手 8 帧（`--drop-right`）→ `payloads=6 / right_shape=None / result=ok`，**退出码 0**；顺手测出规律 **payload 数 = 帧数 - 2**（`HandWindowBuffer` 攒满 3 帧才吐 payload）；② 新增 **`scripts/make_npy_replay_sample.py`**（只依赖 numpy，不导入 `retargeting` 包，`--frames/--fps/--drop-right/--out` 可选，固定种子可复现），把生成器正式入库；③ 表格改成「先造样本 → 再校验」两步并附实测数字与日期，§8 文件表 + README 目录树同步登记；`check_gbk_safe.py --strict` 与 `check_no_c_drive.py --strict` 均 `[OK]` 退出码 0 |
 
 ### 8.2 已掌握的 Git 工作流
 

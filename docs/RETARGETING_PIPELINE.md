@@ -11,7 +11,7 @@
 > - 队友从零上手 → [`TEAM_ONBOARDING.md`](TEAM_ONBOARDING.md)
 >
 > **文件位置**：`F:\simulation_platform\docs\RETARGETING_PIPELINE.md`
-> **最后更新**：2026-10-01（实测环境：`E:\python3.11.7\python.exe`）
+> **最后更新**：2026-10-10（实测环境：`E:\python3.11.7\python.exe`）
 
 ---
 
@@ -239,6 +239,7 @@ python scripts/verify_hand_pipeline.py       # 默认用 datasets/raw/retarget_t
 |---|---|
 | `scripts/run_retargeting_pipeline.py` | ★ 一键跑通全链路（本文件第 3.0 节）|
 | `scripts/make_twohand_raw_sample.py` | 造未对齐的原始双手关键点 H5 |
+| `scripts/make_npy_replay_sample.py` | 造 `.npy` 回放样本（第 9 节第 1 条复核命令的前置步骤；样本文件本身不入库）|
 | `scripts/align_h5_coordinates.py` | 原始 → L21 固定坐标系 |
 | `scripts/show_hands_all.py` / `scripts/replay_hand_native.py` | 三台机器人 / 单台回放 |
 | `scripts/check_native_hand_motion.py` | 量化"每个关节实际转了多少弧度" |
@@ -266,12 +267,13 @@ git diff 3e4e763..HEAD --stat -- retargeting/ tests/test_dual_arm.py inspect_ang
 
 | # | 文件 | 为什么需要 | 复核方式 |
 |---|---|---|---|
-| 1 | `input_adapters/__init__.py`、`input_adapters/hand_keypoints.py`（**新增**）| 队友的 `npy_replay_adapter.py` 从 `input_adapters.hand_keypoints` 取 `HandWindowBuffer` / `NPY_REPLAY_SOURCE`，而该模块**从未入库**（任何提交都搜不到），一 import 就 `ModuleNotFoundError`。转发层把 `retargeting/tracking.py` 的实现按旧路径暴露出来；队友 `tracking.py` 里没有的 `NPY_REPLAY_SOURCE` 也在此定义（只是「来源」字符串标识，`tracking.py` / `hand_core.py` 都不校验取值）| `python scripts/validate_retarget_input.py tmp_motion/npy_replay_sample.npy` → `payloads=10 result=ok`, exit 0 |
+| 1 | `input_adapters/__init__.py`、`input_adapters/hand_keypoints.py`（**新增**）| 队友的 `npy_replay_adapter.py` 从 `input_adapters.hand_keypoints` 取 `HandWindowBuffer` / `NPY_REPLAY_SOURCE`，而该模块**从未入库**（任何提交都搜不到），一 import 就 `ModuleNotFoundError`。转发层把 `retargeting/tracking.py` 的实现按旧路径暴露出来；队友 `tracking.py` 里没有的 `NPY_REPLAY_SOURCE` 也在此定义（只是「来源」字符串标识，`tracking.py` / `hand_core.py` 都不校验取值）| ① `python scripts/make_npy_replay_sample.py` → 造样本（12 帧，`frames=12 expected_payloads=10`，exit 0）<br>② `python scripts/validate_retarget_input.py tmp_motion/npy_replay_sample.npy` → `payloads=10 / source=mediapipe_approx / left_shape=(3, 25, 3) / right_shape=(3, 25, 3) / result=ok`，**exit 0**（实测 2026-10-10）<br>单手：① 加 `--frames 8 --drop-right --out tmp_motion/npy_replay_smoke.npy` ② 再校验 → `payloads=6 / right_shape=None / result=ok`，exit 0。规律：**payload 数 = 帧数 - 2**（`HandWindowBuffer` 攒满 3 帧才吐一个 payload）。样本文件**不入库**（`tmp_*/`），必须由脚本现场生成 |
 | 2 | `tests/conftest.py`（**新增**）| 队友的 `tests/test_dual_arm.py` 缺 TRON2A URDF 时 3 个用例直接 ERROR，把测试套件染红、掩盖真实失败。用 pytest 钩子标记 skip，**不动队友测试文件** | `pytest tests -q` → 40 passed / 3 skipped；`-rs` 打印原因 |
 | 3 | `scripts/run_retargeting_pipeline.py`（**新增**）| 原链路要手敲 5 条命令、checkpoint 路径还得自己拼 | `python scripts/run_retargeting_pipeline.py` → **7/7 PASS, exit 0** |
 | 4 | `scripts/make_twohand_raw_sample.py`（**新增**）| 原始采集数据不在仓库，全链路没法自测 | 第 3 节步骤 0 → 造出 240 帧未对齐数据 |
 | 5 | `requirements-retargeting.txt`（补注释）| 讲清手部必需依赖与机械臂依赖的边界 | `pip install -r requirements-retargeting.txt` 一次装齐 |
 | 6 | `README.md`、`docs/RETARGETING_PIPELINE.md`（新增/补充）| 命令、实测数字、已知缺口、自检清单 | 见本文件第 10 节 |
+| 7 | `scripts/make_npy_replay_sample.py`（**新增**）| 第 1 行的复核命令要读 `tmp_motion/npy_replay_sample.npy`，但样本**不在仓库**（原先只有生成它的临时脚本躺在 `tmp_motion/`，随 `tmp_*/` 一起被 .gitignore 排除）→ 队友 clone 后那条命令必然 `FileNotFoundError`。把生成器正式入库（只依赖 numpy，不导入 `retargeting` 包）| `python scripts/make_npy_replay_sample.py` → `frames=12 expected_payloads=10`，exit 0；随后第 1 行命令 → `payloads=10 result=ok`，exit 0 |
 
 ### 9.1 已知但**有意未修**的队友代码问题（只做规避，不动源码）
 
