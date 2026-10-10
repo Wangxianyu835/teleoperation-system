@@ -15,10 +15,26 @@ Invoke-WebRequest `
 
 该文件是外部模型资产，已加入 `.gitignore`，不要提交到仓库。
 
+## 最简单运行方式
+
+PyCharm 直接打开项目根目录下的 `record_world_landmarks.py`，点击 Run。
+默认从摄像头 0 采集 300 帧，并保存为：
+
+```text
+outputs/world_landmarks/world_landmarks_日期_时间.h5
+```
+
+也可以在项目根目录执行：
+
+```powershell
+python record_world_landmarks.py
+```
+
 ## 新代码位置
 
 | 文件 | 作用 |
 |---|---|
+| `record_world_landmarks.py` | 项目根目录的独立运行入口，PyCharm 可直接 Run |
 | `src/teleoperation/inputs/mediapipe.py` | 在同一次 MediaPipe 结果中读取 world landmarks |
 | `src/teleoperation/data/world_landmark_recording.py` | 写独立 H5、读取和校验 |
 | `src/teleoperation/apps/world_landmark_capture.py` | 采集循环和应用入口 |

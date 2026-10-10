@@ -219,7 +219,7 @@ class MediaPipeCameraLifecycleTests(unittest.TestCase):
             unittest.mock.call(3, 640), unittest.mock.call(4, 480), unittest.mock.call(5, 30),
         ])
         options = self.mp.tasks.vision.HandLandmarker.create_from_options.call_args.args[0]
-        self.assertEqual(options.base_options.model_asset_path, str(self.asset))
+        self.assertEqual(options.base_options.model_asset_path, self.asset.name)
         self.assertEqual(options.running_mode, "VIDEO")
         self.assertEqual(options.num_hands, 2)
         self.assertEqual(options.min_hand_detection_confidence, 0.5)

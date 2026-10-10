@@ -13,6 +13,7 @@ Demo (Ctrl+C stops capture)::
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import time
 
@@ -138,7 +139,7 @@ class MediaPipeCameraInput:
         *,
         invalid_hand_as_missing: bool = False,
     ):
-        model_path = Path(model_asset_path)
+        model_path = Path(model_asset_path).expanduser().resolve()
         if not model_path.is_file():
             raise FileNotFoundError(f"MediaPipe hand model not found: {model_path}")
 
@@ -153,22 +154,30 @@ class MediaPipeCameraInput:
         self._frame_index = 0
         self._last_timestamp_ms = None
         self._invalid_hand_as_missing = invalid_hand_as_missing
-        options = mp.tasks.vision.HandLandmarkerOptions(
-            base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path)),
-            running_mode=mp.tasks.vision.RunningMode.VIDEO,
-            num_hands=2,
-            min_hand_detection_confidence=MIN_DET_CONF,
-            min_hand_presence_confidence=MIN_DET_CONF,
-            min_tracking_confidence=MIN_TRK_CONF,
-        )
+        previous = Path.cwd()
         try:
-            self._cap = cv2.VideoCapture(camera_index)
-            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            self._cap.set(cv2.CAP_PROP_FPS, fps)
-            if not self._cap.isOpened():
-                raise RuntimeError(f"Cannot open camera {camera_index}")
-            self._landmarker = mp.tasks.vision.HandLandmarker.create_from_options(options)
+            # MediaPipe's native loader may reject a non-ASCII absolute path.
+            # Loading the ASCII filename from its parent directory is robust on
+            # Windows while keeping the same model and file.
+            os.chdir(model_path.parent)
+            try:
+                options = mp.tasks.vision.HandLandmarkerOptions(
+                    base_options=mp.tasks.BaseOptions(model_asset_path=model_path.name),
+                    running_mode=mp.tasks.vision.RunningMode.VIDEO,
+                    num_hands=2,
+                    min_hand_detection_confidence=MIN_DET_CONF,
+                    min_hand_presence_confidence=MIN_DET_CONF,
+                    min_tracking_confidence=MIN_TRK_CONF,
+                )
+                self._cap = cv2.VideoCapture(camera_index)
+                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                self._cap.set(cv2.CAP_PROP_FPS, fps)
+                if not self._cap.isOpened():
+                    raise RuntimeError(f"Cannot open camera {camera_index}")
+                self._landmarker = mp.tasks.vision.HandLandmarker.create_from_options(options)
+            finally:
+                os.chdir(previous)
         except BaseException:
             self.release()
             raise

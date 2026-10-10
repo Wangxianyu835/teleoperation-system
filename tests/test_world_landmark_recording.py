@@ -1,7 +1,10 @@
 """World landmark capture persistence and CLI registration."""
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -14,6 +17,8 @@ from teleoperation.data.world_landmark_recording import (
     read_world_landmark_recording,
     write_world_landmark_recording,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def points(value):
@@ -115,6 +120,20 @@ class WorldLandmarkRecordingTests(unittest.TestCase):
         )
         self.assertEqual(args.command, "record-world")
         self.assertEqual(args.output, Path("capture.h5"))
+
+    def test_root_runner_is_directly_runnable(self):
+        result = subprocess.run(
+            [sys.executable, "-B", str(ROOT / "record_world_landmarks.py"), "--help"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--frames", result.stdout)
 
 
 if __name__ == "__main__":
