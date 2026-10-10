@@ -100,6 +100,7 @@ class WorldLandmarkRecordingTests(unittest.TestCase):
                 height=480,
                 fps=30,
                 preview=False,
+                max_fps=0,
             )
             with mock.patch.object(
                 world_landmark_capture,
@@ -122,6 +123,7 @@ class WorldLandmarkRecordingTests(unittest.TestCase):
         self.assertEqual(args.command, "record-world")
         self.assertEqual(args.output, Path("capture.h5"))
         self.assertTrue(args.preview)
+        self.assertEqual(args.max_fps, 10.0)
 
     def test_root_runner_is_directly_runnable(self):
         result = subprocess.run(
@@ -137,6 +139,7 @@ class WorldLandmarkRecordingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--frames", result.stdout)
         self.assertIn("--no-preview", result.stdout)
+        self.assertIn("--max-fps", result.stdout)
 
 
 if __name__ == "__main__":

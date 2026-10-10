@@ -18,7 +18,7 @@ Invoke-WebRequest `
 ## 最简单运行方式
 
 PyCharm 直接打开项目根目录下的 `record_world_landmarks.py`，点击 Run。
-默认从摄像头 0 采集 300 帧，运行时会打开摄像头预览窗口，并保存为：
+默认从摄像头 0 采集 60 帧，限制为最多 10 FPS，运行时会打开摄像头预览窗口，并保存为：
 
 ```text
 outputs/world_landmarks/world_landmarks_日期_时间.h5
@@ -26,6 +26,12 @@ outputs/world_landmarks/world_landmarks_日期_时间.h5
 
 预览窗口中按 `q` 可以提前结束并保存已采集的帧。若不需要预览，使用
 `--no-preview`。
+
+如果电脑仍然卡顿，可以进一步降低负载：
+
+```powershell
+python record_world_landmarks.py --frames 30 --max-fps 5
+```
 
 也可以在项目根目录执行：
 
