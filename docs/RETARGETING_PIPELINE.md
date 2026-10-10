@@ -96,7 +96,7 @@ $py='E:\python3.11.7\python.exe'
 |---|---|---|
 | `python -m teleoperation tools verify-hand-pipeline` | 退出码 `0`，末行 `结论：... [PASS]` | **整条离线链路的验收器**：读真实 H5（557 帧 × 18 维）→ 逐项检查 → 仿真回放。旧布局的 `scripts/run_retargeting_pipeline.py` 对应物 |
 | `python -m teleoperation tools check-environment` | 退出码 `0` | 项目自带环境自检：6 项，含 300 步无头端到端（`[OK] 端到端跑通（robot_id=1, action_dim=38）`）|
-| `python -m unittest discover -s tests -v` | 见 [`CONVENTIONS.md`](CONVENTIONS.md) 约定 5 | 本机回落下**已知** `Ran 197 tests / failures=6 / errors=17 / skipped=1`，判据是**不劣化** |
+| `python -m unittest discover -s tests -v` | 见 [`CONVENTIONS.md`](CONVENTIONS.md) 约定 5 / §3.2 | 本机回落下（**必须 `PYTHONUTF8=1`**，否则多 6 项编码假失败）实测 `Ran 197 tests / failures=0 / errors=17 / skipped=1`；判据是**不劣化** |
 | `powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full` | 退出码 `0` | 上面三条 + 4 条冒烟，共 8 项一次跑完（含 GBK 两条、架构边界、C 盘零写）|
 
 `tools` 里还有一批单项工具（`--help` 实测）：`validate-retarget-input`、`check-gbk-safe`、
