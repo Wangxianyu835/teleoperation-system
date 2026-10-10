@@ -74,6 +74,8 @@ present/qa/
 *.ckpt
 *.onnx
 hand_landmarker.task
+pose_landmarker_lite.task
+pose_landmarker_full.task
 
 # ---------- 系统文件 ----------
 Thumbs.db

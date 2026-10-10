@@ -96,16 +96,18 @@ def hand_realtime(parser: argparse.ArgumentParser) -> None:
 
 def hand_record_world(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET)
+    parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET)
+    parser.add_argument("--pose-min-visibility", type=float, default=0.2)
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
-    parser.add_argument("--frames", type=int, default=60)
+    parser.add_argument("--frames", type=int, default=30)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--height", type=int, default=480)
+    parser.add_argument("--width", type=int, default=320)
+    parser.add_argument("--height", type=int, default=240)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument(
         "--max-fps",
         type=float,
-        default=10.0,
+        default=5.0,
         help="maximum capture rate; use 0 for unthrottled capture",
     )
     parser.add_argument(

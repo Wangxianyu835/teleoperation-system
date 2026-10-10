@@ -180,12 +180,18 @@ class MediaPipeCameraLifecycleTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.asset = Path(directory.name) / "hand_landmarker.task"
         self.asset.touch()
+        self.pose_asset = Path(directory.name) / "pose_landmarker_lite.task"
+        self.pose_asset.touch()
         self.bgr = np.array([[[1, 2, 3], [4, 5, 6]]], dtype=np.uint8)
         self.cap = Mock()
         self.cap.isOpened.return_value = True
         self.cap.read.return_value = (True, self.bgr)
         self.landmarker = Mock()
         self.landmarker.detect_for_video.return_value = result()
+        self.pose_landmarker = Mock()
+        self.pose_landmarker.detect_for_video.return_value = NS(
+            pose_landmarks=[], pose_world_landmarks=[]
+        )
         self.cv2 = NS(
             VideoCapture=Mock(return_value=self.cap),
             CAP_PROP_FRAME_WIDTH=3, CAP_PROP_FRAME_HEIGHT=4, CAP_PROP_FPS=5,
@@ -201,6 +207,8 @@ class MediaPipeCameraLifecycleTests(unittest.TestCase):
                     RunningMode=NS(VIDEO="VIDEO"),
                     HandLandmarkerOptions=Mock(side_effect=lambda **kwargs: NS(**kwargs)),
                     HandLandmarker=NS(create_from_options=Mock(return_value=self.landmarker)),
+                    PoseLandmarkerOptions=Mock(side_effect=lambda **kwargs: NS(**kwargs)),
+                    PoseLandmarker=NS(create_from_options=Mock(return_value=self.pose_landmarker)),
                 ),
             ),
         )
@@ -264,6 +272,21 @@ class MediaPipeCameraLifecycleTests(unittest.TestCase):
             output["metadata"]["world_landmark_space"],
             "mediapipe_world_meters",
         )
+
+    def test_next_frame_can_return_pose_arm_fields(self):
+        from tests.test_pose_mediapipe import result as pose_result
+
+        self.pose_landmarker.detect_for_video.return_value = pose_result()
+        camera = MediaPipeCameraInput(
+            self.asset,
+            pose_model_asset_path=self.pose_asset,
+        )
+        output = camera.next_frame(include_pose=True)
+        self.assertEqual(output["left_arm_keypoints"].shape, (3, 3))
+        self.assertEqual(output["left_arm_world_keypoints"].shape, (3, 3))
+        self.assertEqual(output["pose_visibility"].shape, (6,))
+        self.assertTrue(output["left_arm_valid"])
+        self.assertEqual(output["metadata"]["arm_world_origin"], "hip_midpoint")
 
     def test_realtime_invalid_hand_policy_keeps_camera_running_and_other_hand_valid(self):
         invalid = hand()

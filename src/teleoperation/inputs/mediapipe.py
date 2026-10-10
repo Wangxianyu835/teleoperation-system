@@ -20,6 +20,8 @@ import time
 
 import numpy as np
 
+from .pose_mediapipe import DEFAULT_POSE_VISIBILITY, parse_pose_result
+
 
 MODEL_PATH = "hand_landmarker.task"
 IMAGE_WIDTH = 640
@@ -154,10 +156,19 @@ class MediaPipeCameraInput:
         fps: int = CAM_FPS,
         *,
         invalid_hand_as_missing: bool = False,
+        pose_model_asset_path: str | Path | None = None,
+        pose_min_visibility: float = DEFAULT_POSE_VISIBILITY,
     ):
         model_path = Path(model_asset_path).expanduser().resolve()
         if not model_path.is_file():
             raise FileNotFoundError(f"MediaPipe hand model not found: {model_path}")
+        pose_path = (
+            None
+            if pose_model_asset_path is None
+            else Path(pose_model_asset_path).expanduser().resolve()
+        )
+        if pose_path is not None and not pose_path.is_file():
+            raise FileNotFoundError(f"MediaPipe pose model not found: {pose_path}")
 
         import cv2
         import mediapipe as mp
@@ -166,11 +177,13 @@ class MediaPipeCameraInput:
         self._mp = mp
         self._cap = None
         self._landmarker = None
+        self._pose_landmarker = None
         self._camera_index = camera_index
         self._frame_index = 0
         self._last_timestamp_ms = None
         self.last_bgr = None
         self._invalid_hand_as_missing = invalid_hand_as_missing
+        self._pose_min_visibility = float(pose_min_visibility)
         previous = Path.cwd()
         try:
             # MediaPipe's native loader may reject a non-ASCII absolute path.
@@ -186,6 +199,18 @@ class MediaPipeCameraInput:
                     min_hand_presence_confidence=MIN_DET_CONF,
                     min_tracking_confidence=MIN_TRK_CONF,
                 )
+                pose_options = None
+                if pose_path is not None:
+                    pose_options = mp.tasks.vision.PoseLandmarkerOptions(
+                        base_options=mp.tasks.BaseOptions(
+                            model_asset_path=pose_path.name
+                        ),
+                        running_mode=mp.tasks.vision.RunningMode.VIDEO,
+                        num_poses=1,
+                        min_pose_detection_confidence=MIN_DET_CONF,
+                        min_pose_presence_confidence=MIN_DET_CONF,
+                        min_tracking_confidence=MIN_TRK_CONF,
+                    )
                 self._cap = cv2.VideoCapture(camera_index)
                 self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
                 self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
@@ -193,23 +218,33 @@ class MediaPipeCameraInput:
                 if not self._cap.isOpened():
                     raise RuntimeError(f"Cannot open camera {camera_index}")
                 self._landmarker = mp.tasks.vision.HandLandmarker.create_from_options(options)
+                if pose_options is not None:
+                    os.chdir(pose_path.parent)
+                    self._pose_landmarker = (
+                        mp.tasks.vision.PoseLandmarker.create_from_options(pose_options)
+                    )
             finally:
                 os.chdir(previous)
         except BaseException:
             self.release()
             raise
 
-    def next_frame(self, *, include_world: bool = False) -> dict:
+    def next_frame(
+        self, *, include_world: bool = False, include_pose: bool = False,
+    ) -> dict:
         """Return a frame even with no hands; capture/detection errors raise.
 
 On failure both resources are released. VIDEO timestamps use the reference's
 wall-clock milliseconds, advanced by 1 ms only if the clock repeats or moves
 backward, to satisfy the landmarker's increasing-timestamp requirement.
 Set ``include_world=True`` to also return MediaPipe metre-based world landmarks
-under ``world_left`` and ``world_right``.
+under ``world_left`` and ``world_right``. Set ``include_pose=True`` to add the
+shoulder/elbow/wrist subset and its metric pose-world copy.
 """
         if self._cap is None or self._landmarker is None:
             raise RuntimeError("MediaPipe camera input is closed")
+        if include_pose and self._pose_landmarker is None:
+            raise RuntimeError("MediaPipe pose landmarker is not configured")
         try:
             success, frame = self._cap.read()
             if not success or frame is None or frame.size == 0:
@@ -228,6 +263,17 @@ under ``world_left`` and ``world_right``.
                 "image_height": int(frame.shape[0]),
             }, invalid_hand_as_missing=self._invalid_hand_as_missing,
                include_world=include_world)
+            if include_pose:
+                pose_result = self._pose_landmarker.detect_for_video(
+                    mp_image, timestamp_ms
+                )
+                pose = parse_pose_result(
+                    pose_result,
+                    min_visibility=self._pose_min_visibility,
+                )
+                pose_metadata = pose.pop("metadata")
+                output.update(pose)
+                output["metadata"].update(pose_metadata)
             self._last_timestamp_ms = timestamp_ms
             self._frame_index += 1
             return output
@@ -235,10 +281,22 @@ under ``world_left`` and ``world_right``.
             self.release()
             raise
 
-    def next_observation(self):
+    def next_observation(self, *, include_world: bool = False):
         from teleoperation.contracts.observations import RawHandFrame
-        raw = self.next_frame()
-        return RawHandFrame({side: raw[side] for side in ("left", "right")}, raw["timestamp"], "mediapipe_approx", raw.get("metadata", {}), {"left": "landmarks21", "right": "landmarks21"})
+        raw = self.next_frame(include_world=include_world)
+        world_hands = None
+        if include_world:
+            world_hands = {
+                side: raw.get(f"world_{side}") for side in ("left", "right")
+            }
+        return RawHandFrame(
+            {side: raw[side] for side in ("left", "right")},
+            raw["timestamp"],
+            "mediapipe_approx",
+            raw.get("metadata", {}),
+            {"left": "landmarks21", "right": "landmarks21"},
+            world_hands=world_hands,
+        )
 
     def close(self): self.release()
 
@@ -254,19 +312,25 @@ under ``world_left`` and ``world_right``.
         that will immediately terminate the process may set
         ``close_landmarker=False`` as well.
         """
-        cap, landmarker = self._cap, self._landmarker
-        self._cap = self._landmarker = None
+        cap, landmarker, pose_landmarker = (
+            self._cap,
+            self._landmarker,
+            self._pose_landmarker,
+        )
+        self._cap = self._landmarker = self._pose_landmarker = None
         try:
             if cap is not None:
                 cap.release()
         finally:
-            if landmarker is not None:
+            for resource in (landmarker, pose_landmarker):
+                if resource is None:
+                    continue
                 if not close_landmarker:
-                    _retain_until_process_exit(landmarker)
+                    _retain_until_process_exit(resource)
                 elif wait_for_mediapipe:
-                    landmarker.close()
+                    resource.close()
                 else:
-                    _close_landmarker_in_background(landmarker)
+                    _close_landmarker_in_background(resource)
 
     def __enter__(self) -> "MediaPipeCameraInput":
         return self
