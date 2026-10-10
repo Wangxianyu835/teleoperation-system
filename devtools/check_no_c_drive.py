@@ -13,8 +13,7 @@
 修法 = 把缓存/临时目录全部指到 E 盘（用户级环境变量），见：
     devtools/env_e_drive_cache.ps1
     docs/CONVENTIONS.md 约定 1（硬约束，current-state 布局的唯一来源）
-    docs/archive/ENVIRONMENT.md、docs/archive/PROJECT_CONTEXT.md 第 0.1 节
-    （旧布局手册，只读参考）
+    （旧布局的 ENVIRONMENT.md / PROJECT_CONTEXT.md 已随上游删除，不再作为依据）
 
 用法（在项目根目录执行）
 ------------------------

@@ -3,7 +3,7 @@
 # One-command enforcement of docs/CONVENTIONS.md (the single source of truth
 # for this project's rules) adapted to the current-state layout:
 #   production package  src/teleoperation   CLI  python -m teleoperation
-#   teammate baseline   42bbe10 (origin/current-state)
+#   teammate baseline   10ebd9f (origin/current-state)
 # See CONVENTIONS.md section 3 for the check list:
 #   1 interpreter  2 GBK safety  3 C: zero-write  4 teammate code untouched
 #   5 nothing big staged  6 rule files present  7 architecture boundary
@@ -14,30 +14,35 @@
 # turn into mojibake on a Chinese (GBK) console.  Chinese explanations live in
 # docs/CONVENTIONS.md; the checkers (Python) print their own Chinese messages.
 #
-# NOTE: this file must NOT live in a root folder named 'scripts': the teammate's
-# own architecture test (tests/architecture/test_boundaries.py,
-# test_old_entries_and_path_injection_are_retired) asserts that no legacy root
-# entry such as 'scripts', 'retargeting', 'teleop', 'input_adapters' exists.
-# That is why our tooling lives in devtools/ (check 7 enforces it).
+# NOTE: this file must NOT live in a root folder named 'scripts': legacy root
+# entries such as 'scripts', 'retargeting', 'teleop', 'input_adapters' are
+# forbidden.  The teammate test that used to police the list
+# (tests/architecture/test_boundaries.py, test_old_entries_and_path_injection
+# _are_retired) was deleted together with the whole tests/ folder in the
+# upstream commit 10ebd9f, so check 7 below is the only guard left -- that is
+# why our tooling lives in devtools/ and the list is hard-coded here.
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1
 #   powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full
 #   powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -MaxErr 0
-#   powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Base 42bbe10
+#   powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Base 10ebd9f
 #   powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Fix
 #
 # Switches:
 #   -Full          also run the unittest baseline + CLI smoke (rule 5)
 #   -Base <sha>    commit that holds the teammate's committed code (rule 3);
-#                  default 42bbe10 = origin/current-state (the merged line)
+#                  default 10ebd9f = origin/current-state (the merged line,
+#                  moved from 42bbe10 on 2026-10-10: apps/ -> applications/,
+#                  the teammate's tests/ folder was deleted there as well).
 #   -MaxFail N     allowed unittest failures in -Full; default 0 = measured on
 #                  the fallback interpreter with PYTHONUTF8=1 (this script sets
-#                  it: without it the entry-point tests fail on the cp936
-#                  console, see CONVENTIONS.md 3.2).
-#   -MaxErr N      allowed unittest errors; default 17 = the teammate bugs that
-#                  are already on the baseline (CONVENTIONS.md 3.3).  Pass 0
-#                  once they are fixed upstream / in the conda env.
+#                  it; the entry-point tests that needed it are gone with the
+#                  teammate tests/ folder, see CONVENTIONS.md 3.2).
+#   -MaxErr N      allowed unittest errors; default 17 is a permissive ceiling
+#                  kept for convenience.  The 10ebd9f baseline ships no test
+#                  suite of its own, so the measured value here is 0 -- pass
+#                  -MaxErr 0 once upstream re-adds their suite (CONVENTIONS 3.3).
 #   -Allow <paths> user-approved exception(s) to rule 3 (comma separated)
 #   -Fix           dot-source devtools\env_e_drive_cache.ps1 in this process
 #                  before checking the C: drive rule (process only -- NEVER
@@ -48,7 +53,7 @@
 param(
     [switch]$Full,
     [switch]$Fix,
-    [string]$Base = '42bbe10',
+    [string]$Base = '10ebd9f',
     [int]$MaxFail = 0,
     [int]$MaxErr = 17,
     [string[]]$Allow = @()
@@ -245,13 +250,15 @@ foreach ($f in @('.clinerules', 'docs\CONVENTIONS.md')) {
     else { Fail "$f missing -- conventions must live in docs/CONVENTIONS.md + .clinerules" }
 }
 
-# --- 7. architecture boundary (teammate's own test) ----------------------
+# --- 7. architecture boundary (our own hard-coded list) -------------------
+# None of these legacy root entries may exist, and no module under
+# src/teleoperation may inject sys.path.  The list mirrors the teammate test
 # tests/architecture/test_boundaries.py :: test_old_entries_and_path_injection
-# _are_retired asserts that none of these legacy root entries exist and that no
-# module under src/teleoperation injects sys.path.  Our own tooling must never
-# land in one of those names -- a root 'scripts/' folder is exactly what made
-# this test go from 6 to 7 failures during the merge, which is why devtools/ is
-# used instead.  Run this BEFORE -Full: it fails fast and is five seconds cheap.
+# _are_retired, which upstream deleted together with the whole tests/ folder in
+# 10ebd9f -- so the list is hard-coded here now.  Our own tooling must never
+# land in one of those names: a root 'scripts/' folder is exactly what made that
+# test go from 6 to 7 failures during the merge, which is why devtools/ is used
+# instead.  Run this BEFORE -Full: it fails fast and is five seconds cheap.
 Head '7) architecture boundary: legacy root entries + sys.path injection'
 $legacyRoot = @('retargeting', 'model', 'teleop', 'input_adapters', 'envs',
                 'tasks', 'scripts', 'main.py', 'main_train_twohand.py',
@@ -262,7 +269,7 @@ if ($legacy.Count -eq 0) {
 } else {
     Fail "legacy root entry/entries present: $($legacy -join ', ')"
     Write-Host '        fix: move or rename it (our tooling lives in devtools/),'
-    Write-Host '        see tests/architecture/test_boundaries.py line 107'
+    Write-Host '        list mirrors the retired tests/architecture/test_boundaries.py:107'
 }
 $inject = @(Get-ChildItem (Join-Path $repo 'src\teleoperation') -Recurse -Filter *.py -ErrorAction SilentlyContinue |
             Select-String -Pattern 'sys\.path\.insert')

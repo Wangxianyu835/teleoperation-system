@@ -1,9 +1,10 @@
 # 手部重定向链路怎么跑、怎么复核（current-state 布局）
 
 > **适用版本**：`origin/current-state`（包 `src/teleoperation`，CLI `python -m teleoperation`）
-> **最后更新**：2026-10-10 · **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
+> **最后更新**：2026-10-10（基线 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`，本文路径与数字已同步）· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
 > [`contracts.md`](contracts.md)（H5 / 命令契约，字段以它为准）· [`architecture.md`](architecture.md)（模块层次）·
-> [`archive/`](archive/)（旧布局手册，只读参考）
+> 注意：`docs/archive/`（旧布局手册，只读参考）已随上游 `10ebd9f` 被整体删除，
+> 旧布局的对照表保留在 §5（本文档内，自足）。
 >
 > 本文只讲**怎么用现有代码跑通并复核**；算法/契约本身由队友维护，**不要为跑通而改 `src/teleoperation`**（CONVENTIONS 约定 3）。
 
@@ -96,7 +97,7 @@ $py='E:\python3.11.7\python.exe'
 |---|---|---|
 | `python -m teleoperation tools verify-hand-pipeline` | 退出码 `0`，末行 `结论：... [PASS]` | **整条离线链路的验收器**：读真实 H5（557 帧 × 18 维）→ 逐项检查 → 仿真回放。旧布局的 `scripts/run_retargeting_pipeline.py` 对应物 |
 | `python -m teleoperation tools check-environment` | 退出码 `0` | 项目自带环境自检：6 项，含 300 步无头端到端（`[OK] 端到端跑通（robot_id=1, action_dim=38）`）|
-| `python -m unittest discover -s tests -v` | 见 [`CONVENTIONS.md`](CONVENTIONS.md) 约定 5 / §3.2 | 本机回落下（**必须 `PYTHONUTF8=1`**，否则多 6 项编码假失败）实测 `Ran 216 tests / failures=0 / errors=17 / skipped=1`（§4.4/§4.5 新增 19 个用例前是 `Ran 197`，17 个 errors 是队友既有问题）；判据是**不劣化** |
+| `python -m unittest discover -s tests -v` | 见 [`CONVENTIONS.md`](CONVENTIONS.md) 约定 5 / §3.2 | 本机回落下实测 `Ran 19 tests / failures=0 / errors=0 / skipped=1`（2026-10-10 上游 `10ebd9f` **删除了整个 `tests/`（32 文件）**，所以现在只有本支的 2 个文件、19 个用例；`PYTHONUTF8=1` 仍建议带上）；判据是**不劣化** |
 | `powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full` | 退出码 `0` | 上面三条 + 4 条冒烟，共 8 项一次跑完（含 GBK 两条、架构边界、C 盘零写）|
 
 `tools` 里还有一批单项工具（`--help` 实测）：`validate-retarget-input`、`check-gbk-safe`、
@@ -566,7 +567,7 @@ $py='E:\python3.11.7\python.exe'
 | `main_offline_dual_teleop.py` | `python -m teleoperation dual export` / `dual replay` |
 | `scripts/replay_hand_native.py` | `python -m teleoperation replay native-hand` |
 | `retargeting/**`、`input_adapters/**`、`config/**` | `src/teleoperation/**`（同一个包内，路径变了）|
-| `pytest tests -q`（40 passed / 3 skipped）| `python -m unittest discover -s tests -v`（197 tests）|
+| `pytest tests -q`（40 passed / 3 skipped）| `python -m unittest discover -s tests -v`（19 tests，均为本支新增；上游 `10ebd9f` 起仓库里已无 `tests/`）|
 | `robots/from_teleopbench/**` | `assets/robots/**` |
 | `data/**`、`outputs/**` | `datasets/**`、`outputs/**` |
 | 仓库根 `.venv` 空壳、`E:\python3.11.7` 全路径解释器 | 正式环境是 conda `teleoperation`；本机仍回落 `E:\python3.11.7` + `PYTHONPATH=src` |

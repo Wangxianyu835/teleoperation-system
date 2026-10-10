@@ -5,14 +5,16 @@
 
 ## 仓库布局（先认清，别找错路径）
 #   src/teleoperation/     生产包（= 队友已入库代码，禁止改）
-#   tests/                 队友的 unittest 套件          configs/  配置
+#   tests/                 本支新增的 unittest 套件（上游 10ebd9f 已删掉原有 32 个测试文件）
+#   configs/               上游 10ebd9f 已删除该目录（示例配置随之消失）
 #   assets/robots/         随仓库管理的 URDF/STL（例外：允许入库）
 #   datasets/**/*.h5       H5 契约样本/录制（例外：允许入库）
-#   docs/                  文档；docs/archive/ 是旧手册归档，只读参考
+#   docs/                  文档（上游 10ebd9f 已删 docs/archive/ 旧手册归档）
 #   devtools/              本分支新增的自检工具（我加的，可改）
 #                          注意：根目录**不得**出现 scripts/ retargeting/ teleop/
-#                          input_adapters/ envs/ tasks/ 等名字 —— 队友的架构测试
-#                          会因此 FAIL（tests/architecture/test_boundaries.py:107）
+#                          input_adapters/ envs/ tasks/ 等名字 —— 这条黑名单原本由队友的
+#                          架构测试 tests/architecture/test_boundaries.py:107 把守（该文件已随
+#                          上游 10ebd9f 删除），现在由 devtools/preflight.ps1 第 7 项自查
 #   outputs/               跑出来的产物（已被 .gitignore 忽略，临时文件放这）
 
 ## 开工前必做（不要跳过）
@@ -33,9 +35,11 @@
 1. **禁止往 C 盘写任何东西**：依赖、pip / HF / matplotlib / torch 缓存、临时文件都不行。
    每个新终端先 `. .\devtools\env_e_drive_cache.ps1`（或已 `-Persist` 过），
    自检 `E:\python3.11.7\python.exe devtools\check_no_c_drive.py --strict` 必须是 `[OK]` 退出码 0。
-2. **不改队友已入库的代码**：基线 `42bbe10`（= `origin/current-state`）里**所有已跟踪文件**
-   （`git ls-tree -r --name-only 42bbe10`，787 个：`src/teleoperation/**`、`tests/**`、`configs/**`、
-   `assets/**`、`docs/**`、`pyproject.toml`、`README.md` ...）。
+2. **不改队友已入库的代码**：基线 `10ebd9f`（= `origin/current-state`；2026-10-10 从 `42bbe10`
+   往前挪了一格：`src/teleoperation/apps/` -> `applications/` 整目录改名，并删除了整个 `tests/`、
+   `docs/archive/`、`configs/`）里**所有已跟踪文件**
+   （`git ls-tree -r --name-only 10ebd9f`，747 个：`src/teleoperation/**`、`assets/**`、
+   `datasets/**`、`docs/**`、`pyproject.toml`、`README.md` ...）。
    要兼容就**新增自己的文件**（`devtools/**`、`docs/**`、`.clinerules`），并在根目录避开架构测试的
    禁用名（`scripts` / `retargeting` / `teleop` / `input_adapters` / `envs` / `tasks` / `main.py` ...）；
    队友代码有问题写进问题清单交回队友，不要自己改。
@@ -48,8 +52,9 @@
      `python -m teleoperation replay actions --dummy --steps 120 --robot h1_2 --no-render`；
      `python -m teleoperation tools check-environment`；`tools verify-hand-pipeline`
    - 全量：`PYTHONUTF8=1` 下 `python -m unittest discover -s tests -v` —— 本机回落解释器实测
-     `Ran 197 tests / failures=0 / errors=17 / skipped=1`。**不加 `PYTHONUTF8=1` 会多出 6 项假失败**
-     （cp936 控制台拿 GBK 解 UTF-8 输出，见 CONVENTIONS 3.2）；那 17 个 error 是队友基线里的既有缺陷（§3.3）。
+     `Ran 19 tests / failures=0 / errors=0 / skipped=1`（上游 `10ebd9f` 已删掉队友的 `tests/`，
+     现在只有本支的 2 个文件、19 个用例）。`PYTHONUTF8=1` 仍建议带上
+     （cp936 控制台拿 GBK 解 UTF-8 输出，见 CONVENTIONS 3.2）。
      判据是**不劣化**：`preflight.ps1 -Full`（默认 `-MaxFail 0 -MaxErr 17`），不是"必须全绿"。
    给用户的结论必须附 **命令 + 退出码 + 关键不变量**，禁止只写"已通过"。
 5. **大资产不入库**：`lib/`、`linkerhand_sdk/`、`.venv/`、`outputs/`、`logs/`、`tmp_*`、模型权重、视频；

@@ -5,15 +5,15 @@
 > 内容必须与本文件一致** —— 两者冲突时以本文件为准，并立即修 `.clinerules`。
 >
 > **文件位置**：`F:\simulation_platform_cs\docs\CONVENTIONS.md`
-> **最后更新**：2026-10-10（第 1 版，适配 `origin/current-state` 的 `src/teleoperation` 布局）
+> **最后更新**：2026-10-10（第 1.1 版：基线随上游推进到 `10ebd9f`，`apps/` -> `applications/` 改名与 `tests/` 删除已同步）
 > **相关文档**：架构 → [`architecture.md`](architecture.md) · 接口与 H5 契约 → [`contracts.md`](contracts.md) ·
-> 上手 → [`README.md`](../README.md) · 旧手册（只读参考）→ [`archive/`](archive/)
+> 上手 → [`README.md`](../README.md) · 旧布局对照见 [`RETARGETING_PIPELINE.md`](RETARGETING_PIPELINE.md) §5
 
 ---
 
 ## 0. 30 秒版
 
-> **不许写 C 盘 · 用对解释器 · 不改队友代码（基线 `42bbe10`） · 控制台是 GBK ·
+> **不许写 C 盘 · 用对解释器 · 不改队友代码（基线 `10ebd9f`） · 控制台是 GBK ·
 > 改前跑基线、改后复验、结论带退出码。**
 
 每次动手前 / 提交前跑一键自检：
@@ -38,7 +38,7 @@ powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full    # 再�
 |---|---|---|---|
 | **1** | ★★★ | 项目相关的一切**不许写进 C 盘**（依赖 / 缓存 / 临时文件）| 用户硬要求；C 盘空间被吞、返工（2026-10-01 真实翻车：pip 写了 216.78 MB 进 C 盘）|
 | **2** | ★★★ | 跑项目**只用正式 conda 环境 `teleoperation`**；本机没有 conda 时回落 `E:\python3.11.7\python.exe` + `PYTHONPATH=<repo>\src` | 用仓库内 `.venv`（空壳）必然 `ModuleNotFoundError: torch`，白排查一整轮 |
-| **3** | ★★★ | **不改队友已入库的代码**（基线 `42bbe10` = `origin/current-state`）| 破坏队友分支的合并与评审（2026-10-01 真实翻车：改了 4 个文件，已全部退回合并点）|
+| **3** | ★★★ | **不改队友已入库的代码**（基线 `10ebd9f` = `origin/current-state`）| 破坏队友分支的合并与评审（2026-10-01 真实翻车：改了 4 个文件，已全部退回合并点）|
 | **4** | ★★★ | `.py` 文件里**禁止非 GBK 字符** | 中文 Windows 控制台会 `UnicodeEncodeError` **崩溃**（不是乱码，是崩溃）|
 | **5** | ★★★ | **改前跑基线、改后跑同一套**；结论必须附**命令 + 退出码 + 不变量** | 会得出错误结论并据此改别人的代码（2026-10-01 真实翻车）|
 | **6** | ★★★ | 已冻结的技术选型：**PyBullet**（不是 Isaac Sim）、**不用 Git LFS**、数据交换走 **HDF5 契约**（`docs/contracts.md`）| 推翻团队已投入的工作；大文件卡在 GitHub 100 MB 硬限 |
@@ -113,12 +113,20 @@ Anaconda base、`py` 启动器。PATH 上的 `python` 现在是 `F:\simulation_p
 
 ### 约定 3 ★★★ 不改队友已入库的算法代码
 
-**基线**：`42bbe10`（= `origin/current-state`，队友已合并好的线）。**基线里已存在的**这些路径禁止改：
+**基线**：`10ebd9f`（= `origin/current-state`，队友已合并好的线）。**基线里已存在的**这些路径禁止改：
 
 ```
-基线 42bbe10 里全部 787 个已跟踪文件（实测 `(git ls-tree -r --name-only 42bbe10 | Measure-Object).Count` = 787）：
-src/teleoperation/**   tests/**   configs/**   assets/**   docs/**   pyproject.toml   README.md ...
+基线 10ebd9f 里全部 747 个已跟踪文件（实测 `(git ls-tree -r --name-only 10ebd9f | Measure-Object).Count` = 747）：
+src/teleoperation/**   assets/**   datasets/**   docs/**   pyproject.toml   README.md ...
 ```
+
+> **基线在 2026-10-10 往前挪过一格**：队友把 `origin/current-state` 从 `42bbe10` 推到
+> `10ebd9f`（提交信息"2026-10-9改动：输入文件适配，模型权重更改"），实际内容是
+> `src/teleoperation/apps/` -> `src/teleoperation/applications/` **整目录改名**，
+> 外加**删除整个 `tests/`（32 个文件）**、删除 `docs/archive/`、`configs/` 里的示例与
+> 两个 `datasets/raw/*.h5`（123 files changed / +1301 / -8947）。
+> 所以上面清单里**不再有** `tests/**` 与 `configs/**`；本支的路径引用已在
+> `chore: 适配上游 10ebd9f 的 apps -> applications 改名` 这一次提交里同步（12 文件 / 49 处）。
 
 `devtools/preflight.ps1` 第 4 项会 `git diff <基线> -- .`，按"文件在基线里是否已存在"判定
 （**不是**按目录名），**我新加的文件（`A` 状态）不算违规**；已批准的例外可用 `-Allow <路径>` 放行。
@@ -127,19 +135,23 @@ src/teleoperation/**   tests/**   configs/**   assets/**   docs/**   pyproject.t
 需要挂到队友代码上就写**包装脚本 / 转发层**，不要往他们的文件里插代码。
 **队友代码有问题**：写进问题清单（本文件 §3.3）交回队友，自己不要顺手改。
 
-**额外的坑：根目录名字不能乱取**。队友的架构测试
+**额外的坑：根目录名字不能乱取**。队友原有的架构测试
 `tests/architecture/test_boundaries.py:107`（`test_old_entries_and_path_injection_are_retired`）
 把一批**旧布局的根条目名**列为黑名单：`scripts`、`retargeting`、`teleop`、`input_adapters`、
 `envs`、`tasks`、`main.py` ... —— 根目录只要出现同名条目，这条用例就 `FAIL`。
+（该测试文件**已随上游 `10ebd9f` 删除整个 `tests/` 而消失**；现在这条边界只剩我们自己守：
+黑名单写死在 `devtools/preflight.ps1` 第 7 项里，与队友测试是否还在无关。）
 
-**实测教训（2026-10-10）**：我最初把自检工具放在根 `scripts\`，让队友这条架构用例多红一次
+**实测教训（2026-10-10）**：我最初把自检工具放在根 `scripts\`，当时让队友这条架构用例多红一次
 （cp936 口径 `failures` 6 -> 7；`PYTHONUTF8=1` 口径 0 -> 1）；全部搬到 `devtools\` 后复原。
 所以**我们的新增目录一律叫 `devtools/`**。
-`devtools/preflight.ps1` 第 7 项复查这张黑名单 + `src/teleoperation` 里有没有 `sys.path.insert`。
 
-**实测（2026-10-10）**：`git diff --name-status 42bbe10 -- .` 共 7 行、**全部是 `A`**（我新增的 7 个文件：
-`.clinerules`、`devtools/*` 4 个、`docs/CONVENTIONS.md`、`docs/RETARGETING_PIPELINE.md`），
-`0 modified/deleted`；架构黑名单 0 命中 → `[OK]`。
+**实测（2026-10-10，基线 10ebd9f）**：`git diff --name-status 10ebd9f -- .` 共 21 行、
+**全部是 `A`**（我这一支新增的 21 个文件：`.clinerules`、`devtools/*` 10 个、
+`docs/CONVENTIONS.md`、`docs/RETARGETING_PIPELINE.md`、`src/teleoperation/applications/*` 3 个、
+`src/teleoperation/data/capture_h5.py`、`src/teleoperation/retargeting/hand/geometric.py`、
+`src/teleoperation/retargeting/arm/wrist_targets.py`、`tests/test_*.py` 2 个），
+`0 modified/deleted` 队友文件；架构黑名单 0 命中 → `[OK]`。
 
 ---
 
@@ -183,19 +195,26 @@ E:\python3.11.7\python.exe -m teleoperation tools check-gbk-safe --strict   # �
 | 环境 | `unittest discover` 期望 | 说明 |
 |---|---|---|
 | 正式 conda `teleoperation`（Python 3.10.20）| `OK (skipped=1)` | 队友声明的验收基线；用 `-MaxFail 0 -MaxErr 0` |
-| 本机回落 `E:\python3.11.7` + `PYTHONPATH=src` | `Ran 197 tests` / `failures=0` / `errors=17` / `skipped=1` | **必须 `PYTHONUTF8=1`**（preflight 自己会设）；17 个 error 是既有问题（§3.3），判据是**不劣化** |
+| 本机回落 `E:\python3.11.7` + `PYTHONPATH=src` | `Ran 19 tests` / `failures=0` / `errors=0` / `skipped=1` | 建议仍带 `PYTHONUTF8=1`（preflight 自己会设）；判据是**不劣化** |
 
-**为什么本机必须开 `PYTHONUTF8=1`**（2026-10-10 实测）：`tests/test_application_entrypoints.py`
-的 6 个子进程用例断言中文结束语"仿真环境已关闭"，子进程按 UTF-8 打印、父进程按控制台 cp936
-解码 → 断言失配。
+> 上游 `10ebd9f` 起 `tests/` 目录**整体不存在**（32 个文件被删），所以"队友那 216 项测试"
+> 已无从复现；现在 `unittest discover` 跑到的**只有本支的 2 个文件、19 个用例**
+> （`tests/test_camera_record.py`、`tests/test_wrist_targets.py`），实测
+> `failures=0 / errors=0 / skipped=1`（1 项 skip 是样本 H5 缺失时的守卫，见测试文件顶部说明）。
 
-| 命令 | 结果 |
+**为什么以前本机必须开 `PYTHONUTF8=1`**（2026-10-10 实测，**历史记录**）：当时队友的
+`tests/test_application_entrypoints.py` 有 6 个子进程用例断言中文结束语"仿真环境已关闭"，
+子进程按 UTF-8 打印、父进程按控制台 cp936 解码 → 断言失配。
+
+| 命令 | 结果（旧基线 42bbe10 时代）|
 |---|---|
-| `python -m unittest discover -s tests -v`（cp936 默认）| `failures=6 / errors=17` |
-| `cmd /c "set PYTHONUTF8=1&&python -m unittest discover -s tests -v"` | `failures=0 / errors=17` |
+| `python -m unittest discover -s tests -v`（cp936 默认）| `failures=6 / errors=0` |
+| `cmd /c "set PYTHONUTF8=1&&python -m unittest discover -s tests -v"` | `failures=0 / errors=0` |
 
-即这 6 项是**环境编码问题、不是队友代码缺陷**，所以修法是设环境变量（**不改队友任何文件**）；
-`devtools/preflight.ps1` 在调用 unittest 的那一步自行设置、跑完立刻复原。
+那 6 项是**环境编码问题、不是队友代码缺陷**，修法是设环境变量（**不改队友任何文件**）；
+相关用例**已随上游删 `tests/` 而消失**，本支现在的 19 个用例在 cp936 下也全绿。
+但"控制台是 GBK"这个事实没变，`devtools/preflight.ps1` 仍在调用 unittest 的那一步自行设置
+`PYTHONUTF8=1`、跑完立刻复原。
 
 ```powershell
 # 本机回落口径：preflight 默认 -MaxFail 0 -MaxErr 17，并自行设置 PYTHONUTF8=1
@@ -204,9 +223,10 @@ powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full
 powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -MaxFail 0 -MaxErr 0
 ```
 
-**既有失败清单（下面这张表就是 §3.3 引用的那份）**：本机回落下 `unittest` 曾有 24 项不绿，
-2026-10-10 实测，**全部不是**本次改动引入。其中 **6 项已判定为编码假失败**（见上一张表），
-**当前期望值因此是 17 个 error / 0 个 failure**：
+**既有失败清单（下面这张表就是 §3.3 引用的那份，**历史记录**）**：在旧基线 `42bbe10` 上，
+本机回落的 `unittest` 曾有 24 项不绿，2026-10-10 实测，**全部不是**当时改动引入。
+上游 `10ebd9f` 删除整个 `tests/` 后这些项**已无法复现**；表留在这里是为了说明
+"不劣化"这条判据当年是怎么定的、那些坑长什么样。
 
 | 数量 | 现象（首行） | 位置 | 性质 |
 |---|---|---|---|
@@ -216,13 +236,16 @@ powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -MaxFail 0
 | 3 | `FileNotFoundError: TRON2A URDF was not found: third_party\tron2-robot-description\...` | `tests/test_dual_arm.py` | **外部资产未随仓库提供**：需要设置环境变量 `TRON2A_TEST_URDF` 指向外部 URDF |
 | ~~6~~ **0** | `AssertionError: '仿真环境已关闭' not found in ...` | `tests/test_application_entrypoints.py`（子进程用例）| **子进程中文编码 —— 假失败**：设 `PYTHONUTF8=1` 后 6 项全过（见上一张表），队友环境可能本来就是绿的；**不改队友代码** |
 
-**读法**：这些项**都不在**"我改了什么"的范围里 —— 我这一支只新增 `devtools/`、`docs/`、`.clinerules`，
-一个字都没动 `src/teleoperation`、`tests`。跑基线要看出的是"**17 个 error 不增加、failures 保持 0**"。
+**读法**：这些项**都不在**"我改了什么"的范围里 —— 我这一支只**新增**文件
+（`devtools/` 10 个、`docs/` 2 个、`.clinerules`、`src/teleoperation/applications/*` 3 个入口、
+`src/teleoperation/data/capture_h5.py`、`src/teleoperation/retargeting/{hand/geometric,arm/wrist_targets}.py`、
+`tests/test_*.py` 2 个），`git diff --name-status 10ebd9f -- .` 的 21 行**全是 `A`**，没有一处 `M`/`D`。
+跑基线要看出的是"**`errors` 与 `failures` 都保持 0**"。
 
 **给用户的结论格式**（禁止只写"已通过"）：
 
 ```
-改前：<命令> -> 退出码 N（关键数字，如 Ran 197 tests / failures=0 / errors=17 / skipped=1）
+改前：<命令> -> 退出码 N（关键数字，如 Ran 19 tests / failures=0 / errors=0 / skipped=1）
 改后：<同一命令> -> 退出码 N（关键数字）
 差异：只出现/消失了 <具体项>；不变量：<如 verify-hand-pipeline 末行 [PASS]、action_dim=38>
 ```
@@ -301,8 +324,9 @@ git commit -F outputs\tmp_commit\msg.txt
 1. 本文件 `docs/CONVENTIONS.md`（正文 + 末尾「版本」表加一行）
 2. `.clinerules`（仓库根目录，**给 AI 的自动加载版**）
 
-> 旧布局里第 3 处是 `docs/PROJECT_CONTEXT.md` 的 §0.1；在 `current-state` 里那份手册已被队友
-> **归档到 `docs/archive/`（只读参考，不再维护）**，所以本分支不再要求同步它 —— 避免与队友文档打架。
+> 旧布局里第 3 处是 `docs/PROJECT_CONTEXT.md` 的 §0.1；那份手册队友先归档到 `docs/archive/`，
+> 随后又在上游 `10ebd9f` 里**连同 `docs/archive/` 整个目录一起删除**，所以它在本仓库里
+> 已经不存在了，本分支不再要求同步它 —— 避免与队友文档打架。
 > 若将来恢复一份"活跃手册"，再加回第 3 处。
 
 **代码/工具改动时**：更新对应文档（如 `docs/RETARGETING_PIPELINE.md`、本文件的实测记录），
@@ -331,11 +355,11 @@ git commit -F outputs\tmp_commit\msg.txt
 | 4 | 队友已入库文件零改动（`git diff <基线> -- .`；`A` 状态放行）| 约定 3 | `git checkout <基线> -- <文件>`，逻辑搬进自己的新文件；确需例外用 `-Allow <路径>` |
 | 5 | 没有禁入库目录/大资产进暂存（`lib/`、`.venv/`、`outputs/`、`tmp_*`，或 `.pt/.h5/...` > 5 MB）| 约定 7 | `git restore --staged <路径>`，文件搬进 `outputs/tmp_*/` |
 | 6 | 规则文件在位（`.clinerules`、`docs/CONVENTIONS.md`）| 约定 12 | 补回文件 |
-| 7 | 架构边界：11 个旧布局根条目名（`scripts`、`retargeting`、`teleop`...）+ `src/teleoperation/**` 里的 `sys.path.insert` | 队友 `tests/architecture/test_boundaries.py:107` | 改名/搬家（我们的工具目录固定叫 `devtools/`）|
-| 8 | `-Full`：`unittest discover`（判 `failures<=-MaxFail`、`errors<=-MaxErr`）+ 4 条 CLI 冒烟 | 约定 5 | 先判是不是既有问题（§3.3）|
+| 7 | 架构边界：11 个旧布局根条目名（`scripts`、`retargeting`、`teleop`...）+ `src/teleoperation/**` 里的 `sys.path.insert` | 原属队友 `tests/architecture/test_boundaries.py:107`（上游 `10ebd9f` 已删该文件），现由本脚本自查 | 改名/搬家（我们的工具目录固定叫 `devtools/`）|
+| 8 | `-Full`：`unittest discover`（判 `failures<=-MaxFail`、`errors<=-MaxErr`）+ 4 条 CLI 冒烟 | 约定 5 | 当前基线实测 `19 tests / failures=0 / errors=0 / skipped=1`（§3.2）|
 
 退出码：`0` = 无 `[FAIL]`（`[WARN]` 允许），`1` = 至少一项 `[FAIL]`。
-开关：`-Full`、`-Base <sha>`（默认 `42bbe10`）、`-MaxFail N`（默认 `0`）、`-MaxErr N`（默认 `17`）、
+开关：`-Full`、`-Base <sha>`（默认 `10ebd9f`）、`-MaxFail N`（默认 `0`）、`-MaxErr N`（默认 `17`，宽松上限；基线实测 `errors=0`）、
 `-Allow <路径>`、`-Fix`。加严口径：`-MaxFail 0 -MaxErr 0`。
 
 ### 3.2 解释器与期望值（含 `PYTHONUTF8=1`）
@@ -343,11 +367,12 @@ git commit -F outputs\tmp_commit\msg.txt
 | 环境 | `python -m unittest discover -s tests -v` 期望（2026-10-10 实测）| `preflight.ps1 -Full` 参数 |
 |---|---|---|
 | 正式 conda `teleoperation`（Python 3.10.20）| `OK (skipped=1)` | 默认即可；更严用 `-MaxFail 0 -MaxErr 0` |
-| 本机回落 `E:\python3.11.7\python.exe` + `PYTHONPATH=src` | `Ran 197 tests` / `failures=0` / `errors=17` / `skipped=1` | 默认（`-MaxFail 0 -MaxErr 17`），**且必须 `PYTHONUTF8=1`** |
+| 本机回落 `E:\python3.11.7\python.exe` + `PYTHONPATH=src` | `Ran 19 tests` / `failures=0` / `errors=0` / `skipped=1` | 默认（`-MaxFail 0 -MaxErr 17`），**建议仍带 `PYTHONUTF8=1`**（上游删 `tests/` 前不带它会多 6 项假失败）|
 
-**`PYTHONUTF8=1` 是硬要求，不是装饰**：`tests/test_application_entrypoints.py` 的 6 个子进程用例
+**`PYTHONUTF8=1` 是怎么变成"硬要求"的**（历史）：上游删 `tests/` 之前，那 6 个子进程用例
 断言中文结束语"仿真环境已关闭"，子进程按 UTF-8 打印、父进程按控制台 cp936 解码 → 断言失败
-（两张对照表见约定 5）。`devtools/preflight.ps1` 在跑 unittest 前自行设置、跑完立刻复原；手工跑用：
+（两张对照表见约定 5）。那些用例现在**不在仓库里了**，但"控制台是 GBK"这个事实没变，
+所以 `devtools/preflight.ps1` 仍在跑 unittest 前自行设置、跑完立刻复原；手工跑用：
 
 ```powershell
 cmd /c "set PYTHONUTF8=1&&E:\python3.11.7\python.exe -m unittest discover -s tests -v"
@@ -358,9 +383,11 @@ Python 报 `invalid PYTHONUTF8 value`）—— 这也是约定 10"看退出码�
 
 ### 3.3 既有问题清单（交回队友，别自己改）
 
-当前 `errors=17` **全部**是基线 `42bbe10` 上就有的既有缺陷（逐项明细见约定 5 的那张表）：
-**队友测试笔误（11 项 `argv`）**、**测试夹具与实现不同步（1 项）**、**测试桩与实现不兼容（2 项）**、
-**外部资产未随仓库提供（3 项 TRON2A URDF）**。
+**当前没有既有问题**：实测 `errors=0 / failures=0`（19 个用例，2026-10-10）。
+下面这段是**历史归档**：旧基线 `42bbe10` 时代曾有 17 个 error，**全部**是队友测试侧的问题
+（逐项明细见约定 5 的那张表）：**队友测试笔误（11 项 `argv`）**、**测试夹具与实现不同步（1 项）**、
+**测试桩与实现不兼容（2 项）**、**外部资产未随仓库提供（3 项 TRON2A URDF）**。
+上游 `10ebd9f` 删除整个 `tests/` 后这些项**不再复现**，这张清单只作"当年的结论"保留。
 
 已经查清的**假失败**（结论：**不需要动队友任何文件**）：
 
@@ -368,7 +395,8 @@ Python 报 `invalid PYTHONUTF8 value`）—— 这也是约定 10"看退出码�
 - 1 项架构用例一度变红：根目录出现 `scripts/` 触发队友黑名单（§3.1 第 7 项）→
   工具搬到 `devtools/` 后复原（`failures` 7 → 0）。
 
-**判据**：`errors` 不超过 17、`failures` 保持 0、4 条冒烟退出码 0。**不要求"全绿"**，要求**不劣化**。
+**判据**：`errors` 保持 0、`failures` 保持 0、4 条冒烟退出码 0。**不要求"全绿"**，要求**不劣化**。
+（`-MaxErr` 默认仍是 `17`，作为"上游把测试套件补回来"时的宽松上限；想收紧就用 `-MaxErr 0`。）
 
 ---
 
@@ -377,7 +405,7 @@ Python 报 `invalid PYTHONUTF8 value`）—— 这也是约定 10"看退出码�
 1. **开终端**：`. .\devtools\env_e_drive_cache.ps1`（已 `-Persist` 过则新终端自动生效）→
    `powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1`（快速 7 项，期望 `RESULT: [OK]`）。
 2. **改前跑基线**：`devtools\preflight.ps1 -Full`，把汇总行抄下来
-   （`Ran 197 tests` / `failures=0` / `errors=17` / `skipped=1` + 4 条冒烟 `exit 0`）。
+   （`Ran 19 tests` / `failures=0` / `errors=0` / `skipped=1` + 4 条冒烟 `exit 0`）。
 3. **动手**：只**新增**自己的文件（`devtools/**`、`docs/**`、`.clinerules`）；队友文件只读；
    根目录不要新建 `scripts/`、`retargeting/` 之类名字（§3.1 第 7 项）。
 4. **改后跑同一套**：同命令、同解释器再跑一次 `-Full`，按约定 5 的格式写差异。
@@ -395,8 +423,8 @@ Python 报 `invalid PYTHONUTF8 value`）—— 这也是约定 10"看退出码�
 | `ModuleNotFoundError: No module named 'teleoperation'` | 没把 `src` 放进 `sys.path` | `$env:PYTHONPATH="$pwd\src"`（preflight 会替你设）|
 | `No module named 'torch'` | 用了仓库内 `.venv`（空壳）| 用完整路径的解释器（约定 2）|
 | preflight 第 3 项 `[FAIL]` | 这个终端没重定向缓存 | `. .\devtools\env_e_drive_cache.ps1 -Persist`，或 `-Fix` |
-| unittest 突然多 6 项 `'仿真环境已关闭'` | 没设 `PYTHONUTF8=1` | 见 §3.2，属假失败 |
-| 架构用例 `test_old_entries_and_path_injection_are_retired` 变红 | 根目录出现了黑名单名字 | 改名/搬家（我们的工具目录固定用 `devtools/`）|
+| unittest 出现 `'仿真环境已关闭' not found` | 没设 `PYTHONUTF8=1`（该用例已随上游删 `tests/` 消失）| 见 §3.2，属假失败 |
+| 旧架构用例 `test_old_entries_and_path_injection_are_retired` 变红（**上游已删该文件**）| 根目录出现了黑名单名字 | 改名/搬家（我们的工具目录固定用 `devtools/`）；`preflight.ps1` 第 7 项同样会拦 |
 | 日志里中文是乱码 | cp936 控制台读 UTF-8 输出 | 先看退出码，再决定要不要深挖（约定 10）|
 | 找不到 conda 环境 `teleoperation` | 本机没装 | 用回落解释器口径（§3.2），汇报时注明 |
 
@@ -407,5 +435,6 @@ Python 报 `invalid PYTHONUTF8 value`）—— 这也是约定 10"看退出码�
 | 日期 | 版本 | 变更 | 影响文件 |
 |---|---|---|---|
 | 2026-10-10 | v1.0 | 首版：旧布局（`retargeting/` 等）的约定移植到 `current-state` 布局；新增 `devtools/` 工具链与 `docs/RETARGETING_PIPELINE.md`；确认两个关键结论 —— 必须 `PYTHONUTF8=1`、工具目录必须叫 `devtools/`（队友架构黑名单）| `docs/CONVENTIONS.md`、`.clinerules`、`docs/RETARGETING_PIPELINE.md`、`devtools/*` |
+| 2026-10-10 | v1.1 | **基线随上游推进到 `10ebd9f`**（`src/teleoperation/apps/` -> `applications/` 整目录改名；上游删除整个 `tests/`、`docs/archive/`、`configs/` 与两个 `datasets/raw/*.h5`）：本支 rebase 到新基线、同步 49 处路径引用，并把所有钉死的数字刷新（基线 `747` 文件 / `Ran 19 tests` / `errors=0`）；`preflight.ps1` 的 `-Base` 默认值由 `42bbe10` 改为 `10ebd9f` | `docs/CONVENTIONS.md`、`.clinerules`、`docs/RETARGETING_PIPELINE.md`、`devtools/*` |
 
 > 改约定 = 本表加一行 + `.clinerules` 同步（约定 12）。
