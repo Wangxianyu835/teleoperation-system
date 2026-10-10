@@ -2,6 +2,7 @@
 
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace as NS
 import unittest
@@ -339,6 +340,20 @@ class MediaPipeCameraLifecycleTests(unittest.TestCase):
         self.landmarker.close.assert_called_once()
         with self.assertRaisesRegex(RuntimeError, "closed"):
             camera.next_frame()
+
+    def test_nonblocking_release_closes_landmarker_in_background(self):
+        camera = self.camera()
+        camera.release(wait_for_mediapipe=False)
+        for _ in range(1000):
+            if self.landmarker.close.called:
+                break
+            time.sleep(0.001)
+        self.landmarker.close.assert_called_once()
+
+    def test_fast_exit_release_can_skip_landmarker_cleanup(self):
+        camera = self.camera()
+        camera.release(wait_for_mediapipe=False, close_landmarker=False)
+        self.landmarker.close.assert_not_called()
 
     def test_context_exception_releases_both_resources(self):
         with self.assertRaisesRegex(RuntimeError, "consumer failure"):

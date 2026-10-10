@@ -12,7 +12,7 @@ from teleoperation.data.world_landmark_recording import (
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
 
 
-def run(args) -> int:
+def run(args, *, fast_exit: bool = False) -> int:
     frame_count = int(args.frames)
     if frame_count <= 0:
         raise ValueError("--frames must be positive")
@@ -33,35 +33,41 @@ def run(args) -> int:
     captured = []
     preview = bool(getattr(args, "preview", True))
     window_name = "World Landmark Capture"
+    camera = None
     try:
-        with MediaPipeCameraInput(
+        camera = MediaPipeCameraInput(
             model_asset_path=args.model_asset_path,
             camera_index=args.camera_index,
             width=args.width,
             height=args.height,
             fps=args.fps,
             invalid_hand_as_missing=True,
-        ) as camera:
-            for index in range(frame_count):
-                frame_started = time.perf_counter()
-                frame = camera.next_frame(include_world=True)
-                frame["frame_id"] = int(
-                    frame.get("metadata", {}).get("frame_index", index)
-                )
-                captured.append(frame)
-                if preview:
-                    cv2.imshow(window_name, camera.last_bgr)
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
-                if (index + 1) % 30 == 0:
-                    print(f"captured={index + 1}/{frame_count}", flush=True)
-                if max_fps > 0:
-                    delay = (1.0 / max_fps) - (time.perf_counter() - frame_started)
-                    if delay > 0:
-                        time.sleep(delay)
+        )
+        for index in range(frame_count):
+            frame_started = time.perf_counter()
+            frame = camera.next_frame(include_world=True)
+            frame["frame_id"] = int(
+                frame.get("metadata", {}).get("frame_index", index)
+            )
+            captured.append(frame)
+            if preview:
+                cv2.imshow(window_name, camera.last_bgr)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+            if (index + 1) % 30 == 0:
+                print(f"captured={index + 1}/{frame_count}", flush=True)
+            if max_fps > 0:
+                delay = (1.0 / max_fps) - (time.perf_counter() - frame_started)
+                if delay > 0:
+                    time.sleep(delay)
     except KeyboardInterrupt:
         print("capture interrupted; saving collected frames", flush=True)
     finally:
+        if camera is not None:
+            camera.release(
+                wait_for_mediapipe=False,
+                close_landmarker=not fast_exit,
+            )
         if preview:
             cv2.destroyAllWindows()
 
@@ -80,10 +86,16 @@ def run(args) -> int:
         },
     )
     print(f"saved_world_landmarks={destination} frames={len(captured)}")
+    if fast_exit:
+        import sys
+
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
     return 0
 
 
 def main(args=None) -> int:
     if args is None:
         raise TypeError("Use teleoperation.cli.main() to parse command arguments")
-    return run(args)
+    return run(args, fast_exit=bool(getattr(args, "fast_exit", False)))

@@ -49,7 +49,7 @@ def parse_args():
 def main() -> int:
     from teleoperation.apps.world_landmark_capture import run
 
-    return run(parse_args())
+    return run(parse_args(), fast_exit=True)
 
 
 if __name__ == "__main__":

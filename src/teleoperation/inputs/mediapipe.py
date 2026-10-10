@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import threading
 import time
 
 import numpy as np
@@ -26,6 +27,7 @@ IMAGE_HEIGHT = 480
 CAM_FPS = 30
 MIN_DET_CONF = 0.5
 MIN_TRK_CONF = 0.5
+_RETAINED_FOR_PROCESS_EXIT = []
 
 
 def _landmark_array(landmarks, side: str) -> np.ndarray:
@@ -38,6 +40,20 @@ def _landmark_array(landmarks, side: str) -> np.ndarray:
     if not np.isfinite(points).all():
         raise ValueError(f"{side} landmarks must be finite float32 values")
     return points
+
+
+def _close_landmarker_in_background(landmarker) -> None:
+    def close():
+        try:
+            landmarker.close()
+        except Exception:
+            pass
+
+    threading.Thread(target=close, name="mediapipe-close", daemon=True).start()
+
+
+def _retain_until_process_exit(resource) -> None:
+    _RETAINED_FOR_PROCESS_EXIT.append(resource)
 
 
 def parse_result(
@@ -226,8 +242,18 @@ under ``world_left`` and ``world_right``.
 
     def close(self): self.release()
 
-    def release(self) -> None:
-        """Release both resources, including partial initialization; idempotent."""
+    def release(
+        self, *, wait_for_mediapipe: bool = True, close_landmarker: bool = True,
+    ) -> None:
+        """Release both resources, including partial initialization; idempotent.
+
+        MediaPipe can block for tens of seconds while its native cleanup waits
+        for a telemetry upload to time out. Collection callers that are about
+        to exit may set ``wait_for_mediapipe=False`` to close that native object
+        in a daemon thread instead of blocking the recording process. A caller
+        that will immediately terminate the process may set
+        ``close_landmarker=False`` as well.
+        """
         cap, landmarker = self._cap, self._landmarker
         self._cap = self._landmarker = None
         try:
@@ -235,7 +261,12 @@ under ``world_left`` and ``world_right``.
                 cap.release()
         finally:
             if landmarker is not None:
-                landmarker.close()
+                if not close_landmarker:
+                    _retain_until_process_exit(landmarker)
+                elif wait_for_mediapipe:
+                    landmarker.close()
+                else:
+                    _close_landmarker_in_background(landmarker)
 
     def __enter__(self) -> "MediaPipeCameraInput":
         return self

@@ -75,10 +75,7 @@ class WorldLandmarkRecordingTests(unittest.TestCase):
             def __init__(self):
                 self.released = False
 
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
+            def release(self, *, wait_for_mediapipe=True, close_landmarker=True):
                 self.released = True
 
             def next_frame(self, *, include_world=False):
@@ -124,6 +121,7 @@ class WorldLandmarkRecordingTests(unittest.TestCase):
         self.assertEqual(args.output, Path("capture.h5"))
         self.assertTrue(args.preview)
         self.assertEqual(args.max_fps, 10.0)
+        self.assertTrue(args.fast_exit)
 
     def test_root_runner_is_directly_runnable(self):
         result = subprocess.run(

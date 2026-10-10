@@ -114,7 +114,10 @@ def hand_record_world(parser: argparse.ArgumentParser) -> None:
         default=True,
         help="show the camera window while recording (press q to stop early)",
     )
-    parser.set_defaults(_handler="teleoperation.apps.world_landmark_capture:main")
+    parser.set_defaults(
+        _handler="teleoperation.apps.world_landmark_capture:main",
+        fast_exit=True,
+    )
 
 
 def sim_run(parser):
