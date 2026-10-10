@@ -6,6 +6,7 @@ COMMANDS = (
     ('hand', 'export', 'hand_export', 'teleoperation.apps.hand:export'),
     ('hand', 'inspect', 'hand_inspect', 'teleoperation.apps.hand:inspect'),
     ('hand', 'realtime', 'hand_realtime', 'teleoperation.apps.hand:realtime'),
+    ('hand', 'record-world', 'hand_record_world', 'teleoperation.apps.world_landmark_capture:main'),
     ('sim', 'run', 'sim_run', 'teleoperation.apps.benchmark:main'),
     ('sim', 'demo-joints', 'sim_demo_joints', 'teleoperation.apps.demo.joints:main'),
     ('dual', 'export', 'dual_export', 'teleoperation.apps.dual_export_cli:main'),

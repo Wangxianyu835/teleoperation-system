@@ -16,10 +16,24 @@ def hand(offset=0.0):
     return [NS(x=0.1 + i * 0.01 + offset, y=0.2, z=-0.03) for i in range(21)]
 
 
-def result(labels=(), hands=None):
+def world_hand(offset=0.0):
+    return [
+        NS(x=0.001 + i * 0.0001 + offset, y=-0.002, z=0.003)
+        for i in range(21)
+    ]
+
+
+def result(labels=(), hands=None, world_hands=None):
+    detected_hands = (
+        [hand(i * 0.3) for i in range(len(labels))]
+        if hands is None else hands
+    )
+    if world_hands is None:
+        world_hands = [world_hand(i * 0.003) for i in range(len(labels))]
     return NS(
-        hand_landmarks=[hand(i * 0.3) for i in range(len(labels))] if hands is None else hands,
+        hand_landmarks=detected_hands,
         handedness=[[NS(category_name=label)] for label in labels],
+        hand_world_landmarks=world_hands,
     )
 
 
@@ -62,6 +76,33 @@ class RawMediaPipeParsingTests(unittest.TestCase):
                         [[lm.x, lm.y, lm.z] for lm in detected.hand_landmarks[index]],
                         dtype=np.float32,
                     ))
+
+    def test_world_landmarks_are_opt_in_and_keep_metre_values(self):
+        detected = result(["Right"], [hand()], [world_hand()])
+        normalized = parse_result(detected, 1234)
+        self.assertNotIn("world_right", normalized)
+
+        frame = parse_result(detected, 1234, include_world=True)
+        self.assertEqual(frame["world_right"].shape, (21, 3))
+        self.assertEqual(frame["world_right"].dtype, np.float32)
+        np.testing.assert_array_equal(
+            frame["world_right"],
+            np.array([[lm.x, lm.y, lm.z] for lm in world_hand()], dtype=np.float32),
+        )
+        self.assertEqual(
+            frame["metadata"]["world_landmark_space"],
+            "mediapipe_world_meters",
+        )
+        self.assertEqual(frame["metadata"]["world_length_unit"], "m")
+        self.assertEqual(frame["metadata"]["world_origin"], "hand_geometric_center")
+
+    def test_requested_world_landmarks_require_matching_data(self):
+        missing = NS(
+            hand_landmarks=[hand()],
+            handedness=[[NS(category_name="Left")]],
+        )
+        with self.assertRaisesRegex(ValueError, "world landmarks"):
+            parse_result(missing, 1, include_world=True)
 
     def test_wrong_landmark_counts_raise(self):
         for count in (0, 20, 22, 25):
@@ -207,6 +248,21 @@ class MediaPipeCameraLifecycleTests(unittest.TestCase):
         output = self.camera().next_frame()
         self.assertEqual(output["left"].shape, (21, 3))
         np.testing.assert_array_equal(output["left"][0], np.array([0.1, 0.2, -0.03], dtype=np.float32))
+
+    def test_next_frame_can_return_world_landmarks_from_the_same_result(self):
+        self.landmarker.detect_for_video.return_value = result(
+            ["Left"], [hand()], [world_hand()]
+        )
+        output = self.camera().next_frame(include_world=True)
+        self.assertEqual(output["world_left"].shape, (21, 3))
+        np.testing.assert_array_equal(
+            output["world_left"][0],
+            np.array([0.001, -0.002, 0.003], dtype=np.float32),
+        )
+        self.assertEqual(
+            output["metadata"]["world_landmark_space"],
+            "mediapipe_world_meters",
+        )
 
     def test_realtime_invalid_hand_policy_keeps_camera_running_and_other_hand_valid(self):
         invalid = hand()

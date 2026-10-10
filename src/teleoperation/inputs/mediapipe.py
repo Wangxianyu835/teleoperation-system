@@ -27,9 +27,21 @@ MIN_DET_CONF = 0.5
 MIN_TRK_CONF = 0.5
 
 
+def _landmark_array(landmarks, side: str) -> np.ndarray:
+    with np.errstate(over="ignore", invalid="ignore"):
+        points = np.array(
+            [[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float32
+        )
+    if points.shape != (21, 3):
+        raise ValueError(f"{side} landmarks must have shape (21, 3), got {points.shape}")
+    if not np.isfinite(points).all():
+        raise ValueError(f"{side} landmarks must be finite float32 values")
+    return points
+
+
 def parse_result(
     result, timestamp_ms: int, metadata: dict | None = None,
-    *, invalid_hand_as_missing: bool = False,
+    *, invalid_hand_as_missing: bool = False, include_world: bool = False,
 ) -> dict:
     """Extract a single detection result; malformed detections raise ValueError.
 
@@ -40,8 +52,13 @@ An opt-in realtime policy drops malformed landmarks for a known side, records
 the error in metadata, and preserves the other side. Repeated known labels
 invalidate that side instead of choosing one detection. Unknown labels still
 raise; the default remains strict.
+
+When ``include_world`` is true, the same detection result also exposes
+``world_left`` and ``world_right`` from ``hand_world_landmarks``. Those values
+remain in MediaPipe's metre-based world space.
 """
     hands = {"left": None, "right": None}
+    world_hands = {"left": None, "right": None}
     seen_sides = set()
     invalid_reasons = {}
     try:
@@ -49,6 +66,13 @@ raise; the default remains strict.
         handedness = result.handedness
         if len(landmarks) != len(handedness) or len(landmarks) > 2:
             raise ValueError("Expected matching landmarks/handedness for at most two hands")
+        world_landmarks = None
+        if include_world:
+            world_landmarks = getattr(result, "hand_world_landmarks", None)
+            if world_landmarks is None or len(world_landmarks) != len(landmarks):
+                raise ValueError(
+                    "MediaPipe world landmarks do not match hand landmarks"
+                )
         for index, hand_landmarks in enumerate(landmarks):
             # Match the reference's first-category handedness lookup exactly.
             label = handedness[index][0].category_name
@@ -60,26 +84,25 @@ raise; the default remains strict.
                 if not invalid_hand_as_missing:
                     raise ValueError(message)
                 hands[side] = None
+                world_hands[side] = None
                 invalid_reasons[side] = message
                 continue
             seen_sides.add(side)
             try:
-                with np.errstate(over="ignore", invalid="ignore"):
-                    points = np.array(
-                        [[lm.x, lm.y, lm.z] for lm in hand_landmarks], dtype=np.float32
+                hands[side] = _landmark_array(hand_landmarks, side)
+                if include_world:
+                    world_hands[side] = _landmark_array(
+                        world_landmarks[index], f"{side} world"
                     )
-                if points.shape != (21, 3):
-                    raise ValueError(f"{side} landmarks must have shape (21, 3), got {points.shape}")
-                if not np.isfinite(points).all():
-                    raise ValueError(f"{side} landmarks must be finite float32 values")
-                hands[side] = points
             except (AttributeError, TypeError, ValueError, OverflowError) as error:
                 if not invalid_hand_as_missing:
                     raise
+                hands[side] = None
+                world_hands[side] = None
                 invalid_reasons[side] = str(error)
     except (AttributeError, IndexError, TypeError, OverflowError) as error:
         raise ValueError("Malformed MediaPipe landmarks or handedness") from error
-    return {
+    output = {
         **hands,
         "timestamp": timestamp_ms,
         "metadata": {
@@ -89,6 +112,17 @@ raise; the default remains strict.
             **({"invalid_reasons": invalid_reasons} if invalid_reasons else {}),
         },
     }
+    if include_world:
+        output.update({
+            "world_left": world_hands["left"],
+            "world_right": world_hands["right"],
+        })
+        output["metadata"].update({
+            "world_landmark_space": "mediapipe_world_meters",
+            "world_length_unit": "m",
+            "world_origin": "hand_geometric_center",
+        })
+    return output
 
 
 class MediaPipeCameraInput:
@@ -139,12 +173,14 @@ class MediaPipeCameraInput:
             self.release()
             raise
 
-    def next_frame(self) -> dict:
+    def next_frame(self, *, include_world: bool = False) -> dict:
         """Return a frame even with no hands; capture/detection errors raise.
 
 On failure both resources are released. VIDEO timestamps use the reference's
 wall-clock milliseconds, advanced by 1 ms only if the clock repeats or moves
 backward, to satisfy the landmarker's increasing-timestamp requirement.
+Set ``include_world=True`` to also return MediaPipe metre-based world landmarks
+under ``world_left`` and ``world_right``.
 """
         if self._cap is None or self._landmarker is None:
             raise RuntimeError("MediaPipe camera input is closed")
@@ -163,7 +199,8 @@ backward, to satisfy the landmarker's increasing-timestamp requirement.
                 "frame_index": self._frame_index,
                 "image_width": int(frame.shape[1]),
                 "image_height": int(frame.shape[0]),
-            }, invalid_hand_as_missing=self._invalid_hand_as_missing)
+            }, invalid_hand_as_missing=self._invalid_hand_as_missing,
+               include_world=include_world)
             self._last_timestamp_ms = timestamp_ms
             self._frame_index += 1
             return output

@@ -94,6 +94,17 @@ def hand_realtime(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(_handler="teleoperation.apps.hand:realtime")
 
 
+def hand_record_world(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET)
+    parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
+    parser.add_argument("--frames", type=int, default=300)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--width", type=int, default=640)
+    parser.add_argument("--height", type=int, default=480)
+    parser.add_argument("--fps", type=int, default=30)
+    parser.set_defaults(_handler="teleoperation.apps.world_landmark_capture:main")
+
+
 def sim_run(parser):
     parser = parser
     parser.add_argument('--task', type=str, default=None,
