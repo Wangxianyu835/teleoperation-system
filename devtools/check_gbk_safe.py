@@ -17,7 +17,7 @@ Python 会直接抛：
 
 注意：仓库自带的等价命令是
     python -m teleoperation tools check-gbk-safe --strict
-（实现在 src/teleoperation/apps/diagnostics/check_gbk_safe.py，队友维护）；
+（实现在 src/teleoperation/applications/diagnostics/check_gbk_safe.py，队友维护）；
 devtools/preflight.ps1 两条都会跑。
 
 推荐的 ASCII 替代写法（见下方 SUGGEST 映射表）

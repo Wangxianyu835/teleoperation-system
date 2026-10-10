@@ -140,7 +140,7 @@ if ($py) {
 }
 
 # --- 2b. same rule through the project's own CLI --------------------------
-# The teammate ships the same check as src/teleoperation/apps/diagnostics/
+# The teammate ships the same check as src/teleoperation/applications/diagnostics/
 # check_gbk_safe.py, i.e. 'python -m teleoperation tools check-gbk-safe'.  We run
 # both: ours covers our own files even if the package changes, theirs is the
 # authoritative one for the shipping tree.

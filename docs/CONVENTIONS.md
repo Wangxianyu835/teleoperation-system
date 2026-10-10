@@ -155,7 +155,7 @@ E:\python3.11.7\python.exe -m teleoperation tools check-gbk-safe --strict   # �
 ```
 
 队友把同一条规则实现进了 CLI：`tools check-gbk-safe`
-（`src/teleoperation/apps/diagnostics/check_gbk_safe.py`，跳过 `lib/`、`robots/`、`linkerhand_sdk/`）。
+（`src/teleoperation/applications/diagnostics/check_gbk_safe.py`，跳过 `lib/`、`robots/`、`linkerhand_sdk/`）。
 所以**两条都要过**：他的是出货树的权威检查，我这份确保我们自己的文件也覆盖到
 （我的版本额外跳过 `assets/`、`third_party/`、`outputs/`）。
 
@@ -212,7 +212,7 @@ powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -MaxFail 0
 |---|---|---|---|
 | 11 | `NameError: name 'argv' is not defined` | `tests/test_native_hand_replay.py:153` | **队友测试文件的笔误**（应为 `sys.argv`），与解释器无关，100% 复现 → 交回队友 |
 | 1 | `AttributeError: 'CanonicalWindowFixture' object has no attribute '_window_or_none'` | `tests/test_hand_core_regression.py:164` 调 `tests/support.py` 的 fixture | **测试夹具与实现不同步**（fixture 缺该方法）→ 交回队友 |
-| 2 | `TypeError: Mock.keys() returned a non-iterable (type Mock)` | `src/teleoperation/apps/hand_realtime.py:70` ← `tests/test_mediapipe_realtime.py` 传入未配置的 Mock | 测试桩与实现不兼容（实现要求 `raw.hands`/`raw.metadata` 是 Mapping）→ 交回队友 |
+| 2 | `TypeError: Mock.keys() returned a non-iterable (type Mock)` | `src/teleoperation/applications/hand_realtime.py:70` ← `tests/test_mediapipe_realtime.py` 传入未配置的 Mock | 测试桩与实现不兼容（实现要求 `raw.hands`/`raw.metadata` 是 Mapping）→ 交回队友 |
 | 3 | `FileNotFoundError: TRON2A URDF was not found: third_party\tron2-robot-description\...` | `tests/test_dual_arm.py` | **外部资产未随仓库提供**：需要设置环境变量 `TRON2A_TEST_URDF` 指向外部 URDF |
 | ~~6~~ **0** | `AssertionError: '仿真环境已关闭' not found in ...` | `tests/test_application_entrypoints.py`（子进程用例）| **子进程中文编码 —— 假失败**：设 `PYTHONUTF8=1` 后 6 项全过（见上一张表），队友环境可能本来就是绿的；**不改队友代码** |
 

@@ -33,7 +33,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from teleoperation.apps.hand_realtime import MediaPipePalmLocalPipeline  # noqa: E402
+from teleoperation.applications.hand_realtime import MediaPipePalmLocalPipeline  # noqa: E402
 from teleoperation.contracts.observations import RawHandFrame  # noqa: E402
 from teleoperation.retargeting.hand.config import L21  # noqa: E402
 from teleoperation.retargeting.hand.geometric import (  # noqa: E402

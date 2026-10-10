@@ -64,10 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
-    from teleoperation.apps.camera_record import build_parser as record_parser
-    from teleoperation.apps.camera_record import run as record_run
-    from teleoperation.apps.hand_align import align_h5
-    from teleoperation.apps.hand_inspect import inspect_angle_h5
+    from teleoperation.applications.camera_record import build_parser as record_parser
+    from teleoperation.applications.camera_record import run as record_run
+    from teleoperation.applications.hand_align import align_h5
+    from teleoperation.applications.hand_inspect import inspect_angle_h5
     from teleoperation.data.capture_h5 import read_capture_summary
     from teleoperation.data.hand_h5 import load_twohand_h5
 

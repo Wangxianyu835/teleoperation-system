@@ -14,7 +14,7 @@
 
     cd F:\\simulation_platform_cs
     set PYTHONPATH=F:\\simulation_platform_cs\\src
-    E:\\python3.11.7\\python.exe -m teleoperation.apps.camera_record --seconds 10
+    E:\\python3.11.7\\python.exe -m teleoperation.applications.camera_record --seconds 10
 
 参数与产物
 ----------
@@ -130,7 +130,7 @@ class AngleCollector:
         angles = {side: np.stack(self.angles[side]) for side in HAND_SIDES}
         valid = {side: np.asarray(self.valid[side], dtype=bool) for side in HAND_SIDES}
         metadata = {
-            "recorder": "teleoperation.apps.camera_record",
+            "recorder": "teleoperation.applications.camera_record",
             "backend": ANGLES_BACKEND,
             "backend_weights": "none",
             "invalid_angle_policy": "mark_invalid",
@@ -232,7 +232,7 @@ def run(args) -> int:
                 "requested_height": int(args.height),
                 "requested_fps": int(args.fps),
                 "angles_backend": ANGLES_BACKEND,
-                "cli": "teleoperation.apps.camera_record",
+                "cli": "teleoperation.applications.camera_record",
             },
         )
     except BaseException:
@@ -322,7 +322,7 @@ def run(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m teleoperation.apps.camera_record",
+        prog="python -m teleoperation.applications.camera_record",
         description="camera -> raw 21-landmark capture H5 (optionally an 18D angle H5)",
     )
     parser.add_argument("--output-h5", type=Path, default=None,

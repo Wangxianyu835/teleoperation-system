@@ -2,7 +2,7 @@
 
 为什么要这个文件
 ----------------
-实时入口（``teleoperation.apps.realtime_hand_sim``）默认的显示目标是三台论文机器人
+实时入口（``teleoperation.applications.realtime_hand_sim``）默认的显示目标是三台论文机器人
 **H1-2 / GR1-T2 / G1 并排**，但 PyBullet 的 GUI 窗口只在交互式桌面下才看得到。本探针
 用 DIRECT 客户端 + ``getCameraImage`` 离屏渲染把**同一个场景类**跑起来，做到"没有
 显示器也能核对画面里到底是不是三台机器人、手指到底动没动"：
@@ -35,7 +35,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from teleoperation.apps.three_robot_scene import (  # noqa: E402
+from teleoperation.applications.three_robot_scene import (  # noqa: E402
     ROBOT_ORDER, ThreeRobotHandScene,
 )
 

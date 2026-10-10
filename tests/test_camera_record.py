@@ -15,7 +15,7 @@ from unittest.mock import patch
 import h5py
 import numpy as np
 
-from teleoperation.apps.camera_record import (
+from teleoperation.applications.camera_record import (
     MODEL_ASSET_CANDIDATES,
     AngleCollector,
     build_parser,
@@ -23,9 +23,9 @@ from teleoperation.apps.camera_record import (
     main,
     record_frames,
 )
-from teleoperation.apps.camera_record import run as camera_run
-from teleoperation.apps.hand_align import align_h5
-from teleoperation.apps.hand_inspect import inspect_angle_h5
+from teleoperation.applications.camera_record import run as camera_run
+from teleoperation.applications.hand_align import align_h5
+from teleoperation.applications.hand_inspect import inspect_angle_h5
 from teleoperation.data.capture_h5 import (
     CAPTURE_SIDE_KEYS,
     VALID_SIDE_KEYS,

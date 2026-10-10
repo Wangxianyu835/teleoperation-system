@@ -130,7 +130,7 @@ E:\python3.11.7\python.exe devtools\verify_geometric_hand.py   # 期望退出码
 
 ### 4.2 实时闭环：摄像头 -> 重定向 -> PyBullet 里的三台机器人（默认）
 
-`src/teleoperation/apps/realtime_hand_sim.py`（新增文件，队友代码零改动）把三段接起来：
+`src/teleoperation/applications/realtime_hand_sim.py`（新增文件，队友代码零改动）把三段接起来：
 `MediaPipeCameraInput` -> `MediaPipeCameraWorkflow`（掌面局部对齐 + 三帧窗口）->
 `GeometricHandRetargeter` 或检查点后端 -> `assets/robots/l21/**` 的模型，用 PyBullet GUI 实时显示。
 
@@ -147,8 +147,8 @@ curl.exe -sS -L -o outputs\hand_landmarker.task `
 
 ```powershell
 $py='E:\python3.11.7\python.exe'
-& $py -m teleoperation.apps.realtime_hand_sim --backend auto        # GUI，Ctrl+C 或关窗口退出
-& $py -m teleoperation.apps.realtime_hand_sim --backend geometric --headless --frames 150 `
+& $py -m teleoperation.applications.realtime_hand_sim --backend auto        # GUI，Ctrl+C 或关窗口退出
+& $py -m teleoperation.applications.realtime_hand_sim --backend geometric --headless --frames 150 `
       --report outputs\tmp_probe\realtime_report.json
 ```
 
@@ -158,8 +158,8 @@ $py='E:\python3.11.7\python.exe'
 
 ```powershell
 $py='E:\python3.11.7\python.exe'
-& $py -m teleoperation.apps.realtime_hand_sim --backend auto        # 默认：两个窗口都开
-& $py -m teleoperation.apps.realtime_hand_sim --no-preview          # 只要 PyBullet 窗口
+& $py -m teleoperation.applications.realtime_hand_sim --backend auto        # 默认：两个窗口都开
+& $py -m teleoperation.applications.realtime_hand_sim --no-preview          # 只要 PyBullet 窗口
 ```
 
 **在 PyCharm 里按运行键（`devtools/run_realtime_windows.py`，2026-10-10 新增）**：
@@ -285,14 +285,14 @@ $py='E:\python3.11.7\python.exe'
 | `robots`（默认）| H1-2 / GR1-T2 / G1 并排，各用**出厂自带**的灵巧手 | `POSITION_CONTROL`，每帧推进 `--sim-steps` 步（默认 8 步 x 1/240 s = 33 ms）|
 | `hands` | 只摆 1-2 只 LinkerHand L21 手（旧行为）| `resetJointState`（纯可视化，不滞后）|
 
-承载体是新文件 `src/teleoperation/apps/three_robot_scene.py`（队友代码零改动）；降维映射直接
+承载体是新文件 `src/teleoperation/applications/three_robot_scene.py`（队友代码零改动）；降维映射直接
 复用 `robots/native_hand.py`（符号/限位自动判定），**不写第二份映射表**。
 
 ```powershell
 $py='E:\python3.11.7\python.exe'
-& $py -m teleoperation.apps.realtime_hand_sim --backend auto    # 三台并排（默认）
-& $py -m teleoperation.apps.realtime_hand_sim --view front      # 正面
-& $py -m teleoperation.apps.realtime_hand_sim --scene hands     # 回到"只有一只手"
+& $py -m teleoperation.applications.realtime_hand_sim --backend auto    # 三台并排（默认）
+& $py -m teleoperation.applications.realtime_hand_sim --view front      # 正面
+& $py -m teleoperation.applications.realtime_hand_sim --scene hands     # 回到"只有一只手"
 ```
 
 范围声明（与 `tools show-all-hands` 一致）：手指由实时角度驱动；**手臂不参与**
@@ -449,7 +449,7 @@ $py = 'E:\python3.11.7\python.exe'
 
 ---
 
-### 4.4 摄像头 -> H5：离线闭环的起点（`teleoperation.apps.camera_record`，2026-10-10 新增）
+### 4.4 摄像头 -> H5：离线闭环的起点（`teleoperation.applications.camera_record`，2026-10-10 新增）
 
 **为什么需要**：`hand align` 与 `--input-h5` 回放都要求输入是"根数据集
 `left_hand_keypoints` / `right_hand_keypoints`、形状 `(T,21,3)`"的**原始抓取 H5**。
@@ -460,7 +460,7 @@ $py = 'E:\python3.11.7\python.exe'
 | 新增文件 | 干什么 |
 |---|---|
 | `src/teleoperation/data/capture_h5.py` | 抓取 H5 的容器（增量写、形状/dtype/attrs 与队友读取器逐字段对齐）|
-| `src/teleoperation/apps/camera_record.py` | 入口：摄像头 -> H5（可选再落一份 18 维角度 H5）|
+| `src/teleoperation/applications/camera_record.py` | 入口：摄像头 -> H5（可选再落一份 18 维角度 H5）|
 | `devtools/verify_camera_record.py` | 一键验收：录制 -> 读回 -> `hand align` -> `hand inspect` ->（有手时）回放 |
 | `tests/test_camera_record.py` | 10 个用例，全部不需要摄像头/不需要 MediaPipe 运行时 |
 
@@ -471,7 +471,7 @@ $py='E:\python3.11.7\python.exe'
 # 一键验收（真摄像头 10 秒；无人值守会话也能跑）
 & $py devtools\verify_camera_record.py --seconds 10
 # 只录制：原始点 + 18 维角度（角度来自零权重几何后端，见 §4.1）
-& $py -m teleoperation.apps.camera_record --output-h5 datasets\raw\my_capture.h5 `
+& $py -m teleoperation.applications.camera_record --output-h5 datasets\raw\my_capture.h5 `
        --angles-h5 outputs\tmp_hand\my_capture_angles.h5 --seconds 10
 ```
 

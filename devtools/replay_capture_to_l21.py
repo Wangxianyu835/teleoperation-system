@@ -6,7 +6,7 @@
 
 为什么需要这个文件
 ------------------
-实时入口 ``teleoperation.apps.realtime_hand_sim`` 的输入是**摄像头**：镜头前没有手时
+实时入口 ``teleoperation.applications.realtime_hand_sim`` 的输入是**摄像头**：镜头前没有手时
 MediaPipe 会连续检出 0 只手，实时链路就没有可重定向的输入（本机实测：同一台相机
 亮度正常 114~147，120 帧全部 valid=0，而同一套采集脚本在 2026-09-12 采到的数据
 643/701 帧有手，说明差异只在"镜头前有没有手"）。本文件把输入换成**文件**：任何符合
@@ -66,8 +66,8 @@ if str(PROJECT_ROOT / "src") not in sys.path:
 
 import h5py  # noqa: E402  (sys.path bootstrap must run first)
 
-from teleoperation.apps.realtime_hand_sim import RealtimeL21Scene  # noqa: E402
-from teleoperation.apps.three_robot_scene import ThreeRobotHandScene  # noqa: E402
+from teleoperation.applications.realtime_hand_sim import RealtimeL21Scene  # noqa: E402
+from teleoperation.applications.three_robot_scene import ThreeRobotHandScene  # noqa: E402
 from teleoperation.contracts.hand import HandWindow  # noqa: E402
 from teleoperation.contracts.observations import RawHandFrame  # noqa: E402
 from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM  # noqa: E402

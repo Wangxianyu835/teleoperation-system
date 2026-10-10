@@ -2,7 +2,7 @@
 
 为什么要有这个文件
 ------------------
-真正的入口是 ``python -m teleoperation.apps.realtime_hand_sim``，它要求四件事同时成立：
+真正的入口是 ``python -m teleoperation.applications.realtime_hand_sim``，它要求四件事同时成立：
 
 1. 解释器是 ``E:\\python3.11.7\\python.exe``（仓库里的 ``.venv`` 是**空壳**，连
    ``python.exe`` 都没有）；
@@ -245,12 +245,12 @@ def run_check(want_window: bool = True) -> int:
     else:
         log("WARN", f"cv2 window support: {gui_detail} (fine with --no-preview)")
     try:
-        from teleoperation.apps.realtime_hand_sim import resolve_model_asset
+        from teleoperation.applications.realtime_hand_sim import resolve_model_asset
     except Exception as error:  # noqa: BLE001 - 体检要把原因原样报出来
-        log("FAIL", f"import teleoperation.apps.realtime_hand_sim: "
+        log("FAIL", f"import teleoperation.applications.realtime_hand_sim: "
                     f"{type(error).__name__}: {error}")
         return 3
-    log("OK", "import teleoperation.apps.realtime_hand_sim")
+    log("OK", "import teleoperation.applications.realtime_hand_sim")
     try:
         asset = resolve_model_asset(None)
         log("OK", f"model asset : {asset} ({asset.stat().st_size} bytes)")
@@ -311,8 +311,8 @@ def main(argv: list[str]) -> int:
     if check:
         return run_check(want_window=wants_window(argv))
 
-    from teleoperation.apps.realtime_hand_sim import PREVIEW_WINDOW, build_parser
-    from teleoperation.apps.realtime_hand_sim import main as sim_main
+    from teleoperation.applications.realtime_hand_sim import PREVIEW_WINDOW, build_parser
+    from teleoperation.applications.realtime_hand_sim import main as sim_main
 
     log("INFO", f"interpreter : {sys.executable}")
     log("INFO", f"repo root   : {ROOT}")

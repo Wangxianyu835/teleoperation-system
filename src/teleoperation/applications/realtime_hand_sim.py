@@ -26,19 +26,19 @@
 用法::
 
     # 两个窗口：PyBullet 里三台机器人并排 + 摄像头画面（叠加 21 点骨架）
-    python -m teleoperation.apps.realtime_hand_sim --backend auto
+    python -m teleoperation.applications.realtime_hand_sim --backend auto
 
     # 只摆一只手（旧行为）
-    python -m teleoperation.apps.realtime_hand_sim --scene hands
+    python -m teleoperation.applications.realtime_hand_sim --scene hands
 
     # 正面视角看三台机器人
-    python -m teleoperation.apps.realtime_hand_sim --view front
+    python -m teleoperation.applications.realtime_hand_sim --view front
 
     # 只要 PyBullet 窗口，不显示摄像头画面
-    python -m teleoperation.apps.realtime_hand_sim --no-preview
+    python -m teleoperation.applications.realtime_hand_sim --no-preview
 
     # 无头自检（不弹窗，跑 300 帧后打印统计并写报告）
-    python -m teleoperation.apps.realtime_hand_sim --headless --frames 300 \
+    python -m teleoperation.applications.realtime_hand_sim --headless --frames 300 \
         --report outputs/tmp_probe/realtime_report.json
 
 摄像头窗口（``cv2.imshow``）：原始画面 + MediaPipe 21 点骨架（``COLORS``：浅色
@@ -167,7 +167,7 @@ def build_retargeter(backend: str, checkpoint: Path, device: str, calibration_fr
 
 def _checkpoint_retargeter(checkpoint: Path, device: str):
     """Wrap the teammate's trained palm-local model behind ``HandRetargeter``."""
-    from teleoperation.apps.hand_realtime import load_palm_local_retargeter
+    from teleoperation.applications.hand_realtime import load_palm_local_retargeter
     from teleoperation.retargeting.hand.interface import PoseTransformerRetargeter
 
     model = load_palm_local_retargeter(checkpoint, device)
@@ -595,7 +595,7 @@ def build_scene(args, sides):
     """
     if args.scene == "hands":
         return RealtimeL21Scene(sides, gui=not args.headless)
-    from teleoperation.apps.three_robot_scene import ThreeRobotHandScene
+    from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
 
     return ThreeRobotHandScene(sides, gui=not args.headless,
                                steps_per_frame=args.sim_steps)
@@ -603,7 +603,7 @@ def build_scene(args, sides):
 
 def run(args) -> int:
     """Capture the camera until ``--frames`` or quit, retarget, and show the sim."""
-    from teleoperation.apps.hand_realtime import MediaPipeCameraWorkflow
+    from teleoperation.applications.hand_realtime import MediaPipeCameraWorkflow
 
     asset = resolve_model_asset(args.model_asset_path)
     sides = SIDES if args.hand == "both" else (args.hand,)
@@ -827,7 +827,7 @@ def _drain_in_background(action, label: str, timeout: float = RELEASE_TIMEOUT_SE
 def build_parser() -> argparse.ArgumentParser:
     """Standalone parser; ``main`` also accepts an already parsed namespace."""
     parser = argparse.ArgumentParser(
-        prog="python -m teleoperation.apps.realtime_hand_sim",
+        prog="python -m teleoperation.applications.realtime_hand_sim",
         description="camera -> palm-local alignment -> hand retargeting -> L21 PyBullet",
     )
     parser.add_argument("--model-asset-path", type=Path, default=None,
