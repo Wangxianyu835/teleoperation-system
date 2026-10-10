@@ -116,7 +116,7 @@ Anaconda base、`py` 启动器。PATH 上的 `python` 现在是 `F:\simulation_p
 **基线**：`42bbe10`（= `origin/current-state`，队友已合并好的线）。**基线里已存在的**这些路径禁止改：
 
 ```
-基线 42bbe10 里全部 724 个已跟踪文件：
+基线 42bbe10 里全部 787 个已跟踪文件（实测 `(git ls-tree -r --name-only 42bbe10 | Measure-Object).Count` = 787）：
 src/teleoperation/**   tests/**   configs/**   assets/**   docs/**   pyproject.toml   README.md ...
 ```
 
@@ -132,11 +132,14 @@ src/teleoperation/**   tests/**   configs/**   assets/**   docs/**   pyproject.t
 把一批**旧布局的根条目名**列为黑名单：`scripts`、`retargeting`、`teleop`、`input_adapters`、
 `envs`、`tasks`、`main.py` ... —— 根目录只要出现同名条目，这条用例就 `FAIL`。
 
-**实测教训（2026-10-10）**：我最初把自检工具放在根 `scripts\`，基线 `failures` 从 6 变 **7**；
-全部搬到 `devtools\` 后回到 `0`。所以**我们的新增目录一律叫 `devtools/`**。
+**实测教训（2026-10-10）**：我最初把自检工具放在根 `scripts\`，让队友这条架构用例多红一次
+（cp936 口径 `failures` 6 -> 7；`PYTHONUTF8=1` 口径 0 -> 1）；全部搬到 `devtools\` 后复原。
+所以**我们的新增目录一律叫 `devtools/`**。
 `devtools/preflight.ps1` 第 7 项复查这张黑名单 + `src/teleoperation` 里有没有 `sys.path.insert`。
 
-**实测（2026-10-10）**：全树改动 0 个、黑名单 0 命中 → `[OK]`。
+**实测（2026-10-10）**：`git diff --name-status 42bbe10 -- .` 共 7 行、**全部是 `A`**（我新增的 7 个文件：
+`.clinerules`、`devtools/*` 4 个、`docs/CONVENTIONS.md`、`docs/RETARGETING_PIPELINE.md`），
+`0 modified/deleted`；架构黑名单 0 命中 → `[OK]`。
 
 ---
 
