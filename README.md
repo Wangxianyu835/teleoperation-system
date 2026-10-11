@@ -131,6 +131,14 @@ python -m teleoperation hand train `
 ### 2.4 离线推理并导出角度
 
 读取对齐 H5 和训练权重，生成可回放的双手角度 H5：
+```
+world_test_v1_left=
+"D:\2026\code\teleoperation-system-retargeting\outputs\hand_retargeting\checkpoint\models\twohand_h5\linker\world_test_v1\left\model_best.pth"
+world_test_v1_right = 
+"D:\2026\code\teleoperation-system-retargeting\outputs\hand_retargeting\checkpoint\models\twohand_h5\linker\world_test_v1\right\model_best.pth"
+```
+
+
 
 ```powershell
 python -m teleoperation hand export `
