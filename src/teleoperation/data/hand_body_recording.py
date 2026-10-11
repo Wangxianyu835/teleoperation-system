@@ -1,3 +1,4 @@
+# 函数 _stack_points/_stack_vector（内部辅助计算）；write_hand_body_recording（保存/导出）；read_hand_body_recording（读取/解析）；常量 FORMAT_VERSION/POINT_DATASETS/VECTOR_DATASETS/DATASETS（配置/索引）；链路：应用/训练→文件读写→观测/命令数据
 """Combined normalized and metric hand/arm capture persistence."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# 函数 load_urdf（读取/解析）；create_ground（构造）；链路：应用→仿真环境/机器人→传感器/记录
 """PyBullet URDF loading helpers that work under non-ASCII project paths."""
 
 from __future__ import annotations

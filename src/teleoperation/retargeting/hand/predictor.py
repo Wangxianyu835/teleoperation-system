@@ -1,3 +1,4 @@
+# 类 TwoHandRetargeter[model_for_side/forward/predict]（封装数据/流程）；函数 build_hand_model/create_twohand_retargeter（构造）；_to_single_batch_tensor（映射/转换）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 """Two-hand retargeting wrapper built on the existing PoseTransformer."""
 
 from __future__ import annotations

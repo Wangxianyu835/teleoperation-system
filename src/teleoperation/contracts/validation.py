@@ -1,3 +1,4 @@
+# 函数 validate_hand_input/validate_arm_input/validate_retarget_input（校验）；build_retarget_input（构造）；legacy_visionpro_to_window（映射/转换）；select_hand_window（查询/选择）；常量 HAND_SIDES/ARM_SIDES/ACTION_ORDER/RECEPTIVE_FIELD/HAND_KEYPOINTS/HAND_COORDS/ARM_KEYPOINTS/INPUT_KEY/LEGACY_VISIONPRO_KEY（配置/索引）；链路：输入/存储边界→应用/算法数据契约
 """Shared input/output contracts for realtime and offline retargeting."""
 
 from __future__ import annotations

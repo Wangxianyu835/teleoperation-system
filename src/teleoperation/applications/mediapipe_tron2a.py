@@ -1,3 +1,4 @@
+# 类 RelativeControlClock[next_seconds],TimedCameraObservation（封装数据/流程）；函数 _configuration（内部辅助计算）；_preview（可视化）；run（入口/工作流）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """MediaPipe -> TRON2A calibration only. No robot execution or simulation."""
 from __future__ import annotations
 

@@ -1,3 +1,4 @@
+# 类 VisionProInput[next_observation/close]（封装数据/流程）；链路：相机/回放→原始观测→应用/重定向
 """Expose original Vision Pro matrices. Coordinate conversion belongs downstream."""
 import time
 import numpy as np

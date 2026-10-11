@@ -1,3 +1,4 @@
+# 函数 atomic_output（业务处理）；链路：应用/训练→文件读写→观测/命令数据
 """Same-directory atomic replacement; callers close writers before commit."""
 from contextlib import contextmanager
 from pathlib import Path

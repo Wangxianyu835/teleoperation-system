@@ -1,3 +1,4 @@
+# 函数 _text_attr（内部辅助计算）；diagnose_h5（业务处理）；main（入口/工作流）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Read-only coordinate, chirality and scale evidence for a hand H5 file.
 
 Signed volumes are software orientation probes, not a physical handedness

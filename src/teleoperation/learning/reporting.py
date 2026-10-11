@@ -1,3 +1,4 @@
+# 函数 _metrics_fieldnames（内部辅助计算）；_epoch_metrics_row（训练/损失）；_write_epoch_stats（保存/导出）；常量 LOSS_NAMES（配置/索引）；变量 receptive_field/scaling_factor/scaling_factor_rb/hand_brand/hand_cfg/left_urdf_file/right_urdf_file/source_dic/rb_dic/excluded_pairs/angle_limit_rob/loss_weight/col_threshold/correction_matrix（运行状态）；链路：训练应用→数据集/损失→模型检查点
 """Train one shared left/right retargeting model from an H5 recording."""
 
 from __future__ import annotations

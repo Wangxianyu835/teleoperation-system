@@ -1,3 +1,4 @@
+# 函数 _read_coordinate_alignment/read_coordinate_alignment/load_twohand_h5/_read_optional_vector/iter_angle_h5/read_alignment_input/read_angle_arrays/read_native_angles/read_attributes/read_pipeline_angles（读取/解析）；_validate_hand_array/_validate_coordinate_metadata/_validate_source_landmark_space/read_required_right_angles（校验）；write_aligned_copy/write_hand_angles（保存/导出）；常量 _SIDE_KEYS（配置/索引）；链路：应用/训练→文件读写→观测/命令数据
 from __future__ import annotations
 from pathlib import Path
 import h5py

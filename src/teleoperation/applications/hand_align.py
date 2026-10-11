@@ -1,3 +1,4 @@
+# 函数 align_h5（坐标处理）；run（入口/工作流）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Read → align → persist, assembled only at the application layer."""
 import argparse
 import json

@@ -1,3 +1,4 @@
+# 函数 make_dummy_actions（构造）；validate_dim（校验）；replay（业务处理）；main（入口/工作流）；常量 ROOT（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """离线回放脚本 —— 把重定向算法输出的动作序列灌进仿真环境
 
 契约 H 的参考实现（格式定义见 docs/contracts.md）

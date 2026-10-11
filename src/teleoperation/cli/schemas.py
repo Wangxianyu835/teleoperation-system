@@ -1,3 +1,4 @@
+# 函数 hand_record/hand_export/hand_record_world/dual_export（保存/导出）；hand_align（坐标处理）；hand_train/tools_compare_training_hand_pose（训练/损失）；hand_inspect/hand_realtime/sim_run/sim_demo_joints/dual_calibrate_camera/dual_realtime/dual_replay/replay_actions/replay_native_hand/replay_l21_hand/replay_mounted_hand/tools_diagnose_hand_coordinates（业务处理）；tools_show_robots/tools_show_hand/tools_show_all_hands/tools_visualize_hand_keypoints/tools_visualize_l21_fk（可视化）；tools_check_environment/tools_check_camera/tools_check_gbk_safe/tools_validate_retarget_input/tools_verify_hand_pipeline/tools_verify_p0（校验）；tools_make_sample_data（构造）；常量 PALM_LOCAL_V2_CHECKPOINT/ROOT（配置/索引）；链路：命令行→参数/路由→应用
 """Argument schemas only: no model, device or simulator imports."""
 import argparse
 import os

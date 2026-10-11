@@ -1,3 +1,4 @@
+# 函数 run（入口/工作流）；_model_kwargs（内部辅助计算）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Run shared or dedicated hand models on an offline H5 recording."""
 
 from __future__ import annotations

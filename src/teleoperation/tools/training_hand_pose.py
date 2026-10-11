@@ -1,3 +1,4 @@
+# 函数 _plot_comparison/_draw_target/_draw_robot（可视化）；_equal_limits/_apply_limits（内部辅助计算）；常量 HAND25_CONNECTIONS/TIP_NAMES/SIDE_COLORS（配置/索引）；链路：应用/诊断→辅助计算/可视化
 from __future__ import annotations
 from pathlib import Path
 import matplotlib.pyplot as plt

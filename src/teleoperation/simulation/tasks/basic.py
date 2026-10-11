@@ -1,3 +1,4 @@
+# 类 PushCube[check_success],PickCube[check_success],PickPlaceCube[check_success],UpRearCup[check_success],BallTrashCan[check_success]（封装数据/流程）；链路：仿真环境→任务注册/执行→评估记录
 import numpy as np
 import pybullet as p
 from .base import BaseTask

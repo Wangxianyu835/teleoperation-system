@@ -1,3 +1,4 @@
+# 类 ForwardKinematics[forward]（封装数据/流程）；函数 _joint_record（保存/导出）；parse_urdf_to_joints（读取/解析）；create_hand_kinematics（构造）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 """
 Forward Kinematics Module for converting joint angles to 3D positions and orientations
 """

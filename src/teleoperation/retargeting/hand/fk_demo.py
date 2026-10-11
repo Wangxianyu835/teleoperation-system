@@ -1,3 +1,4 @@
+# 函数 _angles_for_pose（内部辅助计算）；常量 JOINT_NAMES（配置/索引）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 import torch
 from .config import L21
 JOINT_NAMES = L21.hand_kinematics_config()["joints_name"]

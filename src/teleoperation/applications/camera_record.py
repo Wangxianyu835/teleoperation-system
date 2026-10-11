@@ -1,3 +1,4 @@
+# 类 AngleCollector[calibration_status/write]（封装数据/流程）；函数 default_model_asset（业务处理）；record_frames（保存/导出）；run/main（入口/工作流）；build_parser（读取/解析）；常量 DEFAULT_OUTPUT_DIR/MODEL_ASSET_CANDIDATES/DEFAULT_SECONDS/ANGLES_BACKEND（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """摄像头 -> 原始 21 点 H5（可选再落一份 18 维角度 H5）。
 
 为什么有这个入口

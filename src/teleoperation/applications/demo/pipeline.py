@@ -1,3 +1,4 @@
+# 类 TeleopPipeline[setup_scene/run_episode/evaluate_task…]（封装数据/流程）；常量 TRON2_CONFIG（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """遥操作完整流水线 - VR + 手套 -> 机器人 -> 任务执行
 
 论文 Section 3.2: 统一模块化接口

@@ -1,3 +1,4 @@
+# 类 EpisodeRecording[completion_time/reset/capture…]（封装数据/流程）；函数 create_environment（构造）；run_episode/evaluate_task/benchmark_all_tasks（业务处理）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Application-owned episode loops and simulation/data recording composition."""
 import time
 from teleoperation.simulation.environment import SimulationEnv

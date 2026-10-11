@@ -1,3 +1,4 @@
+# 类 L21HandAdapter[map]（封装数据/流程）；常量 MAPPING_18/L21_JOINT_ORDER（配置/索引）；链路：算法输出→机器人动作映射→执行命令
 """Original L21 eighteen-value protocol and actuator names."""
 MAPPING_18 = [
     None,                     # dim 0  占位

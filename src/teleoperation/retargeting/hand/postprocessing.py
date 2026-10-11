@@ -1,3 +1,4 @@
+# 类 KalmanSmoother[reset/step/filter_sequence]（封装数据/流程）；函数 classify_jumps/hold_last_valid/detect_identity_swaps/moving_average/motion_metrics/compare_methods（业务处理）；detect_bad_frames/repair_stream/repair_bad_frames/hold_angle_frames（帧/序列处理）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 """信号平滑滤波 —— 卡尔曼滤波
 
 论文 TeleOpBench §3.2.1 提到：

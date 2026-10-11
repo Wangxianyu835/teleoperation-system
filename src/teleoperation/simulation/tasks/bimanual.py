@@ -1,3 +1,4 @@
+# 类 BallBimanual[check_success],PotBimanual[check_success],PotTomato[check_success],PotTray[check_success],StackBoxes[check_success],PanHearth[check_success],TidyUpTable[check_success],PotTomatoOut[check_success],PlateOven[check_success]（封装数据/流程）；链路：仿真环境→任务注册/执行→评估记录
 import numpy as np
 import pybullet as p
 from .base import BaseTask

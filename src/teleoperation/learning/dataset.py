@@ -1,3 +1,4 @@
+# 类 TwoHandH5Dataset[side_counts/iter_samples],TwoHandH5ChunkedGenerator[num_frames/next_epoch]（封装数据/流程）；函数 _is_valid_hand_frame（帧/序列处理）；_scalar_or_none/_stack/_mask（内部辅助计算）；常量 HAND_SIDES/_SIDE_KEYS（配置/索引）；链路：训练应用→数据集/损失→模型检查点
 """H5 dataset utilities for shared left/right hand retargeting."""
 
 from __future__ import annotations

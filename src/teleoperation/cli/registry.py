@@ -1,3 +1,4 @@
+# 常量 COMMANDS（配置/索引）；链路：命令行→参数/路由→应用
 """Static command routing; importing this registry starts no workflows."""
 
 COMMANDS = (

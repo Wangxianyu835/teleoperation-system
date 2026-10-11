@@ -1,3 +1,4 @@
+# 类 CaptureH5Writer[append/summary/close…]（封装数据/流程）；函数 _utc_now（内部辅助计算）；landmarks_or_zeros（业务处理）；read_capture_summary（读取/解析）；常量 CAPTURE_SIDE_KEYS/VALID_SIDE_KEYS/LANDMARK_COUNT/POINT_DIM/TIMESTAMP_UNIT/SOURCE_LANDMARK_SPACE/MISSING_HAND_ENCODING/RECORDER（配置/索引）；链路：应用/训练→文件读写→观测/命令数据
 """原始 21 点抓取容器：把一帧帧 MediaPipe 结果落成一个可回放的 H5。
 
 为什么有这个文件

@@ -1,3 +1,4 @@
+# 类 RawHandH5Writer[append/finish/set_metadata…]（封装数据/流程）；链路：应用/训练→文件读写→观测/命令数据
 """Incremental storage of raw MediaPipe two-hand recordings."""
 
 from pathlib import Path

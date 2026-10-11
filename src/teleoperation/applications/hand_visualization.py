@@ -1,3 +1,4 @@
+# 函数 make_fk（构造）；run（入口/工作流）；常量 SIDES/WINDOW/PALM_EDGES/PALM_TIPS（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Show live normalized previews, selected palm-local windows and L21 FK.
 
 Two rows (left/right), three columns (raw image XY / palm-local / L21 FK).

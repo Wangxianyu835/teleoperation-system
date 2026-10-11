@@ -1,3 +1,4 @@
+# 函数 transform_diagnostics（坐标处理）；signed_hand_volume（业务处理）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 import numpy as np
 from .coordinates import SOURCE_TO_L21_MATRIX
 

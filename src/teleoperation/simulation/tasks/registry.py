@@ -1,3 +1,4 @@
+# 函数 register_task（注册/分发）；get_task/list_tasks/get_tasks_by_level（查询/选择）；常量 TASK_REGISTRY（配置/索引）；链路：仿真环境→任务注册/执行→评估记录
 """任务注册表 - 管理30个任务类"""
 
 from typing import Type, List

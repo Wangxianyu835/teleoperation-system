@@ -1,3 +1,4 @@
+# 类 _NativeActionAdapter[encode],H1ActionAdapter,GR1ActionAdapter,G1ActionAdapter,Tron2AL21ActionAdapter[encode]（封装数据/流程）；函数 validate_native_action（校验）；pack_tron2a_l21_action（映射/转换）；链路：算法输出→机器人动作映射→执行命令
 """Robot-specific action encoding, with no cross-robot arm conversion."""
 from dataclasses import dataclass
 from typing import Mapping

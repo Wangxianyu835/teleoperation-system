@@ -1,3 +1,4 @@
+# 类 PartialLimbVector（封装数据/流程）；函数 pack_partial_limb_vector（映射/转换）；链路：算法输出→机器人动作映射→执行命令
 """Partial diagnostic vectors never constitute executable robot actions."""
 from dataclasses import dataclass
 import numpy as np

@@ -1,3 +1,4 @@
+# 函数 _side_arrays（内部辅助计算）；write_world_landmark_recording（保存/导出）；read_world_landmark_recording（读取/解析）；常量 FORMAT_VERSION/DATASETS（配置/索引）；链路：应用/训练→文件读写→观测/命令数据
 """Persistence for MediaPipe metre-based world landmark captures."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# 类 SensorRecorder[reset/record_step/save_episode…]（封装数据/流程）；链路：应用/训练→文件读写→观测/命令数据
 """观测数据记录系统 - 记录机器人状态、相机流、物体元数据"""
 
 import time

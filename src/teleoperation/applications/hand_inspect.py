@@ -1,3 +1,4 @@
+# 函数 inspect_angle_h5（业务处理）；run（入口/工作流）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 import argparse
 from pathlib import Path
 from teleoperation.contracts.constants import HAND_SIDES

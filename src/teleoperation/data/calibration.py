@@ -1,3 +1,4 @@
+# 函数 read_calibration（读取/解析）；write_calibration（保存/导出）；链路：应用/训练→文件读写→观测/命令数据
 """Calibration JSON persistence."""
 import json
 import os

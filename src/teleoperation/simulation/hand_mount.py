@@ -1,3 +1,4 @@
+# 函数 _link_name_of_joint/_match_side/_finger_tips/_thumb_tip/_vec_angle（内部辅助计算）；find_hand_base_link（查询/选择）；robot_hand_link_indices/p_getNumJoints/p_getJointInfo（业务处理）；_collect_link_positions（采集/累积）；compute_hand_frame/measure_hand_frame（帧/序列处理）；_mat_to_euler_xyz/_euler_from_matrix_xyz/compute_auto_mount_rpy（映射/转换）；常量 HAND_BASE_CANDIDATES/HAND_LINK_KEYS/FINGER_KEYS/THUMB_KEY（配置/索引）；链路：应用→仿真环境/机器人→传感器/记录
 """Existing robot geometry queries and mounted-hand coordinate math."""
 import numpy as np
 HAND_BASE_CANDIDATES = {

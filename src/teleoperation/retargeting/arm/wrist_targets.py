@@ -1,3 +1,4 @@
+# 类 WristMapping,WristTarget[as_tuple]（封装数据/流程）；函数 _unit（内部辅助计算）；invalid_target/robot_orientation（业务处理）；palm_frame_from_landmarks/rotation_matrix_to_quaternion/matrix_from_quaternion/wrist_pose_from_landmarks（映射/转换）；常量 SIDES/FOUR_MCPS/LANDMARK_COUNT/AXIS_NAMES/MIN_BASIS_LENGTH（配置/索引）；链路：上肢观测→校准/目标位姿/IK→关节目标
 """21 点手部关键点 -> 手腕（机械臂末端）目标位姿：手臂链路的"近似输入"。
 
 为什么需要它，以及它不是什么

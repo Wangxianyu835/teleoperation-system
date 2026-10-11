@@ -1,3 +1,4 @@
+# 函数 main（入口/工作流）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Validate a hand .npy log against the canonical realtime input contract."""
 
 from __future__ import annotations

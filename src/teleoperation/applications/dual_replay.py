@@ -1,3 +1,4 @@
+# 函数 main（入口/工作流）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Replay a 48D Tron2AL21Command H5 in the TRON2A DACH PyBullet scene."""
 
 from __future__ import annotations

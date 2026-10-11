@@ -1,3 +1,4 @@
+# 类 ThreeRobotHandScene[frame_scene/apply/step…]（封装数据/流程）；函数 joint_extent（业务处理）；常量 ROBOT_ORDER/LAYOUT_X/LABEL_COLOR/PHYSICS_DT/DEFAULT_STEPS_PER_FRAME/HAND_FORCE/HOLD_FORCE（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """实时重定向的【三台机器人并排】显示目标（用机器人原装手，不换手）。
 
 这个场景类给 ``teleoperation.applications.realtime_hand_sim`` 用：实时链路算出来的每一帧

@@ -1,3 +1,4 @@
+# 类 RobotLoader[load_robot/set_arm_pose/describe_action_space]（封装数据/流程）；函数 read_joint_ranges（读取/解析）；链路：应用→仿真环境/机器人→传感器/记录
 """机器人模型加载 —— 支持 TeleOpBench 论文的三种人形机器人
 
 支持的机器人（与论文一致，实测数据 2026-09-12）：

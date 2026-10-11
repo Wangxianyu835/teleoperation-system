@@ -1,3 +1,4 @@
+# 函数 read_recording/read_frame（读取/解析）；链路：应用/训练→文件读写→观测/命令数据
 """Persistence for the existing NumPy observation recordings."""
 import numpy as np
 

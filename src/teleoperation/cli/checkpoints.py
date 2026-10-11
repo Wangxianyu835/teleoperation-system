@@ -1,3 +1,4 @@
+# 类 CheckpointArgumentParser[parse_args]（封装数据/流程）；函数 add_checkpoint_arguments（校验）；链路：命令行→参数/路由→应用
 """Parse shared or paired checkpoints without loading model dependencies."""
 
 import argparse

@@ -1,3 +1,4 @@
+# 函数 print_jump_report/print_identity_swap_report/print_metrics_table（业务处理）；print_bad_frames_report（帧/序列处理）；链路：应用/诊断→辅助计算/可视化
 """Formatting of hand diagnostic results."""
 
 def print_jump_report(info, title='跳变性质诊断'):

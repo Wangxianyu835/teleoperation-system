@@ -1,3 +1,4 @@
+# 类 RecordingPreview[show/close]（封装数据/流程）；函数 render_recording_preview（保存/导出）；常量 WINDOW（配置/索引）；链路：应用/诊断→辅助计算/可视化
 """Camera image and landmark overlay for offline H5 recording."""
 #录制时打印窗口
 

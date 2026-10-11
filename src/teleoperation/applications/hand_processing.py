@@ -1,3 +1,4 @@
+# 类 MediaPipePalmLocalPipeline[current_hands/valid_streak/invalid_reasons…],DualHandPipeline[process_frame/reset],CanonicalHandPipeline[process_frame/process/update…],NpyReplayWorkflow[next_input/close]（封装数据/流程）；函数 hand_coordinate_alignment（坐标处理）；常量 SIDES（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Explicit application composition of acquisition, preprocessing and buffering."""
 from teleoperation.contracts.observations import RawHandFrame
 from teleoperation.contracts.hand import CanonicalHandFrame, HandWindow

@@ -1,3 +1,4 @@
+# 类 Tron2AL21Command[flatten],H1JointTargets,GR1JointTargets,G1JointTargets（封装数据/流程）；链路：输入/存储边界→应用/算法数据契约
 """Fixed dual-arm, dual-hand command contract."""
 
 from __future__ import annotations

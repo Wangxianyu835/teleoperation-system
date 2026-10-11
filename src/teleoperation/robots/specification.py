@@ -1,3 +1,4 @@
+# 函数 _is_arm_joint/_is_hand_joint（内部辅助计算）；常量 DEFAULT_ROBOTS_ROOT/TRON2A_ARM_JOINTS/TRON2A_EE_LINKS/ROBOT_SPECS/_ARM_KEYWORDS/ARM_NEUTRAL（配置/索引）；链路：算法输出→机器人动作映射→执行命令
 import os
 from teleoperation.paths import ROBOTS_ROOT
 DEFAULT_ROBOTS_ROOT = str(ROBOTS_ROOT)

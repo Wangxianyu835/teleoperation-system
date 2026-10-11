@@ -1,3 +1,4 @@
+# 类 Tron2ADualArmWorld[apply/step/close]（封装数据/流程）；函数 _prepare_urdf（内部辅助计算）；_joint_and_link_maps（映射/转换）；_require_indices/_require_link（校验）；链路：应用→仿真环境/机器人→传感器/记录
 """PyBullet scene and controller for fixed 48D TRON2A/L21 commands."""
 
 from __future__ import annotations

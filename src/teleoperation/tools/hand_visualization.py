@@ -1,3 +1,4 @@
+# 函数 _panel（内部辅助计算）；_plot/render（可视化）；save_png（保存/导出）；常量 SIDES/WINDOW/PALM_EDGES/PALM_TIPS（配置/索引）；链路：应用/诊断→辅助计算/可视化
 from pathlib import Path
 import cv2
 import numpy as np

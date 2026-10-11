@@ -1,3 +1,4 @@
+# 函数 main（入口/工作流）；replay_loop（业务处理）；常量 ROOT/HAND_BASE_CANDIDATES/HAND_LINK_KEYS/FINGER_KEYS/THUMB_KEY（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """把 LinkerHand l21 装到仿真机器人的腕部，用手部数据驱动手指
 
 用途

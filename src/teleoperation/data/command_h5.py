@@ -1,3 +1,4 @@
+# 函数 _load_arm_observations/_load_hand_angles/read_robot_commands（读取/解析）；write_robot_commands（保存/导出）；链路：应用/训练→文件读写→观测/命令数据
 from pathlib import Path
 import h5py
 import numpy as np

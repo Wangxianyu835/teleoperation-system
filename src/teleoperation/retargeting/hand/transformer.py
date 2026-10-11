@@ -1,3 +1,4 @@
+# 类 Mlp[forward],Attention[forward],Block[forward],PoseTransformer[Spatial_forward_features/forward_features/forward],AngleClamper[forward]（封装数据/流程）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 ## Our PoseFormer model was revised from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
 
 import math

@@ -1,3 +1,4 @@
+# 类 TemporalBuffer[append/reset/reset_side]（封装数据/流程）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 """Buffer canonical frames only. No topology or coordinate conversion."""
 from collections import deque
 import numpy as np

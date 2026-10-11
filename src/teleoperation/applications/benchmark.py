@@ -1,3 +1,4 @@
+# 函数 demo_controller/interactive_menu（业务处理）；main（入口/工作流）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """
 TeleOpBench 仿真平台主入口
 用法:

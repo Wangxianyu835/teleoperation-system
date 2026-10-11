@@ -1,3 +1,4 @@
+# 类 SimulationSensors[collect]（封装数据/流程）；链路：应用→仿真环境/机器人→传感器/记录
 import pybullet as p
 from collections import defaultdict
 from teleoperation.contracts.recording import SimulationSample
