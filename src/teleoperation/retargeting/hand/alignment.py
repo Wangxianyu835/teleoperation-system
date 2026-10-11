@@ -1,7 +1,6 @@
 """Palm-local recording alignment math, independent of storage."""
 import numpy as np
-from .coordinates import build_l21_reference_basis, align_palm_local_coordinates
-from .topology import ensure_hand25
+from .coordinates import build_l21_reference_basis, align_mediapipe_hand
 
 
 def align_recording(raw_hands):
@@ -11,10 +10,7 @@ def align_recording(raw_hands):
         result = np.zeros((len(raw), 25, 3), dtype=np.float32)
         missing, degenerate = 0, 0
         for index, frame in enumerate(raw):
-            # ensure_hand25 already performs wrist-relative conversion.
-            with np.errstate(invalid="ignore", over="ignore"):
-                points25 = ensure_hand25(frame)
-            result[index] = align_palm_local_coordinates(points25, references[side])
+            result[index] = align_mediapipe_hand(frame, references[side])
             if not np.any(frame):
                 missing += 1
             elif not np.any(result[index]):

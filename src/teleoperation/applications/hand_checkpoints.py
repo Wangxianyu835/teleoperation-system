@@ -3,10 +3,12 @@
 from teleoperation.contracts.checkpoints import validate_checkpoint_selection
 
 
-def checkpoint_options(args, *, prefix=""):
+def checkpoint_options(args, *, prefix="", default=None):
     stem = f"{prefix}_" if prefix else ""
     paths = [getattr(args, stem + name, None) for name in
              ("checkpoint", "left_checkpoint", "right_checkpoint")]
+    if all(path is None for path in paths):
+        paths[0] = default
     validate_checkpoint_selection(*paths, required=True)
     return dict(zip(("checkpoint_path", "left_checkpoint", "right_checkpoint"),
                     (None if path is None else str(path) for path in paths)))

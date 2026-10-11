@@ -9,7 +9,10 @@ import torch
 import torch.nn as nn
 
 from teleoperation.contracts.validation import HAND_SIDES, validate_retarget_input
-from teleoperation.contracts.coordinates import COORDINATE_ALIGNMENT, validate_coordinate_alignment
+from teleoperation.contracts.coordinates import (
+    COORDINATE_ALIGNMENT, validate_coordinate_alignment,
+    validate_landmark_contract,
+)
 
 
 def build_hand_model(model_kwargs: dict[str, Any]) -> nn.Module:
@@ -86,6 +89,7 @@ class TwoHandRetargeter(nn.Module):
             )
             if alignment != self.coordinate_alignment:
                 raise ValueError(f"HandWindow coordinate alignment mismatch: input={alignment!r}; model={self.coordinate_alignment!r}")
+            validate_landmark_contract(alignment, retarget_input["metadata"], "HandWindow")
         self.eval()
 
         outputs = {"hands": {}}

@@ -30,7 +30,7 @@ python -m teleoperation --help
 ## 摄像头录制
 
 `hand record` 使用摄像头和 MediaPipe，无需重定向 checkpoint。录制入口是 `applications/offline_h5_record.py`，流式写入由 `data/hand_recording.py` 负责。
-原始 H5 保存左右手 `(T,21,3)` 关键点、连续帧号和 Unix 秒时间戳；未检测到的手保存为零，不丢弃该帧。正常结束或 Ctrl+C 后，程序自动生成 palm-local `(T,25,3)` 的对齐文件，
+原始 H5 同时保存左右手归一化 `(T,21,3)` 和米制 world `(T,21,3)` 关键点、连续帧号和 Unix 秒时间戳；未检测到的手保存为零，不丢弃该帧。默认使用 `--landmark-space world`：正常结束或 Ctrl+C 后，程序自动生成米制 palm-local `(T,25,3)` 的对齐文件，
 将这个文件作为 `hand train --input` 和 `hand export --input`。
 
 `--hand-side left/right/both` 选择录制左手、右手或双手，默认 `both`；单手录制时另一侧保存为零，保持双手 H5 格式兼容。自动文件名沿用 mytrans 的年月日与时分秒格式，
@@ -40,7 +40,7 @@ python -m teleoperation --help
 
 手部与肩肘腕的同步采集使用 `python -m teleoperation hand record-world`，同一 H5 保存归一化和米制 world 坐标。
 默认采集 30 帧并自动保存到 `outputs/hand_body_capture/hand_body_<日期_时间>.h5`；
-用 `--output-dir` 更换目录，或用 `--output` 指定完整文件名。该命令的 world 字段尚未自动接入训练，
+用 `--output-dir` 更换目录，或用 `--output` 指定完整文件名。该命令不自动对齐，录制后执行 `hand align` 即可将手部 world 字段接入训练，
 实现流程与数据字段见 [米制采集说明](docs/world-landmark-capture.md)。
 
 ```powershell
@@ -62,6 +62,48 @@ python -m teleoperation hand inspect --angle-h5 angles.h5
 
 
 ```
+
+新录制和手部实时入口默认使用 **world 米制模式**。归一化坐标仍用于摄像头预览，算法使用同一次检测的 `hand_world_landmarks`，只做腕部相对化、21→25 点扩展和掌面旋转到对应侧 L21。
+人手尺寸系数固定 `1.0`，机器人 FK 使用 URDF 米制尺寸；不做掌部尺寸标定或逐帧尺度匹配。world Dataset 信任 MediaPipe 左右标签，不做身份重分配。
+
+| 模式 | 对齐契约 | 实时默认实验目录 |
+|---|---|---|
+| `world`（默认） | `mediapipe_world_palm_local_to_l21_v1` | `world_palm_local_v1` |
+| `normalized`（显式旧模式） | `palm_local_to_l21_v1` | `palm_local_v2` |
+
+两个实时目录均位于 `outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/`，默认加载 `model_best.pth`。world 输入需要重新训练；旧归一化权重即使网络形状相同也不能用于 world。
+`hand train` 和 `hand export` 根据已对齐 H5 的契约确定模式，没有覆盖输入模式的命令参数。world 导出只接受 `--scale-factor 1.0`。
+训练时使用新的实验名；已有实验目录中的权重若契约不同，会报错并保留权重。
+
+```powershell
+# 新米制链路：record 默认 world，并自动另存 aligned 文件
+python -m teleoperation hand record --frames 900 --output datasets/raw/world_session.h5
+python -m teleoperation hand train --input datasets/raw/aligned_world_session.h5 --run-name world_palm_local_v1 --device cuda
+python -m teleoperation hand export --input datasets/raw/aligned_world_session.h5 --output angles_world.h5
+python -m teleoperation hand realtime --landmark-space world --visualize --frames 0
+
+# 旧数据 / 旧模型：历史文件没有处理空间声明时，align 自动沿用 normalized
+python -m teleoperation hand record --landmark-space normalized --output datasets/raw/normalized_session.h5
+python -m teleoperation hand align --input old_raw.h5 --output old_aligned.h5 --landmark-space normalized
+python -m teleoperation hand realtime --landmark-space normalized --visualize --frames 0
+python -m teleoperation hand export --input old_aligned.h5 --checkpoint old_model.pth --output old_angles.h5
+
+# 已有 record-world 文件：旧文件显式选择 world；新文件可省略该参数
+python -m teleoperation hand align --input outputs/hand_body_capture/session_001.h5 --output aligned_world.h5 --landmark-space world
+
+# 三机器人实时展示：默认 world，保留几何后端选择
+python -m teleoperation.applications.realtime_hand_sim --landmark-space world --backend geometric
+python -m teleoperation.applications.realtime_hand_sim --landmark-space normalized --backend checkpoint
+```
+
+world 字段整套缺失时直接报错，不回退到归一化数据；只有一侧缺失、非有限或掌面退化时清空该侧实时窗口，恢复须重新积累 3 帧。
+world 预览的人手与 L21 FK 使用相同的米制显示比例，由 `--robot-radius` 控制；`--palm-radius` 保留给 normalized 模式。交互缩放只影响画面。
+三机器人 `auto` 仅在模型文件不存在时选择 geometric 后端；模型存在但契约不匹配时会报错。
+几何后端的张手标定仍用于角度零位，不改变米制输入尺寸。本次迁移不改变 TRON2A 双臂适配和独立 `camera_record` 入口。
+
+网络仍接收 `(3,25,3)` 并输出 18 维角度，六项损失与权重保持原值；指尖距离损失的 `×1000` 在 world 模式下表示米转毫米。
+数据字段和契约细节见 [contracts](docs/contracts.md) 与 [米制采集说明](docs/world-landmark-capture.md)。
+
 ```powershell
 # 训练示例：左手独立模型，CUDA，随机初始化
 python -m teleoperation hand train `

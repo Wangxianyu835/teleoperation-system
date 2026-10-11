@@ -36,10 +36,13 @@ except ModuleNotFoundError:
 from teleoperation.retargeting.hand.device import resolve_device as _resolve_device
 from teleoperation.retargeting.hand.config import ANGLE_LIMITS, RUNTIME, EXCLUDED_COLLISION_PAIRS, L21, ROBOT_JOINTS, SOURCE_JOINTS
 from teleoperation.paths import DEFAULT_WARMSTART_CHECKPOINT, DEFAULT_CHECKPOINT_ROOT
-from teleoperation.contracts.coordinates import COORDINATE_FRAME, validate_coordinate_alignment
+from teleoperation.contracts.coordinates import (
+    COORDINATE_FRAME, validate_coordinate_alignment, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
+    validate_world_contract,
+)
 from teleoperation.retargeting.hand.predictor import _require_coordinate_alignment
 from teleoperation.learning.dataset import HAND_SIDES, TwoHandH5ChunkedGenerator, TwoHandH5Dataset
-from teleoperation.data.hand_h5 import load_twohand_h5
+from teleoperation.data.hand_h5 import load_twohand_h5, read_coordinate_alignment
 from teleoperation.retargeting.hand.kinematics import create_hand_kinematics
 from teleoperation.learning.losses import CollisionLoss, RegLoss, hand_loss
 from teleoperation.retargeting.hand.transformer import PoseTransformer
@@ -93,6 +96,13 @@ def _train(args: argparse.Namespace) -> int:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     run_name = _resolve_run_name(args.run_name)
     run_directory = Path(run_name) if hand_side == "shared" else Path(run_name) / hand_side
+    alignment = read_coordinate_alignment(args.input)
+    model_directory = checkpoint_dir / "models" / "twohand_h5" / hand_brand / run_directory
+    for name in ("model_best.pth", "model_last.pth"):
+        existing = model_directory / name
+        if existing.is_file():
+            # Preserve earlier experiments when the input space changes.
+            _require_coordinate_alignment(read_checkpoint(existing, "cpu"), str(existing), alignment)
     logger = _setup_logging(
         checkpoint_dir / "logs" / "twohand_h5" / hand_brand / run_directory / "training.log"
     )
@@ -123,6 +133,8 @@ def _train(args: argparse.Namespace) -> int:
         reset_on_gaps=True,
     )
     coordinate_alignment = train_dataset.coordinate_alignment
+    if train_dataset.is_world and scaling_factor_rb != 1.0:
+        raise ValueError("World training requires robot_scale=1.0 (URDF metres)")
     if val_dataset.coordinate_alignment != coordinate_alignment:
         raise ValueError(
             "Training/validation coordinate alignment mismatch: "
@@ -408,6 +420,10 @@ def _save_checkpoint(
     hand_side="shared",
 ):
     coordinate_alignment = validate_coordinate_alignment(coordinate_alignment, "Checkpoint save")
+    world_metadata = {}
+    if coordinate_alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT:
+        world_metadata = {"length_unit": "m", "units": "m", "source_scale": scaling_factor}
+        validate_world_contract({**world_metadata, "source_landmark_space": source_landmark_space}, "Checkpoint save")
     write_checkpoint(
         {
             "epoch": epoch,
@@ -424,6 +440,7 @@ def _save_checkpoint(
             "coordinate_frame": COORDINATE_FRAME,
             "coordinate_alignment": coordinate_alignment,
             "source_landmark_space": source_landmark_space,
+            **world_metadata,
             "run_name": run_name,
             "init_checkpoint": (
                 str(init_checkpoint) if init_checkpoint is not None else None

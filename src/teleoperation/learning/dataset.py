@@ -11,9 +11,12 @@ import numpy as np
 from teleoperation.retargeting.hand.processing import CanonicalHandProcessor
 from teleoperation.retargeting.hand.temporal import TemporalBuffer
 from teleoperation.contracts.observations import RawHandFrame
+from teleoperation.contracts.hand import CanonicalHandFrame
 from teleoperation.data.hand_h5 import load_twohand_h5, read_coordinate_alignment
 from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
-from teleoperation.contracts.coordinates import COORDINATE_FRAME, validate_coordinate_alignment
+from teleoperation.contracts.coordinates import (
+    COORDINATE_FRAME, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
+)
 
 
 HAND_SIDES = ("left", "right")
@@ -56,8 +59,14 @@ class TwoHandH5Dataset:
             raise ValueError("receptive_field must be positive")
 
         self.coordinate_alignment = read_coordinate_alignment(self.path)
+        self.is_world = self.coordinate_alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
+        if self.is_world:
+            if self.scale_factor != 1.0:
+                raise ValueError("World Dataset requires scale_factor=1.0; preserve human metre dimensions")
+            self.track_identity = False
         self.coordinate_frame = COORDINATE_FRAME
         with h5py.File(self.path, "r") as source:
+            self.coordinate_metadata = dict(source.attrs)
             space = source.attrs.get("source_landmark_space")
             self.source_landmark_space = space.decode("utf-8") if isinstance(space, bytes) else space
 
@@ -120,7 +129,16 @@ class TwoHandH5Dataset:
                 side: self._raw_hands[side][frame_index]
                 for side in HAND_SIDES
             }
-            canonical = processor.process_frame(RawHandFrame(raw_hands, _scalar_or_none(self.timestamps[frame_index]), "h5", {"frame_index": frame_index}))
+            timestamp = _scalar_or_none(self.timestamps[frame_index])
+            if self.is_world:
+                hands = {}
+                for side, points in raw_hands.items():
+                    if points.shape != (25, 3):
+                        raise ValueError("Aligned world Dataset requires (25,3) hands")
+                    hands[side] = points if np.isfinite(points).all() and np.any(points) else None
+                canonical = CanonicalHandFrame(hands, timestamp, "h5", self.coordinate_metadata)
+            else:
+                canonical = processor.process_frame(RawHandFrame(raw_hands, timestamp, "h5", {"frame_index": frame_index}))
             window = buffer.append(canonical)
             payload = None if window is None else window.to_payload()
             current = {side: points for side, points in canonical.hands.items() if points is not None}

@@ -2,7 +2,10 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from teleoperation.data.checkpoint import read_checkpoint
-from teleoperation.contracts.coordinates import COORDINATE_ALIGNMENT, validate_coordinate_alignment
+from teleoperation.contracts.coordinates import (
+    COORDINATE_ALIGNMENT, validate_coordinate_alignment,
+    validate_landmark_contract,
+)
 from teleoperation.contracts.constants import HAND_SIDES
 def load_hand_checkpoint(
     model: nn.Module,
@@ -66,6 +69,7 @@ def _require_coordinate_alignment(
             f"Checkpoint coordinate alignment mismatch ({checkpoint_path}): "
             f"input={expected!r}; checkpoint={alignment!r}."
         )
+    validate_landmark_contract(alignment, checkpoint, f"Checkpoint {checkpoint_path}")
 
 
 def _state_dict_for_side(checkpoint: dict, side: str | None) -> dict:

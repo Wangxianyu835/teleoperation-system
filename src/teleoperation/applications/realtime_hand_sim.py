@@ -95,7 +95,8 @@ import numpy as np
 from teleoperation.contracts.hand import L21HandAngles
 from teleoperation.data.urdf import parse_joint_limits
 from teleoperation.paths import (
-    DEFAULT_REALTIME_CHECKPOINT,
+    DEFAULT_MEDIAPIPE_ASSET,
+    realtime_checkpoint,
     L21_ROOT,
     PROJECT_ROOT,
 )
@@ -123,7 +124,7 @@ def resolve_model_asset(path: Path | None) -> Path:
     candidates = []
     if path is not None:
         candidates.append(Path(path))
-    candidates.extend([PROJECT_ROOT / ASSET_NAME, PROJECT_ROOT / "outputs" / ASSET_NAME])
+    candidates.extend([DEFAULT_MEDIAPIPE_ASSET, PROJECT_ROOT / ASSET_NAME, PROJECT_ROOT / "outputs" / ASSET_NAME])
     for candidate in candidates:
         if candidate.is_file():
             return candidate
@@ -136,7 +137,7 @@ def resolve_model_asset(path: Path | None) -> Path:
 
 
 def build_retargeter(backend: str, checkpoint: Path, device: str, calibration_frames: int,
-                     smoothing: float):
+                     smoothing: float, landmark_space="normalized"):
     """Return ``(retargeter, backend_name, note)`` for the requested backend.
 
     ``auto`` prefers the trained checkpoint and falls back to the geometric
@@ -148,8 +149,10 @@ def build_retargeter(backend: str, checkpoint: Path, device: str, calibration_fr
     checkpoint = Path(checkpoint)
     if backend == "checkpoint":
         if not checkpoint.is_file():
-            raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
-        return _checkpoint_retargeter(checkpoint, device)
+            experiment = "world_palm_local_v1" if landmark_space == "world" else "palm_local_v2"
+            raise FileNotFoundError(f"checkpoint not found: {checkpoint}. Train with python -m teleoperation hand train "
+                                    f"--input <aligned_{landmark_space}.h5> --run-name {experiment}")
+        return _checkpoint_retargeter(checkpoint, device, landmark_space)
     if backend == "geometric":
         return (
             GeometricHandRetargeter(calibration_frames=calibration_frames, smoothing=smoothing),
@@ -157,7 +160,7 @@ def build_retargeter(backend: str, checkpoint: Path, device: str, calibration_fr
             "forced by --backend geometric",
         )
     if checkpoint.is_file():                      # auto + checkpoint available
-        return _checkpoint_retargeter(checkpoint, device)
+        return _checkpoint_retargeter(checkpoint, device, landmark_space)
     return (
         GeometricHandRetargeter(calibration_frames=calibration_frames, smoothing=smoothing),
         "geometric",
@@ -165,12 +168,12 @@ def build_retargeter(backend: str, checkpoint: Path, device: str, calibration_fr
     )
 
 
-def _checkpoint_retargeter(checkpoint: Path, device: str):
+def _checkpoint_retargeter(checkpoint: Path, device: str, landmark_space="normalized"):
     """Wrap the teammate's trained palm-local model behind ``HandRetargeter``."""
     from teleoperation.applications.hand_realtime import load_palm_local_retargeter
     from teleoperation.retargeting.hand.interface import PoseTransformerRetargeter
 
-    model = load_palm_local_retargeter(checkpoint, device)
+    model = load_palm_local_retargeter(checkpoint, device, landmark_space=landmark_space)
     return (
         PoseTransformerRetargeter(model, device),
         "checkpoint",
@@ -566,13 +569,15 @@ def build_preview(args, workflow, sides):
     return preview
 
 
-def preview_hud(processed, marks, sides, samples, invalid, retargeter, raw_seen) -> str:
+def preview_hud(processed, marks, sides, samples, invalid, retargeter, raw_seen,
+                landmark_space="normalized") -> str:
     """窗口左上角那行：帧数 / 帧率 / 原始检出 / 有效角度帧数 / 无效帧数 / 开手标定。"""
     raw = " ".join(f"{side}={raw_seen[side]}" for side in sides)
     counts = " ".join(f"{side}={len(samples[side])}" for side in sides)
     return (f"frame={processed} fps={_loop_fps(marks):.1f} raw={raw} valid={counts} "
             f"invalid={sum(invalid.values())} "
-            f"calibration={getattr(retargeter, 'calibration_status', None)}")
+            f"calibration={getattr(retargeter, 'calibration_status', None)} "
+            f"source={landmark_space} units={'m' if landmark_space == 'world' else 'normalized'}")
 
 
 def _describe(vectors) -> dict:
@@ -606,13 +611,15 @@ def run(args) -> int:
     from teleoperation.applications.hand_realtime import MediaPipeCameraWorkflow
 
     asset = resolve_model_asset(args.model_asset_path)
+    checkpoint = args.checkpoint or realtime_checkpoint(args.landmark_space)
     sides = SIDES if args.hand == "both" else (args.hand,)
     retargeter, backend, note = build_retargeter(
-        args.backend, Path(args.checkpoint), args.device,
-        args.calibration_frames, args.smoothing,
+        args.backend, Path(checkpoint), args.device,
+        args.calibration_frames, args.smoothing, landmark_space=args.landmark_space,
     )
     print(f"backend={backend} ({note})", flush=True)
     print(f"model_asset={asset}", flush=True)
+    print(f"landmark_space={args.landmark_space} input_units={'m' if args.landmark_space == 'world' else 'normalized'}", flush=True)
     print(f"camera_index={args.camera_index} hands={','.join(sides)} "
           f"display={'headless(DIRECT)' if args.headless else 'PyBullet GUI'}", flush=True)
 
@@ -642,7 +649,7 @@ def run(args) -> int:
         # 刻意不用 MediaPipeCameraWorkflow 的 with 语句：它的 __exit__ 会阻塞在
         # landmarker.close() 上（实测 42 s，见模块 docstring 的"退出行为"）。
         camera = MediaPipeCameraWorkflow(asset, args.camera_index,
-                                        args.width, args.height, args.fps)
+                                        args.width, args.height, args.fps, landmark_space=args.landmark_space)
         preview = build_preview(args, camera, sides)
         if not args.headless:
             print(PREVIEW_HINT_ROBOTS if args.scene == "robots" else PREVIEW_HINT_HANDS,
@@ -680,7 +687,7 @@ def run(args) -> int:
             if preview is not None:
                 preview.update(camera.last_raw_frame, latest,
                                preview_hud(processed, marks, sides, samples, invalid,
-                                           retargeter, raw_seen))
+                                           retargeter, raw_seen, args.landmark_space))
                 if preview.quit_requested:
                     print("camera window closed; stopping.", flush=True)
                     break
@@ -717,6 +724,8 @@ def run(args) -> int:
               f"{'' if not preview.note else ' note=' + preview.note}", flush=True)
     report = {
         "backend": backend,
+        "landmark_space": args.landmark_space,
+        "length_unit": "m" if args.landmark_space == "world" else "normalized",
         "backend_note": note,
         "model_asset": str(asset),
         "camera_index": args.camera_index,
@@ -831,13 +840,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="camera -> palm-local alignment -> hand retargeting -> L21 PyBullet",
     )
     parser.add_argument("--model-asset-path", type=Path, default=None,
-                        help="hand_landmarker.task path (default: repo root, else outputs/)")
+                        help="hand_landmarker.task path (default: datasets/, repo root, then outputs/)")
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--backend", choices=("auto", "geometric", "checkpoint"), default="auto")
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_REALTIME_CHECKPOINT)
+    parser.add_argument("--landmark-space", choices=("world", "normalized"), default="world")
+    parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)
     parser.add_argument("--hand", choices=("left", "right", "both"), default="both")
     parser.add_argument("--scene", choices=("robots", "hands"), default="robots",

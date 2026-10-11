@@ -44,6 +44,7 @@ def run(args):
     if args.hand_side not in ("left", "right", "both"):
         raise ValueError("--hand-side must be left, right or both")
     started_at = datetime.now(timezone(timedelta(hours=8)))
+    landmark_space = getattr(args, "landmark_space", "world")
     raw_path, aligned_path = _output_paths(args, started_at)
     capture = MediaPipeCameraInput(
         model_asset_path=args.model_asset_path, camera_index=args.camera_index,
@@ -64,7 +65,7 @@ def run(args):
             "recording_hand_side": args.hand_side,
             "recording_started_at": started_at.isoformat(timespec="seconds"),
             "recording_timezone": "Asia/Shanghai",
-        }) as writer:
+        }, landmark_space=landmark_space) as writer:
             print(f"Recording raw hands to {raw_path}", flush=True)
             print("Ctrl+C stops capture and creates the aligned H5.", flush=True)
             if preview is not None:
@@ -72,10 +73,14 @@ def run(args):
             stop_reason = "frame_limit"
             try:
                 while args.frames == 0 or writer.count < args.frames:
-                    frame = capture.next_frame()
+                    frame = capture.next_frame(include_world=True)
                     hands = {side: frame[side] if args.hand_side in (side, "both") else None
                              for side in ("left", "right")}
-                    writer.append(hands, frame["timestamp"] / 1000.0)
+                    if "world_left" not in frame or "world_right" not in frame:
+                        raise ValueError("Recording requires both world fields from the same MediaPipe detection")
+                    worlds = {side: frame[f"world_{side}"] if args.hand_side in (side, "both") else None
+                              for side in ("left", "right")}
+                    writer.append(hands, frame["timestamp"] / 1000.0, world_hands=worlds)
                     if writer.count == 1:
                         # Persist actual dimensions, which may differ from the request.
                         for name in ("image_width", "image_height"):
@@ -113,9 +118,9 @@ def run(args):
     # A second recording may have created this path while capture was running.
     if aligned_path.exists():
         raise FileExistsError(f"Aligned output already exists; raw recording retained: {aligned_path}")
-    report = align_h5(raw_path, aligned_path)
+    report = align_h5(raw_path, aligned_path, landmark_space)
     print(f"aligned_output={aligned_path}")
-    print("coordinate_alignment=palm_local_to_l21_v1")
+    print(f"coordinate_alignment={report['coordinate_metadata']['coordinate_alignment']}")
     for side, statistics in report["sides"].items():
         print(f"{side}_aligned_frames={statistics['nonzero_frames']}")
     return 0

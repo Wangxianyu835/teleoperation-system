@@ -145,3 +145,18 @@ def align_palm_local_coordinates(points25: np.ndarray, robot_basis: np.ndarray) 
     with np.errstate(over="ignore", invalid="ignore"):
         aligned = values @ source_basis @ reference.T
     return aligned.astype(np.float32, copy=False) if np.isfinite(aligned).all() else zero
+
+
+def align_mediapipe_hand(points21, robot_basis: np.ndarray) -> np.ndarray:
+    """Shared raw21 -> wrist-relative25 -> palm rotation; preserves lengths."""
+    from .topology import ensure_hand25
+
+    if points21 is None:
+        return np.zeros((25, 3), dtype=np.float32)
+    with np.errstate(over="ignore", invalid="ignore"):
+        points = np.asarray(points21, dtype=np.float32)
+        if points.shape not in ((21, 3), (25, 3)):
+            raise ValueError(f"Hand shape must be (21,3) or (25,3), got {points.shape}")
+        if not np.isfinite(points).all() or not np.any(points):
+            return np.zeros((25, 3), dtype=np.float32)
+        return align_palm_local_coordinates(ensure_hand25(points), robot_basis)

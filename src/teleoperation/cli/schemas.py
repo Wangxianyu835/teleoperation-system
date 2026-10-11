@@ -10,6 +10,7 @@ PALM_LOCAL_V2_CHECKPOINT = DEFAULT_REALTIME_CHECKPOINT
 ROOT = str(PROJECT_ROOT)
 
 def hand_record(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--landmark-space", choices=("world", "normalized"), default="world")
     destination = parser.add_mutually_exclusive_group()
     destination.add_argument("--output", type=Path,
                              help="explicit raw filename, overriding automatic time/side naming")
@@ -31,6 +32,8 @@ def hand_record(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(_handler="teleoperation.applications.offline_h5_record:run")
 
 def hand_align(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--landmark-space", choices=("world", "normalized"),
+                        help="default: recording declaration, or normalized for old files")
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.set_defaults(_handler="teleoperation.applications.hand:align")
@@ -59,7 +62,7 @@ def hand_export(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=DEFAULT_INPUT_H5,
     )
-    add_checkpoint_arguments(parser, default=DEFAULT_CHECKPOINT)
+    add_checkpoint_arguments(parser)
     parser.add_argument(
         "--output",
         type=Path,
@@ -102,8 +105,10 @@ def hand_inspect(parser: argparse.ArgumentParser) -> None:
 
 
 def hand_realtime(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--landmark-space", choices=("world", "normalized"), default="world")
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET)
-    add_checkpoint_arguments(parser, default=PALM_LOCAL_V2_CHECKPOINT)
+    add_checkpoint_arguments(parser, default={"world": DEFAULT_WORLD_REALTIME_CHECKPOINT,
+                                             "normalized": PALM_LOCAL_V2_CHECKPOINT})
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
     parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)
     parser.add_argument("--frames", type=int, default=RUNTIME.camera_frames,

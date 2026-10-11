@@ -2,6 +2,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 from .plotting import COLORS, ROBOT_EDGES, ROBOT_TIPS, SOURCE_EDGES, draw_skeleton, project, text
+from teleoperation.contracts.coordinates import palm_local_metadata
+from teleoperation.paths import realtime_checkpoint
 SIDES = ("left", "right")
 WINDOW = "MediaPipe realtime: raw -> palm-local -> window -> L21"
 WIDTH, HEIGHT, HEADER = 420, 320, 100
@@ -39,19 +41,25 @@ def render(raw_frame, palms, payload, angles, robot_points, streaks, reasons,
            resets, args, frame_index, fps, traces=True, zoom=1.0):
     """Render current data only; no historical robot pose is cached here."""
     header = np.full((HEADER, WIDTH * 3, 3), 28, dtype=np.uint8)
+    mode = getattr(args, "landmark_space", "normalized")
+    metadata = palm_local_metadata(mode)
+    # One screen scale in metres for both human and robot in world mode.
+    palm_radius = args.robot_radius if mode == "world" else args.palm_radius
     timestamp = raw_frame["timestamp"]
     text(header, f"frame={frame_index}  timestamp={timestamp} unix_ms  FPS={fps:.1f}  "
          f"view={args.view.upper()}  zoom={zoom:.2f}", (14, 22), scale=0.57)
     if getattr(args, "left_checkpoint", None) is not None:
         label = " | ".join(f"{side}={Path(getattr(args, side + '_checkpoint')).parent.name}/{Path(getattr(args, side + '_checkpoint')).name}" for side in SIDES)
     else:
-        checkpoint = Path(args.checkpoint)
+        checkpoint = Path(args.checkpoint or realtime_checkpoint(mode))
         label = f"{checkpoint.parent.name}/{checkpoint.name}"
-    text(header, f"{label} | palm_local_to_l21_v1 | "
+    text(header, f"{label} | {metadata['coordinate_alignment']} | "
          "identity tracking OFF | fixed display scales",
          (14, 45), scale=0.48)
     text(header, "q/Esc quit | 1 YZ  2 XZ  3 XY  4 ISO | w window traces | +/- zoom | s PNG", (14, 68), scale=0.48)
-    text(header, "Raw: normalized image XY. Palm: normalized coordinates. Robot: URDF units. Screen distances differ.",
+    units_label = ("Palm: MediaPipe world metres. Robot: URDF metres. Same screen scale."
+                   if mode == "world" else "Palm: normalized coordinates. Robot: URDF units. Screen distances differ.")
+    text(header, "Raw: normalized image XY. " + units_label,
          (14, 89), scale=0.43)
     rows = [header]
     for side in SIDES:
@@ -80,8 +88,8 @@ def render(raw_frame, palms, payload, angles, robot_points, streaks, reasons,
             if traces and window is not None:
                 for age, alpha in ((0, 0.25), (1, 0.55)):
                     _plot(palm_panel, window[age], PALM_EDGES, (), tuple(int(c * alpha) for c in color),
-                          args, args.palm_radius / zoom)
-            _plot(palm_panel, palm, PALM_EDGES, PALM_TIPS, color, args, args.palm_radius / zoom, args.labels)
+                          args, palm_radius / zoom)
+            _plot(palm_panel, palm, PALM_EDGES, PALM_TIPS, color, args, palm_radius / zoom, args.labels)
             text(palm_panel, f"shape={palm.shape} finite={bool(np.isfinite(palm).all())}", (12, 268), scale=0.42)
             text(palm_panel, f"window={None if window is None else window.shape}", (12, 289), scale=0.42)
             text(palm_panel, "traces: t-2 dark / t-1 medium / t current" if traces else "current frame only",

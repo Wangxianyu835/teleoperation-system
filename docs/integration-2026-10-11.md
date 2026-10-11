@@ -13,6 +13,9 @@
 模型路径统一为 `datasets/`。实现分层与使用方式见 [米制采集说明](world-landmark-capture.md)。
 下方验证表保留初次合并时的历史结果。
 
+后续手部链路迁移到 world：新 `hand record` / `hand realtime` / 三机器人展示默认用米制 world，保留显式 normalized。
+新 `record-world` 文件补充默认处理空间声明，执行 `hand align` 后可参与 world 训练。完整当前规则见 [数据契约](contracts.md) 与 [米制采集说明](world-landmark-capture.md)，下方“未自动接入训练”等描述属于初次合并时的历史状态。
+
 ## 新增工作流
 
 ```powershell

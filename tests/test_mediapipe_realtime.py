@@ -181,7 +181,7 @@ class MediaPipeRealtimeTests(unittest.TestCase):
         for i in range(3):
             processor.process_frame(raw_frame(i))
         right = align_palm_local_coordinates(ensure_hand25(raw_frame(3)["right"]), self.bases["right"])
-        with patch("teleoperation.retargeting.hand.processing.align_palm_local_coordinates",
+        with patch("teleoperation.retargeting.hand.processing.align_mediapipe_hand",
                    side_effect=[PalmBasisError("degenerate source"), right]):
             payload = processor.process_frame(raw_frame(3))
         self.assertIsNone(payload["hands"]["left"])
@@ -206,8 +206,8 @@ class MediaPipeRealtimeTests(unittest.TestCase):
                 for side in SIDES:
                     np.testing.assert_array_equal(frame.hands[side], processor.current_hands[side])
                 return original_append(frame)
-            with patch("teleoperation.retargeting.hand.processing.ensure_hand25", side_effect=convert), \
-                 patch("teleoperation.retargeting.hand.processing.align_palm_local_coordinates", side_effect=align), \
+            with patch("teleoperation.retargeting.hand.topology.ensure_hand25", side_effect=convert), \
+                 patch("teleoperation.retargeting.hand.coordinates.align_palm_local_coordinates", side_effect=align), \
                  patch.object(processor.buffer, "append", side_effect=append), \
                  patch("teleoperation.retargeting.hand.tracking.HandIdentityTracker", side_effect=AssertionError("identity tracker called")), \
                  patch("teleoperation.retargeting.hand.coordinates.align_source_hand_coordinates", side_effect=AssertionError("legacy alignment called")):
@@ -244,7 +244,7 @@ class MediaPipeRealtimeTests(unittest.TestCase):
         ]
         with patch("teleoperation.applications.hand_realtime.MediaPipeCameraInput", return_value=raw) as camera, \
              patch("teleoperation.applications.hand_realtime.time.time", side_effect=[100, 100.1, 100.2, 100.3]):
-            with MediaPipeCameraWorkflow("model.task", camera_index=2) as adapter:
+            with MediaPipeCameraWorkflow("model.task", camera_index=2, landmark_space="normalized") as adapter:
                 self.assertIsNone(adapter.next_input())
                 self.assertIsNone(adapter.next_input())
                 payload = adapter.next_input()
@@ -272,7 +272,7 @@ class MediaPipeRealtimeTests(unittest.TestCase):
             for frame in (raw_frame(i) for i in range(3))
         ] + [RuntimeError("capture failed")]
         with patch("teleoperation.applications.hand_realtime.MediaPipeCameraInput", return_value=raw):
-            adapter = MediaPipeCameraWorkflow("model.task")
+            adapter = MediaPipeCameraWorkflow("model.task", landmark_space="normalized")
             for _ in range(3):
                 adapter.next_input()
             with self.assertRaisesRegex(RuntimeError, "capture failed"):
@@ -312,7 +312,7 @@ class MediaPipeRealtimeTests(unittest.TestCase):
 
     def test_checkpoint_loader_always_requests_palm_local_alignment(self):
         with patch("teleoperation.retargeting.hand.predictor.create_twohand_retargeter") as create:
-            load_palm_local_retargeter()
+            load_palm_local_retargeter(landmark_space="normalized")
         self.assertEqual(create.call_args.kwargs["checkpoint_path"], str(PALM_LOCAL_V2_CHECKPOINT))
         self.assertEqual(create.call_args.kwargs["expected_coordinate_alignment"], PALM_LOCAL_COORDINATE_ALIGNMENT)
 
@@ -322,7 +322,7 @@ class MediaPipeRealtimeTests(unittest.TestCase):
                  patch("teleoperation.retargeting.hand.predictor.build_hand_model", return_value=torch.nn.Linear(1, 1)), \
                  patch("teleoperation.retargeting.hand.checkpoint.read_checkpoint", return_value={"coordinate_alignment": alignment}):
                 with self.assertRaisesRegex(ValueError, "alignment"):
-                    load_palm_local_retargeter()
+                    load_palm_local_retargeter(landmark_space="normalized")
 
 
 @unittest.skipUnless(PALM_LOCAL_V2_CHECKPOINT.is_file(), "local palm_local_v2 checkpoint unavailable")
@@ -331,7 +331,7 @@ class PalmLocalV2AngleEquivalenceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.previous_threads = torch.get_num_threads()
         torch.set_num_threads(1)
-        cls.model = load_palm_local_retargeter()
+        cls.model = load_palm_local_retargeter(landmark_space="normalized")
         cls.bases = {side: build_l21_reference_basis(side) for side in SIDES}
 
     @classmethod

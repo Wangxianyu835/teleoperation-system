@@ -123,6 +123,7 @@ def write_hand_body_recording(
     attributes = {
         "dataset_format_version": FORMAT_VERSION,
         "source_landmark_space": "mediapipe_normalized",
+        "hand_processing_landmark_space": "mediapipe_world_meters",
         "hand_landmark_space": "mediapipe_normalized",
         "hand_world_landmark_space": "mediapipe_world_meters",
         "hand_world_origin": "hand_geometric_center",

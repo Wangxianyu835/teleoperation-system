@@ -127,7 +127,39 @@ Legacy 保留原 CanonicalHandProcessor 的拓扑、wrist-relative 与 identity 
 坐标标识：
 
 - `source_to_l21_xyz`：既有 legacy 数学。
-- `palm_local_to_l21_v1`：当前 palm-local 数学。
+- `palm_local_to_l21_v1`：归一化 MediaPipe 的既有 palm-local 数学。
+- `mediapipe_world_palm_local_to_l21_v1`：米制 MediaPipe world，腕部相对、掌面旋转到对应侧 L21，尺度固定 `1.0`。
+
+### MediaPipe world 手部契约
+
+`RawHandFrame.hands` 保持归一化 21 点，`world_hands` 保存同一次检测、同一手索引的米制 21 点。输入层 `include_world=True` 不替换 hands，不做空间转换。
+raw metadata 的 `source_landmark_space=mediapipe_normalized` 描述 hands；`world_landmark_space=mediapipe_world_meters`、`world_length_unit=m`、`world_origin=hand_geometric_center` 描述 world_hands。
+归一化数据和 world 数据独立判定有效性，因此坏 world 点不会被归一化点替代，归一化预览也可保留。
+
+`hand record` 原始 H5 的主字段 `left_hand_keypoints/right_hand_keypoints` 为归一化 `(T,21,3)`，新增 `left_world_landmarks/right_world_landmarks` 为米制 `(T,21,3)`。
+world 字段的 dataset attrs 声明 `source_landmark_space=mediapipe_world_meters`、`length_unit=m`、`origin=hand_geometric_center`；root 使用 `hand_world_landmark_space`、`world_length_unit`、`hand_world_origin`。
+`hand_processing_landmark_space` 用 `mediapipe_world_meters` 或 `mediapipe_normalized` 指定默认处理来源，**不改变主字段的含义**。raw 缺手保存全零行，时间戳为 Unix 秒。
+`record-world` 保留身体字段、NaN 缺失编码和 Unix 毫秒时间戳，只补充默认处理空间 world 的声明。
+
+`hand align --landmark-space world|normalized` 可显式选择来源；省略参数时读取上述 root 声明，旧文件没有声明则选择 normalized。
+world 对齐要求两套 world dataset 均存在，并声明米制来源；单侧零行、非有限值和退化掌面变为无效零行，整套字段缺失时报错。
+新输出另存为训练 H5：主字段成为所选来源的 `(T,25,3)`；原始 world 21 点及身体字段原样复制。原始文件保持不变，拒绝对已声明 alignment 的输入再次对齐。
+
+world 对齐 H5、CanonicalHandFrame、HandWindow 和 checkpoint 必须共同声明：
+
+```text
+coordinate_frame = l21
+coordinate_alignment = mediapipe_world_palm_local_to_l21_v1
+source_landmark_space = mediapipe_world_meters
+length_unit = m
+units = m
+source_scale = 1.0
+```
+
+坐标是腕部相对的米制坐标，保留原人手几何尺寸，只进行平移和旋转。MediaPipe 手部几何中心原点不能当作相机或身体的全局原点。
+world Dataset 不重新对齐、重新缩放或身份重分配；实时窗口独立按侧清空，失效恢复后需要连续三帧。
+world 数据的额外输入缩放、非米制单位和不完整 checkpoint 声明均报错。normalized palm-local 允许历史 checkpoint 缺少来源声明，但拒绝将显式 world 来源配到 normalized 契约。
+训练和导出只认文件声明，初始化模型和实时模型都必须与输入契约匹配；交叉使用在加载权重或调用模型前拒绝。
 
 checkpoint 必须使用原有严格 state_dict 加载和相同 coordinate_alignment guard；保留参数名称和网络结构。不会通过迁移重新训练或补写历史声明。
 

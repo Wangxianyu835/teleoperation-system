@@ -7,6 +7,7 @@ DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "check
 DEFAULT_OUTPUT_H5 = PROJECT_ROOT / "outputs" / "hand_retargeting" / "twohand_angles.h5"
 DEFAULT_REALTIME_SNAPSHOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "mediapipe_realtime.png"
 DEFAULT_REALTIME_CHECKPOINT = DEFAULT_CHECKPOINT_ROOT / "models/twohand_h5/linker/palm_local_v2/model_best.pth"
+DEFAULT_WORLD_REALTIME_CHECKPOINT = DEFAULT_CHECKPOINT_ROOT / "models/twohand_h5/linker/world_palm_local_v1/model_best.pth"
 DEFAULT_MEDIAPIPE_ASSET = PROJECT_ROOT / "datasets" / "hand_landmarker.task"
 DEFAULT_POSE_ASSET = PROJECT_ROOT / "datasets" / "pose_landmarker_lite.task"
 DEFAULT_WORLD_CAPTURE_DIR = PROJECT_ROOT / "outputs" / "hand_body_capture"
@@ -16,3 +17,11 @@ DEFAULT_WARMSTART_CHECKPOINT = None
 
 DEFAULT_TRON2A_URDF = PROJECT_ROOT / "third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf"
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
+
+
+def realtime_checkpoint(landmark_space):
+    if landmark_space == "world":
+        return DEFAULT_WORLD_REALTIME_CHECKPOINT
+    if landmark_space == "normalized":
+        return DEFAULT_REALTIME_CHECKPOINT
+    raise ValueError(f"Unsupported landmark space: {landmark_space!r}")

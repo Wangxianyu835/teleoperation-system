@@ -19,8 +19,8 @@ SIDES = ("left", "right")
 class MediaPipePalmLocalPipeline:
     """Shared hand/dual composition; alignment always precedes buffering."""
 
-    def __init__(self):
-        self.processor = MediaPipePalmLocalProcessor()
+    def __init__(self, landmark_space="normalized"):
+        self.processor = MediaPipePalmLocalProcessor(landmark_space)
         self.buffer = TemporalBuffer()
 
     @property
@@ -31,15 +31,20 @@ class MediaPipePalmLocalPipeline:
     def invalid_reasons(self): return self.processor.invalid_reasons
 
     def process_observation(self, frame):
-        raw = frame if isinstance(frame, RawHandFrame) else RawHandFrame(
-            {side: frame[side] for side in SIDES}, frame.get("timestamp"),
-            "mediapipe_approx", frame.get("metadata", {}),
-        )
-        if "coordinate_alignment" in raw.metadata or raw.metadata.get("coordinate_frame") == "l21":
+        try:
+            raw = frame if isinstance(frame, RawHandFrame) else RawHandFrame(
+                {side: frame[side] for side in SIDES}, frame.get("timestamp"),
+                "mediapipe_approx", frame.get("metadata", {}),
+                world_hands=({side: frame.get(f"world_{side}") for side in SIDES}
+                             if "world_left" in frame and "world_right" in frame else None),
+            )
+            if "coordinate_alignment" in raw.metadata or raw.metadata.get("coordinate_frame") == "l21":
+                raise ValueError("MediaPipe palm-local preprocessing requires raw input; refusing to align already declared coordinates")
+            canonical = self.processor.process_frame(raw)
+            return self.buffer.append(canonical), canonical
+        except (TypeError, ValueError, KeyError):
             self.reset()
-            raise ValueError("MediaPipe palm-local preprocessing requires raw input; refusing to align already declared coordinates")
-        canonical = self.processor.process_frame(raw)
-        return self.buffer.append(canonical), canonical
+            raise
 
     def process_window(self, frame):
         return self.process_observation(frame)[0]

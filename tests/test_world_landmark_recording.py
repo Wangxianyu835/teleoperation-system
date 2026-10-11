@@ -100,6 +100,7 @@ class CombinedCaptureTests(unittest.TestCase):
         self.assertEqual(arrays["left_arm_keypoints"].shape, (2, 3, 3))
         self.assertEqual(arrays["left_arm_world_keypoints"].shape, (2, 3, 3))
         self.assertEqual(attributes["source_landmark_space"], "mediapipe_normalized")
+        self.assertEqual(attributes["hand_processing_landmark_space"], "mediapipe_world_meters")
         self.assertEqual(attributes["hand_world_landmark_space"], "mediapipe_world_meters")
         self.assertEqual(attributes["arm_world_space"], "mediapipe_pose_world_meters")
         self.assertEqual(attributes["length_unit"], "m")

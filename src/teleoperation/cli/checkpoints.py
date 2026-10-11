@@ -23,6 +23,8 @@ class CheckpointArgumentParser(argparse.ArgumentParser):
             names = [stem + name for name in ("checkpoint", "left_checkpoint", "right_checkpoint")]
             values = [getattr(parsed, name) for name in names]
             if all(value is None for value in values):
+                if isinstance(default, dict):
+                    default = default[parsed.landmark_space]
                 values[0] = default
                 setattr(parsed, names[0], default)
             try:

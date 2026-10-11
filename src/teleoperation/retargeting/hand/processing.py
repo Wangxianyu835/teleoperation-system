@@ -4,8 +4,8 @@ from teleoperation.contracts.hand import CanonicalHandFrame
 from teleoperation.contracts.observations import RawHandFrame
 from .tracking import HandIdentityTracker, _is_trackable_hand, DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
 from .topology import ensure_hand25, visionpro_fingers_to_points
-from teleoperation.contracts.coordinates import PALM_LOCAL_METADATA
-from .coordinates import align_palm_local_coordinates, build_l21_reference_basis
+from teleoperation.contracts.coordinates import palm_local_metadata, WORLD_LANDMARK_SPACE
+from .coordinates import align_mediapipe_hand, build_l21_reference_basis
 
 
 class CanonicalHandProcessor:
@@ -47,7 +47,13 @@ SIDES = ("left", "right")
 class MediaPipePalmLocalProcessor:
     """Camera-independent processing of the raw input's single-frame mapping."""
 
-    def __init__(self):
+    def __init__(self, landmark_space="normalized"):
+        self.landmark_space = landmark_space
+        self.coordinate_metadata = palm_local_metadata(landmark_space)
+        if landmark_space == "world":
+            from .config import L21
+            if L21.training.robot_scale != 1.0:
+                raise ValueError("World processing requires robot_scale=1.0 (URDF metres)")
         # Fatal robot-reference errors propagate before any camera is opened.
         # Each zero-pose robot basis is computed exactly once for this stream.
         self._robot_bases = {side: build_l21_reference_basis(side) for side in SIDES}
@@ -62,10 +68,27 @@ class MediaPipePalmLocalProcessor:
         current_hands exposes this frame's aligned (25,3) values for smoke and
         equivalence checks. It never holds an old frame on invalid input.
         """
+        if self.landmark_space == "world":
+            if frame.world_hands is None:
+                self.reset()
+                raise ValueError("World processing requires world_hands; normalized fallback is forbidden")
+            if frame.metadata.get("world_landmark_space") != WORLD_LANDMARK_SPACE or frame.metadata.get("world_length_unit") != "m":
+                self.reset()
+                raise ValueError("World input must declare mediapipe_world_meters and world_length_unit='m'")
+            if frame.metadata.get("source_scale", 1.0) != 1.0:
+                self.reset()
+                raise ValueError("World input requires source_scale=1.0")
+            hands = frame.world_hands
+        else:
+            if frame.metadata.get("source_landmark_space", "mediapipe_normalized") != "mediapipe_normalized":
+                self.reset()
+                raise ValueError("Normalized processing requires MediaPipe normalized input")
+            hands = frame.hands
         current = {side: None for side in SIDES}
         for side in SIDES:
-            raw = frame.hands[side]
-            reason = frame.metadata.get("invalid_reasons", {}).get(side, "missing") if raw is None else None
+            raw = hands[side]
+            reason_key = "world_invalid_reasons" if self.landmark_space == "world" else "invalid_reasons"
+            reason = frame.metadata.get(reason_key, {}).get(side, "missing") if raw is None else None
             if raw is not None:
                 try:
                     with np.errstate(over="ignore", invalid="ignore"):
@@ -74,8 +97,7 @@ class MediaPipePalmLocalProcessor:
                             raise ValueError(f"raw shape must be (21,3), got {points.shape}")
                         if not np.isfinite(points).all():
                             raise ValueError("nonfinite raw landmarks")
-                        points25 = ensure_hand25(points)
-                        aligned = align_palm_local_coordinates(points25, self._robot_bases[side])
+                        aligned = align_mediapipe_hand(points, self._robot_bases[side])
                     if aligned.shape != (25, 3) or not np.isfinite(aligned).all() or not np.any(aligned):
                         reason = "invalid or degenerate palm-local frame"
                     else:
@@ -93,7 +115,7 @@ class MediaPipePalmLocalProcessor:
         self.current_hands = current
         metadata = {
             **frame.metadata,
-            **PALM_LOCAL_METADATA,
+            **self.coordinate_metadata,
             "identity_tracking": False,
             "hand_valid": {side: current[side] is not None for side in SIDES},
             "invalid_reasons": dict(self.invalid_reasons),

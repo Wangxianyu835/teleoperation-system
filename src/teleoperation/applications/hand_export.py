@@ -12,7 +12,7 @@ import torch
 
 from teleoperation.retargeting.hand.device import resolve_device as _resolve_device
 from teleoperation.retargeting.hand.config import ANGLE_LIMITS, L21, RUNTIME
-from teleoperation.paths import DEFAULT_CHECKPOINT, DEFAULT_INPUT_H5, DEFAULT_OUTPUT_H5
+from teleoperation.paths import DEFAULT_CHECKPOINT, DEFAULT_WORLD_REALTIME_CHECKPOINT
 from teleoperation.learning.dataset import (
     HAND_SIDES,
     TwoHandH5ChunkedGenerator,
@@ -25,7 +25,6 @@ from .hand_checkpoints import checkpoint_options, checkpoint_metadata, checkpoin
 
 def run(args: argparse.Namespace) -> int:
     device = _resolve_device(args.device)
-    checkpoints = checkpoint_options(args)
     dataset = TwoHandH5Dataset(
         args.input,
         receptive_field=L21.model.receptive_field,
@@ -36,6 +35,10 @@ def run(args: argparse.Namespace) -> int:
         max_shape_rmse=args.max_shape_rmse,
     )
     coordinate_alignment = dataset.coordinate_alignment
+    if dataset.is_world and L21.training.robot_scale != 1.0:
+        raise ValueError("World export requires robot_scale=1.0 (URDF metres)")
+    checkpoints = checkpoint_options(args, default=(DEFAULT_WORLD_REALTIME_CHECKPOINT
+                                                   if dataset.is_world else DEFAULT_CHECKPOINT))
     retargeter = create_twohand_retargeter(
         model_kwargs=_model_kwargs(),
         device=device,
@@ -52,11 +55,13 @@ def run(args: argparse.Namespace) -> int:
     metadata = {
         "input_file": str(args.input), **checkpoint_metadata(checkpoints),
         "output_shape": (L21.model.output_joints,), "coordinate_frame": dataset.coordinate_frame,
-        "coordinate_alignment": coordinate_alignment, "identity_tracking": not args.disable_identity_tracking,
+        "coordinate_alignment": coordinate_alignment, "identity_tracking": dataset.track_identity,
         "max_center_displacement": args.max_center_displacement, "max_shape_rmse": args.max_shape_rmse,
         "invalid_angle_policy": "hold_previous",
     }
     if dataset.source_landmark_space is not None: metadata["source_landmark_space"] = dataset.source_landmark_space
+    if dataset.is_world:
+        metadata.update({"length_unit": "m", "units": "m", "source_scale": 1.0})
     write_hand_angles(output_path, dataset.frame_ids, dataset.timestamps, angles, valid, metadata)
 
     print(f"device={device}")

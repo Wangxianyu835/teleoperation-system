@@ -1,4 +1,4 @@
-"""Show live raw hands, palm-local windows, and palm_local_v2 L21 predictions.
+"""Show live normalized previews, selected palm-local windows and L21 FK.
 
 Two rows (left/right), three columns (raw image XY / palm-local / L21 FK).
 Missing sides clear immediately; the robot panel waits for three new valid
@@ -22,7 +22,7 @@ import numpy as np
 import torch
 
 from teleoperation.retargeting.hand.kinematics import create_hand_kinematics
-from teleoperation.paths import DEFAULT_REALTIME_SNAPSHOT
+from teleoperation.paths import DEFAULT_REALTIME_SNAPSHOT, realtime_checkpoint
 from teleoperation.retargeting.hand.config import L21
 from teleoperation.applications.hand_realtime import (
     MediaPipeCameraWorkflow,
@@ -69,13 +69,13 @@ def run(args):
     try:
         if args.device == "cpu":
             torch.set_num_threads(1)
-        checkpoints = checkpoint_options(args)
-        model = load_palm_local_retargeter(device=args.device, **checkpoints)
+        checkpoints = checkpoint_options(args, default=realtime_checkpoint(args.landmark_space))
+        model = load_palm_local_retargeter(device=args.device, landmark_space=args.landmark_space, **checkpoints)
         retargeter = PoseTransformerRetargeter(model, args.device)
         fk = make_fk()
         print(f"{checkpoint_description(checkpoints)}\nCamera: {args.camera_index}\n"
               "q/Esc quit; missing sides are cleared without holding old poses.", flush=True)
-        with MediaPipeCameraWorkflow(args.model_asset_path, args.camera_index) as camera:
+        with MediaPipeCameraWorkflow(args.model_asset_path, args.camera_index, landmark_space=args.landmark_space) as camera:
             if not args.headless:
                 cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
                 created_window = True

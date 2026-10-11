@@ -70,7 +70,7 @@ class CliIntegrationTests(unittest.TestCase):
         with mock.patch("teleoperation.applications.hand_realtime.MediaPipeCameraInput", return_value=capture), \
                 mock.patch("teleoperation.applications.hand_realtime.load_palm_local_retargeter", return_value=TwoHandRetargeter(model)), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(main(["hand", "realtime", "--frames", "7"]), 0)
+            self.assertEqual(main(["hand", "realtime", "--landmark-space", "normalized", "--frames", "7"]), 0)
         capture.close.assert_called_once()
         self.assertEqual(capture.next_observation.call_count, 7)
         self.assertEqual(model.forward_calls, 7)  # left: 2; right: 5
@@ -93,7 +93,7 @@ class CliIntegrationTests(unittest.TestCase):
                     mock.patch.object(cv2, "namedWindow", side_effect=AssertionError("headless opened GUI")), \
                     contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(main([
-                    "hand", "realtime", "--visualize", "--headless", "--frames", "7", "--snapshot", str(image),
+                    "hand", "realtime", "--landmark-space", "normalized", "--visualize", "--headless", "--frames", "7", "--snapshot", str(image),
                 ]), 0)
             self.assertTrue(image.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
             decoded = cv2.imdecode(np.fromfile(str(image), dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -130,7 +130,7 @@ class CliIntegrationTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(cv2, "getWindowProperty", return_value=1))
             save = stack.enter_context(mock.patch.object(visualization, "save_png"))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
-            self.assertEqual(main(["hand", "realtime", "--visualize", "--frames", "1"]), 0)
+            self.assertEqual(main(["hand", "realtime", "--landmark-space", "normalized", "--visualize", "--frames", "1"]), 0)
             self.assertEqual(save.call_count, 1)
             self.assertEqual(save.call_args.args[0], DEFAULT_REALTIME_SNAPSHOT)
             cv2.destroyAllWindows.assert_called_once()

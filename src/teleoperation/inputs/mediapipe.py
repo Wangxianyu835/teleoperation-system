@@ -82,6 +82,7 @@ remain in MediaPipe's metre-based world space.
     world_hands = {"left": None, "right": None}
     seen_sides = set()
     invalid_reasons = {}
+    world_invalid_reasons = {}
     try:
         landmarks = result.hand_landmarks
         handedness = result.handedness
@@ -107,20 +108,20 @@ remain in MediaPipe's metre-based world space.
                 hands[side] = None
                 world_hands[side] = None
                 invalid_reasons[side] = message
+                world_invalid_reasons[side] = message
                 continue
             seen_sides.add(side)
-            try:
-                hands[side] = _landmark_array(hand_landmarks, side)
-                if include_world:
-                    world_hands[side] = _landmark_array(
-                        world_landmarks[index], f"{side} world"
-                    )
-            except (AttributeError, TypeError, ValueError, OverflowError) as error:
-                if not invalid_hand_as_missing:
-                    raise
-                hands[side] = None
-                world_hands[side] = None
-                invalid_reasons[side] = str(error)
+            copies = [(hands, hand_landmarks, invalid_reasons, side)]
+            if include_world:
+                copies.append((world_hands, world_landmarks[index], world_invalid_reasons, f"{side} world"))
+            for destination, landmarks_for_space, reasons, description in copies:
+                try:
+                    destination[side] = _landmark_array(landmarks_for_space, description)
+                except (AttributeError, TypeError, ValueError, OverflowError) as error:
+                    if not invalid_hand_as_missing:
+                        raise
+                    destination[side] = None
+                    reasons[side] = str(error)
     except (AttributeError, IndexError, TypeError, OverflowError) as error:
         raise ValueError("Malformed MediaPipe landmarks or handedness") from error
     output = {
@@ -142,6 +143,7 @@ remain in MediaPipe's metre-based world space.
             "world_landmark_space": "mediapipe_world_meters",
             "world_length_unit": "m",
             "world_origin": "hand_geometric_center",
+            **({"world_invalid_reasons": world_invalid_reasons} if world_invalid_reasons else {}),
         })
     return output
 

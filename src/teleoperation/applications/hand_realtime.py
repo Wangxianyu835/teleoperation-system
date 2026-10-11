@@ -2,7 +2,8 @@
 
 Identity tracking is disabled: MediaPipe handedness is used directly. Each
 invalid side resets immediately and independently; no historical frame or basis
-is reused. The demo loads palm_local_v2 and prints 18D outputs without sending
+is reused. World metres are the default; normalized uses palm_local_v2.
+The demo prints 18D outputs without sending
 commands or recording data.
 """
 
@@ -14,15 +15,13 @@ import time
 
 import numpy as np
 
-from teleoperation.contracts.coordinates import PALM_LOCAL_COORDINATE_ALIGNMENT, PALM_LOCAL_METADATA
-from teleoperation.retargeting.hand.coordinates import align_palm_local_coordinates, build_l21_reference_basis
+from teleoperation.contracts.coordinates import palm_local_metadata
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
 from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
-from teleoperation.retargeting.hand.topology import MEDIAPIPE_APPROX_SOURCE, ensure_hand25
 
 
-from teleoperation.paths import DEFAULT_REALTIME_CHECKPOINT, DEFAULT_MEDIAPIPE_ASSET
-from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM, RUNTIME
+from teleoperation.paths import DEFAULT_REALTIME_CHECKPOINT, realtime_checkpoint
+from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM
 
 PALM_LOCAL_V2_CHECKPOINT = DEFAULT_REALTIME_CHECKPOINT
 SIDES = ("left", "right")
@@ -48,13 +47,15 @@ class MediaPipeCameraWorkflow:
         min_confidence: float = 0.5,
         max_center_displacement: float = DEFAULT_MAX_CENTER_DISPLACEMENT,
         max_shape_rmse: float = DEFAULT_MAX_SHAPE_RMSE,
+        landmark_space: str = "world",
     ):
         if scale_factor != 1.0:
             raise ValueError("MediaPipe palm-local realtime requires scale_factor=1.0")
         if min_confidence != 0.5:
             raise ValueError("MediaPipeCameraInput uses fixed min_confidence=0.5")
         self.model_asset_path = Path(model_asset_path)
-        self.pipeline = MediaPipePalmLocalPipeline()
+        self.landmark_space = landmark_space
+        self.pipeline = MediaPipePalmLocalPipeline(landmark_space)
         self.processor = self.pipeline.processor
         self.last_raw_frame = None
         self._input = MediaPipeCameraInput(
@@ -66,7 +67,8 @@ class MediaPipeCameraWorkflow:
 
     def next_window(self):
         try:
-            raw = self._input.next_observation()
+            raw = (self._input.next_observation(include_world=True) if self.landmark_space == "world"
+                   else self._input.next_observation())
             raw_frame = {**raw.hands, "timestamp": raw.timestamp, "metadata": dict(raw.metadata)}
             self.last_raw_frame = raw_frame
             frame = {
@@ -78,6 +80,8 @@ class MediaPipeCameraWorkflow:
                     "timestamp_unit": "relative_seconds",
                 },
             }
+            if raw.world_hands is not None:
+                frame.update({"world_" + side: raw.world_hands[side] for side in SIDES})
             return self.pipeline.process_window(frame)
         except BaseException:
             self.last_raw_frame = None
@@ -99,25 +103,33 @@ class MediaPipeCameraWorkflow:
         self.release()
 
 
-def load_palm_local_retargeter(checkpoint_path=None, device="cpu", *, left_checkpoint=None, right_checkpoint=None):
+def load_palm_local_retargeter(checkpoint_path=None, device="cpu", *, left_checkpoint=None, right_checkpoint=None,
+                               landmark_space="world"):
     """Load the existing model and enforce the palm-local checkpoint contract."""
     from teleoperation.retargeting.hand.config import L21
     from teleoperation.retargeting.hand.predictor import create_twohand_retargeter
 
     if checkpoint_path is None and left_checkpoint is None and right_checkpoint is None:
-        checkpoint_path = PALM_LOCAL_V2_CHECKPOINT
-    return create_twohand_retargeter(
-        L21.model_kwargs(), device,
-        checkpoint_path=None if checkpoint_path is None else str(checkpoint_path),
-        left_checkpoint=None if left_checkpoint is None else str(left_checkpoint),
-        right_checkpoint=None if right_checkpoint is None else str(right_checkpoint),
-        expected_coordinate_alignment=PALM_LOCAL_COORDINATE_ALIGNMENT,
-    ).eval()
+        checkpoint_path = realtime_checkpoint(landmark_space)
+    metadata = palm_local_metadata(landmark_space)
+    try:
+        return create_twohand_retargeter(
+            L21.model_kwargs(), device,
+            checkpoint_path=None if checkpoint_path is None else str(checkpoint_path),
+            left_checkpoint=None if left_checkpoint is None else str(left_checkpoint),
+            right_checkpoint=None if right_checkpoint is None else str(right_checkpoint),
+            expected_coordinate_alignment=metadata["coordinate_alignment"],
+        ).eval()
+    except FileNotFoundError as error:
+        experiment = "world_palm_local_v1" if landmark_space == "world" else "palm_local_v2"
+        raise FileNotFoundError(f"{error}. Train a matching model: python -m teleoperation hand train "
+                                f"--input <aligned_{landmark_space}.h5> --run-name {experiment}") from error
 
 
 def run(args: argparse.Namespace) -> int:
     from .hand_checkpoints import checkpoint_options, checkpoint_description
-    checkpoints = checkpoint_options(args)
+    mode = args.landmark_space
+    checkpoints = checkpoint_options(args, default=realtime_checkpoint(mode))
     if args.frames < 0 or (args.frames == 0 and (not args.visualize or args.headless)):
         raise ValueError("--frames must be positive except for interactive visualization")
     if not args.visualize and (args.headless or args.snapshot is not None):
@@ -142,11 +154,11 @@ def run(args: argparse.Namespace) -> int:
 
         if args.device == "cpu":
             torch.set_num_threads(1)
-        model = load_palm_local_retargeter(device=args.device, **checkpoints)
+        model = load_palm_local_retargeter(device=args.device, landmark_space=mode, **checkpoints)
         retargeter = PoseTransformerRetargeter(model, args.device)
-        print(f"{checkpoint_description(checkpoints)} alignment={PALM_LOCAL_COORDINATE_ALIGNMENT} identity_tracking=False", flush=True)
+        print(f"{checkpoint_description(checkpoints)} {palm_local_metadata(mode)} identity_tracking=False", flush=True)
         print("Move hands into view, out of view, then back into view to check reset/recovery.", flush=True)
-        with MediaPipeCameraWorkflow(args.model_asset_path, args.camera_index) as camera:
+        with MediaPipeCameraWorkflow(args.model_asset_path, args.camera_index, landmark_space=mode) as camera:
             started = time.perf_counter()
             for _ in range(args.frames):
                 previous_streak = dict(camera.processor.valid_streak)

@@ -2,7 +2,10 @@ from __future__ import annotations
 from pathlib import Path
 import h5py
 import numpy as np
-from teleoperation.contracts.coordinates import COORDINATE_FRAME, validate_coordinate_alignment
+from teleoperation.contracts.coordinates import (
+    COORDINATE_FRAME, validate_coordinate_alignment, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
+    WORLD_LANDMARK_SPACE, NORMALIZED_LANDMARK_SPACE, palm_local_metadata, validate_landmark_contract,
+)
 from teleoperation.contracts.constants import HAND_SIDES, HAND_ANGLE_DIM
 _SIDE_KEYS = {"left": "left_hand_keypoints", "right": "right_hand_keypoints"}
 def _read_coordinate_alignment(source) -> str:
@@ -15,7 +18,9 @@ def _read_coordinate_alignment(source) -> str:
             f"coordinate_frame={COORDINATE_FRAME!r}; got {frame!r}. "
             "Run the align_h5 command first."
         )
-    return validate_coordinate_alignment(source.attrs.get("coordinate_alignment"), "H5")
+    alignment = validate_coordinate_alignment(source.attrs.get("coordinate_alignment"), "H5")
+    validate_landmark_contract(alignment, source.attrs, "H5")
+    return alignment
 
 
 def read_coordinate_alignment(path: str | Path) -> str:
@@ -200,15 +205,39 @@ def _validate_source_landmark_space(container) -> None:
         )
 
 
-def read_alignment_input(path):
+def read_alignment_input(path, landmark_space=None, *, return_metadata=False):
     with h5py.File(path, "r") as source:
         _validate_coordinate_metadata(source)
         frame_ids, _, raw = load_twohand_h5(path, require_aligned=False)
         if frame_ids.size == 0: raise ValueError("Input H5 contains no frames")
+        if landmark_space is None:
+            declared = source.attrs.get("hand_processing_landmark_space", NORMALIZED_LANDMARK_SPACE)
+            if isinstance(declared, bytes): declared = declared.decode("utf-8")
+            modes = {NORMALIZED_LANDMARK_SPACE: "normalized", WORLD_LANDMARK_SPACE: "world"}
+            if declared not in modes:
+                raise ValueError(f"Unknown hand_processing_landmark_space: {declared!r}")
+            landmark_space = modes[declared]
+        metadata = palm_local_metadata(landmark_space)
+        if landmark_space == "world":
+            names = {side: f"{side}_world_landmarks" for side in ("left", "right")}
+            if any(name not in source for name in names.values()):
+                raise ValueError("World alignment requires left_world_landmarks and right_world_landmarks; re-record or re-detect original images")
+            declared_space = source.attrs.get("hand_world_landmark_space", source.attrs.get("world_landmark_space"))
+            if isinstance(declared_space, bytes): declared_space = declared_space.decode("utf-8")
+            unit = source.attrs.get("world_length_unit", source.attrs.get("length_unit"))
+            if isinstance(unit, bytes): unit = unit.decode("utf-8")
+            if declared_space != WORLD_LANDMARK_SPACE or unit != "m":
+                raise ValueError("Raw world datasets must declare mediapipe_world_meters and metre units")
+            if source.attrs.get("source_scale", 1.0) != 1.0:
+                raise ValueError("Raw world data requires source_scale=1.0")
+            raw = {side: np.asarray(source[name][:], dtype=np.float32) for side, name in names.items()}
+            for side, points in raw.items():
+                if points.shape != (len(frame_ids), 21, 3):
+                    raise ValueError(f"{side} world data must have shape (frames,21,3)")
         if "left_hand_keypoints" not in source:
             group = next(source[key] for key in source if isinstance(source[key], h5py.Group) and "l_glove_pos" in source[key] and "r_glove_pos" in source[key])
             _validate_source_landmark_space(group)
-        return frame_ids, raw
+        return (frame_ids, raw, metadata) if return_metadata else (frame_ids, raw)
 
 
 def write_aligned_copy(input_path, temporary_path, aligned, metadata):
@@ -227,7 +256,21 @@ def write_aligned_copy(input_path, temporary_path, aligned, metadata):
             del container[name]
             dataset = container.create_dataset(name, data=aligned[side], compression="gzip")
             dataset.attrs.update(attributes)
+            dataset.attrs.update({key: metadata[key] for key in
+                                  ("coordinate_frame", "coordinate_alignment", "source_landmark_space")})
+            if metadata["coordinate_alignment"] == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT:
+                dataset.attrs["length_unit"] = "m"
+                dataset.attrs["origin"] = "wrist"
+                dataset.attrs["source_scale"] = 1.0
         target.attrs.update(metadata)
+        target.attrs["hand_processing_landmark_space"] = metadata["source_landmark_space"]
+        if "hand_landmark_space" in target.attrs:
+            target.attrs["hand_landmark_space"] = metadata["source_landmark_space"]
+        if metadata["coordinate_alignment"] != WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT:
+            # Combined captures have global metre metadata for their world copy;
+            # the primary aligned normalized datasets must not inherit it.
+            for key in ("length_unit", "units", "source_scale"):
+                if key in target.attrs: del target.attrs[key]
         if "source_file" not in target.attrs: target.attrs["source_file"] = str(input_path)
         target.flush()
 
