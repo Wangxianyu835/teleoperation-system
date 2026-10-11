@@ -212,17 +212,4 @@ MediaPipe 需要相应依赖、摄像头与模型文件，录制和实时命令�
 
 手部网络仍输出 18D，去除 root placeholder 后才是 L21 的 17 个执行关节。TRON2A/L21 命令是 48D，H1/GR1/G1 原生动作分别为 38/36/28D。当前没有经过验证的跨机器人手臂转换；原生手回放保持手臂中性姿态。完整实时整机闭环、硬件驱动与录制性能优化仍属于后续功能工作。
 
-## 手动验证
-
-目录迁移时只执行了语法、导入、CLI 帮助、包构建和架构边界检查。后续已执行 current-state 回归与实时坐标修复，实测结果和缺失资源见 [2026-10-09 验收报告](docs/current-state-validation-2026-10-09.md)。
-
-```powershell
-python -m unittest discover -s tests -v
-python -m unittest tests.architecture.test_boundaries -v
-python -m teleoperation replay actions --dummy --steps 120 --robot h1_2 --no-render
-python -m teleoperation replay actions --dummy --steps 120 --robot gr1_t2 --no-render
-python -m teleoperation replay actions --dummy --steps 120 --robot g1 --no-render
-```
-
-完整测试中的 TRON2A 测试需要外部 URDF。可用环境变量 `TRON2A_TEST_URDF` 指定位置；资源缺失仍明确失败，不新增跳过规则。然后检查 CPU 小规模训练、初始化恢复、导出、H5 对齐事务、相机失效恢复和实际回放。
 
