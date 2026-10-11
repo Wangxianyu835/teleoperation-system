@@ -181,6 +181,43 @@ def sim_run(parser):
 def sim_demo_joints(parser):
     parser.set_defaults(_handler="teleoperation.applications.demo.joints:main")
 
+def dual_calibrate_camera(parser):
+    parser.description = (
+        "Capture stable bilateral shoulder-relative Pose world neutral wrists and "
+        "TRON2A URDF FK references. Camera preview only; no robot control. "
+        "Rotation and scale must be configured; neutral capture does not estimate extrinsics."
+    )
+    parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index, help="camera device number")
+    parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET, help="Hands .task model (must exist)")
+    parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET, help="Pose .task model (must exist)")
+    parser.add_argument("--output", type=Path, required=True, help="new calibration JSON; existing files are never overwritten")
+    parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF, help="TRON2A URDF for FK and joint limits; meshes not required")
+    for side in ("left", "right"):
+        parser.add_argument(f"--safe-q-{side}", type=float, nargs=7, required=True,
+                            help=f"{side} reference radians: proximal pitch/roll/yaw, elbow, wrist yaw/pitch/roll; must satisfy URDF limits")
+    parser.add_argument("--rotation", type=float, nargs=9, required=True,
+                        help="explicit proper 3x3 rotation from Pose world to base_Link, row-major; not automatically estimated")
+    parser.add_argument("--scale", type=float, nargs=3, default=[1., 1., 1.], help="positive x/y/z mapping scales (default 1 1 1; configured, not estimated)")
+    parser.add_argument("--translation", type=float, nargs=3, default=[0., 0., 0.], help="extra robot-frame offset in metres (default zero)")
+    parser.add_argument("--workspace-min", type=float, nargs=3, required=True, help="minimum base_Link x/y/z in metres")
+    parser.add_argument("--workspace-max", type=float, nargs=3, required=True, help="maximum base_Link x/y/z in metres")
+    parser.add_argument("--samples", type=int, default=60, help="consecutive stable bilateral valid samples, >=3")
+    parser.add_argument("--pose-min-visibility", type=float, default=0.7, help="minimum visibility of all shoulder/elbow/wrist points, [0,1]")
+    parser.add_argument("--stability-tolerance", type=float, default=0.015, help="maximum elbow/wrist distance from window mean, in shoulder-relative metres")
+    parser.add_argument("--min-elbow-bend", type=float, default=10., help="minimum bend away from straight, degrees; prevents degenerate forearm plane")
+    parser.add_argument("--max-elbow-bend", type=float, default=100., help="maximum allowed neutral elbow bend, degrees")
+    parser.add_argument("--max-sample-gap", type=float, default=0.5, help="maximum gap in relative seconds before restarting collection")
+    parser.add_argument("--max-acceleration", type=float, default=20., help="positive stored joint acceleration limit, rad/s^2; no control in this command")
+    parser.add_argument("--tracking-timeout", type=float, default=0.5, help="positive stored tracking timeout in seconds")
+    parser.add_argument("--max-frames", type=int, default=3000, help="abort after this many camera frames")
+    parser.add_argument("--timeout", type=float, default=120., help="abort collection after relative seconds")
+    parser.add_argument("--width", type=int, default=640, help="requested camera width")
+    parser.add_argument("--height", type=int, default=480, help="requested camera height")
+    parser.add_argument("--fps", type=int, default=30, help="requested capture FPS")
+    parser.add_argument("--preview", action=argparse.BooleanOptionalAction, default=True, help="show unmirrored skeleton/status; q/Esc/window close cancels without saving")
+    parser.set_defaults(_handler="teleoperation.applications.mediapipe_tron2a:run")
+
+
 def dual_export(parser):
     parser = parser
     parser.add_argument("--observations", type=Path, required=True)
