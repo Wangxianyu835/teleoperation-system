@@ -1,4 +1,4 @@
-"""MediaPipe camera neutral calibration and arm-only TRON2A simulation."""
+"""MediaPipe camera neutral calibration and TRON2A arms/hands simulation."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -185,6 +185,14 @@ class CameraRunReport:
                          tracking_within_0_02_m=0, tracking_samples=0)
                          for side in ("left", "right")}, noncontrolled_drift_max_rad=0.)
         self._previous = {}
+        self._hand_previous = {side: dict(detected=None, inference_valid=False, awaiting_recovery=False)
+                               for side in ("left", "right")}
+        if getattr(args, "with_hands", False):
+            self.data["mode"] = "camera_dual_arms_hands_simulation"
+            self.data["hands"] = {side: dict(detected_frames=0, aligned_valid_frames=0,
+                window_ready_frames=0, inference_valid_frames=0, window_wait_frames=0,
+                missing_or_invalid_frames=0, detection_losses=0, detection_recoveries=0,
+                inference_recoveries=0) for side in ("left", "right")}
 
     @staticmethod
     def metric(metrics, name, value):
@@ -251,6 +259,28 @@ class CameraRunReport:
         drift = max((abs(value) for value in actual["noncontrolled_joint_drift"].values()), default=0.)
         self.data["noncontrolled_drift_max_rad"] = max(self.data["noncontrolled_drift_max_rad"], drift)
 
+    def add_hands(self, teleoperator):
+        for side, diag in teleoperator.hand_diagnostics.items():
+            item = self.data["hands"][side]
+            previous = self._hand_previous[side]
+            for flag, count in (("detected", "detected_frames"), ("aligned_valid", "aligned_valid_frames"),
+                                ("window_ready", "window_ready_frames"), ("inference_valid", "inference_valid_frames")):
+                item[count] += int(diag[flag])
+            item["window_wait_frames"] += int(diag["aligned_valid"] and not diag["window_ready"])
+            item["missing_or_invalid_frames"] += int(not diag["aligned_valid"])
+            if previous["detected"] is True and not diag["aligned_valid"]:
+                item["detection_losses"] += 1
+            if previous["detected"] is False and diag["aligned_valid"]:
+                item["detection_recoveries"] += 1
+            if previous["inference_valid"] and not diag["inference_valid"]:
+                previous["awaiting_recovery"] = True
+            if previous["awaiting_recovery"] and diag["inference_valid"]:
+                item["inference_recoveries"] += 1
+                previous["awaiting_recovery"] = False
+            previous.update(detected=diag["aligned_valid"], inference_valid=diag["inference_valid"])
+            item["last"] = dict(diag, control_relative_seconds=teleoperator.last_timestamp,
+                                detection_unix_ms=teleoperator.last_observation.hands.timestamp)
+
     def write(self, path):
         import json
         path = Path(path)
@@ -261,8 +291,20 @@ class CameraRunReport:
 
 
 def _runtime_configuration(args):
-    if not args.arms_only:
-        raise ValueError("This stage requires --arms-only")
+    from teleoperation.contracts.checkpoints import validate_checkpoint_selection
+    with_hands = getattr(args, "with_hands", False)
+    if bool(args.arms_only) == bool(with_hands):
+        raise ValueError("Select exactly one of --arms-only or --with-hands")
+    paths = [getattr(args, name, None) for name in ("checkpoint", "left_checkpoint", "right_checkpoint")]
+    validate_checkpoint_selection(*paths, required=with_hands)
+    if with_hands and args.attach_hands is False:
+        raise ValueError("--with-hands conflicts with --no-attach-hands")
+    if args.attach_hands is None:
+        args.attach_hands = bool(with_hands)
+    if with_hands:
+        for path in paths:
+            if path is not None and not Path(path).is_file():
+                raise FileNotFoundError(f"Hand checkpoint not found: {path}")
     if args.frames < 0 or args.camera_index < 0:
         raise ValueError("Frames and camera index must be non-negative")
     for name in ("width", "height", "fps", "simulation_steps"):
@@ -271,8 +313,8 @@ def _runtime_configuration(args):
     for name in ("model_asset_path", "pose_model_asset_path"):
         if not Path(getattr(args, name)).is_file():
             raise FileNotFoundError(f"{name} not found: {getattr(args, name)}")
-    if Path(args.report).resolve() in {Path(getattr(args, name)).resolve() for name in
-                                      ("calibration", "urdf", "model_asset_path", "pose_model_asset_path")}:
+    inputs = [getattr(args, name) for name in ("calibration", "urdf", "model_asset_path", "pose_model_asset_path")]
+    if Path(args.report).resolve() in {Path(path).resolve() for path in inputs + paths if path is not None}:
         raise ValueError("Report path must not overwrite an input asset")
     if Path(args.report).suffix.lower() != ".json":
         raise ValueError("Report must end with .json")
@@ -287,9 +329,9 @@ def _runtime_configuration(args):
     return calibration, visibility
 
 
-def _runtime_preview(camera, raw, controller, actual, window):
+def _runtime_preview(camera, raw, controller, actual, window, teleoperator=None):
     import cv2
-    from .world_landmark_capture import _draw_landmarks
+    from .world_landmark_capture import _draw_landmarks, HAND_CONNECTIONS
     from teleoperation.retargeting.arm.ik import _pose_matrix, _pose_error
     canvas = camera.last_bgr.copy()
     for row, (side, color) in enumerate((("left", (0, 255, 0)), ("right", (255, 180, 0)))):
@@ -307,33 +349,64 @@ def _runtime_preview(camera, raw, controller, actual, window):
         state = f"EE=({pose[0]:.2f},{pose[1]:.2f},{pose[2]:.2f})m target err={target_error} control err={1000 * control_error:.1f}mm"
         for offset, text in enumerate((status, state)):
             cv2.putText(canvas, text, (10, 23 + row * 52 + offset * 23), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1)
-    cv2.putText(canvas, "TRON2A arms simulation; q/Esc closes", (10, 135), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    if teleoperator is not None:
+        for row, (side, color) in enumerate((("left", (0, 255, 0)), ("right", (255, 180, 0)))):
+            _draw_landmarks(canvas, raw.hands.hands[side], HAND_CONNECTIONS, color, side + "-hand")
+            diag = teleoperator.hand_diagnostics[side]
+            status = (f"{side} hand: detected={int(diag['detected'])} aligned={int(diag['aligned_valid'])} "
+                      f"window={int(diag['window_ready'])} inference={int(diag['inference_valid'])} "
+                      f"streak={diag['valid_streak']}/3")
+            cv2.putText(canvas, status, (10, 135 + row * 23), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1)
+        cv2.putText(canvas, f"device={teleoperator.device}; hand processing={1000 * teleoperator.hand_processing_seconds:.1f}ms",
+                    (10, 181), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1)
+        for row, label in enumerate(getattr(teleoperator, "hand_model_labels", ())):
+            cv2.putText(canvas, label, (10, 204 + row * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (255, 255, 255), 1)
+    footer_y = 211 + 20 * len(getattr(teleoperator, "hand_model_labels", ())) if teleoperator is not None else 135
+    cv2.putText(canvas, "TRON2A simulation; q/Esc closes", (10, footer_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     cv2.imshow(window, canvas)
     key = cv2.waitKey(1) & 0xFF
     return key in (ord("q"), 27) or cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1
 
 
 def run_camera(args):
-    from teleoperation.applications.dual import Tron2ADualArmController
+    from teleoperation.applications.dual import Tron2ADualArmController, DualTeleoperator
     from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
-    camera = world = report = None
+    camera = world = report = teleoperator = None
     preview_open = False
     window = "TRON2A camera arms simulation"
     code = 0
     try:
         calibration, visibility = _runtime_configuration(args)
-        controller = Tron2ADualArmController(calibration, args.urdf, input_mode="camera_world", orientation_mode=args.orientation_mode)
         report = CameraRunReport(args)
+        with_hands = getattr(args, "with_hands", False)
+        if with_hands:
+            from .hand_realtime import load_palm_local_retargeter
+            from .hand_checkpoints import checkpoint_options, checkpoint_metadata, checkpoint_description
+            options = checkpoint_options(args)
+            options = {name: None if path is None else str(Path(path).resolve()) for name, path in options.items()}
+            model = load_palm_local_retargeter(device=args.device, landmark_space="world", **options)
+            teleoperator = DualTeleoperator(model, args.device, calibration, args.urdf,
+                                           input_mode="camera_world", orientation_mode=args.orientation_mode)
+            teleoperator.hand_model_labels = [f"{name}: {'/'.join(Path(path).parts[-4:])}"
+                                              for name, path in checkpoint_metadata(options).items()]
+            controller = teleoperator.arms
+            window = "TRON2A camera dual arms and hands simulation"
+            report.data.update(hand_checkpoints=checkpoint_metadata(options), inference_device=str(args.device),
+                               hand_coordinate_alignment=model.coordinate_alignment, hand_landmark_space="world")
+            print(f"World hand model: {checkpoint_description(options)} device={args.device}", flush=True)
+        else:
+            controller = Tron2ADualArmController(calibration, args.urdf, input_mode="camera_world", orientation_mode=args.orientation_mode)
         report.data.update(orientation_mode=args.orientation_mode, attach_hands=args.attach_hands,
+                           hand_reference_only=not with_hands,
                            extrinsics_calibrated=calibration.metadata.get("extrinsics_calibrated", False))
         world = Tron2ADualArmWorld(args.urdf, gui=args.gui, display=args.display,
                                   attach_hands=args.attach_hands, safe_q=controller.safe_q,
-                                  hand_mount_pose=calibration.hand_mount_pose, hand_reference_only=True)
+                                  hand_mount_pose=calibration.hand_mount_pose, hand_reference_only=not with_hands)
         camera = MediaPipeCameraInput(model_asset_path=args.model_asset_path, camera_index=args.camera_index,
                     width=args.width, height=args.height, fps=args.fps, invalid_hand_as_missing=True,
                     pose_model_asset_path=args.pose_model_asset_path, pose_min_visibility=visibility)
         clock = RelativeControlClock()
-        print("TRON2A arm-only simulation. Start neutral; rotation/scale are configured, not estimated. q/Esc exits preview.", flush=True)
+        print(f"TRON2A {'dual arms and hands' if with_hands else 'arm-only'} simulation. Start neutral; rotation/scale are configured, not estimated. q/Esc exits preview.", flush=True)
         while args.frames == 0 or report.data["frames"] < args.frames:
             if not world.is_connected():
                 report.data["exit_reason"] = "simulation_window_closed"
@@ -348,19 +421,30 @@ def run_camera(args):
                     or raw.hands.timestamp != raw.upper_body.timestamp):
                 raise ValueError("Camera observation source/units or matching detection timestamps invalid")
             seconds = clock.next_seconds()
-            controller.update(raw.upper_body, seconds)
+            if teleoperator is not None:
+                command = teleoperator.update(raw, control_seconds=seconds)
+            else:
+                controller.update(raw.upper_body, seconds)
             controlled = time.perf_counter()
-            world.apply_arms({side: safety.q for side, safety in controller.controllers.items()})
+            if teleoperator is not None:
+                world.apply(command)
+            else:
+                world.apply_arms({side: safety.q for side, safety in controller.controllers.items()})
             for _ in range(args.simulation_steps):
                 world.step()
             actual = world.actual_state()
             simulated = time.perf_counter()
-            report.add(raw, seconds, controller, actual, dict(capture_detection_ms=captured-started,
+            durations = dict(capture_detection_ms=captured-started,
                        retarget_ik_control_ms=controlled-captured, simulation_state_ms=simulated-controlled,
-                       capture_to_actual_ms=simulated-started))
+                       capture_to_actual_ms=simulated-started)
+            if teleoperator is not None:
+                durations["hand_processing_ms"] = teleoperator.hand_processing_seconds
+                report.add_hands(teleoperator)
+            report.add(raw, seconds, controller, actual, durations)
             if args.preview:
                 preview_open = True
-                if _runtime_preview(camera, raw, controller, actual, window):
+                preview_options = {} if teleoperator is None else dict(teleoperator=teleoperator)
+                if _runtime_preview(camera, raw, controller, actual, window, **preview_options):
                     report.data["exit_reason"] = "preview_exit"
                     break
             # GUI and DIRECT both run at capture cadence, without accumulating
@@ -380,12 +464,12 @@ def run_camera(args):
                 report.data["exit_reason"] = "simulation_window_closed"
         else:
             code = 1
-            print(f"Camera arms simulation failed: {error}", flush=True)
+            print(f"Camera TRON2A simulation failed: {error}", flush=True)
             if report is not None:
                 report.data.update(exit_reason="error", error=str(error))
     finally:
         # Every owned resource is closed even if another cleanup operation fails.
-        for resource, method in ((camera, "release"), (world, "close")):
+        for resource, method in ((camera, "release"), (teleoperator, "close"), (world, "close")):
             if resource is not None:
                 try:
                     getattr(resource, method)()

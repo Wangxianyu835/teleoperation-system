@@ -219,10 +219,14 @@ def dual_calibrate_camera(parser):
 
 
 def dual_camera(parser):
-    parser.description = "Realtime MediaPipe Pose world -> TRON2A arms in PyBullet. Requires real camera neutral calibration; no hand retargeting checkpoint."
-    parser.add_argument("--arms-only", action="store_true", required=True, help="explicitly select this stage's arm-only simulation")
+    parser.description = "Realtime camera world -> TRON2A simulation: arms only or dual arms and L21 hands. Requires real neutral calibration."
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--arms-only", action="store_true", help="arm-only simulation; no hand model required")
+    modes.add_argument("--with-hands", action="store_true", help="full control using world hand checkpoints")
+    add_checkpoint_arguments(parser)
+    parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
-    parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET, help="MediaPipe Hands detector .task; no hand retargeting model")
+    parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET, help="MediaPipe Hands detector .task")
     parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET)
     parser.add_argument("--calibration", type=Path, required=True, help="real dual calibrate-camera JSON; synthetic fixtures are rejected")
     parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF)
@@ -230,7 +234,7 @@ def dual_camera(parser):
     parser.add_argument("--display", choices=("full", "simplified"), default="full", help="full requires all meshes; explicitly choose simplified kinematic preview without contact acceptance")
     parser.add_argument("--gui", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--preview", action=argparse.BooleanOptionalAction, default=True, help="camera arm/status preview; q/Esc/window close exits")
-    parser.add_argument("--attach-hands", action=argparse.BooleanOptionalAction, default=False, help="optional L21 geometry held at zero reference joints")
+    parser.add_argument("--attach-hands", action=argparse.BooleanOptionalAction, default=None, help="arms-only defaults off (zero reference geometry); with-hands requires on")
     parser.add_argument("--frames", type=int, default=0, help="0 runs until exit; positive number limits capture frames")
     parser.add_argument("--simulation-steps", type=int, default=8, help="PyBullet 1/240 s steps per camera frame; default 8 for ~30 FPS")
     parser.add_argument("--report", type=Path, default=Path("outputs/dual/camera_report.json"))

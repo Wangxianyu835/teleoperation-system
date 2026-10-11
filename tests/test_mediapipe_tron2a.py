@@ -744,7 +744,7 @@ class CameraRuntimeTests(unittest.TestCase):
             "--model-asset-path", str(self.directory / "hands.task"), "--pose-model-asset-path", str(self.directory / "pose.task"),
             "--display", "simplified", "--no-gui", "--no-preview", "--frames", "2", "--report", str(self.directory / "report.json")])
 
-    def test_help_is_static_and_has_no_checkpoint_option(self):
+    def test_help_is_static_and_lists_both_modes_and_checkpoints(self):
         import contextlib
         import io
         stream = io.StringIO()
@@ -753,7 +753,8 @@ class CameraRuntimeTests(unittest.TestCase):
                 build_parser().parse_args(["dual", "camera", "--help"])
         self.assertEqual(caught.exception.code, 0)
         self.assertIn("--arms-only", stream.getvalue())
-        self.assertNotIn("--checkpoint", stream.getvalue())
+        for option in ("--with-hands", "--checkpoint", "--left-checkpoint", "--right-checkpoint", "--device"):
+            self.assertIn(option, stream.getvalue())
         camera.assert_not_called()
 
     def test_preview_includes_actual_pose_and_separate_tracking_errors(self):
@@ -832,6 +833,377 @@ class CameraRuntimeTests(unittest.TestCase):
             self.assertEqual(application.run_camera(self.args), 0)
         camera.release.assert_called_once(); world.close.assert_called_once()
         self.assertEqual(read_calibration(self.args.report)["exit_reason"], "simulation_window_closed")
+
+
+def dual_world_observation(index=0, left=True, right=True, *, invalid_pose=None):
+    from tests.test_world_hand_pipeline import world_frame, observation as hand_observation
+    hands = hand_observation(world_frame(index, left, right))
+    pose = observation(index, invalid=invalid_pose)
+    hands = replace(hands, metadata={**hands.metadata, **pose.hands.metadata})
+    return RawTeleopObservation(hands, replace(pose.upper_body, timestamp=hands.timestamp))
+
+
+def world_predictor():
+    from teleoperation.contracts.coordinates import WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
+    model = Mock(coordinate_alignment=WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT)
+    def predict(payload, device):
+        return dict(hands={side: None if values is None else np.linspace(0, .3, 18, dtype=np.float32)
+                          for side, values in payload["hands"].items()})
+    model.predict.side_effect = predict
+    return model
+
+
+def trained_world_paths():
+    from teleoperation.paths import PROJECT_ROOT
+    root = PROJECT_ROOT / "outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/world_test_v1"
+    return {side + "_checkpoint": root / side / "model_best.pth" for side in ("left", "right")}
+
+
+class CameraDualTeleoperatorTests(unittest.TestCase):
+    def setUp(self):
+        from teleoperation.applications.dual import DualTeleoperator
+        self.dual = DualTeleoperator(world_predictor(), "cpu", synthetic_calibration(), DEFAULT_TRON2A_URDF,
+                                     input_mode="camera_world")
+        self.addCleanup(self.dual.close)
+
+    def test_three_frame_wait_single_loss_recovery_and_independent_pose(self):
+        commands = [self.dual.update(dual_world_observation(i), control_seconds=i / 30) for i in range(3)]
+        self.assertEqual([c.left_hand_valid for c in commands], [False, False, True])
+        self.assertTrue(all(c.left_arm_valid and c.right_arm_valid for c in commands))
+        held = commands[-1].left_hand.copy()
+        lost = self.dual.update(dual_world_observation(3, left=False), control_seconds=.1)
+        self.assertFalse(lost.left_hand_valid)
+        self.assertTrue(lost.right_hand_valid and lost.left_arm_valid)
+        np.testing.assert_array_equal(lost.left_hand, held)
+        self.assertEqual(self.dual.hand_pipeline.valid_streak["left"], 0)
+        for i in (4, 5, 6):
+            cmd = self.dual.update(dual_world_observation(i, invalid_pose="right"), control_seconds=i / 30)
+            self.assertEqual(cmd.left_hand_valid, i == 6)
+            self.assertTrue(cmd.right_hand_valid and cmd.left_arm_valid)
+            self.assertFalse(cmd.right_arm_valid)
+        raw = dual_world_observation(7)
+        raw.upper_body.world_arms["left"][:] = np.nan
+        cmd = self.dual.update(raw, control_seconds=7 / 30)
+        self.assertTrue(cmd.left_hand_valid and cmd.right_hand_valid and cmd.right_arm_valid)
+        self.assertFalse(cmd.left_arm_valid)
+        self.assertFalse(self.dual.arms.diagnostics["left"]["ik_attempted"])
+
+    def test_seconds_raw_preservation_48d_order_and_array_independence(self):
+        from teleoperation.retargeting.hand.angles import angle18_to_dofs
+        raw = dual_world_observation()
+        original_metadata = dict(raw.hands.metadata)
+        for i in range(3):
+            command = self.dual.update(raw, control_seconds=i * .033)
+        self.assertEqual(command.timestamp, .066)
+        self.assertIs(self.dual.last_observation, raw)
+        self.assertEqual(raw.hands.metadata, original_metadata)
+        self.assertEqual(raw.hands.timestamp, 1_700_000_000_000)
+        payload = self.dual.hand_retargeter.retargeter.predict.call_args.args[0]
+        self.assertEqual(payload["timestamp"], .066)
+        self.assertEqual(payload["metadata"]["raw_timestamp_ms"], raw.hands.timestamp)
+        self.assertEqual(payload["metadata"]["timestamp_unit"], "relative_seconds")
+        flat = command.flatten()
+        self.assertEqual(flat.shape, (48,))
+        self.assertTrue(np.isfinite(flat).all())
+        for name, start, stop in (("left_arm", 0, 7), ("left_hand", 7, 24), ("right_arm", 24, 31), ("right_hand", 31, 48)):
+            np.testing.assert_array_equal(flat[start:stop], getattr(command, name))
+        np.testing.assert_allclose(command.left_hand, angle18_to_dofs(np.linspace(0, .3, 18, dtype=np.float32)))
+        before = command.flatten().copy()
+        self.dual.update(dual_world_observation(3), control_seconds=.1)
+        for side in ("left", "right"):
+            self.dual.controllers[side].q[:] = 0
+            self.dual.hand_q[side][:] = .2
+            self.assertFalse(np.shares_memory(getattr(command, side + "_hand"), self.dual.hand_q[side]))
+            self.assertFalse(np.shares_memory(getattr(command, side + "_arm"), self.dual.controllers[side].q))
+        np.testing.assert_array_equal(command.flatten(), before)
+
+    def test_invalid_times_reject_before_inference_or_arm_state_change(self):
+        self.dual.update(dual_world_observation(), control_seconds=.1)
+        for seconds in (None, .1, .09, -1, np.nan, np.inf, True, "0.2"):
+            q = {s:c.q.copy() for s,c in self.dual.controllers.items()}
+            with self.subTest(seconds=seconds), patch.object(self.dual.arms, "update_side") as arms:
+                with self.assertRaisesRegex(ValueError, "control_seconds"):
+                    self.dual.update(dual_world_observation(1), control_seconds=seconds)
+                arms.assert_not_called()
+            for side in q:
+                np.testing.assert_array_equal(self.dual.controllers[side].q, q[side])
+            self.assertEqual(self.dual.hand_pipeline.valid_streak["left"], 0)
+        self.dual.update(dual_world_observation(2), control_seconds=.2)
+
+    def test_bad_world_contract_and_model_alignment_refuse_normalized_fallback(self):
+        from teleoperation.applications.dual import DualTeleoperator
+        from teleoperation.contracts.coordinates import PALM_LOCAL_COORDINATE_ALIGNMENT
+        for kwargs in (dict(input_mode="invalid"), dict(input_mode="camera_world", hand_preprocessing="palm-local")):
+            with self.assertRaises(ValueError):
+                DualTeleoperator(world_predictor(), "cpu", synthetic_calibration(), DEFAULT_TRON2A_URDF, **kwargs)
+        model = Mock(coordinate_alignment=PALM_LOCAL_COORDINATE_ALIGNMENT)
+        with self.assertRaisesRegex(ValueError, "mismatch"):
+            DualTeleoperator(model, "cpu", synthetic_calibration(), DEFAULT_TRON2A_URDF, input_mode="camera_world")
+        raw = dual_world_observation()
+        with self.assertRaisesRegex(ValueError, "world_hands"):
+            self.dual.update(replace(raw, hands=replace(raw.hands, world_hands=None)), control_seconds=0.)
+        self.dual.close()
+        self.assertEqual(self.dual.hand_pipeline.valid_streak, {"left":0, "right":0})
+        self.assertEqual(self.dual.hand_diagnostics, {})
+
+    def test_ik_failure_keeps_safe_output_and_fingers_continue(self):
+        from types import SimpleNamespace
+        for i in range(2):
+            self.dual.update(dual_world_observation(i), control_seconds=i / 30)
+        with patch.object(self.dual.solvers["left"], "solve", return_value=SimpleNamespace(success=False, q=np.full(7, np.nan))):
+            cmd = self.dual.update(dual_world_observation(2), control_seconds=2 / 30)
+        self.assertFalse(cmd.left_arm_valid)
+        self.assertTrue(cmd.right_arm_valid and cmd.left_hand_valid and cmd.right_hand_valid)
+        self.assertTrue(np.isfinite(cmd.flatten()).all())
+        np.testing.assert_allclose(cmd.left_arm, self.dual.safe_q["left"])
+
+    def test_trained_pair_matches_original_world_alignment_windows_flags_and_angles(self):
+        from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
+        from teleoperation.applications.hand_realtime import load_palm_local_retargeter
+        from teleoperation.retargeting.hand.interface import PoseTransformerRetargeter
+        from teleoperation.retargeting.hand.angles import angle18_to_dofs
+        paths = trained_world_paths()
+        if not all(path.is_file() for path in paths.values()):
+            self.skipTest("world_test_v1 trained pair unavailable: trained-model equivalence unverified")
+        model = load_palm_local_retargeter(device="cpu", landmark_space="world", **paths)
+        self.dual.hand_retargeter = PoseTransformerRetargeter(model, "cpu")
+        pipeline = MediaPipePalmLocalPipeline("world")
+        original = PoseTransformerRetargeter(model, "cpu")
+        for i, left in enumerate((True, True, True, False, True, True, True, True)):
+            raw = dual_world_observation(i, left=left, invalid_pose="right" if i == 7 else None)
+            seconds = i / 30
+            frame = replace(raw.hands, timestamp=seconds, metadata={**raw.hands.metadata,
+                "raw_timestamp_ms":raw.hands.timestamp, "timestamp_unit":"relative_seconds"})
+            window, canonical = pipeline.process_observation(frame)
+            reference = None if window is None else original.retarget(window)
+            with patch.object(self.dual.hand_retargeter, "retarget", wraps=self.dual.hand_retargeter.retarget) as infer:
+                command = self.dual.update(raw, control_seconds=seconds)
+            for side in ("left", "right"):
+                diag = self.dual.hand_diagnostics[side]
+                self.assertEqual(diag["aligned_valid"], canonical.hands[side] is not None)
+                self.assertEqual(diag["valid_streak"], pipeline.valid_streak[side])
+                if canonical.hands[side] is not None:
+                    np.testing.assert_allclose(self.dual.hand_pipeline.current_hands[side], canonical.hands[side], atol=1e-6, rtol=0)
+                expected = None if reference is None else getattr(reference, side + "_angles")
+                self.assertEqual(getattr(command, side + "_hand_valid"), expected is not None)
+                self.assertEqual(diag["window_ready"], window is not None and window.hands[side] is not None)
+                if expected is not None:
+                    np.testing.assert_allclose(infer.call_args.args[0].hands[side], window.hands[side], atol=1e-6, rtol=0)
+                    np.testing.assert_allclose(getattr(command, side + "_hand"), angle18_to_dofs(expected.values), atol=1e-6, rtol=0)
+
+
+class CameraFullRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        CameraRuntimeTests.setUp(self)
+        self.args.arms_only = False
+        self.args.with_hands = True
+        self.args.attach_hands = None
+        self.args.checkpoint = self.directory / "world.pth"
+        self.args.checkpoint.write_bytes(b"loader mocked only in orchestration tests")
+
+    def fake_world(self):
+        world = Mock()
+        world.actual_state.return_value = dict(arms={s: dict(q=q, velocity=np.zeros(7), pose=self.calibration.robot_neutral_pose[s])
+            for s,q in self.calibration.safe_q.items()}, noncontrolled_joint_drift={})
+        return world
+
+    def test_cli_exclusive_modes_checkpoint_selection_and_arms_default(self):
+        import contextlib
+        import io
+        base = ["dual", "camera", "--calibration", "neutral.json"]
+        parser = build_parser()
+        self.assertIsNone(parser.parse_args(base + ["--arms-only"]).checkpoint)
+        for options in ([], ["--arms-only", "--with-hands"],
+                        ["--with-hands", "--left-checkpoint", "left.pth"],
+                        ["--with-hands", "--checkpoint", "shared.pth", "--left-checkpoint", "l.pth", "--right-checkpoint", "r.pth"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args(base + options)
+        paired = parser.parse_args(base + ["--with-hands", "--left-checkpoint", "l.pth", "--right-checkpoint", "r.pth", "--device", "cpu"])
+        self.assertIsNone(paired.checkpoint)
+        self.assertEqual(paired.left_checkpoint, Path("l.pth"))
+
+    def test_bad_full_configuration_rejected_before_camera_or_world(self):
+        for changes in (dict(attach_hands=False), dict(checkpoint=None), dict(checkpoint=Path("missing.pth")),
+                        dict(left_checkpoint=self.args.checkpoint, right_checkpoint=self.args.checkpoint),
+                        dict(report=self.args.checkpoint)):
+            args = type(self.args)(**{**vars(self.args), **changes})
+            with self.subTest(changes=changes), patch.object(application, "MediaPipeCameraInput") as camera, \
+                 patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld") as world:
+                self.assertEqual(application.run_camera(args), 1)
+                camera.assert_not_called(); world.assert_not_called()
+        with patch("teleoperation.applications.hand_realtime.load_palm_local_retargeter", side_effect=ValueError("coordinate mismatch")), \
+             patch.object(application, "MediaPipeCameraInput") as camera, \
+             patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld") as world:
+            self.assertEqual(application.run_camera(self.args), 1)
+            camera.assert_not_called(); world.assert_not_called()
+
+    def test_complete_apply_and_report_loss_recovery_statistics(self):
+        self.args.frames = 7
+        camera, world = Mock(), self.fake_world()
+        camera.next_teleop_observation.side_effect = [dual_world_observation(i, left=i != 3) for i in range(7)]
+        with patch.object(application, "MediaPipeCameraInput", return_value=camera), \
+             patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", return_value=world) as factory, \
+             patch("teleoperation.applications.hand_realtime.load_palm_local_retargeter", return_value=world_predictor()) as loader, \
+             patch.object(application.RelativeControlClock, "next_seconds", side_effect=[i/30 for i in range(7)]), \
+             patch.object(application.time, "sleep"):
+            self.assertEqual(application.run_camera(self.args), 0)
+        self.assertTrue(factory.call_args.kwargs["attach_hands"])
+        self.assertFalse(factory.call_args.kwargs["hand_reference_only"])
+        self.assertEqual(loader.call_args.kwargs["landmark_space"], "world")
+        self.assertEqual(loader.call_args.kwargs["checkpoint_path"], str(self.args.checkpoint.resolve()))
+        world.apply_arms.assert_not_called()
+        self.assertEqual(world.apply.call_count, 7)
+        self.assertEqual(world.step.call_count, 7 * self.args.simulation_steps)
+        self.assertEqual(camera.next_teleop_observation.call_count, 7)
+        commands = [c.args[0] for c in world.apply.call_args_list]
+        self.assertEqual([c.left_hand_valid for c in commands], [False, False, True, False, False, False, True])
+        report = read_calibration(self.args.report)
+        left = report["hands"]["left"]
+        self.assertEqual(left["inference_valid_frames"], 2)
+        self.assertEqual(left["window_wait_frames"], 4)
+        self.assertEqual(left["missing_or_invalid_frames"], 1)
+        self.assertEqual(left["detection_losses"], 1)
+        self.assertEqual(left["detection_recoveries"], 1)
+        self.assertEqual(left["inference_recoveries"], 1)
+        self.assertEqual(report["inference_device"], "cpu")
+        self.assertEqual(report["hands"]["left"]["last"]["detection_unix_ms"], dual_world_observation(6).hands.timestamp)
+        self.assertIn("hand_processing_ms", report["latency"])
+        camera.release.assert_called_once(); world.close.assert_called_once()
+
+    def test_full_preview_shows_independent_hand_states_device_and_weights(self):
+        from teleoperation.applications.dual import DualTeleoperator
+        dual = DualTeleoperator(world_predictor(), "cpu", self.calibration, DEFAULT_TRON2A_URDF, input_mode="camera_world")
+        self.addCleanup(dual.close)
+        for i in range(3):
+            raw = dual_world_observation(i, left=False)
+            dual.update(raw, control_seconds=i/30)
+        dual.hand_model_labels = ["left_checkpoint: world_test_v1/left/model_best.pth"]
+        camera = Mock(last_bgr=np.zeros((480, 640, 3), dtype=np.uint8))
+        with patch("cv2.imshow"), patch("cv2.waitKey", return_value=27), patch("cv2.putText") as text:
+            self.assertTrue(application._runtime_preview(camera, raw, dual.arms, self.fake_world().actual_state(), "test", teleoperator=dual))
+        messages = [call.args[1] for call in text.call_args_list]
+        self.assertTrue(any("left hand: detected=0" in message and "inference=0" in message for message in messages))
+        self.assertTrue(any("right hand: detected=1" in message and "window=1 inference=1" in message for message in messages))
+        self.assertTrue(any("device=cpu" in message for message in messages))
+        self.assertIn(dual.hand_model_labels[0], messages)
+
+    def test_full_lifecycle_initialization_failure_error_cancel_and_restart(self):
+        from teleoperation.applications.dual import DualTeleoperator
+        for failure in ("world", "camera", "capture", "interrupt", "preview", "exit", "cleanup", "report", "normal"):
+            dual = DualTeleoperator(world_predictor(), "cpu", self.calibration, DEFAULT_TRON2A_URDF, input_mode="camera_world")
+            camera, world = Mock(), self.fake_world()
+            self.args.preview = failure in ("preview", "exit")
+            self.args.attach_hands = None
+            if failure == "capture":
+                camera.next_teleop_observation.side_effect = RuntimeError("capture failure")
+            elif failure == "interrupt":
+                camera.next_teleop_observation.side_effect = KeyboardInterrupt()
+            else:
+                camera.next_teleop_observation.side_effect = [dual_world_observation(i) for i in range(2)]
+            if failure == "cleanup":
+                camera.release.side_effect = RuntimeError("release failure")
+            with self.subTest(failure=failure), \
+                 patch("teleoperation.applications.dual.DualTeleoperator", return_value=dual), \
+                 patch.object(dual, "close", wraps=dual.close) as close, \
+                 patch("teleoperation.applications.hand_realtime.load_palm_local_retargeter", return_value=world_predictor()), \
+                 patch.object(application, "MediaPipeCameraInput", return_value=camera,
+                              side_effect=RuntimeError("init failure") if failure == "camera" else None), \
+                 patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", return_value=world,
+                       side_effect=RuntimeError("init failure") if failure == "world" else None), \
+                 patch.object(application, "_runtime_preview", return_value=True,
+                              side_effect=RuntimeError("preview failure") if failure == "preview" else None), \
+                 patch("cv2.destroyWindow"), patch.object(application.time, "sleep"), \
+                 patch.object(application.CameraRunReport, "write", side_effect=OSError("write failure") if failure == "report" else None):
+                expected = 130 if failure == "interrupt" else 0 if failure in ("normal", "exit") else 1
+                self.assertEqual(application.run_camera(self.args), expected)
+                close.assert_called_once()
+            if failure != "world":
+                world.close.assert_called_once()
+            if failure not in ("world", "camera"):
+                camera.release.assert_called_once()
+            self.assertEqual(dual.hand_pipeline.valid_streak, {"left":0, "right":0})
+
+    def test_real_trained_pair_complete_runtime_and_hand_targets_reach_pybullet(self):
+        import pybullet
+        from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
+        paths = trained_world_paths()
+        if not all(p.is_file() for p in paths.values()):
+            self.skipTest("world_test_v1 trained pair unavailable: full trained runtime unverified")
+        self.args.checkpoint = None
+        self.args.left_checkpoint, self.args.right_checkpoint = paths.values()
+        self.args.frames = 4
+        camera = Mock()
+        camera.next_teleop_observation.side_effect = [dual_world_observation(i) for i in range(4)]
+        worlds, commands, finger_states = [], [], []
+        def create_world(*args, **kwargs):
+            world = Tron2ADualArmWorld(*args, **kwargs)
+            worlds.append(world)
+            original_apply = world.apply
+            def apply(command):
+                original_apply(command)
+                commands.append(command)
+            world.apply = apply
+            original_state = world.actual_state
+            def actual_state():
+                finger_states.append({side: np.array([s[0] for s in pybullet.getJointStates(
+                    body, world.hand_indices[side], physicsClientId=world.client)])
+                    for side, body in world.hand_bodies.items()})
+                return original_state()
+            world.actual_state = actual_state
+            return world
+        with patch.object(application, "MediaPipeCameraInput", return_value=camera), \
+             patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", side_effect=create_world), \
+             patch.object(application.time, "sleep"):
+            self.assertEqual(application.run_camera(self.args), 0)
+        self.assertEqual(len(commands), 4)
+        self.assertTrue(commands[-1].left_hand_valid and commands[-1].right_hand_valid)
+        self.assertTrue(np.any(commands[-1].left_hand != 0))
+        self.assertFalse(worlds[0].hand_reference_only)
+        self.assertEqual(set(worlds[0].hand_bodies), {"left", "right"})
+        self.assertTrue(np.any(np.abs(finger_states[-1]["left"]) > .001))
+        self.assertTrue(np.any(np.abs(finger_states[-1]["right"]) > .001))
+        self.assertFalse(pybullet.isConnected(worlds[0].client))
+        report = read_calibration(self.args.report)
+        self.assertEqual(report["hands"]["left"]["inference_valid_frames"], 2)
+        self.assertEqual(report["hand_checkpoints"], {k:str(v.resolve()) for k,v in paths.items()})
+        camera.release.assert_called_once()
+
+    def test_real_shared_and_paired_loader_contracts(self):
+        import torch
+        from tests.test_world_hand_pipeline import small_model_kwargs
+        from teleoperation.applications.hand_realtime import load_palm_local_retargeter
+        from teleoperation.retargeting.hand.transformer import PoseTransformer
+        from teleoperation.contracts.coordinates import WORLD_PALM_LOCAL_METADATA, PALM_LOCAL_COORDINATE_ALIGNMENT
+        kwargs = small_model_kwargs()
+        state = PoseTransformer(**kwargs).state_dict()
+        paths = {}
+        for side in ("shared", "left", "right"):
+            path = self.directory / (side + ".pth")
+            torch.save(dict(model_pos=state, hand_side=side, **WORLD_PALM_LOCAL_METADATA), path)
+            paths[side] = path
+        with patch("teleoperation.retargeting.hand.config.L21", Mock(model_kwargs=Mock(return_value=kwargs))):
+            shared = load_palm_local_retargeter(paths["shared"], "cpu", landmark_space="world")
+            paired = load_palm_local_retargeter(device="cpu", left_checkpoint=paths["left"], right_checkpoint=paths["right"], landmark_space="world")
+            self.assertIs(shared.model_for_side("left"), shared.model_for_side("right"))
+            self.assertIsNot(paired.model_for_side("left"), paired.model_for_side("right"))
+            for side in ("left", "right"):
+                self.assertEqual(paired.model_for_side(side).hand_side, side)
+                for key, value in paired.model_for_side(side).state_dict().items():
+                    torch.testing.assert_close(value, state[key])
+            for options in (dict(checkpoint_path=paths["left"]),
+                            dict(left_checkpoint=paths["right"], right_checkpoint=paths["left"])):
+                with self.assertRaisesRegex(ValueError, "side mismatch"):
+                    load_palm_local_retargeter(device="cpu", **options)
+            torch.save(dict(model_pos=state, coordinate_alignment=PALM_LOCAL_COORDINATE_ALIGNMENT), paths["shared"])
+            with self.assertRaisesRegex(ValueError, "alignment mismatch"):
+                load_palm_local_retargeter(paths["shared"], "cpu", landmark_space="world")
+            for metadata in (dict(coordinate_alignment=PALM_LOCAL_COORDINATE_ALIGNMENT),
+                             {**WORLD_PALM_LOCAL_METADATA, "length_unit":"cm"}):
+                torch.save(dict(model_pos=state, **metadata), self.args.checkpoint)
+                with patch.object(application, "MediaPipeCameraInput") as camera, \
+                     patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld") as world:
+                    self.assertEqual(application.run_camera(self.args), 1)
+                    camera.assert_not_called(); world.assert_not_called()
 
 
 if __name__ == "__main__":
