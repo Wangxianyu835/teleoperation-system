@@ -1,4 +1,3 @@
-# 类 ArmTargetPose,ArmIKResult（封装数据/流程）；链路：输入/存储边界→应用/算法数据契约
 """Distinct arm observations, target poses and inverse-kinematics results."""
 from dataclasses import dataclass
 import numpy as np

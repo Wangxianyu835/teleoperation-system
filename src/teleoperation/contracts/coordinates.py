@@ -1,4 +1,3 @@
-# 函数 validate_coordinate_alignment/validate_world_contract/validate_landmark_contract（校验）；landmark_source/palm_local_metadata（业务处理）；常量 COORDINATE_FRAME/COORDINATE_ALIGNMENT/PALM_LOCAL_COORDINATE_ALIGNMENT/WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT/NORMALIZED_LANDMARK_SPACE/WORLD_LANDMARK_SPACE/SUPPORTED_COORDINATE_ALIGNMENTS/PALM_LOCAL_METADATA/WORLD_PALM_LOCAL_METADATA（配置/索引）；链路：输入/存储边界→应用/算法数据契约
 from numbers import Real
 
 

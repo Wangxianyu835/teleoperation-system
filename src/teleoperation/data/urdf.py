@@ -1,4 +1,3 @@
-# 函数 parse_joint_limits（读取/解析）；链路：应用/训练→文件读写→观测/命令数据
 """URDF metadata reading; no simulation or algorithm execution."""
 
 def parse_joint_limits(urdf_path):

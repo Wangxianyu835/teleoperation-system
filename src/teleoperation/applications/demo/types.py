@@ -1,4 +1,3 @@
-# 类 CameraFrame[save/load],H1DemoJointCommand[to_dict/save/load…],TeleopEpisode（封装数据/流程）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """
 数据接口定义 — 三人协作的数据格式
 

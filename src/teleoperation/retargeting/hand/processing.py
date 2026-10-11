@@ -1,4 +1,3 @@
-# 类 CanonicalHandProcessor[process_frame/process_detections/reset],MediaPipePalmLocalProcessor[process_frame/reset]（封装数据/流程）；常量 SIDES（配置/索引）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 """Single-frame hand algorithms. Application/learning code owns temporal state."""
 import numpy as np
 from teleoperation.contracts.hand import CanonicalHandFrame

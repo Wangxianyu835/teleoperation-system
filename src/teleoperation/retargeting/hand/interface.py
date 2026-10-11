@@ -1,4 +1,3 @@
-# 类 HandRetargeter[reset/retarget],PoseTransformerRetargeter[retargeter/reset/retarget],DexRetargetingRetargeter[reset/retarget]（封装数据/流程）；函数 _normalize_angles（坐标处理）；变量 __all__（运行状态）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 """Unified hand retargeting interface and model adapters.
 
 The interface stops at the L21 model result.  Robot-specific

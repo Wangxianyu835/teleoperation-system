@@ -1,4 +1,3 @@
-# 类 MediaPipeCameraWorkflow[next_window/next_input/release]（封装数据/流程）；函数 load_palm_local_retargeter（读取/解析）；run（入口/工作流）；常量 PALM_LOCAL_V2_CHECKPOINT/SIDES（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """MediaPipe raw input -> per-frame palm-local alignment -> three-frame windows.
 
 Identity tracking is disabled: MediaPipe handedness is used directly. Each

@@ -1,4 +1,3 @@
-# 类 RotateFaucet[check_success],RotateHearth[check_success],OpenMicrowave[check_success],CloseMicrowave[check_success],OpenDrawer[check_success],CloseDrawer[check_success],LiftMug[check_success],OpenLaptop[check_success],BallMug[check_success],PourWater[check_success],BreadToaster[check_success]（封装数据/流程）；链路：仿真环境→任务注册/执行→评估记录
 import numpy as np
 import pybullet as p
 from .base import BaseTask

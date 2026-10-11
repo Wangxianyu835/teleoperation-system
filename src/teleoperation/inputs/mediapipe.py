@@ -1,4 +1,3 @@
-# 类 MediaPipeCameraInput[next_frame/next_observation/close…]（封装数据/流程）；函数 _landmark_array（内部辅助计算）；_close_landmarker_in_background（释放资源）；_retain_until_process_exit（帧/序列处理）；parse_result（读取/解析）；常量 MODEL_PATH/IMAGE_WIDTH/IMAGE_HEIGHT/CAM_FPS/MIN_DET_CONF/MIN_TRK_CONF/_RETAINED_FOR_PROCESS_EXIT（配置/索引）；链路：相机/回放→原始观测→应用/重定向
 """Camera -> MediaPipe VIDEO -> raw left/right normalized 21-point hands.
 
 Capture settings and extraction follow ``MediaPipe/hand capture media.py``.

@@ -1,4 +1,3 @@
-# 类 SimulationEnv[reset/step/close]（封装数据/流程）；链路：应用→仿真环境/机器人→传感器/记录
 """仿真环境核心类 - 集成机器人、任务、记录、随机化"""
 
 import time

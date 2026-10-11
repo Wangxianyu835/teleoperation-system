@@ -1,4 +1,3 @@
-# 函数 read_checkpoint/write_checkpoint（校验）；链路：应用/训练→文件读写→观测/命令数据
 """Checkpoint serialization without interpretation or model construction."""
 def read_checkpoint(path, map_location):
     import torch

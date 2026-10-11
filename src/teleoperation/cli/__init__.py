@@ -1,4 +1,3 @@
-# 函数 _configure_utf8_stdio（内部辅助计算）；build_parser（读取/解析）；main（入口/工作流）；链路：命令行→参数/路由→应用
 """A single CLI; all workflow execution is dispatched to applications."""
 import argparse
 from importlib import import_module

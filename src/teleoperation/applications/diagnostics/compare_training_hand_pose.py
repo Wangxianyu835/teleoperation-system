@@ -1,4 +1,3 @@
-# 函数 main（入口/工作流）；_sample_for_frame（帧/序列处理）；_create_fks（构造）；_predict_checkpoint（校验）；常量 HAND25_CONNECTIONS/TIP_NAMES/SIDE_COLORS（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Compare before/after checkpoint FK outputs against hand keypoint targets."""
 
 from __future__ import annotations

@@ -1,4 +1,3 @@
-# 类 _HandMetadataView[coordinate_frame/units],CanonicalHandFrame[valid/invalid_reasons],HandWindow[to_payload],L21HandAngles[native_mapping_dofs],L21HandDOFs,HandRetargetResult,AngleFrame（封装数据/流程）；链路：输入/存储边界→应用/算法数据契约
 """Hand processing values, deliberately separate from actuator commands."""
 from dataclasses import dataclass, field
 from typing import Any, Mapping

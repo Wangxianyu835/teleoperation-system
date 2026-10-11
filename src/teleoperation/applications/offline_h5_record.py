@@ -1,4 +1,3 @@
-# 函数 _output_paths（内部辅助计算）；run（入口/工作流）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Camera -> raw two-hand H5 -> palm-local H5 for hand train/export.
 
 Run ``python -m teleoperation hand record --frames 900 --hand-side left``.

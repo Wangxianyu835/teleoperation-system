@@ -1,4 +1,3 @@
-# 类 PalmBasisError（封装数据/流程）；函数 align_source_hand_coordinates/_normalize_palm_axis/align_palm_local_coordinates/align_mediapipe_hand（坐标处理）；_validate_palm_basis（校验）；build_palm_basis/build_l21_reference_basis（构造）；常量 SOURCE_TO_L21_MATRIX/PALM_BASIS_EPS/SOURCE_PALM_MCP_INDICES/ROBOT_PALM_MCP_INDICES（配置/索引）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 """Legacy fixed alignment and independent per-frame palm-local alignment."""
 
 from __future__ import annotations

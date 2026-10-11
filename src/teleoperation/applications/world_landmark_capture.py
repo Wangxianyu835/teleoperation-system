@@ -1,4 +1,3 @@
-# 函数 _ensure_model/_output_path（内部辅助计算）；_draw_landmarks/_draw_preview（可视化）；_normalise_capture_frame（坐标处理）；run（入口/工作流）；常量 HAND_CONNECTIONS/POSE_CONNECTIONS（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Camera -> normalized and metre-based hand/arm H5.
 
 Run ``python -m teleoperation hand record-world --frames 30``.

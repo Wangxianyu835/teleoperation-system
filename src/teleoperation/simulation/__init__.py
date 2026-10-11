@@ -1,4 +1,3 @@
-# 函数 __getattr__（内部辅助计算）；链路：应用→仿真环境/机器人→传感器/记录
 """Simulation components load when explicitly requested."""
 def __getattr__(name):
     if name == "SimulationEnv":

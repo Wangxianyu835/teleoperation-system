@@ -1,4 +1,3 @@
-# 函数 validate_checkpoint_selection（校验）；链路：输入/存储边界→应用/算法数据契约
 """Checkpoint selection rules shared by CLI and hand-model factories."""
 
 

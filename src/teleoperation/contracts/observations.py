@@ -1,4 +1,3 @@
-# 类 CameraFrame,RawHandFrame[validate],UpperBodyObservation[validate],RawTeleopObservation（封装数据/流程）；变量 RawObservation（运行状态）；链路：输入/存储边界→应用/算法数据契约
 """Unprocessed sensor observations. Arrays retain their original precision."""
 from dataclasses import dataclass, field
 from typing import Any, Mapping

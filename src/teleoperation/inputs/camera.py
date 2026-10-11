@@ -1,4 +1,3 @@
-# 类 CameraInterface[start/stop/capture_frame…]（封装数据/流程）；链路：相机/回放→原始观测→应用/重定向
 
 
 import cv2

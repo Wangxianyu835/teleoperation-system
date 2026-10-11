@@ -1,4 +1,3 @@
-# 类 BaseTask[set_robot/reset/check_success…]（封装数据/流程）；链路：仿真环境→任务注册/执行→评估记录
 """任务基类 - 所有30个任务都继承此类"""
 
 import numpy as np

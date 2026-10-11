@@ -1,4 +1,3 @@
-# 函数 compute_robot_extent/hand_extent/style_hands/setup_camera（业务处理）；main（入口/工作流）；常量 ROOT（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """用机器人【原装的手】回放队友数据（降维映射）
 
 为什么要这个脚本

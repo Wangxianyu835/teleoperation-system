@@ -1,4 +1,3 @@
-# 类 NativeHandAdapter[map]（封装数据/流程）；函数 build_mapping（构造）；dropped_dims/coverage（业务处理）；map_dofs（映射/转换）；常量 DIM_NAMES/PREFIX/NATIVE_MAP/N_MOVABLE/L21_LIMITS（配置/索引）；链路：算法输出→机器人动作映射→执行命令
 """L21 数据 -> 机器人【原装灵巧手】的降维映射（本项目正式采用的方案）
 
 决策背景（2026-09-12）

@@ -1,4 +1,3 @@
-# 函数 _plot_side/_plot_both/_draw_hand（可视化）；_finish_axes/_set_equal_axes（内部辅助计算）；常量 TIP_NAMES/SIDE_COLORS（配置/索引）；链路：应用/诊断→辅助计算/可视化
 from __future__ import annotations
 from pathlib import Path
 import matplotlib.pyplot as plt

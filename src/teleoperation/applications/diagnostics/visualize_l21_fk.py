@@ -1,4 +1,3 @@
-# 函数 main（入口/工作流）；_fk_positions（内部辅助计算）；常量 TIP_NAMES/SIDE_COLORS（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Visualize LinkerHand L21 FK nodes from the configured URDF assets."""
 
 from __future__ import annotations

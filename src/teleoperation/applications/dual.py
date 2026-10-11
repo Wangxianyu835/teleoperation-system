@@ -1,4 +1,3 @@
-# 类 DualTeleoperator[update/close]（封装数据/流程）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Reusable realtime observation-to-Tron2AL21Command service."""
 
 from __future__ import annotations

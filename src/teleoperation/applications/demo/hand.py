@@ -1,4 +1,3 @@
-# 类 HandInterface[get_both_hands/apply_to_robot/close]（封装数据/流程）；常量 L21_JOINTS（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """手部遥操作接口 - 简化的手指开合动画
 
 不再用 SDK 的电机映射算法（那是给真实电机用的）

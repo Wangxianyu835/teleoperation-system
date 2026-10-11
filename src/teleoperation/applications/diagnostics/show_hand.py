@@ -1,4 +1,3 @@
-# 函数 main（入口/工作流）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 def main(args=None):
     """LinkerHand 灵巧手独立展示 - 从 SDK 加载完整 3D 模型"""
     import pybullet as p

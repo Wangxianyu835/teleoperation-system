@@ -1,4 +1,3 @@
-# 函数 sha256（业务处理）；verify（校验）；main（入口/工作流）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Read-only checkpoint inference and bilateral FK/loss backward audit.
 
 No optimizer or training epoch is created. Existing checkpoint and input bytes

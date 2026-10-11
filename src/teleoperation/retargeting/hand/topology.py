@@ -1,4 +1,3 @@
-# 函数 wrist_relative/ensure_hand25（业务处理）；mediapipe21_to_hand25/visionpro_fingers_to_points（映射/转换）；_copy_finger_with_palm_root（内部辅助计算）；常量 MEDIAPIPE_HAND_KEYPOINTS/VISIONPRO_SOURCE/MEDIAPIPE_APPROX_SOURCE（配置/索引）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 from __future__ import annotations
 import numpy as np
 from teleoperation.contracts.constants import *

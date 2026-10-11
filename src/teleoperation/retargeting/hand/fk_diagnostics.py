@@ -1,4 +1,3 @@
-# 函数 fk_positions（业务处理）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 import numpy as np
 import torch
 from .angles import angle18_to_nodes

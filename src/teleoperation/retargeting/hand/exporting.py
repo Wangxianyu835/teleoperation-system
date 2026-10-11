@@ -1,4 +1,3 @@
-# 函数 predict_batches（推理）；_valid_angle_rows/_hold_last_valid_angles（内部辅助计算）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 """Batch inference algorithms, independent of Dataset and H5."""
 import numpy as np
 import torch

@@ -1,4 +1,3 @@
-# 函数 angle18_to_dofs/angle18_to_nodes（映射/转换）；_angle18（内部辅助计算）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 import numpy as np
 from teleoperation.contracts.constants import HAND_ANGLE_DIM, FK_FIXED_TIPS
 def angle18_to_dofs(angle: np.ndarray) -> np.ndarray:

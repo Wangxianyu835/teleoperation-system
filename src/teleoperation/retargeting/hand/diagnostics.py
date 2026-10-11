@@ -1,4 +1,3 @@
-# 函数 summarize_angles（业务处理）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 from pathlib import Path
 import numpy as np
 from .config import ANGLE_LIMITS

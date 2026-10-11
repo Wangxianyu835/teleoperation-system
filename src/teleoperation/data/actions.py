@@ -1,4 +1,3 @@
-# 函数 load_action_file（读取/解析）；save_action_file（保存/导出）；链路：应用/训练→文件读写→观测/命令数据
 """Existing native action file schemas and serialization."""
 import os
 import numpy as np

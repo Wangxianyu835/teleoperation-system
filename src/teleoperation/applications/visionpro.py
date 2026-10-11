@@ -1,4 +1,3 @@
-# 类 VisionProWorkflow[next_input/close]（封装数据/流程）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Vision Pro application composition; inputs return only original matrices."""
 from teleoperation.inputs.visionpro import VisionProInput
 from teleoperation.retargeting.hand.processing import CanonicalHandProcessor

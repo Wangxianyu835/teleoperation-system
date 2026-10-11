@@ -1,4 +1,3 @@
-# 类 RealtimeL21Scene[apply/step/alive…],_PreviewCapture[read],CameraPreview[pixels/annotate/update…]（封装数据/流程）；函数 resolve_model_asset（查询/选择）；build_retargeter/build_preview/build_scene（构造）；_checkpoint_retargeter（校验）；attach_preview_capture/preview_hud（可视化）；_desktop_size/_window_pos/_describe/_loop_fps/_median_interval/_drain_in_background（内部辅助计算）；run/main（入口/工作流）；build_parser（读取/解析）；常量 SIDES/URDF_NAME/ASSET_NAME/BASE_POSITIONS/PREVIEW_WINDOW/PREVIEW_TIPS/PREVIEW_HINT_ROBOTS/PREVIEW_HINT_HANDS/RELEASE_TIMEOUT_SECONDS（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """实时闭环入口：摄像头 -> 手掌局部 25 点 -> 重定向 -> PyBullet 里的机器人灵巧手。
 
 显示目标由 ``--scene`` 选择（**默认 robots**）::

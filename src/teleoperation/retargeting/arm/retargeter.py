@@ -1,4 +1,3 @@
-# 类 ArmRetargeter[update]（封装数据/流程）；函数 _forearm_rotation（内部辅助计算）；常量 ARM_DOF（配置/索引）；链路：上肢观测→校准/目标位姿/IK→关节目标
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path

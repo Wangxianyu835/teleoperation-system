@@ -1,4 +1,3 @@
-# 类 DomainRandomizer[randomize/get_randomized_params]（封装数据/流程）；链路：应用→仿真环境/机器人→传感器/记录
 """域随机化模块 - 光照、摩擦、纹理、位置随机化"""
 
 import numpy as np

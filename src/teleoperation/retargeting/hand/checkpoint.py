@@ -1,4 +1,3 @@
-# 函数 load_hand_checkpoint/_require_hand_side/_require_coordinate_alignment（校验）；_state_dict_for_side（内部辅助计算）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 from __future__ import annotations
 import torch
 import torch.nn as nn

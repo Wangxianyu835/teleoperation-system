@@ -1,4 +1,3 @@
-# 函数 find_arm_joints（查询/选择）；add_ground_marker/add_head_marker（采集/累积）；main（入口/工作流）；常量 ROBOTS/ROBOT_SPECS/SHOULDER_PATTERN（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """同时显示 TeleOpBench 三种机器人：H1-2 / GR1-T2 / G1
 
 用法:

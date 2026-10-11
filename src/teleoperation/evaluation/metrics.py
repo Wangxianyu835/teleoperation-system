@@ -1,4 +1,3 @@
-# 类 MetricsTracker[reset/record/get_success_rate…]（封装数据/流程）；链路：仿真/回放结果→指标汇总
 """任务评估指标：成功率、完成时间统计"""
 
 import time

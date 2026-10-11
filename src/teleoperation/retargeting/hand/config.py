@@ -1,4 +1,3 @@
-# 类 ModelConfig,TrainingConfig,RuntimeConfig,L21Config[model_kwargs/hand_kinematics_config]（封装数据/流程）；常量 RUNTIME/JOINT_NAMES/JOINT_EDGES/ANGLE_LIMITS/SOURCE_JOINTS/ROBOT_JOINTS/EXCLUDED_COLLISION_PAIRS/L21（配置/索引）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 """Single source of truth for the LinkerHand L21 retargeting pipeline."""
 
 from __future__ import annotations

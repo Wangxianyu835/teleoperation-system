@@ -1,4 +1,3 @@
-# 函数 project（坐标处理）；text（业务处理）；draw_skeleton（可视化）；常量 SOURCE_EDGES/NAME_INDEX/ROBOT_EDGES/ROBOT_TIPS/COLORS（配置/索引）；链路：应用/诊断→辅助计算/可视化
 """Display-only projections and skeleton drawing shared by live/offline tools."""
 
 import cv2

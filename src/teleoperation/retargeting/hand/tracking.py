@@ -1,4 +1,3 @@
-# 类 HandIdentityTracker[update/update_detections/assign…]（封装数据/流程）；函数 _is_trackable_hand/_continuity_metrics/_palm_center（内部辅助计算）；常量 MEDIAPIPE_HAND_KEYPOINTS/VISIONPRO_SOURCE/MEDIAPIPE_APPROX_SOURCE/DEFAULT_MAX_CENTER_DISPLACEMENT/DEFAULT_MAX_SHAPE_RMSE（配置/索引）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 from __future__ import annotations
 import numpy as np
 from teleoperation.contracts.constants import *

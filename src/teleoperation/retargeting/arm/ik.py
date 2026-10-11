@@ -1,4 +1,3 @@
-# 类 ArmSpecification,ArmIK[solve],RoboticsToolboxArmIK[solve]（封装数据/流程）；函数 load_arm_specification（读取/解析）；_joint_path/_joint_ets/_pose_matrix/_pose_error/_joint_vector（内部辅助计算）；_align_z（坐标处理）；target_pose_from_matrix（映射/转换）；常量 ARM_DOF（配置/索引）；链路：上肢观测→校准/目标位姿/IK→关节目标
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path

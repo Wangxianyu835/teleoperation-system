@@ -1,4 +1,3 @@
-# 函数 _plot_hands/_plot_one_hand/_is_plottable（可视化）；_set_equal_axes（内部辅助计算）；常量 HAND21_CONNECTIONS/HAND25_CONNECTIONS/SIDE_COLORS（配置/索引）；链路：应用/诊断→辅助计算/可视化
 from __future__ import annotations
 from pathlib import Path
 import matplotlib.pyplot as plt

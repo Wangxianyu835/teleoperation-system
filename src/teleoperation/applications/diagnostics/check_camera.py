@@ -1,4 +1,3 @@
-# 函数 main（入口/工作流）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 def main(args=None):
     """测试联想摄像头 - RGB 画面采集"""
     import sys, cv2, os

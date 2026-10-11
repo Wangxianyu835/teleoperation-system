@@ -1,4 +1,3 @@
-# 函数 make_hand_keypoints（构造）；main（入口/工作流）；常量 ROOT/OUT_DIR/MEDIAPIPE_HAND_LANDMARKS/FINGER_CHAINS/FINGER_Y/SEG_LEN（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """生成示例数据文件 —— 把「契约 G / H」变成可执行文档
 
 用法：

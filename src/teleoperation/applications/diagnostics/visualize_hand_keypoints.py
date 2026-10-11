@@ -1,4 +1,3 @@
-# 函数 main（入口/工作流）；_resolve_frames（查询/选择）；_load_frame/_load_raw_h5_frame/_load_processed_h5_frame/_load_npy_frame/_load_npz_frame（读取/解析）；_frame_to_hands（映射/转换）；_first_present/_ensure_hands25（内部辅助计算）；_check_frame_index（校验）；常量 HAND21_CONNECTIONS/HAND25_CONNECTIONS/SIDE_COLORS（配置/索引）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Visualize hand keypoints used by the two-hand training pipeline."""
 
 from __future__ import annotations

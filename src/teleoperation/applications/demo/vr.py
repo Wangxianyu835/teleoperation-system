@@ -1,4 +1,3 @@
-# 类 VRInterface[receive_vr_data/transform_to_robot_frame/solve_ik_for_arms…]（封装数据/流程）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """VR 遥操作接口 - Apple Vision Pro 手腕追踪 -> 机器人关节角度
 
 论文 Section 3.2.3:

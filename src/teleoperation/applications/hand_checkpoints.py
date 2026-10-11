@@ -1,4 +1,3 @@
-# 函数 checkpoint_options/checkpoint_metadata/checkpoint_description（校验）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Translate workflow arguments into model selection and provenance."""
 
 from teleoperation.contracts.checkpoints import validate_checkpoint_selection

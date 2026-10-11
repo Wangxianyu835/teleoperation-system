@@ -1,4 +1,3 @@
-# 类 CollisionLoss[forward],RegLoss[forward]（封装数据/流程）；函数 hand_loss/vec_inter_loss/thumb_loss/thumb_loss2/tip_pos_loss/tip_distance_loss（训练/损失）；point_plane_distance_batch（业务处理）；链路：训练应用→数据集/损失→模型检查点
 """Losses used by the two-hand LinkerHand L21 training pipeline."""
 
 from __future__ import annotations

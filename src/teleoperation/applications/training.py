@@ -1,4 +1,3 @@
-# 函数 run（入口/工作流）；_train（训练/损失）；_resolve_run_name/_resolve_hand_urdf_paths（查询/选择）；_create_pose_model/_create_hand_fks/_create_collision_loss（构造）；_save_checkpoint/_load_checkpoint/_require_urdf/_validate_args（校验）；_set_seed/_setup_logging（内部辅助计算）；常量 LOSS_NAMES（配置/索引）；变量 receptive_field/scaling_factor/scaling_factor_rb/hand_brand/hand_cfg/left_urdf_file/right_urdf_file/source_dic/rb_dic/excluded_pairs/angle_limit_rob/loss_weight/col_threshold/correction_matrix（运行状态）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Train a dedicated hand model or a legacy shared model from a two-hand H5."""
 
 from __future__ import annotations

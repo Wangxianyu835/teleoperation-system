@@ -1,4 +1,3 @@
-# 类 GeometricHandRetargeter[reset/calibration_status/basis…]（封装数据/流程）；函数 _unit/_in_plane_angle/_rodrigues/_rotation_family/_reflect/_rotation_between/_thumb_chain_offsets/_thumb_metacarpal/_solve_yaw_pitch/_clamp（内部辅助计算）；bend_angle（业务处理）；_normalise（坐标处理）；常量 SIDES/WRIST/THUMB/FINGERS/ROLL_DIM/PITCH_DIM/PIP_DIM/HINGE_DIMS/MIN_AXIS_LENGTH/MIN_SIGN_EVIDENCE/PROBE_DELTA/L21_JOINT_COUNT（配置/索引）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 """解析式（零权重）手部重定向：手掌局部 25 点 -> L21 18 维角度。
 
 为什么有这个文件

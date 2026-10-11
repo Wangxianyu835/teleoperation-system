@@ -1,4 +1,3 @@
-# 函数 _point/_visibility/_empty_pose/_side_valid（内部辅助计算）；parse_pose_result（读取/解析）；常量 POSE_ARM_INDICES/POSE_ARM_ORDER/DEFAULT_POSE_VISIBILITY（配置/索引）；链路：相机/回放→原始观测→应用/重定向
 """MediaPipe Pose -> shoulder/elbow/wrist observations for data collection."""
 
 from __future__ import annotations

@@ -1,4 +1,3 @@
-# 函数 write_hand_file（保存/导出）；常量 MEDIAPIPE_HAND_LANDMARKS（配置/索引）；链路：应用/训练→文件读写→观测/命令数据
 import os
 import numpy as np
 

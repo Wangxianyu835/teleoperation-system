@@ -1,4 +1,3 @@
-# 函数 resolve_device（查询/选择）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 """Shared device selection for training, export and offline diagnostics."""
 
 import torch

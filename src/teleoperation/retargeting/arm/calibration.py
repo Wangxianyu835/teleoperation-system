@@ -1,4 +1,3 @@
-# 类 ArmCalibration[to_dict/load/from_dict],CameraCalibrationConfig,NeutralPoseCollector[ready/add/calibration]（封装数据/流程）；函数 _finite/_positive/_rotation/_quaternion（内部辅助计算）；tron2a_reference（业务处理）；常量 ARM_DOF/SIDES（配置/索引）；链路：上肢观测→校准/目标位姿/IK→关节目标
 from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path

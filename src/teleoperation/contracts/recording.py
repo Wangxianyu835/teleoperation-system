@@ -1,4 +1,3 @@
-# 类 SimulationSample（封装数据/流程）；链路：输入/存储边界→应用/算法数据契约
 """A simulator sample ready for persistence; no simulator handles."""
 from dataclasses import dataclass, field
 from typing import Any

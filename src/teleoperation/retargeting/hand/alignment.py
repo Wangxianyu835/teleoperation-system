@@ -1,4 +1,3 @@
-# 函数 align_recording（保存/导出）；链路：手部点→拓扑/坐标/时序处理→角度/模型结果
 """Palm-local recording alignment math, independent of storage."""
 import numpy as np
 from .coordinates import build_l21_reference_basis, align_mediapipe_hand

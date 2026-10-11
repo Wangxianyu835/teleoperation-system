@@ -1,4 +1,3 @@
-# 函数 export_robot_commands（保存/导出）；_empty_output（内部辅助计算）；链路：CLI/调用方→应用编排→输入/算法/存储/仿真
 """Offline assembly of TRON2A arm IK and existing L21 hand angles."""
 
 from __future__ import annotations
