@@ -1,0 +1,75 @@
+# .clinerules —— 本仓库的工程约定（AI 自动加载版）
+#
+# 唯一来源是 docs/CONVENTIONS.md（人读版）。**两者必须一致**：冲突时以 CONVENTIONS.md 为准，
+# 并立即回来修本文件。改了约定 = 同步 CONVENTIONS.md 末尾的「版本」表 + 本文件。
+
+## 仓库布局（先认清，别找错路径）
+#   src/teleoperation/     生产包（= 队友已入库代码，禁止改）
+#   tests/                 本支新增的 unittest 套件（上游 10ebd9f 已删掉原有 32 个测试文件）
+#   configs/               上游 10ebd9f 已删除该目录（示例配置随之消失）
+#   assets/robots/         随仓库管理的 URDF/STL（例外：允许入库）
+#   datasets/**/*.h5       H5 契约样本/录制（例外：允许入库）
+#   docs/                  文档（上游 10ebd9f 已删 docs/archive/ 旧手册归档）
+#   devtools/              本分支新增的自检工具（我加的，可改）
+#                          注意：根目录**不得**出现 scripts/ retargeting/ teleop/
+#                          input_adapters/ envs/ tasks/ 等名字 —— 这条黑名单原本由队友的
+#                          架构测试 tests/architecture/test_boundaries.py:107 把守（该文件已随
+#                          上游 10ebd9f 删除），现在由 devtools/preflight.ps1 第 7 项自查
+#   outputs/               跑出来的产物（已被 .gitignore 忽略，临时文件放这）
+
+## 开工前必做（不要跳过）
+1. 先读 `docs/CONVENTIONS.md`（规则全文）。
+2. 跑一键自检，任何 `[FAIL]` 先修好再动手：
+
+   ```powershell
+   cd F:\simulation_platform_cs
+   powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1
+   ```
+3. 解释器：优先正式 conda 环境 `teleoperation`（`D:\Anaconda\envs\teleoperation\python.exe`，
+   Python 3.10.20）；本机没有 conda 时用 `E:\python3.11.7\python.exe` + `$env:PYTHONPATH="$pwd\src"`。
+   仓库内 `.venv` 是空壳（用它必然 No module named 'torch'）。命令一律写成
+   `E:\python3.11.7\python.exe -m teleoperation ...`。
+
+## 硬约束（违反了就是返工）
+
+1. **禁止往 C 盘写任何东西**：依赖、pip / HF / matplotlib / torch 缓存、临时文件都不行。
+   每个新终端先 `. .\devtools\env_e_drive_cache.ps1`（或已 `-Persist` 过），
+   自检 `E:\python3.11.7\python.exe devtools\check_no_c_drive.py --strict` 必须是 `[OK]` 退出码 0。
+2. **不改队友已入库的代码**：基线 `10ebd9f`（= `origin/current-state`；2026-10-10 从 `42bbe10`
+   往前挪了一格：`src/teleoperation/apps/` -> `applications/` 整目录改名，并删除了整个 `tests/`、
+   `docs/archive/`、`configs/`）里**所有已跟踪文件**
+   （`git ls-tree -r --name-only 10ebd9f`，747 个：`src/teleoperation/**`、`assets/**`、
+   `datasets/**`、`docs/**`、`pyproject.toml`、`README.md` ...）。
+   要兼容就**新增自己的文件**（`devtools/**`、`docs/**`、`.clinerules`），并在根目录避开架构测试的
+   禁用名（`scripts` / `retargeting` / `teleop` / `input_adapters` / `envs` / `tasks` / `main.py` ...）；
+   队友代码有问题写进问题清单交回队友，不要自己改。
+3. `.py` 里**禁止非 GBK 字符**（`✓ ⚠ → ≥` 等会让中文控制台直接崩溃）；
+   提交前跑两条（都要退出码 0）：
+   `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` 与
+   `E:\python3.11.7\python.exe -m teleoperation tools check-gbk-safe --strict`（队友自带，等价实现）。
+4. **改前跑基线、改后跑同一套**：
+   - 冒烟（任何环境都必须退出码 0）：`python -m teleoperation --help`；
+     `python -m teleoperation replay actions --dummy --steps 120 --robot h1_2 --no-render`；
+     `python -m teleoperation tools check-environment`；`tools verify-hand-pipeline`
+   - 全量：`PYTHONUTF8=1` 下 `python -m unittest discover -s tests -v` —— 本机回落解释器实测
+     `Ran 19 tests / failures=0 / errors=0 / skipped=1`（上游 `10ebd9f` 已删掉队友的 `tests/`，
+     现在只有本支的 2 个文件、19 个用例）。`PYTHONUTF8=1` 仍建议带上
+     （cp936 控制台拿 GBK 解 UTF-8 输出，见 CONVENTIONS 3.2）。
+     判据是**不劣化**：`preflight.ps1 -Full`（默认 `-MaxFail 0 -MaxErr 17`），不是"必须全绿"。
+   给用户的结论必须附 **命令 + 退出码 + 关键不变量**，禁止只写"已通过"。
+5. **大资产不入库**：`lib/`、`linkerhand_sdk/`、`.venv/`、`outputs/`、`logs/`、`tmp_*`、模型权重、视频；
+   只有 `assets/robots/**` 与 `datasets/**` 例外。临时产物一律丢 `outputs/tmp_*/`。
+6. **破坏性/不可逆操作先说明再执行**（删目录、`robocopy /MOVE`、`git reset --hard`、
+   `git push --force`、改**用户级**环境变量）：说清删/移什么、多少、能否恢复，能搬不删。
+7. 技术选型已冻结：**PyBullet**（不是 Isaac Sim）、**普通 Git + SSH 不用 LFS**、数据走 **HDF5 契约**（`docs/contracts.md`）。
+8. 密钥只放 `E:\ssh`，绝不入库、不外传；文档里不写密钥 / Token / SID 实际内容。
+
+## 工程习惯（会显著影响成败）
+
+- **中文提交信息用消息文件**：`git commit -F <消息文件>`（PowerShell 引号会弄坏中文）。
+  提交信息格式 `类型: 说明`（feat / fix / docs / chore / data / test / refactor），一个提交一件事。
+- **判断脚本成败看退出码**（`$LASTEXITCODE`），别看被 `Select-Object` 截断的管道输出；
+  pybullet 往 stderr 打的 `pybullet build time:` 与 `b3Warning:` **不是错误**。
+  最稳写法：`cmd /c "E:\python3.11.7\python.exe -m teleoperation ... > log 2>&1"`，然后只看退出码。
+- **文档随代码更新**（改约定 = CONVENTIONS.md 版本表 + 本文件）。
+- 回复用户用中文，结论先给"做了什么 / 证据 / 影响"，不要把过程日志堆在前面。
