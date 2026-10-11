@@ -119,12 +119,17 @@ def hand_realtime(parser: argparse.ArgumentParser) -> None:
 
 
 def hand_record_world(parser: argparse.ArgumentParser) -> None:
+    parser.description = "Record normalized and metre-based hand and arm landmarks."
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET)
     parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET)
     parser.add_argument("--pose-min-visibility", type=float, default=0.2)
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
     parser.add_argument("--frames", type=int, default=30)
-    parser.add_argument("--output", type=Path, required=True)
+    destination = parser.add_mutually_exclusive_group()
+    destination.add_argument("--output", type=Path,
+                             help="explicit H5 filename, overriding automatic time naming")
+    destination.add_argument("--output-dir", type=Path, default=DEFAULT_WORLD_CAPTURE_DIR,
+                             help="directory for hand_body_<YYYYMMDD_HHMMSS>.h5")
     parser.add_argument("--width", type=int, default=320)
     parser.add_argument("--height", type=int, default=240)
     parser.add_argument("--fps", type=int, default=30)
@@ -141,7 +146,7 @@ def hand_record_world(parser: argparse.ArgumentParser) -> None:
         help="show the camera window while recording (press q to stop early)",
     )
     parser.set_defaults(
-        _handler="teleoperation.applications.world_landmark_capture:main",
+        _handler="teleoperation.applications.world_landmark_capture:run",
         fast_exit=True,
     )
 

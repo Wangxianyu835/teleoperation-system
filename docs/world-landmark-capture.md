@@ -8,31 +8,33 @@
 程序会在缺少模型时尝试自动下载：
 
 ```text
-hand_landmarker.task
-pose_landmarker_lite.task
+datasets/hand_landmarker.task
+datasets/pose_landmarker_lite.task
 ```
 
 优先使用 hf-mirror，失败后回退官方 Google 地址。两个模型都已加入
 `.gitignore`，不要提交到仓库。
 
-## 最简单运行方式
+## 统一命令入口
 
-PyCharm 直接打开项目根目录下的 `record_world_landmarks.py`，点击 Run。
+与项目其他工作流一样，通过统一 CLI 启动：
+
+```powershell
+python -m teleoperation hand record-world
+```
+
 默认从摄像头 0 采集 30 帧，限制为最多 5 FPS，并保存为：
 
 ```text
 outputs/hand_body_capture/hand_body_日期_时间.h5
 ```
 
+文件名使用 Asia/Shanghai 时间；同一秒内重名时追加 `_01`、`_02` 等序号。
+用 `--output-dir` 更换自动保存目录，或用 `--output` 指定完整文件名，两个参数不能同时使用。
 预览窗口中按 `q` 可以提前结束并保存。若不需要预览，使用 `--no-preview`。
+`--help` 只解析参数，不导入采集应用、不打开设备或下载模型。
 
-也可以直接运行内部入口：
-
-```text
-src/teleoperation/applications/world_landmark_capture.py
-```
-
-## 命令行方式
+显式指定文件名：
 
 ```powershell
 python -m teleoperation hand record-world `
@@ -50,12 +52,39 @@ python -m teleoperation hand record-world `
 --camera-index
 --frames
 --output
+--output-dir
 --width
 --height
 --fps
 --max-fps
 --preview / --no-preview
 ```
+
+## 实现流程与原文件去向
+
+根目录 `record_world_landmarks.py` 已删除，不再保留直接运行 wrapper。
+应用模块也不再自行解析参数。原脚本的职责按既有分层归入：
+
+| 职责 | 当前文件 |
+|---|---|
+| 参数与默认值 | `src/teleoperation/cli/schemas.py` 的 `hand_record_world()` |
+| 静态命令注册 | `src/teleoperation/cli/registry.py` |
+| 模型及默认输出目录 | `src/teleoperation/paths.py` |
+| 自动命名、采集循环、预览、资源释放、保存调用 | `src/teleoperation/applications/world_landmark_capture.py` 的 `run()` |
+| 同帧手部与姿态识别 | `src/teleoperation/inputs/mediapipe.py`、`pose_mediapipe.py` |
+| H5 schema 与原子写入 | `src/teleoperation/data/hand_body_recording.py` |
+
+```text
+python -m teleoperation hand record-world
+    -> cli/schemas.hand_record_world: parse arguments
+    -> applications/world_landmark_capture.run: resolve output and model assets
+    -> inputs/mediapipe.MediaPipeCameraInput: read world + pose from the same frame
+    -> applications/world_landmark_capture: preview, collect and release
+    -> data/hand_body_recording.write_hand_body_recording: save H5 atomically
+```
+
+CLI 保留原有 `fast_exit` 行为：保存完成后快速退出进程，避免 MediaPipe 退出等待。
+程序内调用 `run(args)` 时，未设置 `args.fast_exit` 则正常返回。
 
 ## H5 字段
 

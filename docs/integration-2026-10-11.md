@@ -8,6 +8,11 @@
 合并前的本地 annotated tag 为 `checkpoint-20261011-merge-realtime-world`。
 两个功能分支保留，合并历史保留原始提交。
 
+后续入口统一：根目录 `record_world_landmarks.py` 和应用内独立参数解析已移除。
+当前通过 `python -m teleoperation hand record-world` 启动；不传 `--output` 时自动命名，
+模型路径统一为 `datasets/`。实现分层与使用方式见 [米制采集说明](world-landmark-capture.md)。
+下方验证表保留初次合并时的历史结果。
+
 ## 新增工作流
 
 ```powershell
@@ -23,8 +28,8 @@ python -m teleoperation.applications.camera_record --seconds 10
 # 手部与肩肘腕：同步保存 normalized 和米制 world 数据
 python -m teleoperation hand record-world --frames 30 --output outputs/hand_body_capture/session.h5
 
-# 在 IDE 中也可直接运行；--help 不打开设备或下载模型
-python record_world_landmarks.py --help
+# 统一入口帮助；不打开设备或下载模型
+python -m teleoperation hand record-world --help
 ```
 
 实时三机器人入口默认只驱动手指，手臂与其他关节保持固定。

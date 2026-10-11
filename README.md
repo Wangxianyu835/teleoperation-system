@@ -38,6 +38,11 @@ python -m teleoperation --help
 用 `--output-dir` 更换目录；显式传入 `--output` 或 `--aligned-output` 时保留指定的完整文件名。程序拒绝覆盖已有输出；摄像头读取失败时保留已录制的原始帧并返回失败，
 可用 `hand align` 单独对齐。训练前应确认有足够的连续有效手部帧，单手文件的训练使用对应的 `hand train --hand-side left/right`。
 
+手部与肩肘腕的同步采集使用 `python -m teleoperation hand record-world`，同一 H5 保存归一化和米制 world 坐标。
+默认采集 30 帧并自动保存到 `outputs/hand_body_capture/hand_body_<日期_时间>.h5`；
+用 `--output-dir` 更换目录，或用 `--output` 指定完整文件名。该命令的 world 字段尚未自动接入训练，
+实现流程与数据字段见 [米制采集说明](docs/world-landmark-capture.md)。
+
 ```powershell
 # 摄像头录制：保存原始 21 点，并自动生成供训练/导出的 palm-local 25 点 H5
 python -m teleoperation hand record --hand-side left 

@@ -1,9 +1,12 @@
-"""Capture normalized and metre-based hand and shoulder/elbow/wrist data."""
+"""Camera -> normalized and metre-based hand/arm H5.
+
+Run ``python -m teleoperation hand record-world --frames 30``.
+Argument parsing belongs to teleoperation.cli; this module assembles capture.
+"""
 
 from __future__ import annotations
 
-import argparse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import time
@@ -13,11 +16,7 @@ import numpy as np
 from teleoperation.data.hand_body_recording import write_hand_body_recording
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
 from teleoperation.inputs.pose_mediapipe import DEFAULT_POSE_VISIBILITY
-from teleoperation.paths import DEFAULT_MEDIAPIPE_ASSET, DEFAULT_POSE_ASSET
-
-
-ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_OUTPUT_DIR = ROOT / "outputs" / "hand_body_capture"
+from teleoperation.paths import DEFAULT_WORLD_CAPTURE_DIR
 
 HAND_CONNECTIONS = (
     (0, 1), (1, 2), (2, 3), (3, 4),
@@ -125,11 +124,27 @@ def _normalise_capture_frame(frame):
     return frame
 
 
-def run(args, *, fast_exit: bool = False) -> int:
+def _output_path(args) -> Path:
+    if args.output is not None:
+        return Path(args.output)
+    started_at = datetime.now(timezone(timedelta(hours=8)))
+    stem = f"hand_body_{started_at:%Y%m%d_%H%M%S}"
+    directory = Path(getattr(args, "output_dir", DEFAULT_WORLD_CAPTURE_DIR))
+    output = directory / f"{stem}.h5"
+    index = 1
+    while output.exists():
+        output = directory / f"{stem}_{index:02d}.h5"
+        index += 1
+    return output
+
+
+def run(args, *, fast_exit: bool | None = None) -> int:
+    if fast_exit is None:
+        fast_exit = bool(getattr(args, "fast_exit", False))
     frame_count = int(args.frames)
     if frame_count <= 0:
         raise ValueError("--frames must be positive")
-    output = Path(args.output)
+    output = _output_path(args)
     if output.suffix.lower() not in {".h5", ".hdf5"}:
         raise ValueError("--output must end with .h5 or .hdf5")
     max_fps = float(getattr(args, "max_fps", 5))
@@ -228,47 +243,3 @@ def run(args, *, fast_exit: bool = False) -> int:
         sys.stderr.flush()
         os._exit(0)
     return 0
-
-
-def main(args=None) -> int:
-    if args is None:
-        raise TypeError("Use teleoperation.cli.main() to parse command arguments")
-    return run(args, fast_exit=bool(getattr(args, "fast_exit", False)))
-
-
-def _add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET)
-    parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET)
-    parser.add_argument(
-        "--pose-min-visibility",
-        type=float,
-        default=DEFAULT_POSE_VISIBILITY,
-    )
-    parser.add_argument("--camera-index", type=int, default=0)
-    parser.add_argument("--frames", type=int, default=30)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--width", type=int, default=320)
-    parser.add_argument("--height", type=int, default=240)
-    parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--max-fps", type=float, default=5.0)
-    parser.add_argument(
-        "--preview",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-
-
-def _direct_args():
-    parser = argparse.ArgumentParser(
-        description="Record normalized and metre-based hand and arm landmarks."
-    )
-    _add_arguments(parser)
-    args = parser.parse_args()
-    if args.output is None:
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.output = DEFAULT_OUTPUT_DIR / f"hand_body_{stamp}.h5"
-    return args
-
-
-if __name__ == "__main__":
-    raise SystemExit(run(_direct_args(), fast_exit=True))

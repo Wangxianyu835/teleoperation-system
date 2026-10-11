@@ -106,6 +106,7 @@ checkpoint 的文件序列化位于 `data/checkpoint`，state_dict 选择、严�
 | main_train_twohand.py | hand train |
 | main_offline_twohand.py | hand export |
 | inspect_angle_h5.py | hand inspect |
+| record_world_landmarks.py | hand record-world |
 | scripts/align_h5_coordinates.py | hand align |
 | main_offline_dual_teleop.py | dual export |
 | main_realtime_dual_teleop.py | dual realtime |

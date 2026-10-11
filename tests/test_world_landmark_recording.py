@@ -1,6 +1,7 @@
 """Combined hand/body capture persistence and compatibility."""
 
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
@@ -12,7 +13,12 @@ from unittest import mock
 import numpy as np
 
 from teleoperation.applications import world_landmark_capture
-from teleoperation.cli import build_parser
+from teleoperation.cli import build_parser, main as cli_main
+from teleoperation.paths import (
+    DEFAULT_MEDIAPIPE_ASSET,
+    DEFAULT_POSE_ASSET,
+    DEFAULT_WORLD_CAPTURE_DIR,
+)
 from teleoperation.data.command_h5 import _load_arm_observations
 from teleoperation.data.hand_body_recording import (
     read_hand_body_recording,
@@ -128,25 +134,18 @@ class CombinedCaptureTests(unittest.TestCase):
                 self.assert_include_world = include_world
                 self.assert_include_pose = include_pose
                 value = combined_frame(self.index)
+                value.update(
+                    left=value["left_hand_keypoints"],
+                    right=value["right_hand_keypoints"],
+                    world_left=value["left_world_landmarks"],
+                    world_right=value["right_world_landmarks"],
+                )
                 self.index += 1
                 return value
 
         fake = FakeCamera()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "capture.h5"
-            args = SimpleNamespace(
-                model_asset_path="hand.task",
-                pose_model_asset_path="pose.task",
-                pose_min_visibility=0.2,
-                camera_index=2,
-                frames=2,
-                output=path,
-                width=320,
-                height=240,
-                fps=30,
-                preview=False,
-                max_fps=0,
-            )
             with mock.patch.object(
                 world_landmark_capture,
                 "_ensure_model",
@@ -155,14 +154,23 @@ class CombinedCaptureTests(unittest.TestCase):
                 world_landmark_capture,
                 "MediaPipeCameraInput",
                 return_value=fake,
-            ):
-                self.assertEqual(world_landmark_capture.main(args), 0)
+            ), mock.patch.object(world_landmark_capture.os, "_exit") as fast_exit:
+                self.assertEqual(cli_main([
+                    "hand", "record-world", "--output", str(path),
+                    "--camera-index", "2", "--frames", "2",
+                    "--no-preview", "--max-fps", "0",
+                ]), 0)
+                fast_exit.assert_called_once_with(0)
             arrays, attributes = read_hand_body_recording(path)
 
         self.assertTrue(fake.released)
         self.assertTrue(fake.assert_include_world)
         self.assertTrue(fake.assert_include_pose)
         self.assertEqual(arrays["timestamps"].shape, (2,))
+        np.testing.assert_array_equal(
+            arrays["left_world_landmarks"][0], combined_frame(0)["left_world_landmarks"]
+        )
+        self.assertTrue(arrays["left_valid"].all())
         self.assertEqual(attributes["source_landmark_space"], "mediapipe_normalized")
 
     def test_record_world_command_is_registered(self):
@@ -175,40 +183,63 @@ class CombinedCaptureTests(unittest.TestCase):
         self.assertEqual(args.max_fps, 5.0)
         self.assertTrue(args.fast_exit)
         self.assertIn("pose_model_asset_path", vars(args))
+        self.assertEqual(args.model_asset_path, DEFAULT_MEDIAPIPE_ASSET)
+        self.assertEqual(args.pose_model_asset_path, DEFAULT_POSE_ASSET)
 
-    def test_root_runner_is_directly_runnable(self):
+    def test_record_world_help_works_without_site_packages(self):
         result = subprocess.run(
-            [sys.executable, "-B", str(ROOT / "record_world_landmarks.py"), "--help"],
+            [sys.executable, "-B", "-S", "-m", "teleoperation", "hand", "record-world", "--help"],
             cwd=ROOT,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=30,
-            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
+                 "PYTHONPATH": str(ROOT / "src")},
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--pose-model-asset-path", result.stdout)
         self.assertIn("--no-preview", result.stdout)
+        self.assertIn("--output-dir", result.stdout)
+        self.assertIn("hand and arm", result.stdout)
 
-    def test_capture_module_is_directly_runnable(self):
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-B",
-                str(ROOT / "src" / "teleoperation" / "applications" / "world_landmark_capture.py"),
-                "--help",
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("--pose-model-asset-path", result.stdout)
+    def test_automatic_output_uses_default_directory_and_shanghai_time(self):
+        args = build_parser().parse_args(["hand", "record-world"])
+        self.assertIsNone(args.output)
+        self.assertEqual(args.output_dir, DEFAULT_WORLD_CAPTURE_DIR)
+        started_at = datetime(2026, 10, 11, 12, 30, 0,
+                              tzinfo=timezone(timedelta(hours=8)))
+        with mock.patch.object(world_landmark_capture, "datetime") as clock, \
+                mock.patch.object(Path, "exists", return_value=False):
+            clock.now.return_value = started_at
+            output = world_landmark_capture._output_path(args)
+            clock.now.assert_called_once_with(timezone(timedelta(hours=8)))
+        self.assertEqual(output, DEFAULT_WORLD_CAPTURE_DIR / "hand_body_20261011_123000.h5")
+
+    def test_automatic_output_avoids_existing_recordings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = build_parser().parse_args([
+                "hand", "record-world", "--output-dir", directory,
+            ])
+            existing = Path(directory) / "hand_body_20261011_123000.h5"
+            existing.write_bytes(b"existing capture")
+            with mock.patch.object(world_landmark_capture, "datetime") as clock:
+                clock.now.return_value = datetime(2026, 10, 11, 12, 30, 0)
+                output = world_landmark_capture._output_path(args)
+            self.assertEqual(output, existing.with_stem(existing.stem + "_01"))
+            self.assertEqual(existing.read_bytes(), b"existing capture")
+
+    def test_explicit_output_filename_is_preserved(self):
+        args = SimpleNamespace(output=Path("named/session.hdf5"), output_dir=Path("unused"))
+        self.assertEqual(world_landmark_capture._output_path(args), args.output)
+
+    def test_output_and_output_dir_are_mutually_exclusive(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit) as failure:
+            build_parser().parse_args([
+                "hand", "record-world", "--output", "capture.h5", "--output-dir", "other",
+            ])
+        self.assertEqual(failure.exception.code, 2)
 
 
 if __name__ == "__main__":
