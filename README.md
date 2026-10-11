@@ -398,6 +398,44 @@ python -m teleoperation hand align `
 
 `--max-fps` 限制实际采集频率，`0` 取消限速。将第 2 节的 `$aligned` 改为 `$bodyAligned` 可训练手部。手与身体 world 原点不同；身体数据还需坐标、单位和时间戳适配才能用于双臂 IK。
 
+### 4.1.1 TRON2A 摄像头中性姿态标定（当前第 1 步）
+
+`dual calibrate-camera` 使用同一摄像头帧和同一原始 Unix 毫秒检测时间戳获取 Hands 与 Pose，另外用单调时钟产生相对秒时间。只预览骨架、采集中性姿态和保存 JSON，不驱动机器人；TRON2A 参考末端由 URDF FK 计算，不依赖 mesh。
+
+下面是一组**用于标定流程审核的配置示例**。关节顺序为近端 pitch/roll/yaw、elbow、腕部 yaw/pitch/roll，单位为弧度；旋转按行展开。示例单位旋转和尺度不是测出的相机外参，关节姿态只验证 URDF 限位，不保证碰撞安全。实际坐标映射、工作空间和参考姿态需按安装情况设置。
+
+```powershell
+python -m teleoperation dual calibrate-camera --help
+
+python -m teleoperation dual calibrate-camera `
+  --camera-index 0 `
+  --model-asset-path datasets/hand_landmarker.task `
+  --pose-model-asset-path datasets/pose_landmarker_lite.task `
+  --urdf third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf `
+  --output outputs/calibration/tron2a_camera_neutral.json `
+  --safe-q-left 0 0 0 -0.5 0 0 0 --safe-q-right 0 0 0 -0.5 0 0 0 `
+  --rotation 1 0 0 0 1 0 0 0 1 --scale 1 1 1 `
+  --workspace-min -1 -1 -1 --workspace-max 1 1 1 `
+  --samples 60 --pose-min-visibility 0.7 --stability-tolerance 0.015 `
+  --min-elbow-bend 10 --max-elbow-bend 100 --max-sample-gap 0.5 `
+  --timeout 120 --max-frames 3000
+
+python -c "from teleoperation.retargeting.arm.calibration import ArmCalibration; c=ArmCalibration.load('outputs/calibration/tron2a_camera_neutral.json'); print(c.human_neutral_wrist, c.metadata['extrinsics_calibrated'])"
+```
+
+摄像头打开后自动开始计数。左右手臂均需肩、肘、腕 world 数据完整且达到可见度阈值，双肘稍屈。稳定性使用每侧肘、腕相对本侧肩部的位置，窗口内与均值的最大距离不超过 `--stability-tolerance`（米）。遮挡、低可见度、伸直/过度弯肘或采集间断会清空窗口；运动超过阈值从当前帧重新计数。默认连续 60 帧通过后保存并关闭；按 q、Esc、关闭窗口或 Ctrl+C 取消且不保存。输出已存在会在打开摄像头前拒绝；再次运行选择新文件名。`--no-preview` 可关闭窗口。
+
+标定保存 `human_neutral_wrist = mean(wrist_world - shoulder_world)`，保留各侧 FK 参考位姿、配置的旋转/尺度/额外偏移、工作空间、安全参数、URDF 关节限位及采样帧号和两种时间。`extrinsics_calibrated=false` 明确表示没有自动估计完整相机外参；手部安装位姿为未标定的单位占位值。将来使用该标定时，输入必须先转换为肩部相对的 Pose world 米制坐标，本阶段尚未接入原有实时重定向。
+
+合成验收样例：[tron2a_camera_neutral.synthetic.json](tests/fixtures/tron2a_camera_neutral.synthetic.json)，使用合成肩肘腕及真实 TRON2A URDF FK，不能替代现场标定。其左右参考腕为 `[0, 0.45, -0.15]` 和 `[-0.1, 0.45, -0.1]` 米。测试命令（未安装 editable 包时先执行 `$env:PYTHONPATH = (Join-Path (Get-Location) 'src')`）：
+
+```powershell
+python -m unittest tests.test_mediapipe_input tests.test_pose_mediapipe tests.test_mediapipe_tron2a
+python -m unittest discover -s tests
+```
+
+人工审核：确认未镜像预览的左右标记；遮挡一侧时只有该侧状态失效、恢复后重新计数；稳定稍屈肘能生成并重新加载 JSON；取消不保存；取消或完成后换输出文件名再次启动摄像头。真实摄像头和窗口验收需现场执行。第 1 步交付后停止，不进入实时控制、双手集成或仿真场景资源修复。
+
 ### 4.2 TRON2A 双臂离线导出与回放
 
 先准备符合 [数据契约](docs/contracts.md) 的上身观测 H5、同帧号和秒时间戳的手部角度 H5、实际标定 JSON。仓库目前没有 `configs/tron2a_dach_calibration.example.json`，标定字段以 `src/teleoperation/retargeting/arm/calibration.py` 的 `ArmCalibration.load()` 为准。

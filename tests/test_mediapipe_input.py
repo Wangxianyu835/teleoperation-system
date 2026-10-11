@@ -293,6 +293,89 @@ class MediaPipeCameraLifecycleTests(unittest.TestCase):
             self.pose_landmarker.detect_for_video.call_args.args[1],
         )
 
+    def test_combined_observation_captures_once_with_same_image_and_timestamp(self):
+        from tests.test_pose_mediapipe import result as pose_result
+        self.landmarker.detect_for_video.return_value = result(["Left", "Right"])
+        self.pose_landmarker.detect_for_video.return_value = pose_result()
+        with MediaPipeCameraInput(self.asset, pose_model_asset_path=self.pose_asset) as camera:
+            raw = camera.next_teleop_observation()
+        self.cap.read.assert_called_once()
+        hand_image, timestamp = self.landmarker.detect_for_video.call_args.args
+        pose_image, pose_timestamp = self.pose_landmarker.detect_for_video.call_args.args
+        self.assertIs(hand_image, pose_image)
+        self.assertEqual(timestamp, pose_timestamp)
+        self.assertEqual(raw.hands.timestamp, timestamp)
+        self.assertEqual(raw.upper_body.timestamp, timestamp)
+        self.assertEqual(raw.hands.metadata["frame_index"], 0)
+        self.assertEqual(raw.hands.metadata["timestamp_unit"], "unix_ms")
+        self.assertEqual(raw.upper_body.coordinate_frame, "mediapipe_pose_normalized")
+        self.assertEqual(raw.hands.metadata["arm_world_space"], "mediapipe_pose_world_meters")
+        np.testing.assert_allclose(raw.upper_body.world_arms["left"][:, 0], [1.1, 1.3, 1.5])
+        np.testing.assert_allclose(raw.upper_body.world_arms["right"][:, 0], [1.2, 1.4, 1.6])
+        np.testing.assert_array_equal(raw.hands.hands["left"], parse_result(result(["Left"]), timestamp)["left"])
+        self.assertEqual(raw.hands.world_hands["right"].shape, (21, 3))
+
+    def test_combined_invalid_side_is_none_and_other_side_recovers(self):
+        from tests.test_pose_mediapipe import result as pose_result, pose_landmarks
+        for failure in ("occluded", "nan", "no_world", "missing"):
+            with self.subTest(failure=failure):
+                pose = pose_landmarks()
+                if failure == "occluded":
+                    pose[11].visibility = 0.01
+                elif failure == "nan":
+                    pose[11].x = np.nan
+                detection = pose_result(landmarks=[pose])
+                if failure == "no_world":
+                    detection = pose_result(world=False)
+                elif failure == "missing":
+                    detection = pose_result(landmarks=False, world=False)
+                self.pose_landmarker.detect_for_video.side_effect = [detection, pose_result()]
+                with MediaPipeCameraInput(self.asset, pose_model_asset_path=self.pose_asset) as camera:
+                    raw = camera.next_teleop_observation()
+                    self.assertFalse(raw.upper_body.valid["left"])
+                    self.assertIsNone(raw.upper_body.arms["left"])
+                    self.assertIsNone(raw.upper_body.world_arms["left"])
+                    self.assertEqual(raw.upper_body.valid["right"], failure in ("occluded", "nan"))
+                    raw.upper_body.validate()
+                    recovered = camera.next_teleop_observation()
+                    self.assertTrue(all(recovered.upper_body.valid.values()))
+
+    def test_old_next_observation_remains_hand_only_and_world_is_opt_in(self):
+        from teleoperation.contracts.observations import RawHandFrame
+        camera = self.camera()
+        self.landmarker.detect_for_video.return_value = result(["Left"])
+        raw = camera.next_observation()
+        self.assertIsInstance(raw, RawHandFrame)
+        self.assertIsNone(raw.world_hands)
+        self.pose_landmarker.detect_for_video.assert_not_called()
+        self.assertEqual(camera.next_observation(include_world=True).world_hands["left"].shape, (21, 3))
+
+    def test_invalid_hand_world_side_keeps_body_and_other_side_available(self):
+        from tests.test_pose_mediapipe import result as pose_result
+        detection = result(["Left", "Right"])
+        detection.hand_world_landmarks[0][3].x = np.nan
+        self.landmarker.detect_for_video.return_value = detection
+        self.pose_landmarker.detect_for_video.return_value = pose_result()
+        with MediaPipeCameraInput(self.asset, pose_model_asset_path=self.pose_asset,
+                                  invalid_hand_as_missing=True) as camera:
+            raw = camera.next_teleop_observation()
+        self.assertIsNotNone(raw.hands.hands["left"])
+        self.assertIsNone(raw.hands.world_hands["left"])
+        self.assertIsNotNone(raw.hands.world_hands["right"])
+        self.assertTrue(all(raw.upper_body.valid.values()))
+
+    def test_pose_resources_close_even_if_hand_close_fails_and_camera_can_reopen(self):
+        camera = MediaPipeCameraInput(self.asset, pose_model_asset_path=self.pose_asset)
+        self.landmarker.close.side_effect = RuntimeError("close failed")
+        with self.assertRaisesRegex(RuntimeError, "close failed"):
+            camera.release()
+        self.pose_landmarker.close.assert_called_once()
+        self.cap.release.assert_called_once()
+        camera.release()
+        self.landmarker.close.side_effect = None
+        with MediaPipeCameraInput(self.asset, pose_model_asset_path=self.pose_asset):
+            pass
+
     def test_next_frame_can_return_pose_arm_fields(self):
         from tests.test_pose_mediapipe import result as pose_result
 

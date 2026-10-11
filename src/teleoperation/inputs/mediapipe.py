@@ -368,15 +368,21 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
             if cap is not None:
                 cap.release()
         finally:
+            close_error = None
             for resource in (landmarker, pose_landmarker):
                 if resource is None:
                     continue
-                if not close_landmarker:
-                    _retain_until_process_exit(resource)
-                elif wait_for_mediapipe:
-                    resource.close()
-                else:
-                    _close_landmarker_in_background(resource)
+                try:
+                    if not close_landmarker:
+                        _retain_until_process_exit(resource)
+                    elif wait_for_mediapipe:
+                        resource.close()
+                    else:
+                        _close_landmarker_in_background(resource)
+                except BaseException as error:
+                    close_error = close_error or error
+            if close_error is not None:
+                raise close_error
 
     def __enter__(self) -> "MediaPipeCameraInput":
         return self

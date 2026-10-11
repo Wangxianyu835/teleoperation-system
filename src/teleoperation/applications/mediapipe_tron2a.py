@@ -8,6 +8,7 @@ import time
 
 import numpy as np
 
+from teleoperation.contracts.observations import RawTeleopObservation
 from teleoperation.data.calibration import write_calibration
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
 from teleoperation.retargeting.arm.calibration import (
@@ -31,7 +32,7 @@ class RelativeControlClock:
 
 @dataclass(frozen=True)
 class TimedCameraObservation:
-    raw: object
+    raw: RawTeleopObservation
     control_relative_seconds: float
 
 
@@ -120,6 +121,8 @@ def run(args):
                 raise RuntimeError(f"Calibration timed out: {collector.status}")
             raw = camera.next_teleop_observation()
             timed = TimedCameraObservation(raw, clock.next_seconds())
+            if timed.control_relative_seconds >= args.timeout:
+                raise RuntimeError(f"Calibration timed out: {collector.status}")
             collector.add(timed.raw, timed.control_relative_seconds)
             if args.preview:
                 preview_open = True
@@ -137,7 +140,13 @@ def run(args):
                 # Validate the exact serializable result before publishing it.
                 ArmCalibration.from_dict(data)
                 destination = write_calibration(args.output, data)
-                ArmCalibration.load(destination)
+                try:
+                    ArmCalibration.load(destination)
+                except BaseException:
+                    # This command created the file exclusively. Do not leave
+                    # an apparent success if read-back validation fails.
+                    destination.unlink(missing_ok=True)
+                    raise
                 print(f"saved_calibration={destination} samples={len(collector.samples)}")
                 return 0
         raise RuntimeError(f"No stable bilateral neutral window: {collector.status}")
@@ -154,4 +163,8 @@ def run(args):
         finally:
             if preview_open:
                 import cv2
-                cv2.destroyWindow(window)
+                try:
+                    cv2.destroyWindow(window)
+                except cv2.error:
+                    # Closing the window manually may already destroy it.
+                    pass

@@ -42,6 +42,16 @@ def result(landmarks=True, world=True, visibility=0.9):
 
 
 class PoseMediaPipeTests(unittest.TestCase):
+    def test_nonfinite_detection_invalidates_only_affected_side(self):
+        for space in ("normalized", "world"):
+            with self.subTest(space=space):
+                pose, world = pose_landmarks(), world_landmarks()
+                (pose if space == "normalized" else world)[13].x = np.nan
+                parsed = parse_pose_result(result(landmarks=[pose], world=[world]))
+                self.assertFalse(parsed["left_arm_valid"])
+                self.assertTrue(parsed["right_arm_valid"])
+                np.testing.assert_allclose(parsed["right_arm_keypoints"][:, 0], [0.2, 0.4, 0.6])
+
     def test_parses_shoulder_elbow_wrist_in_project_order(self):
         parsed = parse_pose_result(result())
         self.assertEqual(parsed["pose_keypoints"].shape, (6, 3))
