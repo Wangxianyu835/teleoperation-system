@@ -218,6 +218,29 @@ def dual_calibrate_camera(parser):
     parser.set_defaults(_handler="teleoperation.applications.mediapipe_tron2a:run")
 
 
+def dual_camera(parser):
+    parser.description = "Realtime MediaPipe Pose world -> TRON2A arms in PyBullet. Requires real camera neutral calibration; no hand retargeting checkpoint."
+    parser.add_argument("--arms-only", action="store_true", required=True, help="explicitly select this stage's arm-only simulation")
+    parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
+    parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET, help="MediaPipe Hands detector .task; no hand retargeting model")
+    parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET)
+    parser.add_argument("--calibration", type=Path, required=True, help="real dual calibrate-camera JSON; synthetic fixtures are rejected")
+    parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF)
+    parser.add_argument("--orientation-mode", choices=("fixed", "forearm"), default="fixed")
+    parser.add_argument("--display", choices=("full", "simplified"), default="full", help="full requires all meshes; explicitly choose simplified kinematic preview without contact acceptance")
+    parser.add_argument("--gui", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--preview", action=argparse.BooleanOptionalAction, default=True, help="camera arm/status preview; q/Esc/window close exits")
+    parser.add_argument("--attach-hands", action=argparse.BooleanOptionalAction, default=False, help="optional L21 geometry held at zero reference joints")
+    parser.add_argument("--frames", type=int, default=0, help="0 runs until exit; positive number limits capture frames")
+    parser.add_argument("--simulation-steps", type=int, default=8, help="PyBullet 1/240 s steps per camera frame; default 8 for ~30 FPS")
+    parser.add_argument("--report", type=Path, default=Path("outputs/dual/camera_report.json"))
+    parser.add_argument("--width", type=int, default=640)
+    parser.add_argument("--height", type=int, default=480)
+    parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--pose-min-visibility", type=float, default=None, help="defaults to stored calibration visibility")
+    parser.set_defaults(_handler="teleoperation.applications.mediapipe_tron2a:run_camera")
+
+
 def dual_export(parser):
     parser = parser
     parser.add_argument("--observations", type=Path, required=True)

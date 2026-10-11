@@ -1,6 +1,6 @@
 # 遥操作与重定向
 
-摄像头采集人手关键点，经 L21 重定向输出关节角，在 PyBullet 中回放或实时驱动手部。支持独立 L21 手和 H1-2、GR1-T2、G1 原装手；TRON2A 双臂另需输入适配和标定。
+摄像头采集人手关键点，经 L21 重定向输出关节角，在 PyBullet 中回放或实时驱动手部。支持独立 L21 手和 H1-2、GR1-T2、G1 原装手；TRON2A 双臂可用 MediaPipe Pose world 经真人中性标定在 PyBullet 中实时驱动，见第 4.1.2 节。
 
 **离线：采集 → 对齐 → 训练 → 推理导出 → 仿真回放。
 实时：摄像头 → 对齐 → 推理 → 仿真。** 
@@ -398,7 +398,7 @@ python -m teleoperation hand align `
 
 `--max-fps` 限制实际采集频率，`0` 取消限速。将第 2 节的 `$aligned` 改为 `$bodyAligned` 可训练手部。手与身体 world 原点不同；身体数据还需坐标、单位和时间戳适配才能用于双臂 IK。
 
-### 4.1.1 TRON2A 摄像头中性姿态标定（当前第 1 步）
+### 4.1.1 TRON2A 摄像头中性姿态标定（第 1 步）
 
 `dual calibrate-camera` 使用同一摄像头帧和同一原始 Unix 毫秒检测时间戳获取 Hands 与 Pose，另外用单调时钟产生相对秒时间。只预览骨架、采集中性姿态和保存 JSON，不驱动机器人；TRON2A 参考末端由 URDF FK 计算，不依赖 mesh。
 
@@ -425,7 +425,7 @@ python -c "from teleoperation.retargeting.arm.calibration import ArmCalibration;
 
 摄像头打开后自动开始计数。左右手臂均需肩、肘、腕 world 数据完整且达到可见度阈值，双肘稍屈。稳定性使用每侧肘、腕相对本侧肩部的位置，窗口内与均值的最大距离不超过 `--stability-tolerance`（米）。遮挡、低可见度、伸直/过度弯肘或采集间断会清空窗口；运动超过阈值从当前帧重新计数。默认连续 60 帧通过后保存并关闭；按 q、Esc、关闭窗口或 Ctrl+C 取消且不保存。输出已存在会在打开摄像头前拒绝；再次运行选择新文件名。`--no-preview` 可关闭窗口。
 
-标定保存 `human_neutral_wrist = mean(wrist_world - shoulder_world)`，保留各侧 FK 参考位姿、配置的旋转/尺度/额外偏移、工作空间、安全参数、URDF 关节限位及采样帧号和两种时间。`extrinsics_calibrated=false` 明确表示没有自动估计完整相机外参；手部安装位姿为未标定的单位占位值。将来使用该标定时，输入必须先转换为肩部相对的 Pose world 米制坐标，本阶段尚未接入原有实时重定向。
+标定保存 `human_neutral_wrist = mean(wrist_world - shoulder_world)`，保留各侧 FK 参考位姿、配置的旋转/尺度/额外偏移、工作空间、安全参数、URDF 关节限位及采样帧号和两种时间。`extrinsics_calibrated=false` 明确表示没有自动估计完整相机外参；手部安装位姿为未标定的单位占位值。第 2 步的摄像头入口使用肩部相对的 Pose world 米制坐标；原有 `dual realtime` 适配器的默认输入方式保持兼容。
 
 合成验收样例：[tron2a_camera_neutral.synthetic.json](tests/fixtures/tron2a_camera_neutral.synthetic.json)，使用合成肩肘腕及真实 TRON2A URDF FK，不能替代现场标定。其左右参考腕为 `[0, 0.45, -0.15]` 和 `[-0.1, 0.45, -0.1]` 米。测试命令（未安装 editable 包时先执行 `$env:PYTHONPATH = (Join-Path (Get-Location) 'src')`）：
 
@@ -434,7 +434,66 @@ python -m unittest tests.test_mediapipe_input tests.test_pose_mediapipe tests.te
 python -m unittest discover -s tests
 ```
 
-人工审核：确认未镜像预览的左右标记；遮挡一侧时只有该侧状态失效、恢复后重新计数；稳定稍屈肘能生成并重新加载 JSON；取消不保存；取消或完成后换输出文件名再次启动摄像头。真实摄像头和窗口验收需现场执行。第 1 步交付后停止，不进入实时控制、双手集成或仿真场景资源修复。
+人工审核：确认未镜像预览的左右标记；遮挡一侧时只有该侧状态失效、恢复后重新计数；稳定稍屈肘能生成并重新加载 JSON；取消不保存；取消或完成后换输出文件名再次启动摄像头。真实摄像头和窗口验收需现场执行。第 1 步仅采集标定；以下第 2 步独立驱动仿真双臂。
+
+### 4.1.2 摄像头实时驱动 TRON2A 仿真双臂（第 2 步）
+
+先用上一节的现场配置采集**真人标定**，然后运行下列命令。`tests/fixtures/tron2a_camera_neutral.synthetic.json` 是自动验收样例，实时入口拒绝它；复制或改名不能将其变为真人标定。`extrinsics_calibrated=false` 表示旋转与尺度仍由参数配置。当前仓库缺少 TRON2A meshes，现场运动学审核须明确选择 `--display simplified`。
+
+本机可用 Python 为 `D:\Anaconda\envs\teleoperation\python.exe`，包含 MediaPipe、Robotics Toolbox、PyBullet、OpenCV。若使用其他环境，应安装现有依赖文件并执行 `python -m pip install -e . --no-deps --no-build-isolation`。以下命令从仓库根目录运行，所有参数均可先通过 `--help` 查看，不会打开设备。
+
+```powershell
+$python = 'D:\Anaconda\envs\teleoperation\python.exe'
+$env:PYTHONPATH = (Join-Path (Get-Location) 'src')
+& $python -m teleoperation dual camera --help
+
+& $python -m teleoperation dual camera --arms-only `
+  --camera-index 0 `
+  --model-asset-path datasets/hand_landmarker.task `
+  --pose-model-asset-path datasets/pose_landmarker_lite.task `
+  --calibration outputs/calibration/tron2a_camera_neutral.json `
+  --urdf third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf `
+  --orientation-mode fixed --display simplified --gui --preview `
+  --no-attach-hands --frames 0 --simulation-steps 8 `
+  --report outputs/dual/camera_report.json
+```
+
+| 参数 | 行为与默认值 |
+|---|---|
+| `--arms-only` | 本阶段必填；只创建双臂控制，不创建手部重定向模型、checkpoint 或手部时序窗口 |
+| `--calibration` | 必填的真人中性标定 JSON；验证源、米制单位、本侧肩参考、关节限位及参考 FK 与本次 URDF 匹配 |
+| `--orientation-mode fixed/forearm` | 默认 `fixed`：位置跟随，末端方向固定为标定参考方向；`forearm` 复用标定方向对齐偏移 |
+| `--display full/simplified` | 默认 `full`，逐个解析并验证 mesh，缺失明确报错；`simplified` 保留运动链、关节参数、惯性及非 mesh 几何，以球/杆替代 mesh，关闭机器人接触碰撞，仅验收运动学 |
+| `--gui/--no-gui` | 默认 PyBullet GUI；`--no-gui` 使用 DIRECT，摄像头仍为真实输入 |
+| `--preview/--no-preview` | 默认未镜像的摄像头双臂骨架，显示各侧 Pose、IK、工作空间拒绝、失效/超时及方向保持状态，以及实际末端坐标、相对原始目标和限速控制的跟随误差 |
+| `--attach-hands/--no-attach-hands` | 默认关闭 L21 挂载；开启时仅将固定零关节的几何随末端定位，不引入手部控制或接触负载；安装偏移仍为标定中的未标定占位值 |
+| `--frames` | 默认 `0` 持续运行；如 `300` 限制采集帧数 |
+| `--simulation-steps` | 默认每摄像头帧 8 个 `1/240 s` 物理步；按期望采集率选择，报告记录仿真步数 |
+| `--width/--height/--fps` | 默认 `640/480/30`；FPS 同时限制处理节奏，过慢推理仍以实际单调时间驱动安全控制 |
+| `--pose-min-visibility` | 默认使用标定文件的阈值；可显式设置 `[0,1]` 范围内的值 |
+| `--report` | 默认 `outputs/dual/camera_report.json`；每次写入汇总与最后状态，拒绝覆盖任何输入资产 |
+
+控制使用 `world_arms`，逐侧计算 `机器人参考位置 + 配置偏移 + 旋转 @ (尺度 * ((当前腕 world - 当前肩 world) - 标定相对腕))`。世界坐标中的整体平移不影响目标，左右不交换。摄像头目标超出配置工作空间会明确拒绝，旧适配器的绝对腕坐标映射仍保留。固定方向模式允许伸直手臂继续更新位置；前臂模式下近共线（平面夹角正弦小于 0.05）保持上一有效方向，跨过伸直状态时连续选择平面法向符号，位置照常更新。
+
+左右复用现有 7 自由度 IK，优先上一帧控制关节状态；成功标志、有限值、限位和独立 FK 残差均通过后才能下发，容差仍为 `0.01 m / 0.15 rad`。机器人从标定 `safe_q` 初始化，第一帧保持原姿态。有效输入经过关节速度、加速度与位置约束；短时失效先受限减速，残余速度可能产生小幅制动位移，之后保持。超过标定的 `tracking_timeout` 平缓返回 `safe_q`；恢复从当前状态继续跟随。重复、倒退或非有限时间不推进；超过 `0.25 s` 的采样间隔按失效处理、按真实时间计算超时，但最多积分 `0.05 s`，避免积累大步位移。其他可动关节通过固定参考电机保持，报告其实际漂移。
+
+报告分开统计有效/无效 Pose、IK 成功/失败、工作空间拒绝、方向保持、各失效状态，并区分 IK 残差、限速后的控制关节/FK、实际末端相对控制 FK 和原始目标的误差。另列控制约束违例、实际关节限位/速度统计、实际加速度峰值和非控制关节漂移。控制加速度限制约束的是指令；实际物理响应单独测量。原始 Unix 毫秒和控制相对秒保留在最后状态。延迟用单调墙钟测量“开始获取帧到读取仿真实际状态”，单列采集检测、IK 控制、仿真读取耗时，排除预览；这是软件处理延迟，未测量相机曝光至显示的端到端延迟。物理步时长与墙钟时间可能不同，不能把正常退出或平均误差当作持续稳定跟随成功。
+
+人工审核：从与标定一致的中性姿态启动，检查无突跳；分别伸手、收手、抬臂、侧移，确认左右及配置轴向；缓慢小幅移动和同时移动，观察连续跟随与固定末端方向；遮挡一侧确认另一侧独立跟随，短时减速保持、持续遮挡平缓回安全姿态、恢复连续跟随；不可达目标显示 IK 失败或工作空间拒绝；前臂模式下伸直再弯曲不翻腕。用稳定可达目标检查报告中的实际末端位置误差是否达到 `≤0.02 m`，不达标时先定位映射、求解、限速阶段还是仿真阶段。最后用 q、Esc、关闭摄像头/PyBullet 窗口或 Ctrl+C 退出，再次启动确认资源释放。
+
+```powershell
+# 有限帧、关闭窗口的真人摄像头检查（仍须真人标定）
+& $python -m teleoperation dual camera --arms-only `
+  --calibration outputs/calibration/tron2a_camera_neutral.json `
+  --display simplified --no-gui --no-preview --frames 300 `
+  --report outputs/dual/camera_headless_report.json
+
+# 自动验收，不打开真实摄像头
+& $python -m unittest tests.test_mediapipe_input tests.test_pose_mediapipe tests.test_mediapipe_tron2a -v
+& $python -m unittest discover -s tests -v
+```
+
+自动验收使用合成观测和真实 TRON2A URDF、IK、PyBullet DIRECT；不能替代真人左右方向、延迟、遮挡、连续性和设备重启审核。完整 mesh 显示、GUI 与可选 L21 几何显示的视觉效果也需现场核验（固定参考已通过无头测试）。本阶段完成提交后等待人工审核，尚未进入双手集成。
 
 ### 4.2 TRON2A 双臂离线导出与回放
 

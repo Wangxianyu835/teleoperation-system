@@ -1,4 +1,4 @@
-"""Camera-only TRON2A calibration, with synthetic observations and real URDF FK.
+"""TRON2A camera calibration/control with synthetic observations and real physics.
 
 No tests open physical cameras. Preview handedness, occlusion recovery and
 device reopening still require the user's hardware acceptance checks.
@@ -360,6 +360,478 @@ class CameraApplicationTests(unittest.TestCase):
         camera.next_teleop_observation.assert_not_called()
         camera.release.assert_called_once()
         self.assertFalse(self.args.output.exists())
+
+
+
+
+
+class CameraArmMappingTests(unittest.TestCase):
+    def setUp(self):
+        self.calibration = synthetic_calibration()
+
+    def retargeter(self, **kwargs):
+        from teleoperation.retargeting.arm.retargeter import ArmRetargeter
+        return ArmRetargeter(self.calibration, input_mode="camera_world", **kwargs)
+
+    def test_neutral_offset_rotated_scaled_axes_and_independent_shoulders(self):
+        rotation = Rotation.from_euler("xyz", [0.2, -0.4, 0.7]).as_matrix()
+        self.calibration = replace(self.calibration, rotation=rotation, scale=np.array([0.5, 1.2, 0.8]), translation=np.array([0.01, -0.02, 0.03]))
+        for side in ("left", "right"):
+            for axis in range(3):
+                raw = observation()
+                # Make normalized points visibly incompatible with metre mapping.
+                raw.upper_body.arms[side][:] = 99
+                raw.upper_body.world_arms[side][:] += [1., 2., 3.]
+                delta = np.eye(3)[axis] * 0.05
+                raw.upper_body.world_arms[side][2] += delta
+                mapper = self.retargeter()
+                target = mapper.update(raw.upper_body, side)
+                expected = self.calibration.robot_neutral_pose[side][:3] + self.calibration.translation + rotation @ (self.calibration.scale * delta)
+                np.testing.assert_allclose(target.pose[:3], expected, atol=1e-7)
+                np.testing.assert_allclose(target.pose[3:], self.calibration.robot_neutral_pose[side][3:], atol=1e-7)
+                other = "right" if side == "left" else "left"
+                np.testing.assert_allclose(mapper.update(raw.upper_body, other).pose[:3], self.calibration.robot_neutral_pose[other][:3] + self.calibration.translation, atol=1e-7)
+
+    def test_forearm_neutral_alignment_and_degenerate_position_still_updates(self):
+        mapper = self.retargeter(orientation_mode="forearm")
+        for side in ("left", "right"):
+            neutral = mapper.update(observation().upper_body, side)
+            np.testing.assert_allclose(Rotation.from_quat(neutral.pose[3:]).as_matrix(), Rotation.from_quat(self.calibration.robot_neutral_pose[side][3:]).as_matrix(), atol=1e-6)
+        straight = observation(straight=True)
+        target = mapper.update(straight.upper_body, "left")
+        self.assertTrue(target.valid)
+        self.assertTrue(mapper.orientation_held["left"])
+        np.testing.assert_allclose(target.pose[3:], self.calibration.robot_neutral_pose["left"][3:], atol=1e-7)
+        self.assertGreater(np.linalg.norm(target.pose[:3] - self.calibration.robot_neutral_pose["left"][:3]), 0.05)
+        straight.upper_body.world_arms["left"][:] = np.nan
+        self.assertFalse(mapper.update(straight.upper_body, "left").valid)
+        self.assertTrue(mapper.update(straight.upper_body, "right").valid)
+
+    def test_missing_invalid_nonfinite_and_calibration_source_checks(self):
+        mapper = self.retargeter()
+        for raw in (observation(invalid="left"), observation(no_world=True), observation(missing=True)):
+            self.assertFalse(mapper.update(raw.upper_body, "left").valid)
+        raw = observation()
+        raw.upper_body.world_arms["left"][0, 0] = np.inf
+        self.assertFalse(mapper.update(raw.upper_body, "left").valid)
+        for key, value in (("units", "normalized"), ("human_reference", "hip"), ("coordinate_source", "other")):
+            metadata = dict(self.calibration.metadata, **{key: value})
+            from teleoperation.retargeting.arm.retargeter import ArmRetargeter
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                ArmRetargeter(replace(self.calibration, metadata=metadata), input_mode="camera_world")
+        with self.assertRaises(ValueError):
+            mapper.update(replace(observation().upper_body, units="m"), "left")
+
+    def test_near_straight_and_plane_sign_crossing_do_not_flip_roll(self):
+        mapper = self.retargeter(orientation_mode="forearm")
+        raw = observation()
+        first = mapper.update(raw.upper_body, "left")
+        raw.upper_body.world_arms["left"][2] = [.2, .45, -.001]
+        held = mapper.update(raw.upper_body, "left")
+        self.assertTrue(held.valid)
+        self.assertTrue(mapper.orientation_held["left"])
+        np.testing.assert_allclose(first.pose[3:], held.pose[3:])
+        raw.upper_body.world_arms["left"][2] = [.2, .45, .02]
+        crossed = mapper.update(raw.upper_body, "left")
+        angle = (Rotation.from_quat(first.pose[3:]).inv() * Rotation.from_quat(crossed.pose[3:])).magnitude()
+        self.assertLess(angle, 1.)
+
+    def test_legacy_absolute_wrist_behavior_is_unchanged(self):
+        from teleoperation.retargeting.arm.retargeter import ArmRetargeter
+        mapper = ArmRetargeter(self.calibration)
+        raw = observation()
+        target = mapper.update(raw.upper_body, "left")
+        expected = self.calibration.robot_neutral_pose["left"][:3] + raw.upper_body.arms["left"][2] - self.calibration.human_neutral_wrist["left"]
+        np.testing.assert_allclose(target.pose[:3], expected, atol=1e-7)
+        self.assertFalse(mapper.update(observation(straight=True).upper_body, "left").valid)
+
+
+class ArmControlSafetyTests(unittest.TestCase):
+    def setUp(self):
+        from teleoperation.applications.dual import Tron2ADualArmController
+        self.calibration = synthetic_calibration()
+        self.controller = Tron2ADualArmController(self.calibration, DEFAULT_TRON2A_URDF, input_mode="camera_world")
+
+    def test_independent_pose_without_hands_and_ik_failure(self):
+        self.controller.update(observation().upper_body, 0.)
+        self.assertTrue(all(d["ik_success"] for d in self.controller.diagnostics.values()))
+        raw = observation(invalid="left")
+        self.controller.update(raw.upper_body, .03)
+        self.assertFalse(self.controller.diagnostics["left"]["ik_attempted"])
+        self.assertTrue(self.controller.diagnostics["right"]["ik_success"])
+        from teleoperation.contracts.arm import ArmTargetPose
+        unreachable = ArmTargetPose("left", np.array([.95, .95, -.95, 0, 0, 0, 1.]))
+        with patch.object(self.controller.arm_retargeter, "update", return_value=unreachable):
+            self.assertFalse(self.controller.update_side(raw.upper_body, "left", .06))
+        self.assertEqual(self.controller.diagnostics["left"]["status"], "loss_braking")
+
+    def test_outside_workspace_is_rejected_without_hiding_target(self):
+        raw = observation(shift=50.)
+        with patch.object(self.controller.solvers["left"], "solve") as solver:
+            self.assertFalse(self.controller.update_side(raw.upper_body, "left", 0.))
+        solver.assert_not_called()
+        self.assertTrue(self.controller.diagnostics["left"]["workspace_rejected"])
+        self.assertGreater(self.controller.diagnostics["left"]["target_pose"][0], 1.)
+
+    def test_original_dual_keeps_hand_pipeline_and_call_order(self):
+        from teleoperation.applications.dual import DualTeleoperator
+        from teleoperation.applications.hand_processing import hand_coordinate_alignment
+        from teleoperation.contracts.hand import L21HandAngles, HandRetargetResult
+        events = []
+        hand = Mock(coordinate_alignment=hand_coordinate_alignment("legacy"))
+        pipeline = Mock()
+        pipeline.process_frame.side_effect = lambda raw: (events.append("hands_preprocess") or object(), None)
+        adapter = Mock()
+        adapter.retarget.side_effect = lambda window: events.append("hands_model") or HandRetargetResult(
+            L21HandAngles(np.zeros(18)), L21HandAngles(np.zeros(18)), True, True)
+        with patch("teleoperation.applications.hand_processing.DualHandPipeline", return_value=pipeline), patch("teleoperation.retargeting.hand.interface.PoseTransformerRetargeter", return_value=adapter):
+            dual = DualTeleoperator(hand, "cpu", self.calibration, DEFAULT_TRON2A_URDF)
+        def arm_update(body, side, time):
+            events.append(side + "_arm")
+            return True
+        with patch.object(dual.arms, "update_side", side_effect=arm_update):
+            command = dual.update(dict(hands={"left":None, "right":None}, arms=observation().upper_body.arms, timestamp=.1))
+        self.assertEqual(events, ["hands_preprocess", "hands_model", "left_arm", "right_arm"])
+        self.assertTrue(command.left_hand_valid and command.right_hand_valid)
+        self.assertIs(dual.controllers, dual.arms.controllers)
+        self.assertEqual(dual.arm_retargeter.input_mode, "legacy")
+        dual.close()
+        pipeline.reset.assert_called_once(); adapter.reset.assert_called_once()
+
+    def test_ik_reachable_fk_targets_and_reject_unchecked_success(self):
+        from teleoperation.retargeting.arm.ik import target_pose_from_matrix
+        from types import SimpleNamespace
+        for side, solver in self.controller.solvers.items():
+            q = self.calibration.safe_q[side].copy()
+            q[0] += .1
+            q[1] += .1
+            target = target_pose_from_matrix(solver.specification.robot.fkine(q).A, side)
+            result = solver.solve(target, self.calibration.safe_q[side], self.calibration.safe_q[side])
+            self.assertTrue(result.success)
+            self.assertLessEqual(result.position_error, .01)
+            self.assertLessEqual(result.orientation_error, .15)
+            bads = (np.full(7, np.nan), solver.specification.upper + 1,
+                    self.calibration.safe_q[side], np.zeros(6))
+            # Use a distinctly separated FK target for the wrong-q residual check.
+            q[0] += .5
+            target = target_pose_from_matrix(solver.specification.robot.fkine(q).A, side)
+            for bad in bads:
+                with patch.object(self.controller.arm_retargeter, "update", return_value=target), patch.object(solver, "solve", return_value=SimpleNamespace(success=True, q=bad)):
+                    self.assertFalse(self.controller.update_side(observation().upper_body, side, 1.))
+
+    def test_mismatched_urdf_reference_and_unsafe_q_are_rejected(self):
+        from teleoperation.applications.dual import Tron2ADualArmController
+        poses = {s:p.copy() for s,p in self.calibration.robot_neutral_pose.items()}
+        poses["left"][0] += .01
+        with self.assertRaises(ValueError):
+            Tron2ADualArmController(replace(self.calibration, robot_neutral_pose=poses), DEFAULT_TRON2A_URDF, input_mode="camera_world")
+        joints = {s:q.copy() for s,q in self.calibration.safe_q.items()}
+        joints["left"][0] = 99
+        with self.assertRaises(ValueError):
+            Tron2ADualArmController(replace(self.calibration, safe_q=joints), DEFAULT_TRON2A_URDF, input_mode="camera_world")
+
+    def test_loss_brakes_residual_velocity_timeout_returns_and_recovers(self):
+        safety = self.controller.controllers["left"]
+        target = safety.safe_q + .15
+        safety.update(None, False, 0.)
+        np.testing.assert_array_equal(safety.q, safety.safe_q)
+        for i in range(1, 9):
+            safety.update(target, True, i / 100.)
+        before = safety.q.copy()
+        velocity = safety.velocity.copy()
+        safety.update(None, False, .09)
+        self.assertEqual(safety.status, "loss_braking")
+        self.assertTrue(np.any(safety.q != before))
+        self.assertLess(np.linalg.norm(safety.velocity), np.linalg.norm(velocity))
+        for i in range(10, 55):
+            safety.update(None, False, i / 100.)
+        np.testing.assert_allclose(safety.velocity, 0, atol=1e-10)
+        held = safety.q.copy()
+        safety.update(None, False, .59)
+        self.assertEqual(safety.status, "timeout_return")
+        for i in range(60, 150):
+            safety.update(None, False, i / 100.)
+        self.assertLess(np.linalg.norm(safety.q - safety.safe_q), np.linalg.norm(held - safety.safe_q))
+        previous = safety.q.copy()
+        safety.update(target, True, 1.5)
+        self.assertEqual(safety.status, "tracking")
+        self.assertLess(np.max(np.abs(safety.q - previous)), .01)
+
+    def test_initial_loss_bad_times_and_large_gap_do_not_jump(self):
+        safety = self.controller.controllers["left"]
+        for timestamp in (0., .01, .02, .6):
+            safety.update(None, False, timestamp)
+            np.testing.assert_array_equal(safety.q, safety.safe_q)
+        for timestamp in (.6, .5, -1., np.nan, np.inf):
+            previous = safety.q.copy()
+            safety.update(safety.safe_q + .5, True, timestamp)
+            self.assertEqual(safety.status, "time_invalid")
+            np.testing.assert_array_equal(safety.q, previous)
+        safety.update(safety.safe_q + .5, True, .61)
+        previous = safety.q.copy()
+        safety.update(safety.safe_q + .5, True, 10.)
+        self.assertTrue(safety.status.startswith("time_gap_"))
+        self.assertLess(np.max(np.abs(safety.q - previous)), .05)
+
+    def test_joint_bounds_velocity_acceleration_with_irregular_times_and_reversals(self):
+        for side, safety in self.controller.controllers.items():
+            rng = np.random.default_rng(923)
+            time = 0.
+            safety.update(None, False, time)
+            for i in range(1800):
+                dt = rng.uniform(.001, .1)
+                time += dt
+                q, v = safety.q.copy(), safety.velocity.copy()
+                spec = safety.specification
+                desired = spec.upper if i % 400 < 200 else spec.lower
+                safety.update(desired, i % 91 != 0, time)
+                self.assertTrue(np.all(safety.q >= spec.lower - 1e-8), side)
+                self.assertTrue(np.all(safety.q <= spec.upper + 1e-8), side)
+                self.assertTrue(np.all(np.abs(safety.velocity) <= spec.velocity + 1e-8), side)
+                self.assertTrue(np.all(np.abs(safety.velocity - v) <= safety.max_acceleration * dt + 1e-8), side)
+                self.assertTrue(np.all(np.abs(safety.q - q) <= spec.velocity * dt + 1e-8), side)
+
+
+class CameraSimulationTests(unittest.TestCase):
+    def test_simplification_preserves_all_joints_inertias_and_source(self):
+        import xml.etree.ElementTree as ET
+        from teleoperation.simulation.tron2a_world import _prepare_urdf
+        source = DEFAULT_TRON2A_URDF.read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            target = _prepare_urdf(DEFAULT_TRON2A_URDF, Path(directory), display="simplified")
+            a, b = ET.fromstring(source), ET.parse(target).getroot()
+            self.assertEqual([ET.tostring(j) for j in a.findall("joint")], [ET.tostring(j) for j in b.findall("joint")])
+            self.assertEqual([ET.tostring(j) for j in a.findall(".//inertial")], [ET.tostring(j) for j in b.findall(".//inertial")])
+            self.assertEqual(b.findall(".//mesh"), [])
+        self.assertEqual(DEFAULT_TRON2A_URDF.read_bytes(), source)
+
+    def test_full_resource_resolution_checks_every_mesh_and_both_package_prefixes(self):
+        from teleoperation.simulation.tron2a_world import _prepare_urdf
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "urdf").mkdir(); (root / "meshes").mkdir()
+            asset = root / "meshes" / "link.STL"
+            asset.write_text("stub")
+            source = root / "urdf" / "robot.urdf"
+            for prefix in ("tron2", "tron2a"):
+                source.write_text(f'<robot><link name="base"><visual><geometry><mesh filename="package://robot_description/{prefix}/DACH_TRON2A/meshes/link.STL"/></geometry></visual></link></robot>')
+                prepared = _prepare_urdf(source, root).read_text()
+                self.assertIn(asset.as_posix(), prepared)
+                self.assertNotIn("package://", prepared)
+            asset.unlink()
+            with self.assertRaisesRegex(FileNotFoundError, "simplified"):
+                _prepare_urdf(source, root)
+
+    def test_headless_left_right_and_bilateral_follow_actual_fk(self):
+        try:
+            import pybullet
+        except ImportError:
+            self.skipTest("pybullet not installed: actual simulator tracking unverified")
+        from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
+        from teleoperation.applications.dual import Tron2ADualArmController
+        from teleoperation.retargeting.arm.ik import target_pose_from_matrix, _pose_matrix, _pose_error
+        calibration = synthetic_calibration()
+        for moving in (("left",), ("right",), ("left", "right")):
+            ctrl = Tron2ADualArmController(calibration, DEFAULT_TRON2A_URDF, input_mode="camera_world")
+            world = Tron2ADualArmWorld(DEFAULT_TRON2A_URDF, gui=False, display="simplified", attach_hands=False, safe_q=calibration.safe_q)
+            temporary = Path(world._temporary.name)
+            try:
+                for side in ("left", "right"):
+                    initial = world.actual_state()["arms"][side]["pose"]
+                    np.testing.assert_allclose(initial[:3], calibration.robot_neutral_pose[side][:3], atol=1e-6)
+                targets = {}
+                for side in ("left", "right"):
+                    q = calibration.safe_q[side].copy()
+                    if side in moving:
+                        q[0] += .12; q[1] += .08
+                    targets[side] = target_pose_from_matrix(ctrl.solvers[side].specification.robot.fkine(q).A, side)
+                with patch.object(ctrl.arm_retargeter, "update", side_effect=lambda body, side: targets[side]):
+                    for frame in range(100):
+                        ctrl.update(observation().upper_body, frame / 30.)
+                        world.apply_arms({s:c.q for s,c in ctrl.controllers.items()})
+                        for _ in range(8):
+                            world.step()
+                actual = world.actual_state()
+                for side in targets:
+                    errors = _pose_error(_pose_matrix(targets[side].pose), _pose_matrix(actual["arms"][side]["pose"]))
+                    self.assertLessEqual(errors[0], .02, (moving, side, errors))
+                    self.assertLessEqual(errors[1], .15)
+                    spec = ctrl.solvers[side].specification
+                    self.assertTrue(np.all(actual["arms"][side]["q"] >= spec.lower - 1e-5))
+                    self.assertTrue(np.all(actual["arms"][side]["q"] <= spec.upper + 1e-5))
+                self.assertLess(max(map(abs, actual["noncontrolled_joint_drift"].values()), default=0), 1e-5)
+            finally:
+                world.close()
+                world.close()
+            self.assertFalse(pybullet.isConnected(world.client))
+            self.assertFalse(temporary.exists())
+
+    def test_initialization_failure_disconnects_and_cleans_temp(self):
+        try:
+            import pybullet
+        except ImportError:
+            self.skipTest("pybullet not installed: connection cleanup unverified")
+        from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
+        client = pybullet.connect(pybullet.DIRECT)
+        with patch.object(pybullet, "connect", return_value=client), patch.object(pybullet, "loadURDF", side_effect=RuntimeError("load failed")):
+            with self.assertRaisesRegex(RuntimeError, "load failed"):
+                Tron2ADualArmWorld(DEFAULT_TRON2A_URDF, gui=False, display="simplified", attach_hands=False)
+        self.assertFalse(pybullet.isConnected(client))
+
+    def test_optional_hand_geometry_holds_fixed_reference(self):
+        try:
+            import pybullet
+        except ImportError:
+            self.skipTest("pybullet not installed: hand geometry reference unverified")
+        from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
+        calibration = synthetic_calibration()
+        world = Tron2ADualArmWorld(DEFAULT_TRON2A_URDF, gui=False, display="simplified", attach_hands=True,
+                                   hand_reference_only=True, safe_q=calibration.safe_q)
+        try:
+            for _ in range(80):
+                world.step()
+            for side, body in world.hand_bodies.items():
+                states = pybullet.getJointStates(body, world.hand_indices[side], physicsClientId=world.client)
+                np.testing.assert_allclose([s[0] for s in states], 0, atol=1e-10)
+                np.testing.assert_allclose([s[1] for s in states], 0, atol=1e-10)
+        finally:
+            world.close()
+
+    def test_pose_world_mapping_through_real_ik_safety_and_simulation(self):
+        try:
+            import pybullet
+        except ImportError:
+            self.skipTest("pybullet not installed: complete pose-world pipeline unverified")
+        from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
+        from teleoperation.applications.dual import Tron2ADualArmController
+        from teleoperation.retargeting.arm.ik import _pose_matrix, _pose_error
+        calibration = synthetic_calibration()
+        for moving in (("left",), ("right",), ("left", "right")):
+            controller = Tron2ADualArmController(calibration, DEFAULT_TRON2A_URDF, input_mode="camera_world")
+            world = Tron2ADualArmWorld(DEFAULT_TRON2A_URDF, gui=False, display="simplified", attach_hands=False, safe_q=calibration.safe_q)
+            try:
+                for frame in range(150):
+                    raw = observation(frame)
+                    if frame:
+                        for side in moving:
+                            raw.upper_body.world_arms[side][2] += [.015, -.01, .01]
+                    controller.update(raw.upper_body, frame / 30.)
+                    world.apply_arms({s:c.q for s,c in controller.controllers.items()})
+                    for _ in range(8):
+                        world.step()
+                actual = world.actual_state()
+                for side in ("left", "right"):
+                    self.assertTrue(controller.diagnostics[side]["ik_success"])
+                    target = controller.diagnostics[side]["target_pose"]
+                    errors = _pose_error(_pose_matrix(target), _pose_matrix(actual["arms"][side]["pose"]))
+                    self.assertLessEqual(errors[0], .02, (moving, side, errors))
+                    self.assertLessEqual(errors[1], .15)
+            finally:
+                world.close()
+
+
+class CameraRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.calibration = synthetic_calibration()
+        # Synthetic observations may exercise orchestration in tests only.
+        write_calibration(self.directory / "neutral.json", self.calibration.to_dict())
+        for model in ("hands.task", "pose.task"):
+            (self.directory / model).write_bytes(b"mock")
+        self.args = build_parser().parse_args(["dual", "camera", "--arms-only", "--calibration", str(self.directory / "neutral.json"),
+            "--model-asset-path", str(self.directory / "hands.task"), "--pose-model-asset-path", str(self.directory / "pose.task"),
+            "--display", "simplified", "--no-gui", "--no-preview", "--frames", "2", "--report", str(self.directory / "report.json")])
+
+    def test_help_is_static_and_has_no_checkpoint_option(self):
+        import contextlib
+        import io
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream), patch.object(application, "MediaPipeCameraInput") as camera:
+            with self.assertRaises(SystemExit) as caught:
+                build_parser().parse_args(["dual", "camera", "--help"])
+        self.assertEqual(caught.exception.code, 0)
+        self.assertIn("--arms-only", stream.getvalue())
+        self.assertNotIn("--checkpoint", stream.getvalue())
+        camera.assert_not_called()
+
+    def test_preview_includes_actual_pose_and_separate_tracking_errors(self):
+        from teleoperation.applications.dual import Tron2ADualArmController
+        controller = Tron2ADualArmController(self.calibration, DEFAULT_TRON2A_URDF, input_mode="camera_world")
+        raw = observation(invalid="left")
+        controller.update(raw.upper_body, 0.)
+        actual = dict(arms={side: dict(pose=self.calibration.robot_neutral_pose[side]) for side in ("left", "right")})
+        camera = Mock(last_bgr=np.zeros((240, 640, 3), dtype=np.uint8))
+        with patch("cv2.imshow"), patch("cv2.waitKey", return_value=27), patch("cv2.putText") as text:
+            self.assertTrue(application._runtime_preview(camera, raw, controller, actual, "test"))
+        messages = [call.args[1] for call in text.call_args_list]
+        self.assertTrue(any("EE=" in message and "target err=" in message and "control err=" in message for message in messages))
+        self.assertTrue(any("Pose=--" in message for message in messages))
+
+    def test_real_headless_runtime_missing_hands_report_and_no_hand_models(self):
+        try:
+            import pybullet
+        except ImportError:
+            self.skipTest("pybullet not installed: runtime simulator unverified")
+        camera = Mock()
+        camera.next_teleop_observation.side_effect = [observation(), observation(1, invalid="left")]
+        with patch.object(application, "MediaPipeCameraInput", return_value=camera), patch("teleoperation.retargeting.hand.predictor.create_twohand_retargeter", side_effect=AssertionError("hand checkpoint loaded")), patch("teleoperation.applications.hand_processing.DualHandPipeline", side_effect=AssertionError("hand window created")), patch.object(application.time, "sleep"):
+            self.assertEqual(application.run_camera(self.args), 0)
+        camera.release.assert_called_once()
+        report = read_calibration(self.args.report)
+        self.assertEqual(report["frames"], 2)
+        self.assertEqual(report["sides"]["left"]["invalid_observations"], 1)
+        self.assertEqual(report["sides"]["right"]["ik_success"], 2)
+        self.assertIn("actual_vs_target_position_m", report["sides"]["right"]["metrics"])
+        self.assertEqual(report["sides"]["right"]["last"]["detection_unix_ms"], observation(1).upper_body.timestamp)
+        self.assertLess(report["sides"]["right"]["last"]["control_relative_seconds"], 10)
+        self.assertIn("capture_to_actual_ms", report["latency"])
+        self.assertFalse(report["real_camera_verified"])
+
+    def test_invalid_configuration_and_synthetic_fixture_do_not_open_devices(self):
+        for name, value in (("frames", -1), ("simulation_steps", 0), ("pose_min_visibility", np.nan), ("report", self.args.calibration),
+                            ("calibration", Path(__file__).parent / "fixtures/tron2a_camera_neutral.synthetic.json")):
+            old = getattr(self.args, name)
+            setattr(self.args, name, value)
+            with patch.object(application, "MediaPipeCameraInput") as camera, patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld") as world:
+                self.assertEqual(application.run_camera(self.args), 1)
+                camera.assert_not_called(); world.assert_not_called()
+            setattr(self.args, name, old)
+
+    def test_interrupt_capture_and_preview_errors_close_resources_and_report(self):
+        world = Mock()
+        world.actual_state.return_value = dict(arms={s: dict(q=q, velocity=np.zeros(7), pose=self.calibration.robot_neutral_pose[s]) for s,q in self.calibration.safe_q.items()}, noncontrolled_joint_drift={})
+        for error, code in ((KeyboardInterrupt(), 130), (RuntimeError("capture lost"), 1)):
+            camera = Mock()
+            camera.next_teleop_observation.side_effect = error
+            world.reset_mock()
+            with patch.object(application, "MediaPipeCameraInput", return_value=camera), patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", return_value=world):
+                self.assertEqual(application.run_camera(self.args), code)
+            camera.release.assert_called_once(); world.close.assert_called_once()
+            self.assertTrue(self.args.report.is_file())
+        self.args.preview = True
+        for result in (True, RuntimeError("preview failed")):
+            camera = Mock(); camera.next_teleop_observation.return_value = observation()
+            world.reset_mock()
+            with patch.object(application, "MediaPipeCameraInput", return_value=camera), patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", return_value=world), patch.object(application, "_runtime_preview", side_effect=result if isinstance(result, Exception) else None, return_value=True), patch("cv2.destroyWindow") as destroy:
+                self.assertEqual(application.run_camera(self.args), 1 if isinstance(result, Exception) else 0)
+            camera.release.assert_called_once(); world.close.assert_called_once(); destroy.assert_called_once()
+
+    def test_camera_initialization_failure_and_simulation_window_close_release_world(self):
+        world = Mock()
+        with patch.object(application, "MediaPipeCameraInput", side_effect=RuntimeError("camera init failed")), patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", return_value=world):
+            self.assertEqual(application.run_camera(self.args), 1)
+        world.close.assert_called_once()
+        self.assertEqual(read_calibration(self.args.report)["exit_reason"], "error")
+        world.reset_mock()
+        world.is_connected.side_effect = [True, False]
+        camera = Mock()
+        camera.next_teleop_observation.side_effect = RuntimeError("window closed during capture")
+        with patch.object(application, "MediaPipeCameraInput", return_value=camera), patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", return_value=world):
+            self.assertEqual(application.run_camera(self.args), 0)
+        camera.release.assert_called_once(); world.close.assert_called_once()
+        self.assertEqual(read_calibration(self.args.report)["exit_reason"], "simulation_window_closed")
 
 
 if __name__ == "__main__":
