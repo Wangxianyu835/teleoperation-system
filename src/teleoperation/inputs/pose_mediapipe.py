@@ -68,8 +68,8 @@ def parse_pose_result(
         [_visibility(full[index]) for index in POSE_ARM_INDICES],
         dtype=np.float32,
     )
-    if not np.isfinite(pose).all() or not np.isfinite(visibility).all():
-        raise ValueError("MediaPipe pose result contains non-finite values")
+    # Side validity below rejects non-finite detections independently, so an
+    # occluded/malformed arm does not discard the other arm's observation.
 
     world_landmarks = getattr(result, "pose_world_landmarks", None)
     world = np.full((6, 3), np.nan, dtype=np.float32)
@@ -80,8 +80,6 @@ def parse_pose_result(
                 [_point(full_world[index]) for index in POSE_ARM_INDICES],
                 dtype=np.float32,
             )
-            if not np.isfinite(world).all():
-                raise ValueError("MediaPipe pose world result contains non-finite values")
 
     output["pose_keypoints"] = pose
     output["pose_world_keypoints"] = world

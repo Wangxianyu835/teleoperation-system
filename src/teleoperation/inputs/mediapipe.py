@@ -308,6 +308,43 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
 
     def close(self): self.release()
 
+    def next_teleop_observation(self):
+        """One capture, one image/time for Hands and Pose; no control transforms.
+
+        Body ``arms`` are normalized; ``world_arms`` are Pose world metres.
+        Invalid sides become None in both spaces. Raw pose arrays/visibility
+        remain in hand metadata for diagnostics, never as valid control input.
+        """
+        from teleoperation.contracts.observations import (
+            RawHandFrame, RawTeleopObservation, UpperBodyObservation,
+        )
+
+        raw = self.next_frame(include_world=True, include_pose=True)
+        sides = ("left", "right")
+        valid = {}
+        for side in sides:
+            valid[side] = bool(raw[f"{side}_arm_valid"] and all(
+                np.shape(raw[key]) == (3, 3) and np.isfinite(raw[key]).all()
+                for key in (f"{side}_arm_keypoints", f"{side}_arm_world_keypoints")
+            ))
+        metadata = dict(raw["metadata"])
+        metadata.update({key: raw[key] for key in (
+            "pose_keypoints", "pose_world_keypoints", "pose_visibility",
+        )})
+        metadata["arm_point_order"] = ("shoulder", "elbow", "wrist")
+        hands = RawHandFrame(
+            {side: raw[side] for side in sides}, raw["timestamp"],
+            "mediapipe_approx", metadata,
+            {side: "landmarks21" for side in sides},
+            world_hands={side: raw[f"world_{side}"] for side in sides},
+        )
+        body = UpperBodyObservation(
+            {side: raw[f"{side}_arm_keypoints"] if valid[side] else None for side in sides},
+            valid, raw["timestamp"], "mediapipe_pose_normalized", "normalized",
+            world_arms={side: raw[f"{side}_arm_world_keypoints"] if valid[side] else None for side in sides},
+        )
+        return RawTeleopObservation(hands, body)
+
     def release(
         self, *, wait_for_mediapipe: bool = True, close_landmarker: bool = True,
     ) -> None:
