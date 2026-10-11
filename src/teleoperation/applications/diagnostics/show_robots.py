@@ -12,6 +12,7 @@ import time
 import pybullet as p
 import pybullet_data
 import numpy as np
+from teleoperation.simulation.urdf_loader import create_ground, load_urdf
 
 # 项目内机器人资产根目录（相对本脚本，不依赖盘符）
 from teleoperation.paths import ROBOTS_ROOT
@@ -74,7 +75,7 @@ def main(args=None):
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     p.setGravity(0, 0, -9.81)
     p.setTimeStep(1.0 / 240.0)
-    p.loadURDF("plane.urdf", physicsClientId=client)
+    create_ground(p, physicsClientId=client)
 
     robots = []  # [(name, robot_id, joints_dict, base)]
     for name, urdf_rel, search_rel, base, color in ROBOT_SPECS:
@@ -82,8 +83,9 @@ def main(args=None):
         urdf_path = os.path.join(ROBOTS, urdf_rel)
         p.setAdditionalSearchPath(search_path, physicsClientId=client)
         try:
-            rid = p.loadURDF(
-                urdf_path, base,
+            rid = load_urdf(
+                urdf_path,
+                basePosition=base,
                 baseOrientation=p.getQuaternionFromEuler([0, 0, 0]),
                 useFixedBase=True,
                 physicsClientId=client,

@@ -4,6 +4,8 @@
 
 **阶段汇报与答辩材料**：[present 成果包](present/README.md)，完整汇报正文见 [项目阶段成果](present/项目阶段成果.md)。
 
+**2026-10-11 合并更新**：已集成实时三机器人手部展示、无需 checkpoint 的几何重定向，以及手部与肩肘腕的米制 world 数据采集。新增入口、数据差异与验证记录见 [分支集成说明](docs/integration-2026-10-11.md)。
+
 ## 安装
 
 沿用现有 Conda 环境和 requirements 版本，不升级依赖。在已有环境中执行：
@@ -110,7 +112,7 @@ python -m teleoperation hand train `
 | `scheduler_factor` / `scheduler_patience` | `0.5` / `8` | ReduceLROnPlateau 的学习率缩减倍数与耐心参数 |
 | `minimum_learning_rate` | `1e-6` | 调度器的最低学习率 |
 | `gradient_clip_norm` | `10.0` | 梯度范数裁剪上限 |
-| `loss_weights` | `(500,500,10,500,10,500)` | 依次对应 `vec`、`pos`、`collision`、`thumb`、`tip_distance`、`thumb2` |
+| `loss_weights` | `(500,500,10,500,0.01,500)` | 依次对应 `vec`、`pos`、`collision`、`thumb`、`tip_distance`、`thumb2` |
 | `collision_threshold` | `0.010` | 碰撞损失中的点间距离阈值 |
 | `source_scale` / `robot_scale` | `1.0` / `1.0` | 输入手部关键点与机器人 FK 的尺度参数 |
 

@@ -207,8 +207,9 @@ def part2(args, results, record, L, R, LV, RV, ts, bad_info, swaps):
         try:
             world = os.path.dirname(urdf)
             p.setAdditionalSearchPath(world, physicsClientId=cid)
-            rid = p.loadURDF(urdf, [0, 0, 0.3], useFixedBase=True,
-                             physicsClientId=cid)
+            from teleoperation.simulation.urdf_loader import load_urdf
+            rid = load_urdf(urdf, basePosition=[0, 0, 0.3],
+                            useFixedBase=True, physicsClientId=cid)
             name2idx = {}
             for i in range(p.getNumJoints(rid, physicsClientId=cid)):
                 info = p.getJointInfo(rid, i, physicsClientId=cid)

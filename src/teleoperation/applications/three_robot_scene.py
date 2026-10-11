@@ -1,6 +1,6 @@
 """实时重定向的【三台机器人并排】显示目标（用机器人原装手，不换手）。
 
-这个场景类给 ``teleoperation.apps.realtime_hand_sim`` 用：实时链路算出来的每一帧
+这个场景类给 ``teleoperation.applications.realtime_hand_sim`` 用：实时链路算出来的每一帧
 18 维 L21 角度直接写进 **H1-2 / GR1-T2 / G1** 三台论文机器人**出厂自带**的灵巧手，
 而不是把一只 LinkerHand L21 单独摆在世界原点（那样画面上只有一只"手套"）。
 
@@ -35,7 +35,7 @@ import time
 
 import numpy as np
 
-from teleoperation.apps.replay.hand_support import map_frame
+from teleoperation.applications.replay.hand_support import map_frame
 
 # 三台机器人的横向摆位（米）与标签色，与 tools show-all-hands 保持一致
 ROBOT_ORDER = ("h1_2", "gr1_t2", "g1")

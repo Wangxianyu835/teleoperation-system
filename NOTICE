@@ -50,3 +50,16 @@ https://gitee.com/ericbrunt/linkerhand_telop_python
 
 本项目的灵巧手模型与关节驱动接口参考该 SDK。
 该 SDK 未包含在本仓库中，需自行从上游克隆，许可证见其原仓库。
+
+------------------------------------------------------------
+3. TRON2 Robot Description
+------------------------------------------------------------
+SPDX-FileCopyrightText: 2024-2026 LimX Dynamics Technology Co., Ltd.
+SPDX-License-Identifier: Apache-2.0
+
+来源：
+https://github.com/limxdynamics/tron2-robot-description
+
+本仓库 `third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf`
+来自该项目的 URDF 描述，用于测试双臂关节链读取和 IK。
+完整网格资产未包含在本仓库中，需从上游项目获取。

@@ -73,6 +73,9 @@ present/qa/
 *.pth
 *.ckpt
 *.onnx
+hand_landmarker.task
+pose_landmarker_lite.task
+pose_landmarker_full.task
 
 # ---------- 系统文件 ----------
 Thumbs.db
@@ -82,3 +85,7 @@ $RECYCLE.BIN/
 
 # Persistence package contains source code, not runtime datasets.
 !src/teleoperation/data/
+
+# Downloaded MediaPipe models use the shared datasets directory.
+/datasets/hand_landmarker.task
+/datasets/pose_landmarker_lite.task

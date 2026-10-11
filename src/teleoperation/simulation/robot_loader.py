@@ -24,6 +24,7 @@ import pybullet as p
 
 # 项目内机器人资产根目录（相对本文件定位，不依赖盘符）
 from teleoperation.robots.specification import DEFAULT_ROBOTS_ROOT, ROBOT_SPECS, ARM_NEUTRAL, _is_arm_joint, _is_hand_joint
+from .urdf_loader import load_urdf
 
 class RobotLoader:
     """加载机器人并构建「关节名 -> 索引」映射表"""
@@ -70,9 +71,10 @@ class RobotLoader:
 
         p.setAdditionalSearchPath(os.path.dirname(urdf_path),
                                   physicsClientId=self.client)
-        self.robot_id = p.loadURDF(
-            urdf_path, [0, 0, spec['base_z']],
-            p.getQuaternionFromEuler([0, 0, 0]),
+        self.robot_id = load_urdf(
+            urdf_path,
+            basePosition=[0, 0, spec['base_z']],
+            baseOrientation=p.getQuaternionFromEuler([0, 0, 0]),
             useFixedBase=True, physicsClientId=self.client,
         )
 

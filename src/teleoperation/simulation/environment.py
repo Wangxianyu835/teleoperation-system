@@ -7,6 +7,7 @@ import pybullet_data
 
 from .robot_loader import RobotLoader
 from .randomization import DomainRandomizer
+from .urdf_loader import create_ground
 from teleoperation.simulation.tasks import get_task, list_tasks
 from teleoperation.simulation.tasks import register_builtin_tasks
 register_builtin_tasks()          # noqa: F401  ★ 触发 30 个任务注册
@@ -113,9 +114,7 @@ class SimulationEnv:
 
     def _load_ground(self):
         """加载地面"""
-        # RobotLoader changes the search path; subsequent episode resets must
-        # still resolve the same ground asset without depending on that path.
-        p.loadURDF(f"{pybullet_data.getDataPath()}/plane.urdf", physicsClientId=self.client)
+        create_ground(p, physicsClientId=self.client)
 
     def step(self, action: np.ndarray = None, duration: float = 1.0 / 240.0):
         """

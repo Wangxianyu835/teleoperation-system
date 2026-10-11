@@ -1,6 +1,7 @@
 """Static command routing; importing this registry starts no workflows."""
 
 COMMANDS = (
+    ('hand', 'record-world', 'hand_record_world', 'teleoperation.applications.world_landmark_capture:main'),
     ('hand', 'record', 'hand_record', 'teleoperation.applications.offline_h5_record:run'),
     ('hand', 'align', 'hand_align', 'teleoperation.applications.hand:align'),
     ('hand', 'train', 'hand_train', 'teleoperation.applications.training:run'),

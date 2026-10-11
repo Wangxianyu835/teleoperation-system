@@ -24,7 +24,8 @@ def main(args=None):
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     p.setGravity(0, 0, -9.81)
     p.setTimeStep(1.0 / 240.0)
-    p.loadURDF("plane.urdf")
+    from teleoperation.simulation.urdf_loader import create_ground, load_urdf
+    create_ground(p)
 
     # 加载左右灵巧手（统一为 L21，17 个可动关节 —— 与队友重定向目标一致）
     # ★ 2026-09-12 型号统一：原先加载的是 l7（每手 7 关节、无 *_mcp_roll），
@@ -32,16 +33,16 @@ def main(args=None):
     p.setAdditionalSearchPath(HAND_DIR)
 
     # 右手 - L21
-    right_hand = p.loadURDF(
-        "l21_right/linkerhand_l21_right.urdf",
+    right_hand = load_urdf(
+        os.path.join(HAND_DIR, "l21_right", "linkerhand_l21_right.urdf"),
         basePosition=[-0.2, 0, 0.6],
         baseOrientation=p.getQuaternionFromEuler([1.57, 0, 0]),
         useFixedBase=True
     )
 
     # 左手 - L21
-    left_hand = p.loadURDF(
-        "l21_left/linkerhand_l21_left.urdf",
+    left_hand = load_urdf(
+        os.path.join(HAND_DIR, "l21_left", "linkerhand_l21_left.urdf"),
         basePosition=[0.2, 0, 0.6],
         baseOrientation=p.getQuaternionFromEuler([1.57, 0, 0]),
         useFixedBase=True

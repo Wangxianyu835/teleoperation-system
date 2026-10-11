@@ -1,6 +1,7 @@
 """Verify the delivered files, relative links, media streams, and input hashes."""
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import re
@@ -37,7 +38,7 @@ class References(HTMLParser):
         if 'id' in attrs: self.ids.add(attrs['id'])
 
 
-def main():
+def main(*, allow_missing_inputs: bool = False):
     report={'material_date':'2026-10-07','checks':{}}
     checks=report['checks']
     manifest=json.loads((HERE/'素材元数据.json').read_text(encoding='utf-8'))
@@ -97,10 +98,24 @@ def main():
     checks['output_hashes_match_manifest']=all(sha(HERE/item['relative_path'])==item['sha256'] for item in manifest['outputs'])
     assert checks['output_hashes_match_manifest']
     checks['protected_inputs']=[]
+    missing_inputs=[]
     for item in manifest['inputs']:
         path=Path(item['original_path'])
-        assert path.is_file() and sha(path)==item['sha256'], f'Input modified: {path}'
-        checks['protected_inputs'].append({'name':path.name,'sha256':item['sha256'],'unchanged':True})
+        if not path.is_file():
+            if not allow_missing_inputs:
+                raise FileNotFoundError(
+                    f'Protected input is unavailable: {path}. '
+                    'Restore it or pass --allow-missing-inputs to verify the remaining deliverables.'
+                )
+            missing_inputs.append(str(path))
+            checks['protected_inputs'].append(
+                {'name': path.name, 'sha256': item['sha256'], 'available': False, 'unchanged': None}
+            )
+            continue
+        assert sha(path)==item['sha256'], f'Input modified: {path}'
+        checks['protected_inputs'].append(
+            {'name': path.name, 'sha256': item['sha256'], 'available': True, 'unchanged': True}
+        )
     parser=References();parser.feed((HERE/'index.html').read_text(encoding='utf-8'))
     assert parser.video_count==4
     references=[('index.html',value) for value in parser.paths]
@@ -125,12 +140,20 @@ def main():
                        'valid_frames':{side:manifest['evidence']['cpu_gpu_comparison'][side]['valid'] for side in ['left','right']}}
     # Human inspection is described separately; never claim it from a parser check.
     report['visual_review']='Recorded separately in 素材说明.md; this script checks structural and numeric validity only.'
+    checks['protected_inputs_missing']=missing_inputs
     report['passed']=True
     (HERE/'验收结果.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     print(json.dumps({'passed':True,'counts':checks['counts'],'relative_links':checks['relative_links'],
                       'video_codecs':[item['codec'] for item in checks['videos']],
-                      'protected_inputs_unchanged':True},ensure_ascii=False,indent=2))
+                      'protected_inputs_unchanged':not missing_inputs,
+                      'protected_inputs_missing':missing_inputs},ensure_ascii=False,indent=2))
 
 
 if __name__=='__main__':
-    main()
+    parser=argparse.ArgumentParser(description='Verify portable deliverable structure and media.')
+    parser.add_argument(
+        '--allow-missing-inputs',
+        action='store_true',
+        help='verify deliverables without the original D:\\ source inputs',
+    )
+    main(**vars(parser.parse_args()))

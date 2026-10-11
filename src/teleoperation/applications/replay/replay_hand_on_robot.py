@@ -99,7 +99,8 @@ def main(args=None):
                               physicsClientId=cid)
     p.setGravity(0, 0, -9.81, physicsClientId=cid)
     p.setTimeStep(args.dt, physicsClientId=cid)
-    p.loadURDF('plane.urdf', physicsClientId=cid)
+    from teleoperation.simulation.urdf_loader import create_ground, load_urdf
+    create_ground(p, physicsClientId=cid)
 
     loader = RobotLoader(cid)
     robot_id = loader.load_robot(args.robot)['robot']
@@ -152,8 +153,9 @@ def main(args=None):
         p.setAdditionalSearchPath(os.path.dirname(urdf),
                                   physicsClientId=cid)
         # 先按「零偏移」加载，用来测量 l21 自身的坐标系
-        hand_id = p.loadURDF(urdf, base_pos, base_orn,
-                             useFixedBase=False, physicsClientId=cid)
+        hand_id = load_urdf(urdf, basePosition=base_pos,
+                            baseOrientation=base_orn,
+                            useFixedBase=False, physicsClientId=cid)
         for i in range(p.getNumJoints(hand_id, physicsClientId=cid)):
             p.resetJointState(hand_id, i, 0.0, physicsClientId=cid)
 

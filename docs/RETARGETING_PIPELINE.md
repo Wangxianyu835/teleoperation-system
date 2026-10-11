@@ -1,5 +1,7 @@
 # 手部重定向链路怎么跑、怎么复核（current-state 布局）
 
+> 2026-10-11：本文保留原分支的运行与验收历史。合并后的入口、坐标数据差异及测试结果见 [main 集成记录](integration-2026-10-11.md)，本文的历史机器路径与测试数量不代表当前 main。
+
 > **适用版本**：`origin/current-state`（包 `src/teleoperation`，CLI `python -m teleoperation`）
 > **最后更新**：2026-10-10（基线 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`，本文路径与数字已同步）· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
 > [`contracts.md`](contracts.md)（H5 / 命令契约，字段以它为准）· [`architecture.md`](architecture.md)（模块层次）·
