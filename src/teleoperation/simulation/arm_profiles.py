@@ -170,6 +170,14 @@ ARM_PROFILES: dict = {
         # gravity on): left holds up to 0.10 m (mean 14.3 / max 27.8 mm), right up to
         # 0.16 m (mean 14.8 / max 29.8 mm); 0.20 m breaks both sides.
         realtime_travel_m={"left": 0.10, "right": 0.15},
+        # 2026-10-12 lateral probe + real-session A/B (docs/multi-robot-arm.md 8.6):
+        # with both hands on the centre line (y=0) both wrists are commanded to the *same*
+        # point, so at rest the forearms converge in front of the chest and look crossed.
+        # The shoulders sit at y=+-0.148.  Steady residual mean on the recorded 2280 frame
+        # session: y=0 -> 16.8 (L) / 27.9 (R) mm, +-0.05 -> 22.7 / 22.7 mm, +-0.10 ->
+        # 30.1 (L, over the ceiling) / 22.4 (R) mm.  +-0.05 leaves 10 cm between the
+        # hands and keeps both sides inside max_residual_mm.
+        realtime_offset={"left": (0.24, 0.05, 0.19), "right": (0.24, -0.05, 0.19)},
         max_residual_mm=30.0,
         min_travel_mm=10.0,
         sweep_amplitude_m=0.05,
@@ -184,6 +192,11 @@ ARM_PROFILES: dict = {
         # Probe: left up to 0.10 m (mean 13.3 / max 28.2 mm), right up to 0.12 m
         # (mean 15.9 / max 26.3 mm); 0.16 m breaks both sides.
         realtime_travel_m={"left": 0.10, "right": 0.12},
+        # Same reason as h1_2 (docs/multi-robot-arm.md 8.6): the shoulder line is at
+        # y=+-0.095, so +-0.10 puts each hand under its own shoulder instead of both of
+        # them on the centre line.  Real 2280 frame session: steady residual mean 7.8 ->
+        # 18.4 (L) and 13.0 -> 13.4 (R) mm, both still inside max_residual_mm.
+        realtime_offset={"left": (0.16, 0.10, 0.12), "right": (0.16, -0.10, 0.12)},
         max_residual_mm=25.0,
         min_travel_mm=6.0,
         sweep_amplitude_m=0.03,
@@ -201,8 +214,12 @@ ARM_PROFILES: dict = {
         realtime_travel_m={"left": 0.04, "right": 0.04},
         # The left arm tracks much better with a lateral working point of +0.10 m: at
         # 0.04 m the mean drops from 31.2 mm (y=0) to 19.8 mm, and 0.06 m from 28.6 to
-        # 19.9 mm.  The right arm prefers the centre (18.3 mm at y=0).
-        realtime_offset={"left": (0.16, 0.10, 0.10), "right": (0.16, 0.0, 0.10)},
+        # 19.9 mm.  The right arm's best point is the centre (18.3 mm), but -0.10 m only
+        # costs +1.3 mm (19.6 mm) and puts the hand under its own shoulder (+-0.100),
+        # which is what stops the right arm reaching across the chest at rest.  Real 2280
+        # frame session: the left is unchanged at 22.5 mm (it already used +0.10) and the
+        # right goes 11.8 -> 18.9 mm, still inside max_residual_mm.
+        realtime_offset={"left": (0.16, 0.10, 0.10), "right": (0.16, -0.10, 0.10)},
         max_residual_mm=25.0,
         min_travel_mm=6.0,
         sweep_amplitude_m=0.03,

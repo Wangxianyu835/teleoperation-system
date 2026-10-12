@@ -1,6 +1,6 @@
 # 多机器人手臂驱动：按 robot_type 选臂并驱动机器人关节
 
-最后更新：2026-10-12（§8 实时链路 + §8.5 采集窗口的手臂层）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
+最后更新：2026-10-12（§8 实时链路 + §8.5 采集窗口的手臂层 + §8.6 静息工作点/\"两手交叉\"的实测定位与修复）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
 相关代码：`src/teleoperation/simulation/arm_ik.py`、`arm_profiles.py`、`arm_scene_driver.py`、
 `arm_realtime.py`、`realtime_teleop.py`、`arm_preview.py`
 相关测试：`tests/test_arm_ik_multi_robot.py`（16 个用例）、`tests/test_arm_realtime_bridge.py`（30 个用例）、
@@ -196,12 +196,15 @@ E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headles
 
 | robot_type | ik_mode | 中性工作点（基座系，米） | 每侧行程上限（米） | 残差阈值 |
 |---|---|---|---|---|
-| h1_2 | pose | (0.24, 0, 0.19) | left 0.10 / right 0.15 | 30 mm |
-| gr1_t2 | position | (0.16, 0, 0.12) | left 0.10 / right 0.12 | 25 mm |
-| g1 | position | left (0.16, +0.10, 0.10) / right (0.16, 0, 0.10) | 0.04 / 0.04 | 25 mm |
+| h1_2 | pose | left (0.24, +0.05, 0.19) / right (0.24, -0.05, 0.19) | left 0.10 / right 0.15 | 30 mm |
+| gr1_t2 | position | left (0.16, +0.10, 0.12) / right (0.16, -0.10, 0.12) | left 0.10 / right 0.12 | 25 mm |
+| g1 | position | left (0.16, +0.10, 0.10) / right (0.16, -0.10, 0.10) | 0.04 / 0.04 | 25 mm |
 
 - 行程上限由 `--probe-travel` 实测（**两侧同时驱动**才有意义：只驱动一侧时另一侧解冻下垂、会把整机带歪）；超限按每轴夹取，夹取帧数写进 `--report`。
-- g1 左臂在 Y=0 时残差均值 31.2 mm，Y=+0.10 降到 19.8 mm（`--probe-lateral` 复核）；h1_2 / gr1_t2 两侧都是 Y=0 最好 —— 左右不对称是实测结论，不是调参洁癖。
+- 中性工作点的**横向 y 必须分左右**（`+` = 机器人左侧，REP-103）：两侧都写 0 时两个腕子被命令到
+  **同一个点**，松手就是\"前臂交叉在胸前\"——根因、量法与取舍见 §8.6。y 是\"看着对\"与\"IK 解得准\"的折中。
+- g1 左臂在 Y=0 时残差均值 31.2 mm，Y=+0.10 降到 19.8 mm；右臂 Y=-0.10 只比 Y=0 差 1.3 mm
+  （18.3 -> 19.6 mm），于是两侧对称在 +-0.10。h1_2 左臂最多 +0.05（+0.10 会到 30.05 mm，越 30 mm 上限）。
 - 入口默认：`--side both`、`--landmark-space world`、`--arm-orientation auto`、`--arm-ik-iterations 60`、`--arm-ik-residual-threshold 1e-4`、`--arm-calibrate-frames 30`、`--calibration-frames 15`、`--sim-steps 8`、`--print-every 15`、`--frames 0`。
 - **60 / 1e-4 是特意选的**：实测比 `PyBulletArmIK` 自带的 200 / 1e-5 又快又准（h1_2 稳态残差 10.3 / 11.7 vs 18.4 / 20.4 mm）；三台同时跑约 11.2 fps、单侧约 17.7 fps（本机 CPU）。
 - 两个"标定帧"不同义：`--calibration-frames`（开手标定，基线口径）vs `--arm-calibrate-frames`（手臂中性帧），混用会互相污染。
@@ -213,13 +216,13 @@ E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headles
 
 | 命令 | 退出码 | 关键不变量 |
 |---|---|---|
-| `E:\python3.11.7\python.exe devtools\verify_realtime_arm_bridge.py` | 0 | 中性标定 60 帧完成（有效帧 left 45 / right 46）；标定后第一帧目标 = 中性工作点（最差轴 0.0000 mm）；稳态残差 mean 9.5~21.4 mm（阈值 25 / 30 mm，判据只看 mean）；丢帧保持 81 次全中；未驱动关节漂移 <= 0.0005 rad |
-| 同上加 `--arm-ik-iterations 60 --arm-ik-residual-threshold 1e-4` | 0 | 同上，稳态残差 mean 5.2~11.7 mm（h1_2 10.3 / 11.7 mm）—— 这就是入口默认口径，数字与 profile 阈值一致 |
-| `E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headless --input-npz outputs\tmp_realtime\replay_frames.npz --frames 40 --no-preview --report ...json` | 0 | 40 帧回放完、不读相机；手 24 / 18 帧有效（其余是 3 帧滑窗预热与刻意丢帧）；手臂每侧 40 / 40 帧有目标；三台残差 h1_2 11.3 / 20.6、gr1_t2 3.7 / 5.1、g1 24.8 / 14.8 mm；hold drift <= 0.0005 rad |
+| `E:\python3.11.7\python.exe devtools\verify_realtime_arm_bridge.py --side both --report outputs\tmp_realtime\verify_default_after.json` | 0 | 中性标定 60 帧完成（有效帧 left 45 / right 46）；标定后第一帧目标 = 中性工作点（最差轴 0.0000 mm）；稳态残差 mean 18.7~23.1 mm（h1_2 18.8 / 23.1、gr1_t2 19.1 / 18.7；阈值 25 / 30 mm，判据只看 mean）；丢帧保持 81 次全中；未驱动关节漂移 <= 0.0005 rad（§8.6 改静息点后重跑） |
+| 同上加 `--arm-ik-iterations 60 --arm-ik-residual-threshold 1e-4 --report outputs\tmp_realtime\verify_ik60_after.json` | 0 | 同上，稳态残差 mean 7.4~10.8 mm（h1_2 7.5 / 10.8、gr1_t2 7.9 / 7.7 mm）—— 这就是入口默认口径，数字与 profile 阈值一致（§8.6 改静息点后重跑） |
+| `E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headless --input-npz outputs\tmp_realtime\replay_frames.npz --frames 40 --no-preview --report outputs\tmp_realtime\replay_report4.json` | 0 | 40 帧回放完、不读相机（3.42 s / 12.1 fps）；手 24 / 18 帧有效（其余是 3 帧滑窗预热与刻意丢帧）；`applied={'left': 24, 'right': 18}`；三台残差 h1_2 14.9 / 7.0、gr1_t2 6.4 / 4.3、g1 24.8 / 3.2 mm；hold drift <= 0.0003 rad（§8.6 改静息点后重跑：g1 右 14.8 -> 3.2 mm 变好，g1 左 24.8 与改前一字不差 = 它本来就用 +0.10） |
 | `E:\python3.11.7\python.exe -m pytest tests -q` | 0 | 280 passed, 3 skipped（289 subtests；含本层 30 + 21 条）—— 改前基线 259 passed / 3 skipped |
-| 真机无头：`E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headless --frames 120 --preview-dump-dir outputs\tmp_realtime\preview_arm --preview-dump-frames 6 --dump-npz outputs\tmp_realtime\live_frames.npz --report outputs\tmp_realtime\live_arm.json` | 0 | 真相机 120 帧 / 14.2 fps；`camera preview: window=off arm_overlay=on dumped_png=6`（存下带手臂层的 PNG）；右臂中性标定 30/30 -> `delta_op_cm=[-22.38, +30.08, -7.95]`、肘角 102.8°；三台稳态残差 3.9~14.7 mm；hold drift <= 0.0002 rad；左臂本帧不入镜 -> 走 21 点兜底 |
-| 真机两窗口：`E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --frames 150 --preview-dump-dir outputs\tmp_realtime\preview_gui --preview-dump-frames 3 --report outputs\tmp_realtime\gui_arm.json` | 0 | 150 帧 / 10.1 fps；`camera preview: window=on mirror=on arm_overlay=on rect=(28,91,640,480)` + PyBullet 三机器人窗口同时开；双侧 `L=P R=P`、`cal=ok`、手 15 帧有效；三台残差 2.6~27.1 mm；`sim_frames=150` |
-| `powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -Base d8bca93` | 0 | `RESULT: [OK]`（8 项全过，2 warnings；unittest discover `Ran 283 tests`、`OK (skipped=3)`；4 条 CLI 冒烟 exit 0；第 4 项 `809 teammate-owned files under baseline: 0 modified/deleted`） |
+| 真机无头：`E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headless --frames 120 --preview-dump-dir outputs\tmp_realtime\preview_arm --preview-dump-frames 6 --dump-npz outputs\tmp_realtime\live_frames.npz --report outputs\tmp_realtime\live_arm.json` | 0 | 真相机 120 帧 / 14.2 fps；`camera preview: window=off arm_overlay=on dumped_png=6`（存下带手臂层的 PNG）；右臂中性标定 30/30 -> `delta_op_cm=[-22.38, +30.08, -7.95]`、肘角 102.8°；三台稳态残差 3.9~14.7 mm；hold drift <= 0.0002 rad；左臂本帧不入镜 -> 走 21 点兜底（§8.6 改静息点**之前**的真机记录，残差要重跑才算最新） |
+| 真机两窗口：`E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --frames 150 --preview-dump-dir outputs\tmp_realtime\preview_gui --preview-dump-frames 3 --report outputs\tmp_realtime\gui_arm.json` | 0 | 150 帧 / 10.1 fps；`camera preview: window=on mirror=on arm_overlay=on rect=(28,91,640,480)` + PyBullet 三机器人窗口同时开；双侧 `L=P R=P`、`cal=ok`、手 15 帧有效；三台残差 2.6~27.1 mm；`sim_frames=150`（§8.6 改静息点**之前**的真机记录） |
+| `powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -Base d8bca93` | 0 | `RESULT: [OK]`（8 项全过，2 warnings；unittest discover `Ran 283 tests`、`OK (skipped=3)`；4 条 CLI 冒烟 exit 0；第 4 项 `809 teammate-owned files under baseline: 0 modified/deleted`）——§8.6 改静息点后重跑同结果 |
 
 > **`-Base` 必须显式给 `d8bca93`**：`preflight.ps1` 的默认基线是 `10ebd9f`，而本支在那之后已合进队友
 > 45 个提交，于是第 4 项会把**队友自己的改动**算成"改了队友文件"（本轮实测 49 个 `[FAIL]`，全在队友线）。
@@ -266,13 +269,76 @@ CameraPreview（基线：取画面 / 镜像 / 挪窗口 / 置顶 / 存 PNG / q|E
 **手臂没进画面**而不是没数据；往后退到肩肘腕都进画面，折线立刻出现，
 `outside_frame()` 也会把"有几个点在画面外"直接写在窗口上。
 
-### 8.6 没做的（交接）
+### 8.6 静息工作点：\"两手交叉\"的根因与修复（2026-10-12 实测）
 
-- **真机已跑通、但轴向仍未核**：2026-10-12 已在真机（本机 USB 相机 640x480 / 30 fps）跑通
-  **无头**与**两窗口**两种模式（证据见 §8.3 最后两行），但 `--arm-trace` 的轴向（§8.2 第一条）
-  需要**你本人**只朝一个方向动手去对照，本轮没做 —— 在此之前只能说"相对自洽"，
-  不能说"已标定 / 已跟手"。
-- 双手同框未测：本次真机运行只检到右臂（左臂走 21 点兜底 / 或只有一侧入镜），
-  双臂同时有效还要再试一次。
+现象：实时遥操作里**松手（回到中性姿势）时两只手叠在一起、前臂交叉在胸前**，
+而加 `--arm-travel-mm 150` 几乎看不出区别。根因在中性工作点（`realtime_offset`）上，
+跟轴顺序、跟行程都无关：
+
+| robot | 肩关节在基座系的 y（URDF `*_shoulder_pitch_joint` 的 origin） | 改前中性 y | 后果 |
+|---|---|---|---|
+| h1_2 | left +0.14806 / right -0.14806 | 两侧都是 0 | 两个腕子被命令到**同一个点**，前臂只能收敛、互相穿插 = \"交叉\" |
+| gr1_t2 | left +0.10128（roll +0.09515）/ right -0.10094 | 两侧都是 0 | 同上 |
+| g1 | left +0.10022 / right -0.10021 | left +0.10 / right 0 | 左臂正常；**右臂中性点就在中线**、行程只有 4 cm，永远够不到自己那侧 |
+
+（REP-103：机器人基座系 x 前 / y 左 / z 上，所以左肩 y 为正。手部重定向本来就是**相对中性姿势**的，
+所以\"操作者两手相距 40 cm\"在中性姿势下被压成\"机器人两手相距 0\"。）
+
+- **`--arm-travel-mm` 治不了这个**：它改的是\"围绕中性点还能走多远\"，中性点本身不动 ——
+  松手看到的就是中性点，行程只在大幅动作时才可见（§8.2 已注：行程要两侧同时驱动才有意义）。
+- 改法：把每侧中性 y 挪到自己**肩膀下方**（让机器人像人一样\"手在身侧\"），h1_2 因残差只挪一半。
+
+**改前 / 改后（同一条命令 + 同一份录制数据 `outputs\tmp_realtime\axis2_frames.npz`，约 2280 帧）：**
+
+| 机器人/侧 | 改前中性 y | 改后中性 y | 稳态残差 mean（mm）改前 -> 改后 | 上限 |
+|---|---|---|---|---|
+| h1_2 left | 0.00 | +0.05 | 16.8 -> 22.7 | 30 |
+| h1_2 right | 0.00 | -0.05 | 27.9 -> **22.7** | 30 |
+| gr1_t2 left | 0.00 | +0.10 | 7.8 -> 18.4 | 25 |
+| gr1_t2 right | 0.00 | -0.10 | 13.0 -> 13.4 | 25 |
+| g1 left | +0.10 | +0.10（未变） | 22.5 -> 22.5 | 25 |
+| g1 right | 0.00 | -0.10 | 11.8 -> 18.9 | 25 |
+
+```
+E:\python3.11.7\python.exe devtools\verify_realtime_arm_bridge.py --input-npz outputs\tmp_realtime\axis2_frames.npz --side both --report outputs\tmp_realtime\npz_axis2_half.json
+-> 退出码 0；稳态残差 6 条全部 [OK]，相比改前基线没有新增失败
+```
+
+> `*_neutral_start` 那 3 条 `[FAIL]` 是喂**录制**数据必然踩到的：录下来的开头就是当时那下的
+> \"伺服进入段\"。改前基线同样 3 条、逐条相同，因此判据是稳态残差（约定 5）。
+> g1 左臂改前改后都是 22.52 / 22.5 mm —— 它本来就用的 +0.10，这对数字同时是\"A/B 管线确实生效\"的对照。
+
+- 取舍是量出来的：`--probe-lateral --side both` 扫 y = 0 / +-0.10 / +-0.15 / +-0.20。
+  注意它**一次把两侧移到同一个 y**，所以判\"左右对称张开 a\"要读**左臂在 +a 行、右臂在 -a 行**
+  （数字是稳态残差 mean / max，毫米）：
+
+| 扫描 y | h1_2 左 / 右 | gr1_t2 左 / 右 | g1 左 / 右 |
+|---|---|---|---|
+| +0.00 | 13.5 / 14.2 | 9.6 / 9.1 | 31.2 / 18.3 |
+| -0.10 | 29.8 / 28.0 | 22.1 / 17.3 | 89.5 / 19.6 |
+| -0.15 | 74.6 / 35.6 | 43.6 / 28.0 | 177.9 / 28.3 |
+| -0.20 | 146.0 / 44.2 | 102.3 / 39.8 | 290.4 / 37.4 |
+| +0.10 | 27.7 / 27.2 | 16.0 / 21.5 | 21.1 / 81.9 |
+| +0.15 | 35.4 / 68.8 | 25.2 / 45.8 | 25.1 / 149.4 |
+| +0.20 | 44.2 / 137.9 | 35.6 / 93.5 | 31.1 / 260.1 |
+
+  读法：三台**两侧都最想要中线**（13.5 / 14.2 / 9.6 / 9.1 / 18.3 mm），越往自己肩膀下挪残差越大；
+  也就是\"手在身侧（好看）\"与\"IK 解得准（数字好看）\"天生冲突，取值是这条曲线上选的折中点。
+  h1_2 左臂 +0.10 会到 30.05 mm（越 30 mm 上限），所以它取 +0.05（22.7 mm）；gr1_t2 / g1 能接受满量 +-0.10。
+- 左右能力不同是**手臂自己的关节限位**，不是映射错：h1_2 左臂 +0.10 越线、右臂 -0.10 反而更好
+  （27.9 -> 22.4）；g1 左臂本来就需要 +0.10。
+- 真机观感仍要**你本人**看一次：本层只有残差数字，没有自动化的渲染判据。
+
+### 8.7 没做的（交接）
+
+- **轴向已用真实会话离线复算核对**（2026-10-12）：从 `--dump-npz` 的 world 手部轨迹逐帧复算
+  "操作者轴位移 -> 机器人基座系目标"，与 §8.2 的 `AxisMap` 一致。例：某一帧 `op=[-1.2, +31.7, +13.8] cm`
+  按 `AxisMap=(Z,X,Y)/(-1,+1,-1)`、gain 0.58 应得 `(-7, -80, -184) mm`，实测 g1 左臂目标
+  `[-84, -8, -150] mm` —— 逐轴吻合（x 差 4 mm 是报告里那个伺服抖动；`-184 -> -150` 正是
+  `--arm-travel-mm 150` 的每轴夹取）。所以"跟手"不再只是相对自洽；还差的只是 gain 的归一化口径
+  （按标定那几帧臂长 / 0.60）与 §8.6 那种左右能力差异。
+- 真机已跑通：**无头**与**两窗口**两种模式（证据见 §8.3 最后两行）；多轮真实会话里两侧手臂
+  都有目标与残差记录（§8.6 的 A/B 就是 2280 帧实录）。
+- 仍没做的：中性工作点的真机**观感**要你本人再确认一次（§8.6 结尾：本层只有残差数字，没有渲染判据）。
 - 手臂目标是**相对重定向**（以中性姿势为原点），不是手眼标定；换操作者、换站位、换相机摆放都要重做中性标定。
 - 未做：双臂协调动作测试、与 `retargeting/arm/wrist_targets.py` 那条 21 点 -> 手腕链路的联合调试（`--arm-orientation auto` 目前只有 h1_2 带姿态约束）。
