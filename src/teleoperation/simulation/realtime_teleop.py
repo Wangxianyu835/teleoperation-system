@@ -35,6 +35,19 @@ import 它们的公开接口并复用基线入口里那几个纯工具函数；�
     # 回到基线行为：只驱动手
     E:\\python3.11.7\\python.exe -m teleoperation.simulation.realtime_teleop --no-arms
 
+两个窗口
+--------
+1. **采集窗口**（``cv2.imshow``，标题见 ``arm_preview.ARM_PREVIEW_WINDOW``）：原始画面 +
+   手 21 点骨架 + **手臂肩/肘/腕折线**（同色系浅一档）+ 每侧一行数字（来源字母
+   P/H/-、相对中性姿势的三轴位移厘米、臂长、肘角）+ 底部图例。这一层由
+   ``simulation/arm_preview.py`` 在基线预览上**子类化**画出来，基线文件一行未改；
+   ``--no-arm-overlay`` 回到基线那种"只有手"的窗口。
+2. **PyBullet 窗口**：H1-2 / GR1-T2 / G1 并排 —— 原装手由 18 维角度驱动、手臂由
+   ``ArmSceneDriver`` 的 IK 结果驱动。它只看仿真结果，不看摄像头。
+
+采集窗口里那层手臂是**显示投影**（pose 归一化坐标乘图像尺寸），不是三维重建：
+本层没有相机内参、没有手眼标定，折线只能当"MediaPipe 到底看没看到这条手臂"的现场证据。
+
 中性标定（第一次跑必看）
 ------------------------
 手臂走的是**相对**重定向：启动后前 ``--arm-calibrate-frames`` 帧要**保持一个中性姿势不动**
@@ -87,7 +100,6 @@ from teleoperation.applications.realtime_hand_sim import (
     _loop_fps,
     _median_interval,
     _window_pos,
-    build_preview,
     build_retargeter,
     build_scene,
     resolve_model_asset,
@@ -95,6 +107,10 @@ from teleoperation.applications.realtime_hand_sim import (
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
 from teleoperation.paths import DEFAULT_POSE_ASSET, realtime_checkpoint
 from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM, RUNTIME
+from teleoperation.simulation.arm_preview import (
+    ARM_PREVIEW_WINDOW,
+    build_arm_preview,
+)
 from teleoperation.simulation.arm_profiles import loadable_robots, profile_for
 from teleoperation.simulation.arm_realtime import (
     AxisMap,
@@ -338,6 +354,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preview-no-topmost", action="store_true")
     parser.add_argument("--preview-dump-dir", type=Path, default=None)
     parser.add_argument("--preview-dump-frames", type=int, default=5)
+    parser.add_argument("--no-arm-overlay", action="store_true",
+                        help="do not draw the arm skeleton/numbers in the camera window "
+                             "(the window then matches the baseline hand-only preview)")
     parser.add_argument("--print-every", type=int, default=15)
     parser.add_argument("--report", type=Path, default=None)
     return parser
@@ -359,6 +378,32 @@ def arm_hud(bridge, driver, targets) -> str:
                         for name, entry in sorted(values.items()) if entry)
         residuals = f" res(mm) {text}"
     return f"{bridge.status()} arm {sources}{residuals}"
+
+
+def arm_lines(bridge, sides) -> dict:
+    """采集窗口里每侧一行手臂数字：来源字母 + 相对中性姿势的三轴位移（厘米）+ 臂长 + 肘角。
+
+    数据就是 ``bridge.trace()``（``--arm-trace`` 打的同一份）；窗口只显示，不参与计算。
+    ``bridge`` 为 ``None``（``--no-arms``）时给空字典，调用方不用分叉。
+    """
+    if bridge is None:
+        return {}
+    lines = {}
+    for side, entry in sorted(bridge.trace().items()):
+        if side not in sides:
+            continue
+        letter = SOURCE_SHORT.get(entry.get("source", "none"), "?")
+        delta = entry.get("delta_op_cm")
+        moved = ("--" if delta is None
+                 else "[" + ",".join(f"{float(value):+5.1f}" for value in delta) + "]")
+        reach = entry.get("operator_reach_m")
+        elbow = entry.get("elbow_bend_deg")
+        reason = str(entry.get("reason") or "")
+        lines[side] = (f"{side} {letter} d(cm){moved} "
+                       f"reach={'--' if reach is None else f'{float(reach):.3f}'}m "
+                       f"elbow={'--' if elbow is None else f'{float(elbow):.0f}'}deg"
+                       f"{'' if not reason else ' ' + reason[:44]}")
+    return lines
 
 
 def print_arm_state(processed, bridge, driver, targets, profiles) -> None:
@@ -497,9 +542,12 @@ def run(args) -> int:
                                        args.fps, args.landmark_space,
                                        pose_asset if arms_wanted else None,
                                        args.pose_min_visibility)
-        preview = build_preview(args, camera, sides)
+        preview = build_arm_preview(args, camera, sides)
         if not args.headless:
             print(PREVIEW_HINT_ROBOTS, flush=True)
+            print(f"camera window {ARM_PREVIEW_WINDOW!r}: raw frame + 21 hand points + both "
+                  f"arms (shoulder/elbow/wrist); the PyBullet window shows the three robots.",
+                  flush=True)
         if bridge is not None:
             print("keep a neutral arm pose (elbows slightly bent, hands in front of the chest) "
                   f"for about {args.arm_calibrate_frames} frames per side; until then the arms hold "
@@ -559,7 +607,12 @@ def run(args) -> int:
             if args.dump_npz is not None:
                 _record_frame(dumped, raw_frame, camera.arms())
             if preview is not None:
-                preview.update(raw_frame, latest, arm_hud(bridge, driver, targets))
+                body = camera.arms()
+                # 不在这里挑手臂点：arm_preview.update() 自己把形状不对 / 含 NaN 的一侧
+                # 当作"没有"（与桥的丢帧保持同口径），这里只负责把 None 原样传下去。
+                preview.update(raw_frame, latest, arm_hud(bridge, driver, targets),
+                               arms=None if body is None else body.arms,
+                               lines=arm_lines(bridge, sides))
                 if preview.quit_requested:
                     print("camera window closed; stopping.", flush=True)
                     break
@@ -602,7 +655,9 @@ def run(args) -> int:
         print(f"  arm hold drift: {json.dumps(arm_hold_drift, ensure_ascii=False)}", flush=True)
     if preview is not None:
         print(f"camera preview: window={'on' if preview.show else 'off'} "
-              f"mirror={'on' if preview.mirror else 'off'} dumped_png={preview.dumped}"
+              f"mirror={'on' if preview.mirror else 'off'} "
+              f"arm_overlay={'on' if getattr(preview, 'overlay', False) else 'off'} "
+              f"dumped_png={preview.dumped}"
               f"{'' if preview.rect is None else f' rect={preview.rect}'}"
               f"{'' if not preview.note else ' note=' + preview.note}", flush=True)
     arm_valid_total = 0 if bridge is None else sum(bridge.counts["valid"].values())
@@ -633,6 +688,7 @@ def run(args) -> int:
         "preview": None if preview is None else {
             "window": bool(preview.show),
             "mirrored": bool(preview.mirror),
+            "arm_overlay": bool(getattr(preview, "overlay", False)),
             "dumped_png": int(preview.dumped),
             "dump_dir": None if preview.dump_dir is None else str(preview.dump_dir),
             "window_name": preview.window_name,

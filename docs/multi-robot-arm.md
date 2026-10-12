@@ -1,9 +1,10 @@
 # 多机器人手臂驱动：按 robot_type 选臂并驱动机器人关节
 
-最后更新：2026-10-12（新增 §8 实时链路）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
+最后更新：2026-10-12（§8 实时链路 + §8.5 采集窗口的手臂层）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
 相关代码：`src/teleoperation/simulation/arm_ik.py`、`arm_profiles.py`、`arm_scene_driver.py`、
-`arm_realtime.py`、`realtime_teleop.py`
-相关测试：`tests/test_arm_ik_multi_robot.py`（16 个用例）、`tests/test_arm_realtime_bridge.py`（30 个用例）；
+`arm_realtime.py`、`realtime_teleop.py`、`arm_preview.py`
+相关测试：`tests/test_arm_ik_multi_robot.py`（16 个用例）、`tests/test_arm_realtime_bridge.py`（30 个用例）、
+`tests/test_arm_preview.py`（21 个用例）；
 离线验收 `devtools/verify_arm_multi_robot.py`、`devtools/verify_realtime_arm_bridge.py`
 
 ## 1. 为什么需要这一层
@@ -148,10 +149,12 @@ MediaPipeCameraInput.next_teleop_observation()   # 同一帧：手 21 点 + pose
 | 文件 | 干什么 |
 |---|---|
 | `src/teleoperation/simulation/arm_realtime.py` | `AxisMap`、`RealtimeArmBridge`（中性标定 / 相对映射 / 每侧行程夹取 / 丢帧保持 / 21 点兜底）、`load_neutral` / `save_neutral` |
-| `src/teleoperation/simulation/realtime_teleop.py` | 实时入口 CLI：`build_parser` / `run` / `main`、`CameraFrameSource`、`ReplayFrameSource`（`--input-npz` 回放）、手臂 HUD、`--report`、`--dump-npz` |
+| `src/teleoperation/simulation/realtime_teleop.py` | 实时入口 CLI：`build_parser` / `run` / `main`、`CameraFrameSource`、`ReplayFrameSource`（`--input-npz` 回放）、手臂 HUD（`arm_hud` / `arm_lines`）、`--report`、`--dump-npz` |
+| `src/teleoperation/simulation/arm_preview.py` | **采集窗口的手臂层**：`ArmCameraPreview`（子类化基线预览，基线文件零改动）、`finite_arm_points`、`outside_frame`、`build_arm_preview` |
 | `devtools/verify_realtime_arm_bridge.py` | 离线验收（无相机、无人可跑），含 `--probe-travel` / `--probe-lateral` 两个"只量参数、不改文件"的模式 |
 | `devtools/run_realtime_arm_windows.py` | PyCharm 一键入口（`--check` 只体检） |
 | `tests/test_arm_realtime_bridge.py` | 30 个用例（轴向 / 几何 / 标定 / 相对映射 / 夹取 / 保持兜底 / 报告 IO / 入口默认值 / 回放元数据） |
+| `tests/test_arm_preview.py` | 21 个用例（合法点才画 / NaN 与形状不对当"没有" / `--no-arm-overlay` 逐像素等于基线 / 镜像翻面 / 画面外提示 / `build_arm_preview` 开关语义） |
 | `arm_profiles.py`（改） | `realtime_travel_m` / `realtime_offset` + `realtime_neutral(side)` / `travel_limit(side)` |
 | `arm_scene_driver.py`（改） | `__init__` 透传 `ik_iterations` / `residual_threshold` |
 
@@ -213,8 +216,10 @@ E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headles
 | `E:\python3.11.7\python.exe devtools\verify_realtime_arm_bridge.py` | 0 | 中性标定 60 帧完成（有效帧 left 45 / right 46）；标定后第一帧目标 = 中性工作点（最差轴 0.0000 mm）；稳态残差 mean 9.5~21.4 mm（阈值 25 / 30 mm，判据只看 mean）；丢帧保持 81 次全中；未驱动关节漂移 <= 0.0005 rad |
 | 同上加 `--arm-ik-iterations 60 --arm-ik-residual-threshold 1e-4` | 0 | 同上，稳态残差 mean 5.2~11.7 mm（h1_2 10.3 / 11.7 mm）—— 这就是入口默认口径，数字与 profile 阈值一致 |
 | `E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headless --input-npz outputs\tmp_realtime\replay_frames.npz --frames 40 --no-preview --report ...json` | 0 | 40 帧回放完、不读相机；手 24 / 18 帧有效（其余是 3 帧滑窗预热与刻意丢帧）；手臂每侧 40 / 40 帧有目标；三台残差 h1_2 11.3 / 20.6、gr1_t2 3.7 / 5.1、g1 24.8 / 14.8 mm；hold drift <= 0.0005 rad |
-| `E:\python3.11.7\python.exe -m pytest tests -q` | 0 | 259 passed, 3 skipped（含本层 30 条） |
-| `powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -Base d8bca93` | 0 | `RESULT: [OK]`（8 项全过；unittest discover `Ran 262 tests`、skipped=3；4 条 CLI 冒烟 exit 0） |
+| `E:\python3.11.7\python.exe -m pytest tests -q` | 0 | 280 passed, 3 skipped（289 subtests；含本层 30 + 21 条）—— 改前基线 259 passed / 3 skipped |
+| 真机无头：`E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headless --frames 120 --preview-dump-dir outputs\tmp_realtime\preview_arm --preview-dump-frames 6 --dump-npz outputs\tmp_realtime\live_frames.npz --report outputs\tmp_realtime\live_arm.json` | 0 | 真相机 120 帧 / 14.2 fps；`camera preview: window=off arm_overlay=on dumped_png=6`（存下带手臂层的 PNG）；右臂中性标定 30/30 -> `delta_op_cm=[-22.38, +30.08, -7.95]`、肘角 102.8°；三台稳态残差 3.9~14.7 mm；hold drift <= 0.0002 rad；左臂本帧不入镜 -> 走 21 点兜底 |
+| 真机两窗口：`E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --frames 150 --preview-dump-dir outputs\tmp_realtime\preview_gui --preview-dump-frames 3 --report outputs\tmp_realtime\gui_arm.json` | 0 | 150 帧 / 10.1 fps；`camera preview: window=on mirror=on arm_overlay=on rect=(28,91,640,480)` + PyBullet 三机器人窗口同时开；双侧 `L=P R=P`、`cal=ok`、手 15 帧有效；三台残差 2.6~27.1 mm；`sim_frames=150` |
+| `powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -Base d8bca93` | 0 | `RESULT: [OK]`（8 项全过，2 warnings；unittest discover `Ran 283 tests`、`OK (skipped=3)`；4 条 CLI 冒烟 exit 0；第 4 项 `809 teammate-owned files under baseline: 0 modified/deleted`） |
 
 > **`-Base` 必须显式给 `d8bca93`**：`preflight.ps1` 的默认基线是 `10ebd9f`，而本支在那之后已合进队友
 > 45 个提交，于是第 4 项会把**队友自己的改动**算成"改了队友文件"（本轮实测 49 个 `[FAIL]`，全在队友线）。
@@ -231,8 +236,43 @@ E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headles
 4. `reset()` 要连帧计数一起清，否则 `frames` 把上一轮累计带进新一轮。
 5. 只在**入口**里 `print` 数字，别在桥里 print：桥是纯计算，报告才是证据（约定 5）。
 
-### 8.5 没做的（交接）
+### 8.5 采集窗口：手和手臂在同一个窗口
 
-- **真机未做**：还没站在摄像头前跑过一次、`--arm-trace` 的轴向（§8.2 第一条）**没核**，所以不要说"已标定 / 已跟手"。
+要求是"一个窗口看采集、另一个窗口看仿真"，而基线的 `CameraPreview`
+（`applications/realtime_hand_sim.py`）只画 **21 点手部骨架**（那个入口不驱动手臂）。
+既要叠加手臂、又**不能改基线文件**，于是**子类化**它的预览：
+
+```
+CameraPreview（基线：取画面 / 镜像 / 挪窗口 / 置顶 / 存 PNG / q|Esc 退出）   <- 一行未改
+  `- ArmCameraPreview.annotate()      simulation/arm_preview.py（新增）
+       画面 + 21 点手骨架（基线画的）
+       + 肩->肘->腕 折线（每侧同色系浅一档，腕点放大成橙点）
+       + 每侧一行数据：来源字母（P/H/-）+ 相对中性姿势的三轴位移厘米 + 臂长 + 肘角
+       + 画面外提示：`right 3/3 arm point(s) outside the frame (step back or tilt the camera)`
+       + 底部图例：`arm: P=pose arm H=hand fallback -=held`
+```
+
+- 窗口标题与基线区分开：`camera: hands + arms (q/Esc quits)`。
+- 数据由入口准备（`camera.arms()` 的归一化肩/肘/腕 + `bridge.trace()` 的位移），预览**只画**：
+  像素不回灌重定向；开不出窗口（没桌面 / 没 HighGUI）只打印一行 note，主链路与 `--report` 不受影响。
+- `--no-arm-overlay` 回到基线那种"只有手"的窗口；`--report` 的 `preview.arm_overlay` 记录本场开没开。
+- 非有限（NaN / Inf）或形状不对的手臂点统一当"没有这一侧"（`finite_arm_points`），与桥的
+  "丢帧保持"同口径：看不见就不画，也不猜。
+- 这层折线是 **pose 归一化坐标的显示投影**，不是三维重建（本层没有相机内参、没有手眼标定）。
+
+**实测现象（第一次上真机就会遇到）**：人离相机太近时，MediaPipe 的肩/肘/腕会落到画面外 ——
+本机实测（640x480）肩 `y=0.96`、肘 `y=1.11~1.44`、腕 `y=0.90~1.57`，换算成像素就是
+459（画面内）/ 533（画面外）/ 433（画面内）。所以"窗口里看不见手臂线"通常是
+**手臂没进画面**而不是没数据；往后退到肩肘腕都进画面，折线立刻出现，
+`outside_frame()` 也会把"有几个点在画面外"直接写在窗口上。
+
+### 8.6 没做的（交接）
+
+- **真机已跑通、但轴向仍未核**：2026-10-12 已在真机（本机 USB 相机 640x480 / 30 fps）跑通
+  **无头**与**两窗口**两种模式（证据见 §8.3 最后两行），但 `--arm-trace` 的轴向（§8.2 第一条）
+  需要**你本人**只朝一个方向动手去对照，本轮没做 —— 在此之前只能说"相对自洽"，
+  不能说"已标定 / 已跟手"。
+- 双手同框未测：本次真机运行只检到右臂（左臂走 21 点兜底 / 或只有一侧入镜），
+  双臂同时有效还要再试一次。
 - 手臂目标是**相对重定向**（以中性姿势为原点），不是手眼标定；换操作者、换站位、换相机摆放都要重做中性标定。
 - 未做：双臂协调动作测试、与 `retargeting/arm/wrist_targets.py` 那条 21 点 -> 手腕链路的联合调试（`--arm-orientation auto` 目前只有 h1_2 带姿态约束）。

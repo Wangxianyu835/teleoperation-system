@@ -68,7 +68,7 @@ def main(argv) -> int:
         status = base.run_check(want_window=base.wants_window(list(argv)))
         return status if status != 0 else check_arm_entry()
 
-    from teleoperation.applications.realtime_hand_sim import PREVIEW_WINDOW
+    from teleoperation.simulation.arm_preview import ARM_PREVIEW_WINDOW as PREVIEW_WINDOW
     from teleoperation.simulation.realtime_teleop import build_parser
     from teleoperation.simulation.realtime_teleop import main as entry_main
 
