@@ -1,0 +1,11 @@
+# Preserve robot meshes and model assets without line-ending conversion.
+*.obj binary
+*.stl binary
+*.STL binary
+*.dae binary
+*.mtl binary
+*.glb binary
+*.gltf binary
+*.usd binary
+*.usda binary
+*.usdc binary

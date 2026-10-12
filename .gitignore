@@ -1,0 +1,16 @@
+# Local Python environment and runtime caches
+/.conda-env/
+/.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local editor configuration
+.idea/
+.vscode/
+
+# Local environment configuration
+.env
+.env.*
+!.env.example
