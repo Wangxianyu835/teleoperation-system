@@ -59,7 +59,8 @@ class ArmSceneDriver:
     """
 
     def __init__(self, scene, sides=("right",), robots=None, arm_force=ARM_FORCE,
-                 ik_mode=None, rest_poses: str = "current"):
+                 ik_mode=None, rest_poses: str = "current",
+                 ik_iterations=None, residual_threshold=None):
         self.scene = scene
         self.p = scene.p
         self.cid = scene.cid
@@ -77,9 +78,15 @@ class ArmSceneDriver:
             robot_type = robot["type"]
             if wanted is not None and robot_type not in wanted:
                 continue
+            settings = {}
+            if ik_iterations is not None:
+                settings["ik_iterations"] = int(ik_iterations)
+            if residual_threshold is not None:
+                settings["residual_threshold"] = float(residual_threshold)
             adapter = PyBulletArmIK(robot["body"], self.cid, robot_type,
                                     sides=self.sides, ik_mode=ik_mode,
-                                    arm_force=arm_force, rest_poses=rest_poses)
+                                    arm_force=arm_force, rest_poses=rest_poses,
+                                    **settings)
             self.released[robot_type] = self._release_holds(robot, adapter)
             self.ik[robot_type] = adapter
         if not self.ik:

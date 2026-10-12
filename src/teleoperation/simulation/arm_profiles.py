@@ -62,6 +62,13 @@ class ArmProfile:
     metric_scale: float = 1.0
     #: Target centre in the robot's base frame (metres).
     metric_offset: tuple = (0.0, 0.0, 0.0)
+    #: Realtime chain only: per-side travel clamp (metres, each base-frame axis).  Empty =
+    #: fall back to ``sweep_amplitude_m``.  Measured by
+    #: ``devtools/verify_realtime_arm_bridge.py --probe-travel`` (see docs section 7).
+    realtime_travel_m: Mapping[str, float] = field(default_factory=dict)
+    #: Realtime chain only: per-side neutral working point (metres, base frame).  Empty =
+    #: use ``metric_offset``.  Measured by the same probe's ``--probe-lateral``.
+    realtime_offset: Mapping[str, tuple] = field(default_factory=dict)
     #: Acceptance thresholds for the headless probe / tests.
     max_residual_mm: float = 30.0
     min_travel_mm: float = 10.0
@@ -81,6 +88,20 @@ class ArmProfile:
             raise ValueError(f"{self.robot_type}: metric_scale must be > 0")
         if len(self.metric_offset) != 3:
             raise ValueError(f"{self.robot_type}: metric_offset must be (x, y, z)")
+        for side, value in self.realtime_travel_m.items():
+            if side not in SIDES:
+                raise ValueError(
+                    f"{self.robot_type}: realtime_travel_m key {side!r} is not one of {SIDES}")
+            if not float(value) > 0.0:
+                raise ValueError(
+                    f"{self.robot_type}: realtime_travel_m[{side}] must be > 0, got {value!r}")
+        for side, value in self.realtime_offset.items():
+            if side not in SIDES:
+                raise ValueError(
+                    f"{self.robot_type}: realtime_offset key {side!r} is not one of {SIDES}")
+            if len(tuple(value)) != 3:
+                raise ValueError(
+                    f"{self.robot_type}: realtime_offset[{side}] must be (x, y, z), got {value!r}")
 
     # ------------------------------------------------------------------ #
     def base_target_from_operator(self, position) -> tuple:
@@ -101,6 +122,28 @@ class ArmProfile:
         low = tuple(value - amplitude for value in self.metric_offset)
         high = tuple(value + amplitude for value in self.metric_offset)
         return low, high
+
+    # ------------------------------------------------------------------ #
+    # 实时链路的每侧参数（实测覆盖值，不是标定）
+    # ------------------------------------------------------------------ #
+    def realtime_neutral(self, side: str) -> tuple:
+        """这一侧的中性工作点（基座系，米）：实测覆盖值，缺省回落到 ``metric_offset``。"""
+        if side not in SIDES:
+            raise ValueError(f"side must be one of {SIDES}, got {side!r}")
+        return tuple(float(value) for value in self.realtime_offset.get(side,
+                                                                        self.metric_offset))
+
+    def travel_limit(self, side: str) -> float:
+        """这一侧每轴允许的最大位移（米）：实测覆盖值，缺省回落到 ``sweep_amplitude_m``。
+
+        ``sweep_amplitude_m`` 是 ``devtools/verify_arm_multi_robot.py`` 验过的方框，
+        所以在没有实测覆盖值的地方用它当上限是安全的。
+        """
+        if side not in SIDES:
+            raise ValueError(f"side must be one of {SIDES}, got {side!r}")
+        if side in self.realtime_travel_m:
+            return float(self.realtime_travel_m[side])
+        return float(self.sweep_amplitude_m)
 
 
 #: Per-robot profiles.  Two measurement sets, both on this machine:
@@ -123,6 +166,10 @@ ARM_PROFILES: dict = {
         ik_mode="pose",
         metric_scale=0.7,
         metric_offset=(0.24, 0.0, 0.19),
+        # 2026-10-12 probe (both arms driven, sweep at the listed amplitude, 32 frames,
+        # gravity on): left holds up to 0.10 m (mean 14.3 / max 27.8 mm), right up to
+        # 0.16 m (mean 14.8 / max 29.8 mm); 0.20 m breaks both sides.
+        realtime_travel_m={"left": 0.10, "right": 0.15},
         max_residual_mm=30.0,
         min_travel_mm=10.0,
         sweep_amplitude_m=0.05,
@@ -134,6 +181,9 @@ ARM_PROFILES: dict = {
         ik_mode="position",
         metric_scale=0.4,
         metric_offset=(0.16, 0.0, 0.12),
+        # Probe: left up to 0.10 m (mean 13.3 / max 28.2 mm), right up to 0.12 m
+        # (mean 15.9 / max 26.3 mm); 0.16 m breaks both sides.
+        realtime_travel_m={"left": 0.10, "right": 0.12},
         max_residual_mm=25.0,
         min_travel_mm=6.0,
         sweep_amplitude_m=0.03,
@@ -146,6 +196,13 @@ ARM_PROFILES: dict = {
         ik_mode="position",
         metric_scale=0.4,
         metric_offset=(0.16, 0.0, 0.10),
+        # g1 is the tight one: both sides only hold 0.04 m (left mean 19.8 / max 29.0 mm,
+        # right mean 9.4 / max 21.6 mm); 0.06 m already spikes to 40+ mm.
+        realtime_travel_m={"left": 0.04, "right": 0.04},
+        # The left arm tracks much better with a lateral working point of +0.10 m: at
+        # 0.04 m the mean drops from 31.2 mm (y=0) to 19.8 mm, and 0.06 m from 28.6 to
+        # 19.9 mm.  The right arm prefers the centre (18.3 mm at y=0).
+        realtime_offset={"left": (0.16, 0.10, 0.10), "right": (0.16, 0.0, 0.10)},
         max_residual_mm=25.0,
         min_travel_mm=6.0,
         sweep_amplitude_m=0.03,
@@ -261,6 +318,8 @@ def describe(robot_type: str) -> dict:
         "ik_mode": profile.ik_mode,
         "metric_scale": profile.metric_scale,
         "metric_offset": list(profile.metric_offset),
+        "realtime_offset": {side: list(profile.realtime_neutral(side)) for side in SIDES},
+        "realtime_travel_m": {side: profile.travel_limit(side) for side in SIDES},
         "sweep_amplitude_m": profile.sweep_amplitude_m,
         "expected_arm_dof": profile.expected_arm_dof,
         "ee_keywords": list(profile.ee_keywords),
