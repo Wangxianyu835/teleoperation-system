@@ -1,0 +1,7 @@
+# Build the local wheel first: python devtools/build_vr_wheel.py
+# Install from the repository root in a separate environment (see docs/vr_environment.md).
+--extra-index-url https://download.pytorch.org/whl/cu130
+-c constraints-vr.txt
+-r requirements-dev.txt
+-r requirements-retargeting-camera.txt
+./outputs/vr_environment/avp_stream-2.51+opencvcontrib1-py3-none-any.whl
