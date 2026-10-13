@@ -41,7 +41,7 @@ class TrainingConfig:
     scheduler_patience: int = 8
     minimum_learning_rate: float = 1e-6
     gradient_clip_norm: float = 10.0
-    loss_weights: tuple[float, ...] = (500, 500, 10, 500, 0.01, 500)
+    loss_weights: tuple[float, ...] = (500, 500, 10, 500, 0.05, 500)
     collision_threshold: float = 0.010
     source_scale: float = 1.0
     robot_scale: float = 1.0
