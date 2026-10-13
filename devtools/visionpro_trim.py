@@ -128,8 +128,9 @@ def main(argv=None) -> int:
             "trim_rule": f"first_identical_run>={args.stale_limit}_frames",
             "frame_count": int(stop),
             "duration_seconds": round(duration, 3),
-            "left_freeze_at_frame": freeze_at.get("left"),
-            "right_freeze_at_frame": freeze_at.get("right"),
+            # HDF5 attributes cannot store None; -1 means no freeze detected.
+            "left_freeze_at_frame": freeze_at.get("left") if freeze_at.get("left") is not None else -1,
+            "right_freeze_at_frame": freeze_at.get("right") if freeze_at.get("right") is not None else -1,
         })
         for key, value in trimmed.items():
             out.attrs[key] = value

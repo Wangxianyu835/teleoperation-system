@@ -78,6 +78,10 @@
 
 ## 3. 怎么录
 
+裁剪工具 `devtools/visionpro_trim.py` 的输出属性 `left_freeze_at_frame` 和
+`right_freeze_at_frame` 使用 `-1` 表示该侧未检测到冻结帧。两侧均未冻结时保留全部帧；
+仅一侧冻结时按该侧冻结位置裁剪。
+
 ```powershell
 cd F:\simulation_platform_cs
 $env:PYTHONPATH = "$pwd\src"
