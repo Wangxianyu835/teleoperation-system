@@ -12,7 +12,9 @@ from teleoperation.contracts.validation import HAND_SIDES, validate_retarget_inp
 from teleoperation.contracts.coordinates import (
     COORDINATE_ALIGNMENT, validate_coordinate_alignment,
     validate_landmark_contract,
+    WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
 )
+from .angles import canonical_to_native_angles
 
 
 def build_hand_model(model_kwargs: dict[str, Any]) -> nn.Module:
@@ -56,6 +58,8 @@ class TwoHandRetargeter(nn.Module):
         if len(alignments) > 1:
             raise ValueError("Left/right model coordinate alignment mismatch")
         self.coordinate_alignment = expected if expected is not None else next(iter(alignments), None)
+        if self.coordinate_alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT and independent:
+            raise ValueError("Canonical coordinates use a shared model, not independent left/right checkpoints")
 
     def model_for_side(self, side: str) -> nn.Module:
         if side not in HAND_SIDES:
@@ -70,10 +74,16 @@ class TwoHandRetargeter(nn.Module):
         """Retarget whichever batched hand tensors are present."""
         outputs = {}
         if left_hand is not None:
-            outputs["left"] = self.model_for_side("left")(left_hand)
+            outputs["left"] = self.predict_side(left_hand, "left")
         if right_hand is not None:
-            outputs["right"] = self.model_for_side("right")(right_hand)
+            outputs["right"] = self.predict_side(right_hand, "right")
         return {"hands": outputs}
+
+    def predict_side(self, hand_tensor: torch.Tensor, side: str) -> torch.Tensor:
+        """One inference/output path shared by realtime and batch export."""
+        prediction = self.model_for_side(side)(hand_tensor)
+        return (canonical_to_native_angles(prediction, side)
+                if self.coordinate_alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT else prediction)
 
     @torch.no_grad()
     def predict(self, retarget_input: dict[str, Any], device: torch.device | str) -> dict[str, Any]:
@@ -99,7 +109,7 @@ class TwoHandRetargeter(nn.Module):
                 outputs["hands"][side] = None
                 continue
             hand_tensor = _to_single_batch_tensor(hand_data, device)
-            hand_output = self.model_for_side(side)(hand_tensor)
+            hand_output = self.predict_side(hand_tensor, side)
             outputs["hands"][side] = hand_output.detach().cpu().numpy()[0]
 
         return outputs
@@ -118,6 +128,8 @@ def create_twohand_retargeter(
     from teleoperation.contracts.checkpoints import validate_checkpoint_selection
 
     validate_checkpoint_selection(checkpoint_path, left_checkpoint, right_checkpoint)
+    if expected_coordinate_alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT and left_checkpoint is not None:
+        raise ValueError("Canonical coordinates require one shared checkpoint; independent left/right checkpoints are not supported")
     if left_checkpoint is not None:
         models = {}
         for side, path in (("left", left_checkpoint), ("right", right_checkpoint)):

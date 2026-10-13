@@ -50,8 +50,8 @@ MediaPipe / VisionPro / Replay
 MediaPipe palm-local 使用独立的 `MediaPipePalmLocalProcessor`：逐帧对齐，不启用 identity tracking，单侧失效立即清空该侧历史。hand 与 dual 复用 `apps/hand_processing.py` 的 `MediaPipePalmLocalPipeline`。原始 Unix 毫秒保留在 input；relative seconds 仍由 hand 摄像头应用用原先的 `round(time.time() - start, 3)` 计算。
 
 hand 录制、实时与三机器人展示默认选择 world 米制模式；共用处理器的低层默认仍为 normalized，保持 dual 适配的既有行为。
-world 和 normalized 的来源选择在处理器中明确完成，离线与实时调用同一个 `retargeting/hand/coordinates.align_mediapipe_hand()` 做 21→25、腕部相对化和掌面旋转。
-world 对齐文件使用独立契约 `mediapipe_world_palm_local_to_l21_v1`；Dataset 直接缓冲这些已对齐米制点，关闭身份重分配和额外缩放。
+world 和 normalized 的来源选择在处理器中明确完成，离线与实时调用同一个 `retargeting/hand/coordinates.align_mediapipe_hand()`。掌部基只用腕点/食指/中指；world 先归零和规范化，再纯拓扑扩展到 25 点。
+world 对齐文件使用 `mediapipe_world_wrist_index_middle_canonical_right_v1`，坐标框架 `hand_canonical_right`；Dataset 直接缓冲这些米制点，关闭身份重分配和额外缩放。训练池化任意侧有效样本，共用一个模型，仅对右侧 FK 计算损失。左右实时及导出共用 `predict_side()`，左侧四个 MCP roll 经 `canonical_to_native_angles()` 反号。
 模型加载与推理在 `contracts/coordinates.py` 的共同规则下验证来源、单位和尺度。原始 H5 的双空间存储在 `data/hand_recording.py`，来源声明与 world 字段读写在 `data/hand_h5.py`；应用层仅选择来源并组装流程。
 
 NPY 保留关闭跟踪、缩放和缺失清空行为；H5 Dataset 保留跟踪配置、frame gap 重置、timeline 和 mask；Vision Pro 输入返回原始矩阵，坐标提取发生在 retargeting/topology，没有新样本时不更新缓冲。dual realtime 显式选择 legacy 或 palm-local；输入声明与预处理、checkpoint 必须精确匹配，未知空间拒绝处理。

@@ -94,6 +94,11 @@ def mediapipe21_to_hand25(points: np.ndarray, scale_factor: float = 1.0) -> np.n
     返回:
         形状 (25, 3) 的数组，坐标已相对腕部并缩放
     """
+    return wrist_relative(expand_hand21_to25(points), scale_factor=scale_factor)
+
+
+def expand_hand21_to25(points: np.ndarray) -> np.ndarray:
+    """Change topology only; preserve input origin, axes and units."""
     mp_points = np.asarray(points, dtype=np.float32)
     if mp_points.shape != (MEDIAPIPE_HAND_KEYPOINTS, HAND_COORDS):
         raise ValueError(
@@ -118,8 +123,7 @@ def mediapipe21_to_hand25(points: np.ndarray, scale_factor: float = 1.0) -> np.n
     _copy_finger_with_palm_root(out, mp_points, out_start=15, mp_start=13) # 无名指
     _copy_finger_with_palm_root(out, mp_points, out_start=20, mp_start=17) # 小指
 
-    # 最后进行手腕相对化并应用缩放
-    return wrist_relative(out, scale_factor=scale_factor)
+    return out
 
 
 def _copy_finger_with_palm_root(

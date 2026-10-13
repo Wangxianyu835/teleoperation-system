@@ -91,13 +91,17 @@ def _run_epoch(
 ):
     if hand_side not in (*HAND_SIDES, "shared"):
         raise ValueError(f"Unknown hand side: {hand_side!r}")
-    active_hand_sides = HAND_SIDES if hand_side == "shared" else (hand_side,)
+    report_hand_sides = HAND_SIDES if hand_side == "shared" else (hand_side,)
+    canonical = getattr(getattr(generator, "dataset", None), "is_canonical", False)
+    if canonical and hand_side != "shared":
+        raise ValueError("Canonical coordinates require one shared model; hand_side must be shared")
+    active_hand_sides = ("right",) if canonical else report_hand_sides
     totals = {name: 0.0 for name in LOSS_NAMES}
     side_totals = {
         side: {name: 0.0 for name in LOSS_NAMES}
-        for side in active_hand_sides
+        for side in report_hand_sides
     }
-    side_counts = {side: 0 for side in active_hand_sides}
+    side_counts = {side: 0 for side in report_hand_sides}
     total_count = 0
     batch_count = 0
     gradient_total = 0.0
@@ -108,6 +112,19 @@ def _run_epoch(
 
         losses = {}
         masks = {}
+        shared_prediction = None
+        if canonical:
+            # Pool actual valid human windows once, independent of source side.
+            # All human sides train against the canonical right robot only.
+            inputs = [batch[f"{side}_input"][batch[f"{side}_valid"]] for side in HAND_SIDES]
+            targets = [batch[f"{side}_target"][batch[f"{side}_valid"]] for side in HAND_SIDES]
+            count = sum(len(values) for values in inputs)
+            if not count:
+                continue
+            shared_prediction = F.pad(model(_tensor(np.concatenate(inputs), device)), (0, 5), "constant", 0)
+            target = np.concatenate(targets)
+            batch = {f"{side}_{key}": value for side in active_hand_sides for key, value in
+                     (("valid", np.ones(count, dtype=bool)), ("target", target))}
         for side in active_hand_sides:
             masks[side] = torch.as_tensor(
                 batch[f"{side}_valid"],
@@ -115,7 +132,7 @@ def _run_epoch(
                 device=device,
             )
             if masks[side].any():
-                predicted_angle = F.pad(
+                predicted_angle = shared_prediction if canonical else F.pad(
                     model(_tensor(batch[f"{side}_input"], device)),
                     (0, 5, 0, 0),
                     "constant",
@@ -193,7 +210,7 @@ def _run_epoch(
     divisor = max(total_count, 1)
     stats = {name: totals[name] / divisor for name in LOSS_NAMES}
     stats["gradient_norm"] = gradient_total / max(batch_count, 1)
-    for side in active_hand_sides:
+    for side in report_hand_sides:
         side_divisor = max(side_counts[side], 1)
         for name in LOSS_NAMES:
             stats[f"{side}_{name}"] = (

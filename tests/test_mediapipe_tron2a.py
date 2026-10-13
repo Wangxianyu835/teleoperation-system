@@ -853,10 +853,17 @@ def world_predictor():
     return model
 
 
-def trained_world_paths():
-    from teleoperation.paths import PROJECT_ROOT
-    root = PROJECT_ROOT / "outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/world_test_v1"
-    return {side + "_checkpoint": root / side / "model_best.pth" for side in ("left", "right")}
+def write_canonical_checkpoint(path):
+    """Real model state for integration plumbing, not an accuracy benchmark."""
+    import torch
+    from teleoperation.retargeting.hand.config import L21
+    from teleoperation.retargeting.hand.transformer import PoseTransformer
+    from teleoperation.contracts.coordinates import WORLD_PALM_LOCAL_METADATA, CANONICAL_ANGLE_CONVENTION
+    torch.manual_seed(123)
+    model = PoseTransformer(**L21.model_kwargs())
+    torch.save(dict(model_pos=model.state_dict(), hand_side="shared", training_robot="right",
+                    angle_convention=CANONICAL_ANGLE_CONVENTION, **WORLD_PALM_LOCAL_METADATA), path)
+    return path
 
 
 class CameraDualTeleoperatorTests(unittest.TestCase):
@@ -957,15 +964,15 @@ class CameraDualTeleoperatorTests(unittest.TestCase):
         self.assertTrue(np.isfinite(cmd.flatten()).all())
         np.testing.assert_allclose(cmd.left_arm, self.dual.safe_q["left"])
 
-    def test_trained_pair_matches_original_world_alignment_windows_flags_and_angles(self):
+    def test_shared_model_matches_hand_and_dual_windows_flags_and_native_angles(self):
         from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
         from teleoperation.applications.hand_realtime import load_palm_local_retargeter
         from teleoperation.retargeting.hand.interface import PoseTransformerRetargeter
         from teleoperation.retargeting.hand.angles import angle18_to_dofs
-        paths = trained_world_paths()
-        if not all(path.is_file() for path in paths.values()):
-            self.skipTest("world_test_v1 trained pair unavailable: trained-model equivalence unverified")
-        model = load_palm_local_retargeter(device="cpu", landmark_space="world", **paths)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        checkpoint = write_canonical_checkpoint(Path(directory.name) / "shared.pth")
+        model = load_palm_local_retargeter(checkpoint, device="cpu", landmark_space="world")
         self.dual.hand_retargeter = PoseTransformerRetargeter(model, "cpu")
         pipeline = MediaPipePalmLocalPipeline("world")
         original = PoseTransformerRetargeter(model, "cpu")
@@ -1123,14 +1130,11 @@ class CameraFullRuntimeTests(unittest.TestCase):
                 camera.release.assert_called_once()
             self.assertEqual(dual.hand_pipeline.valid_streak, {"left":0, "right":0})
 
-    def test_real_trained_pair_complete_runtime_and_hand_targets_reach_pybullet(self):
+    def test_shared_runtime_and_native_hand_targets_reach_pybullet(self):
         import pybullet
         from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
-        paths = trained_world_paths()
-        if not all(p.is_file() for p in paths.values()):
-            self.skipTest("world_test_v1 trained pair unavailable: full trained runtime unverified")
-        self.args.checkpoint = None
-        self.args.left_checkpoint, self.args.right_checkpoint = paths.values()
+        self.args.checkpoint = write_canonical_checkpoint(self.directory / "shared_runtime.pth")
+        self.args.left_checkpoint = self.args.right_checkpoint = None
         self.args.frames = 4
         camera = Mock()
         camera.next_teleop_observation.side_effect = [dual_world_observation(i) for i in range(4)]
@@ -1165,7 +1169,7 @@ class CameraFullRuntimeTests(unittest.TestCase):
         self.assertFalse(pybullet.isConnected(worlds[0].client))
         report = read_calibration(self.args.report)
         self.assertEqual(report["hands"]["left"]["inference_valid_frames"], 2)
-        self.assertEqual(report["hand_checkpoints"], {k:str(v.resolve()) for k,v in paths.items()})
+        self.assertEqual(report["hand_checkpoints"], {"checkpoint":str(self.args.checkpoint.resolve())})
         camera.release.assert_called_once()
 
     def test_real_shared_and_paired_loader_contracts(self):
@@ -1173,26 +1177,27 @@ class CameraFullRuntimeTests(unittest.TestCase):
         from tests.test_world_hand_pipeline import small_model_kwargs
         from teleoperation.applications.hand_realtime import load_palm_local_retargeter
         from teleoperation.retargeting.hand.transformer import PoseTransformer
-        from teleoperation.contracts.coordinates import WORLD_PALM_LOCAL_METADATA, PALM_LOCAL_COORDINATE_ALIGNMENT
+        from teleoperation.contracts.coordinates import WORLD_PALM_LOCAL_METADATA, PALM_LOCAL_COORDINATE_ALIGNMENT, CANONICAL_ANGLE_CONVENTION
         kwargs = small_model_kwargs()
         state = PoseTransformer(**kwargs).state_dict()
         paths = {}
         for side in ("shared", "left", "right"):
             path = self.directory / (side + ".pth")
-            torch.save(dict(model_pos=state, hand_side=side, **WORLD_PALM_LOCAL_METADATA), path)
+            torch.save(dict(model_pos=state, hand_side=side, training_robot="right",
+                            angle_convention=CANONICAL_ANGLE_CONVENTION, **WORLD_PALM_LOCAL_METADATA), path)
             paths[side] = path
         with patch("teleoperation.retargeting.hand.config.L21", Mock(model_kwargs=Mock(return_value=kwargs))):
             shared = load_palm_local_retargeter(paths["shared"], "cpu", landmark_space="world")
-            paired = load_palm_local_retargeter(device="cpu", left_checkpoint=paths["left"], right_checkpoint=paths["right"], landmark_space="world")
             self.assertIs(shared.model_for_side("left"), shared.model_for_side("right"))
-            self.assertIsNot(paired.model_for_side("left"), paired.model_for_side("right"))
+            with self.assertRaisesRegex(ValueError, "shared checkpoint"):
+                load_palm_local_retargeter(device="cpu", left_checkpoint=paths["left"], right_checkpoint=paths["right"], landmark_space="world")
             for side in ("left", "right"):
-                self.assertEqual(paired.model_for_side(side).hand_side, side)
-                for key, value in paired.model_for_side(side).state_dict().items():
+                self.assertEqual(shared.model_for_side(side).hand_side, "shared")
+                for key, value in shared.model_for_side(side).state_dict().items():
                     torch.testing.assert_close(value, state[key])
             for options in (dict(checkpoint_path=paths["left"]),
                             dict(left_checkpoint=paths["right"], right_checkpoint=paths["left"])):
-                with self.assertRaisesRegex(ValueError, "side mismatch"):
+                with self.assertRaisesRegex(ValueError, "[Ss]hared"):
                     load_palm_local_retargeter(device="cpu", **options)
             torch.save(dict(model_pos=state, coordinate_alignment=PALM_LOCAL_COORDINATE_ALIGNMENT), paths["shared"])
             with self.assertRaisesRegex(ValueError, "alignment mismatch"):

@@ -149,7 +149,7 @@ def build_retargeter(backend: str, checkpoint: Path, device: str, calibration_fr
     checkpoint = Path(checkpoint)
     if backend == "checkpoint":
         if not checkpoint.is_file():
-            experiment = "world_palm_local_v1" if landmark_space == "world" else "palm_local_v2"
+            experiment = "world_canonical_shared_v1" if landmark_space == "world" else "palm_three_point_v2"
             raise FileNotFoundError(f"checkpoint not found: {checkpoint}. Train with python -m teleoperation hand train "
                                     f"--input <aligned_{landmark_space}.h5> --run-name {experiment}")
         return _checkpoint_retargeter(checkpoint, device, landmark_space)

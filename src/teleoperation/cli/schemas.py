@@ -43,7 +43,7 @@ def hand_train(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--hand-side", choices=("left", "right", "shared"), default="shared",
-                        help="train a dedicated left/right model or a shared model (default)")
+                        help="canonical world data requires shared; left/right selects dedicated models for old native-root data")
     parser.add_argument("--checkpoint-root", type=Path, default=DEFAULT_CHECKPOINT_ROOT)
     parser.add_argument("--init-checkpoint", type=Path, default=DEFAULT_WARMSTART_CHECKPOINT)
     parser.add_argument("--epochs", type=int, default=L21.training.epochs)

@@ -73,6 +73,12 @@ def run(args):
         model = load_palm_local_retargeter(device=args.device, landmark_space=args.landmark_space, **checkpoints)
         retargeter = PoseTransformerRetargeter(model, args.device)
         fk = make_fk()
+        display_matrices = {}
+        if args.landmark_space == "world":
+            from teleoperation.retargeting.hand.coordinates import build_palm_basis, ROBOT_PALM_INDICES, OPERATOR_TO_CANONICAL
+            for side, model_fk in fk.items():
+                reference = fk_positions(model_fk, np.zeros(18, dtype=np.float32))
+                display_matrices[side] = build_palm_basis(reference, ROBOT_PALM_INDICES) @ OPERATOR_TO_CANONICAL[side]
         print(f"{checkpoint_description(checkpoints)}\nCamera: {args.camera_index}\n"
               "q/Esc quit; missing sides are cleared without holding old poses.", flush=True)
         with MediaPipeCameraWorkflow(args.model_asset_path, args.camera_index, landmark_space=args.landmark_space) as camera:
@@ -95,6 +101,8 @@ def run(args):
                         print(f"frame={completed} {side}: RESET", flush=True)
                     if predictions[side] is not None:
                         positions[side] = fk_positions(fk[side], predictions[side])
+                        if side in display_matrices:
+                            positions[side] = (positions[side] - positions[side][0:1]) @ display_matrices[side]
                         outputs[side] += 1
                         if previous[side] == 2:
                             print(f"frame={completed} {side}: window ready after 3 valid frames", flush=True)

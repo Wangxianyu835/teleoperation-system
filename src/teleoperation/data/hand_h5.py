@@ -5,20 +5,22 @@ import numpy as np
 from teleoperation.contracts.coordinates import (
     COORDINATE_FRAME, validate_coordinate_alignment, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
     WORLD_LANDMARK_SPACE, NORMALIZED_LANDMARK_SPACE, palm_local_metadata, validate_landmark_contract,
+    coordinate_frame_for_alignment, is_world_alignment,
 )
 from teleoperation.contracts.constants import HAND_SIDES, HAND_ANGLE_DIM
 _SIDE_KEYS = {"left": "left_hand_keypoints", "right": "right_hand_keypoints"}
 def _read_coordinate_alignment(source) -> str:
+    alignment = validate_coordinate_alignment(source.attrs.get("coordinate_alignment"), "H5")
+    expected_frame = coordinate_frame_for_alignment(alignment)
     frame = source.attrs.get("coordinate_frame")
     if isinstance(frame, bytes):
         frame = frame.decode("utf-8")
-    if not isinstance(frame, str) or frame != COORDINATE_FRAME:
+    if not isinstance(frame, str) or frame != expected_frame:
         raise ValueError(
             "H5 input must be pre-aligned and declare "
-            f"coordinate_frame={COORDINATE_FRAME!r}; got {frame!r}. "
+            f"coordinate_frame={expected_frame!r}; got {frame!r}. "
             "Run the align_h5 command first."
         )
-    alignment = validate_coordinate_alignment(source.attrs.get("coordinate_alignment"), "H5")
     validate_landmark_contract(alignment, source.attrs, "H5")
     return alignment
 
@@ -258,7 +260,7 @@ def write_aligned_copy(input_path, temporary_path, aligned, metadata):
             dataset.attrs.update(attributes)
             dataset.attrs.update({key: metadata[key] for key in
                                   ("coordinate_frame", "coordinate_alignment", "source_landmark_space")})
-            if metadata["coordinate_alignment"] == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT:
+            if is_world_alignment(metadata["coordinate_alignment"]):
                 dataset.attrs["length_unit"] = "m"
                 dataset.attrs["origin"] = "wrist"
                 dataset.attrs["source_scale"] = 1.0
@@ -266,7 +268,7 @@ def write_aligned_copy(input_path, temporary_path, aligned, metadata):
         target.attrs["hand_processing_landmark_space"] = metadata["source_landmark_space"]
         if "hand_landmark_space" in target.attrs:
             target.attrs["hand_landmark_space"] = metadata["source_landmark_space"]
-        if metadata["coordinate_alignment"] != WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT:
+        if not is_world_alignment(metadata["coordinate_alignment"]):
             # Combined captures have global metre metadata for their world copy;
             # the primary aligned normalized datasets must not inherit it.
             for key in ("length_unit", "units", "source_scale"):

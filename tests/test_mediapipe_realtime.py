@@ -302,7 +302,7 @@ class MediaPipeRealtimeTests(unittest.TestCase):
         with patch("teleoperation.retargeting.hand.processing.build_l21_reference_basis", side_effect=PalmBasisError("robot reference")), \
              patch("teleoperation.applications.hand_realtime.MediaPipeCameraInput") as camera:
             with self.assertRaisesRegex(PalmBasisError, "robot reference"):
-                MediaPipeCameraWorkflow("model.task")
+                MediaPipeCameraWorkflow("model.task", landmark_space="normalized")
         camera.assert_not_called()
 
     def test_scale_normalization_and_changed_capture_confidence_are_rejected(self):
@@ -317,7 +317,7 @@ class MediaPipeRealtimeTests(unittest.TestCase):
         self.assertEqual(create.call_args.kwargs["expected_coordinate_alignment"], PALM_LOCAL_COORDINATE_ALIGNMENT)
 
     def test_legacy_missing_and_unknown_checkpoint_alignment_fail_before_state_loading(self):
-        for alignment in ("source_to_l21_xyz", None, "palm_local_to_l21_v2"):
+        for alignment in ("source_to_l21_xyz", None, "palm_local_to_l21_v1", "palm_local_to_l21_v999"):
             with self.subTest(alignment=alignment), \
                  patch("teleoperation.retargeting.hand.predictor.build_hand_model", return_value=torch.nn.Linear(1, 1)), \
                  patch("teleoperation.retargeting.hand.checkpoint.read_checkpoint", return_value={"coordinate_alignment": alignment}):

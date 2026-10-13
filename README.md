@@ -96,7 +96,7 @@ python -m teleoperation tools check-camera
 
 ### 2.1 采集手部数据
 
-保存原始 21 点，同时自动生成训练用 palm-local 25 点文件。保持双手可见，录制张手、握拳和各指弯曲等动作。
+保存原始 21 点，同时自动生成训练用 palm-local 25 点文件。可只保持一只手可见，录制张手、握拳和各指弯曲等动作；另一只手无需另录训练集。
 
 ```powershell
 python -m teleoperation hand record `
@@ -129,16 +129,9 @@ python -m teleoperation hand align `
 
 输入须含米制 world 字段；不能重复对齐已对齐文件。原始文件保留，输出路径须尚不存在。
 
-### 2.3 训练：共享模型或左右手独立模型
+### 2.3 训练共享模型
 
-两种训练方式在这里选择，随后进入 2.4 推理和 2.5 仿真。输入连续三帧 `(3,25,3)`，输出每手 18 维角度；通过机器人 FK 和几何损失训练，无需机器人角度标签。
-
-| 方式 | 训练数据 | 权重 |
-|---|---|---|
-| 共享训练 | 一个双手对齐 H5，左右手共同训练 | 一份 `model_best.pth` |
-| 独立训练 | 同一双手 H5，或各自的单手对齐 H5 | `left/`、`right/` 各一份 `model_best.pth` |
-
-**方式 A：左右手共享训练**
+新 world 流程只训练一份模型。只录左手、只录右手或同时录双手都可以：左右人手先归一到同一个右手表示，所有有效窗口汇入同一批次，模型只通过右侧 L21 FK 和六类几何损失训练，无需机器人角度标签。输入为 `(3,25,3)`，输出为 18 维规范角度。
 
 ```powershell
 python -m teleoperation hand train `
@@ -148,70 +141,13 @@ python -m teleoperation hand train `
   --val-ratio 0.2 --early-stopping-patience 20 --seed 1234
 ```
 
-**方式 B：左右手分开训练**
+新 world 数据要求 `--hand-side shared`，默认已是 shared。训练不加载左侧 FK；checkpoint 声明 `hand_side=shared`、`training_robot=right`。左手推理使用相同权重，仅四个 MCP roll 输出反号，以匹配本仓库左侧 URDF。左右拇指几何并非严格对称，右侧训练不保证左侧几何误差相同，需要仿真和真人验收。
 
-先定义独立实验名、两侧训练数据和权重路径。默认两侧使用同一个双手 H5；`--hand-side` 会筛选对应手的数据。
+默认从头训练，按原始时间划分训练/验证并留出窗口间隔，排除无效窗口。模型目录为 `$checkpointRoot/models/twohand_h5/linker/$run/`，包含 `model_best.pth`、`model_last.pth` 和 `epoch_metrics.csv`；日志位于同根的 `logs/twohand_h5/linker/$run/`。CSV 的 right 指训练机器人侧，left 为零；原始人手样本数在启动日志另列。
 
-```powershell
-$separateRun = "${run}_separate"
-$leftAligned = $aligned
-$rightAligned = $aligned
-$leftCheckpoint = "$checkpointRoot/models/twohand_h5/linker/$separateRun/left/model_best.pth"
-$rightCheckpoint = "$checkpointRoot/models/twohand_h5/linker/$separateRun/right/model_best.pth"
-```
+`--init-checkpoint` 仅接受同坐标、同角度契约的权重。旧四 MCP world 权重不能初始化新模型。新数据需从原始 world 21 点重新对齐，不能改写旧 H5 或 checkpoint 的契约来冒充新格式。
 
-若使用你分别采集的左、右文件，将上面的输入改为：
-
-```powershell
-$leftAligned = 'datasets/raw/aligned_visual_hand_data_left_20261011_155019.h5'
-$rightAligned = 'datasets/raw/aligned_visual_hand_data_right_20261011_155429.h5'
-```
-
-然后依次训练左手、右手：
-
-```powershell
-python -m teleoperation hand train `
-  --input $leftAligned --run-name $separateRun --hand-side left `
-  --checkpoint-root $checkpointRoot --device $device `
-  --epochs 100 --batch-size 64 --learning-rate 0.0001 `
-  --val-ratio 0.2 --early-stopping-patience 20 --seed 1234
-
-python -m teleoperation hand train `
-  --input $rightAligned --run-name $separateRun --hand-side right `
-  --checkpoint-root $checkpointRoot --device $device `
-  --epochs 100 --batch-size 64 --learning-rate 0.0001 `
-  --val-ratio 0.2 --early-stopping-patience 20 --seed 1234
-```
-
-`$separateRun` 是独立模型实验名，`$leftAligned/$rightAligned` 是各侧训练输入，`$leftCheckpoint/$rightCheckpoint` 是训练后生成的权重。修改实验名或根目录后，重新设置两侧权重路径。单手文件只训练对应一侧，双手推理需要两份权重齐全。
-
-两种方式默认均从头训练，按时间划分训练/验证数据，并排除缺手或无效窗口。输出位置：
-
-| 输出 | 位置 |
-|---|---|
-| 共享模型 | `$checkpointRoot/models/twohand_h5/linker/$run/` |
-| 独立左/右模型 | `$checkpointRoot/models/twohand_h5/linker/$separateRun/left/`、`right/` |
-| 权重与指标 | 上述各目录的 `model_best.pth`、`model_last.pth`、`epoch_metrics.csv` |
-| 日志 | `$checkpointRoot/logs/twohand_h5/linker/` 下相同实验名和手侧目录 |
-
-`model_best.pth` 为验证损失最低的权重；`model_last.pth` 为最后完成一轮的权重。
-
-已有权重初始化新实验时，给对应训练命令加 `--init-checkpoint`。例如共享模型：
-
-```powershell
-python -m teleoperation hand train `
-  --input $aligned --run-name "${run}_finetune" --hand-side shared `
-  --checkpoint-root $checkpointRoot --device $device `
-  --init-checkpoint $checkpoint --epochs 100 --batch-size 64 --learning-rate 0.0001
-```
-
-独立训练分别使用 `--init-checkpoint $leftCheckpoint`、`--init-checkpoint $rightCheckpoint`。它只加载网络权重，优化器和轮次重新开始；新实验推理时需改为新权重路径。
-
-### 2.4 离线推理：共享模型或左右手独立模型
-
-读取对齐 H5 和训练权重，生成供 2.5 仿真回放的 `$angles`。下面两种命令选对应的一种执行。
-
-**方式 A：共享模型推理**
+### 2.4 离线推理共享模型
 
 ```powershell
 python -m teleoperation hand export `
@@ -219,33 +155,9 @@ python -m teleoperation hand export `
   --device $device --batch-size 256 --scale-factor 1.0
 ```
 
-**方式 B：左右手独立模型推理**
+一份权重同时支持左右手。实时和离线导出调用同一输出适配函数，导出的是各侧原生 L21 18 维角度，可继续使用既有回放和 18→17 DOF 映射。输入为单手文件时，另一侧输出为无效；缺手不当作全零真实手势训练。
 
-使用 2.3 生成的 `$leftCheckpoint`、`$rightCheckpoint`。如果直接使用你备注的 `world_test_v1` 已有权重，可跳过训练并先执行：
-
-```powershell
-$leftCheckpoint = 'D:/2026/code/teleoperation-system-retargeting/outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/world_test_v1/left/model_best.pth'
-$rightCheckpoint = 'D:/2026/code/teleoperation-system-retargeting/outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/world_test_v1/right/model_best.pth'
-```
-
-随后导出：
-
-```powershell
-python -m teleoperation hand export `
-  --input $aligned --output $angles --device $device `
-  --left-checkpoint $leftCheckpoint --right-checkpoint $rightCheckpoint `
-  --batch-size 256 --scale-factor 1.0
-```
-
-`$aligned` 是要推理的对齐文件：可以是双手文件，也可以设为 `$leftAligned` 或 `$rightAligned` 分别推理；单手文件的另一侧输出为无效。分别导出时修改 `$angles`，使用不同输出文件名。
-
-两种方式都用下面的命令检查输出：
-
-```powershell
-python -m teleoperation hand inspect --angle-h5 $angles
-```
-
-推理选择 `--checkpoint`，或成对提供 `--left-checkpoint`、`--right-checkpoint`；不能混用。输出包含左右角度、有效标记、帧号和时间戳。每手 18 维中的第 0 维是固定占位，实际执行关节为 17 个；world 模式的 `--scale-factor` 必须为 `1.0`。
+旧原生根坐标 H5 与匹配的旧独立权重仍可显式离线导出；新 world 链路拒绝 `--left-checkpoint/--right-checkpoint`。新流程的模型输入坐标是 `hand_canonical_right`，不是机器人根坐标。
 
 ### 2.5 将重定向结果输出到 PyBullet
 
@@ -286,7 +198,7 @@ python -m teleoperation replay native-hand --file $angles --robot h1_2 --hand bo
 
 ### 3.1 训练模型实时推理与 FK 对比
 
-共享模型使用 2.3 的 `$checkpoint`；独立模型使用两侧权重。显示人手关键点、模型输入和 L21 FK，选择对应命令执行。
+使用 2.3 的共享 `$checkpoint`。人手关键点和机器人 FK 在同一个规范右手米制坐标中显示；左右模型输入共用同一坐标约定。
 
 **方式 A：共享模型实时推理**
 
@@ -298,17 +210,6 @@ python -m teleoperation hand realtime `
 ```
 
 `--frames 0` 持续运行，须配合 `--visualize`；按 `q`、`Esc` 或 `Ctrl+C` 退出。每侧连续 3 帧有效检测后输出角度，丢手后重新积累窗口。
-
-**方式 B：左右手独立模型实时推理**
-
-使用 2.3 训练的两侧权重，或 2.4 设置的 `world_test_v1` 两侧权重：
-
-```powershell
-python -m teleoperation hand realtime `
-  --landmark-space world --left-checkpoint $leftCheckpoint --right-checkpoint $rightCheckpoint `
-  --camera-index $camera --model-asset-path $handAsset --device $device `
-  --visualize --frames 0
-```
 
 只在终端运行有限帧，或保存对比图：
 
@@ -497,15 +398,14 @@ $env:PYTHONPATH = (Join-Path (Get-Location) 'src')
 
 ### 4.1.3 摄像头实时驱动 TRON2A 仿真双臂双手（第 3 步）
 
-复用第 1 步真人标定和第 2 步双臂映射、IK、安全控制。以下本机左右权重路径来自 `world_test_v1`；使用自己的实验时替换两侧路径。此入口明确使用 world 米制手部输入，权重必须声明 `mediapipe_world_palm_local_to_l21_v1`、米制单位和 `source_scale=1.0`。坐标不匹配、缺少模型文件或错误权重选择在打开摄像头前报错。
+复用第 1 步真人标定和第 2 步双臂映射、IK、安全控制。先按第 2 节重新对齐 world 数据并训练共享模型。此入口使用新的规范右手米制坐标，权重必须声明新的坐标和规范角度契约、`training_robot=right`；旧 `world_test_v1` 左右权重不能用于新实时链路。坐标不匹配或缺少模型在打开摄像头前报错。
 
 ```powershell
 Set-Location D:\2026\code\teleoperation-system-retargeting
 $python = 'D:\Anaconda\envs\teleoperation\python.exe'
 $env:PYTHONPATH = (Join-Path (Get-Location) 'src')
 $calibration = 'outputs/calibration/tron2a_camera_neutral.json'
-$leftCheckpoint = 'outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/world_test_v1/left/model_best.pth'
-$rightCheckpoint = 'outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/world_test_v1/right/model_best.pth'
+$checkpoint = 'outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/world_canonical_shared_v1/model_best.pth'
 
 & $python -m teleoperation dual camera --with-hands `
   --camera-index 0 `
@@ -513,13 +413,13 @@ $rightCheckpoint = 'outputs/hand_retargeting/checkpoint/models/twohand_h5/linker
   --pose-model-asset-path datasets/pose_landmarker_lite.task `
   --calibration $calibration `
   --urdf third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf `
-  --left-checkpoint $leftCheckpoint --right-checkpoint $rightCheckpoint --device cpu `
+  --checkpoint $checkpoint --device cpu `
   --orientation-mode fixed --display simplified --gui --preview `
   --attach-hands --frames 0 --simulation-steps 8 `
   --report outputs/dual/camera_with_hands_report.json
 ```
 
-共享 world 模型也支持：将上面的两侧权重参数替换为 `--checkpoint <实际共享world模型.pth>`，其余参数相同。共享与独立权重不能混用，独立权重必须左右成对；不提供权重时完整模式报错，不隐式选择默认模型。`--device cpu/cuda` 默认 `cpu`；选择 CUDA 时加载和推理均使用 CUDA，不自动回落到其他后端。本机现有成对训练权重已用于 CPU 自动验收；共享加载用生成的模型 checkpoint 验证，不能据此认定真实共享训练权重的效果。
+新 world 模式使用一份共享 checkpoint；完整模式需要显式提供 `--checkpoint`。实时默认 CPU，选择 CUDA 后加载和推理均使用 CUDA。坐标变换和短训练测试不能替代真实模型质量与左侧拇指适配的现场检查。
 
 `--with-hands` 默认开启 L21 挂载，显式 `--no-attach-hands` 会报错。场景使用现有 `attach_hands=True, hand_reference_only=False`，通过 `world.apply(command)` 执行每帧完整命令，再执行配置的物理步数。`--arms-only` 保留 `world.apply_arms()`，默认不挂手；显式挂手仍为固定零关节参考展示。安装变换和碰撞执行沿用仿真实现及标定安装参数；标定中的单位安装偏移尚需视觉审核。发现安装或仿真问题时记录并交给仿真负责人。
 
@@ -549,7 +449,7 @@ $env:PYTHONUTF8 = '1'
 & $python -m unittest discover -s tests -v
 ```
 
-测试覆盖旧入口回归、时间单位、数组独立性、48 维顺序、失效恢复、共享/成对 checkpoint 契约和生命周期。存在本机 `world_test_v1` 权重时，使用真实训练模型比较原 world 链路与组合链路的对齐、窗口、有效标志及手指角度，绝对容差 `1e-6`，并通过真实 PyBullet DIRECT 执行完整命令、确认手指关节产生非零响应；权重缺失时这两项明确跳过。此验证使用合成人体观测，不能替代真实摄像头、真实动作模型准确度或挂载视觉检查。
+测试覆盖旧入口回归、时间单位、数组独立性、48 维顺序、失效恢复和共享 checkpoint 生命周期。真实模型集成验收使用新共享权重；旧四 MCP 权重仅验证契约拒绝。合成观测与 PyBullet DIRECT 验证不能替代真实摄像头、模型准确度或挂载视觉检查。
 
 第 3 步提交后由用户人工审核以下项目；未经现场检查均为待审核：
 
@@ -591,7 +491,7 @@ python -m teleoperation dual replay `
 
 ```powershell
 $adapter = 'my_input:factory'
-$dualCheckpoint = 'outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/palm_local_v2/model_best.pth'
+$dualCheckpoint = 'outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/palm_three_point_v2/model_best.pth'
 
 python -m teleoperation dual realtime `
   --adapter $adapter --calibration $calibration --urdf $urdf `
@@ -674,7 +574,7 @@ python -m teleoperation replay actions `
 | 双臂坐标、工作空间、超时、加速度 | 实际标定 JSON；字段见 [calibration.py](src/teleoperation/retargeting/arm/calibration.py) |
 | 物理环境、机器人加载、任务 | `src/teleoperation/simulation/` 下的 `environment.py`、`robot_loader.py`、`tasks/` |
 
-`loss_weights` 默认 `(500,500,10,500,0.01,500)`，依次对应 `vec/pos/collision/thumb/tip_distance/thumb2`。未开放 CLI 的设置在配置文件修改；改变网络结构后需重新训练或使用结构兼容权重。
+`loss_weights` 默认 `(500,500,10,500,0.05,500)`，依次对应 `vec/pos/collision/thumb/tip_distance/thumb2`。未开放 CLI 的设置在配置文件修改；改变网络结构后需重新训练或使用结构兼容权重。
 
 ## 6. 坐标兼容与诊断
 
@@ -682,17 +582,17 @@ python -m teleoperation replay actions `
 
 | 模式 | 对齐契约 | 实时省略权重时的默认实验目录 |
 |---|---|---|
-| `world` | `mediapipe_world_palm_local_to_l21_v1` | `world_palm_local_v1` |
-| `normalized` | `palm_local_to_l21_v1` | `palm_local_v2` |
+| `world` | `mediapipe_world_wrist_index_middle_canonical_right_v1` | `world_canonical_shared_v1` |
+| `normalized` | `palm_local_to_l21_v2` | `palm_three_point_v2` |
 
 默认实验目录在 `outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/` 下。本文显式使用 `$checkpoint`，自定义实验不会自动成为默认权重。
 
-旧 normalized 数据使用独立流程；先将变量改成实际文件路径：
+normalized 新预处理同样使用三点掌面，但保留各侧原生根坐标。它声明 v2，需要重新训练匹配的权重；旧 v1 文件只可与旧权重显式离线使用。先将变量改成实际文件路径：
 
 ```powershell
 $oldRaw = 'datasets/raw/visual_hand_data_left_20261009_200808.h5'
 $oldAligned = "outputs/hand_retargeting/aligned_normalized_$session.h5"
-$oldCheckpoint = 'outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/palm_local_v2/model_best.pth'
+$oldCheckpoint = 'outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/palm_three_point_v2/model_best.pth'
 
 python -m teleoperation hand align `
   --input $oldRaw --output $oldAligned --landmark-space normalized
@@ -706,7 +606,7 @@ python -m teleoperation hand realtime `
   --camera-index $camera --model-asset-path $handAsset --visualize --frames 0
 ```
 
-查询完整参数，或在完成双模型训练后检查 FK、损失和梯度：
+查询完整参数，或在完成共享模型训练后检查 FK、损失和梯度：
 
 ```powershell
 python -m teleoperation hand record --help
@@ -718,7 +618,7 @@ python -m teleoperation replay native-hand --help
 python -m teleoperation dual --help
 
 python -m teleoperation tools verify-p0 `
-  --input $aligned --left-checkpoint $leftCheckpoint --right-checkpoint $rightCheckpoint
+  --input $aligned --checkpoint $checkpoint
 
 python -m teleoperation tools show-robots
 python -m teleoperation tools show-all-hands --file $angles

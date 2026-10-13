@@ -80,7 +80,7 @@ class CoordinatePipelineTests(unittest.TestCase):
                     self.assertEqual(dataset.source_landmark_space, "mediapipe_normalized")
 
     def test_h5_missing_empty_unknown_and_nonscalar_alignment_fail_closed(self):
-        for value in (None, "", "  ", "unknown_mode", "palm_local_to_l21_v2", 123, [PALM, PALM]):
+        for value in (None, "", "  ", "unknown_mode", "palm_local_to_l21_v999", 123, [PALM, PALM]):
             with self.subTest(value=value):
                 self.write_h5(value)
                 for reader in (read_coordinate_alignment, TwoHandH5Dataset, load_twohand_h5):

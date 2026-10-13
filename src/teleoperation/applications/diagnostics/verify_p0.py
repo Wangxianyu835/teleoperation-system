@@ -29,6 +29,8 @@ from teleoperation.retargeting.hand.predictor import create_twohand_retargeter
 from teleoperation.learning.trainer import LOSS_NAMES
 from teleoperation.contracts.checkpoints import validate_checkpoint_selection
 from teleoperation.applications.hand_checkpoints import checkpoint_options, checkpoint_metadata
+from teleoperation.applications.training import _create_hand_fks
+from teleoperation.retargeting.hand.angles import canonical_to_native_angles
 
 
 def sha256(path: Path) -> str:
@@ -54,6 +56,8 @@ def verify(input_path: Path, checkpoint_path: Path | None = None, sample_count: 
         right_checkpoint=None if right_checkpoint is None else str(right_checkpoint),
         expected_coordinate_alignment=dataset.coordinate_alignment,
     ).eval()
+    with contextlib.redirect_stdout(io.StringIO()):
+        canonical_fk = _create_hand_fks("cpu", ("right",), canonical=True)["right"] if dataset.is_canonical else None
     report = {
         **checkpoint_metadata({"checkpoint_path": None if checkpoint_path is None else str(checkpoint_path),
                                "left_checkpoint": None if left_checkpoint is None else str(left_checkpoint),
@@ -64,17 +68,22 @@ def verify(input_path: Path, checkpoint_path: Path | None = None, sample_count: 
         "training_performed": False, "optimizer_created": False,
         "physical_scale_status": "PHYSICAL SCALE NOT VERIFIED",
         "historical_total_loss_comparable": False, "sides": {},
+        "training_robot": "right" if dataset.is_canonical else "per_side",
     }
     for side in ("left", "right"):
         valid = [sample for sample in dataset.samples if sample[f"{side}_valid"]]
         if not valid:
+            if dataset.is_canonical:
+                report["sides"][side] = {"valid_windows": 0, "audit_performed": False}
+                continue
             raise ValueError(f"No valid {side} hand windows")
         selected = [valid[i] for i in np.linspace(0, len(valid) - 1, min(sample_count, len(valid)), dtype=int)]
         inputs = torch.from_numpy(np.stack([sample[f"{side}_input"] for sample in selected]))
         targets = torch.from_numpy(np.stack([sample[f"{side}_target"] for sample in selected]))
         retargeter.zero_grad(set_to_none=True)
         model = retargeter.model_for_side(side)
-        prediction = model(inputs)
+        canonical_prediction = model(inputs)
+        prediction = canonical_to_native_angles(canonical_prediction, side) if dataset.is_canonical else canonical_prediction
         if prediction.shape != (len(selected), 18):
             raise RuntimeError(f"Unexpected {side} prediction shape: {prediction.shape}")
         values = prediction.detach().numpy()
@@ -95,9 +104,11 @@ def verify(input_path: Path, checkpoint_path: Path | None = None, sample_count: 
             hand_type=side,
         )
         losses = hand_loss(
-            padded, targets, ROBOT_JOINTS, SOURCE_JOINTS,
+            F.pad(canonical_prediction, (0, 5)) if dataset.is_canonical else padded,
+            targets, ROBOT_JOINTS, SOURCE_JOINTS,
             torch.nn.MSELoss(), None, collision,
-            hand_fk_model=fk, loss_weight=L21.training.loss_weights, hand_side=side,
+            hand_fk_model=canonical_fk if dataset.is_canonical else fk,
+            loss_weight=L21.training.loss_weights, hand_side="right" if dataset.is_canonical else side,
         )
         if not all(torch.isfinite(loss).all() for loss in losses):
             raise RuntimeError(f"Non-finite {side} loss")

@@ -62,6 +62,8 @@ def run(args: argparse.Namespace) -> int:
     if dataset.source_landmark_space is not None: metadata["source_landmark_space"] = dataset.source_landmark_space
     if dataset.is_world:
         metadata.update({"length_unit": "m", "units": "m", "source_scale": 1.0})
+    if dataset.is_canonical:
+        metadata.update({"canonical_hand": "right", "angle_convention": "l21_native_angles_v1"})
     write_hand_angles(output_path, dataset.frame_ids, dataset.timestamps, angles, valid, metadata)
 
     print(f"device={device}")

@@ -5,6 +5,7 @@ from teleoperation.data.checkpoint import read_checkpoint
 from teleoperation.contracts.coordinates import (
     COORDINATE_ALIGNMENT, validate_coordinate_alignment,
     validate_landmark_contract,
+    WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, CANONICAL_ANGLE_CONVENTION,
 )
 from teleoperation.contracts.constants import HAND_SIDES
 def load_hand_checkpoint(
@@ -70,6 +71,10 @@ def _require_coordinate_alignment(
             f"input={expected!r}; checkpoint={alignment!r}."
         )
     validate_landmark_contract(alignment, checkpoint, f"Checkpoint {checkpoint_path}")
+    if alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT:
+        if (checkpoint.get("hand_side") != "shared" or checkpoint.get("angle_convention") != CANONICAL_ANGLE_CONVENTION
+                or checkpoint.get("training_robot") != "right"):
+            raise ValueError("Canonical checkpoint requires hand_side='shared', training_robot='right' and the canonical angle_convention")
 
 
 def _state_dict_for_side(checkpoint: dict, side: str | None) -> dict:

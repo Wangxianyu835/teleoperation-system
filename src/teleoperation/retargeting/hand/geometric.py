@@ -23,12 +23,13 @@
 
 坐标系与符号（本模块唯一的"魔法"，全部是实测结果）
 --------------------------------------------------
-输入是 ``MediaPipePalmLocalProcessor`` 对齐后的 25 点窗口（``HandWindow``），
-即"以 L21 零位姿掌面基为轴、相对手腕"的坐标：
+输入是 ``MediaPipePalmLocalProcessor`` 处理后的 25 点窗口（``HandWindow``）。
+world 规范坐标先在 retarget 内转换回各侧原生根坐标；normalized 已是原生根坐标。
+几何求角和 URDF 关节轴在同一个根坐标中比较。用于确定法向的三点基列方向为：
 
-    X = pinky MCP -> index MCP    （掌侧向，+X = 食指侧）
-    Y = wrist -> 四指 MCP 均值     （掌纵向，+Y = 指向指尖）
-    Z = X x Y                     （掌法向，正负由手性决定）
+    X = middle MCP -> wrist      （中间纵向，指向腕部）
+    Y = 三点 SVD 法向             （符号由食指侧确定）
+    Z = X x Y                     （掌内朝食指侧）
 
 屈曲量一律绕**该关节在 URDF 里的自身轴**测量（见 ``joint_axes``），不靠几何
 猜测：URDF 的轴已经自带"正值为屈曲"的方向，所以正常输入不做任何手性缩放。
@@ -402,7 +403,7 @@ class GeometricHandRetargeter(HandRetargeter):
                     axes[dim] = axis
             nodes = global_positions[0].numpy().astype(np.float64)
             metacarpal = _unit(nodes[THUMB_MCP_NODE] - nodes[THUMB_CMC_NODE])
-            lean = 0.0 if metacarpal is None else float(np.dot(metacarpal, self.basis(side)[:, 2]))
+            lean = 0.0 if metacarpal is None else float(np.dot(metacarpal, self.basis(side)[:, 1]))
             self._axes[side] = axes
             self._lean[side] = lean
             self._nodes[side] = nodes
@@ -418,6 +419,11 @@ class GeometricHandRetargeter(HandRetargeter):
             if window is None:
                 continue
             frame = np.asarray(window, dtype=np.float64)[-1]
+            from teleoperation.contracts.coordinates import WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
+            if hand_window.metadata.get("coordinate_alignment") == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT:
+                from .coordinates import OPERATOR_TO_CANONICAL
+                native_to_canonical = self.basis(side) @ OPERATOR_TO_CANONICAL[side]
+                frame = frame @ native_to_canonical.T
             values = self._side_angles(side, frame)
             if values is None:
                 continue
@@ -435,7 +441,7 @@ class GeometricHandRetargeter(HandRetargeter):
         """One aligned (25,3) frame -> 18D L21 angles, or None if unusable."""
         if points.shape != (25, 3) or not np.isfinite(points).all() or not np.any(points):
             return None
-        normal = self.basis(side)[:, 2]
+        normal = self.basis(side)[:, 1]
         axes = self.joint_axes(side)
         mirror = self._mirror_factor(side, points, normal)
         raw = np.zeros(HAND_ANGLE_DIM, dtype=np.float64)

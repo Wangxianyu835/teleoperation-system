@@ -38,8 +38,8 @@ def vec_inter_loss(target_3D, source_3D, loss_function, rb_dic, source_dic):
 
 
 def thumb_loss(target_3D, source_3D, loss_function, rb_dic, source_dic):
-    source_normal = torch.cross(source_3D[:, 21] - source_3D[:, 0], source_3D[:, 6] - source_3D[:, 0], dim=-1)
-    target_normal = torch.cross(target_3D[:, 10] - target_3D[:, 0], target_3D[:, 1] - target_3D[:, 0], dim=-1)
+    source_normal = torch.cross(source_3D[:, 11] - source_3D[:, 0], source_3D[:, 6] - source_3D[:, 0], dim=-1)
+    target_normal = torch.cross(target_3D[:, 4] - target_3D[:, 0], target_3D[:, 1] - target_3D[:, 0], dim=-1)
     source_distance = point_plane_distance_batch(source_3D[:, source_dic["TIP_dic"][0]], source_3D[:, 0], source_normal)
     target_distance = point_plane_distance_batch(target_3D[:, rb_dic["TIP_dic"][0]], target_3D[:, 0], target_normal)
     return loss_function(source_distance, target_distance * 0.9)

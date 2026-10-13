@@ -141,7 +141,7 @@ python -m teleoperation hand align `
 # 创建新的 world 实验；旧归一化模型不能初始化 world 模型
 python -m teleoperation hand train `
   --input outputs/hand_body_capture/aligned_session_001.h5 `
-  --run-name world_palm_local_v1 --device cuda
+  --run-name world_canonical_shared_v1 --hand-side shared --device cuda
 
 python -m teleoperation hand export `
   --input outputs/hand_body_capture/aligned_session_001.h5 `
@@ -149,22 +149,22 @@ python -m teleoperation hand export `
 
 python -m teleoperation hand realtime --landmark-space world --visualize --frames 0
 
-# 显式旧模式，继续使用归一化数据及相匹配的旧模型
+# 显式 normalized 模式使用三点原生根坐标，需要匹配 v2 新权重
 python -m teleoperation hand record --landmark-space normalized --frames 900
 python -m teleoperation hand align --input old_raw.h5 --output old_aligned.h5 --landmark-space normalized
 python -m teleoperation hand realtime --landmark-space normalized --visualize --frames 0
 ```
 
-world 21 点先扩展为 25 点、减去腕部，再将掌面方向旋转到对应侧 L21。输出契约为 `mediapipe_world_palm_local_to_l21_v1`，
+world 21 点先减腕点，只用 0/5/9 经 SVD 建立掌部基，再按左右矩阵统一为右手表示，最后扩展到 25 点。左侧 dex 输出额外做 Y 镜像，矩阵可合并；输出坐标框架为 `hand_canonical_right`，契约为 `mediapipe_world_wrist_index_middle_canonical_right_v1`，
 来源为 `mediapipe_world_meters`，单位 `m`，`source_scale=1.0`。没有掌部尺寸标定或逐帧缩放；人手保留米制尺寸，机器人 FK 保留 URDF 米制尺寸。
 world Dataset 沿用 MediaPipe 左右标签，并复用实时三帧窗口语义。单侧缺失、非有限或退化会清空该侧窗口，恢复后重新积累 3 帧。
 缺少整套 world 字段会报错；归一化数据不能用于填补 world 缺失。
 
-world 实时和默认 world 导出查找 `outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/world_palm_local_v1/model_best.pth`。
-其他实验名或独立左右模型需显式传 checkpoint 参数。normalized 实时默认保留 `palm_local_v2`；normalized 导出保留原导出路径。
+world 实时和默认 world 导出查找 `outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/world_canonical_shared_v1/model_best.pth`。
+其他实验名需显式传共享 checkpoint 参数；新 world 模式拒绝独立左右模型。normalized 新预处理为三点 v2，实时目录为 `palm_three_point_v2`。
 `hand train` / `hand export` 从已对齐 H5 契约确定模式，不能通过参数覆盖；world 导出拒绝非 `1.0` 的 `--scale-factor`。
 H5 与 checkpoint 契约不同会报错，即使模型网络形状完全相同；不改写旧文件或旧权重。
 
 预览始终投影归一化关键点。world 对比面板的人手和机器人共用 `--robot-radius` 对应的米制显示比例；交互缩放只改变显示。
-六项损失、权重和网络形状保持原值，指尖距离中的 `×1000` 表示米转毫米。30 帧短采集用于验证记录格式；正式训练应录制足够的连续有效帧。
+共享训练汇集任意人手侧的有效窗口，只使用右侧 L21 FK；左侧输出适配四个 MCP roll 的符号。拇指结构差异不通过左侧训练修正，需单独验收。六项损失和网络形状保持，拇指距离掌面改用腕点/食指/中指，指尖距离中的 `×1000` 表示米转毫米。30 帧短采集用于验证记录格式；正式训练应录制足够的连续有效帧。
 TRON2A 双臂适配及独立 `camera_record` 入口保留原行为。

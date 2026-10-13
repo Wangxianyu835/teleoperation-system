@@ -122,13 +122,15 @@ Legacy 保留原 CanonicalHandProcessor 的拓扑、wrist-relative 与 identity 
 
 ## 文件格式与声明
 
-`data/hand_h5.py` 保留 root 格式的 `left_hand_keypoints/right_hand_keypoints`，以及历史 group 格式的 `l_glove_pos/r_glove_pos`。训练输入要求显式 `coordinate_frame=l21` 和受支持的 coordinate_alignment；未知声明不自动补全。
+`data/hand_h5.py` 保留 root 格式的 `left_hand_keypoints/right_hand_keypoints`，以及历史 group 格式的 `l_glove_pos/r_glove_pos`。训练输入要求受支持的 coordinate_alignment 和对应 coordinate_frame；旧原生根坐标声明 l21，新 world 声明 hand_canonical_right。未知声明不自动补全。
 
 坐标标识：
 
 - `source_to_l21_xyz`：既有 legacy 数学。
-- `palm_local_to_l21_v1`：归一化 MediaPipe 的既有 palm-local 数学。
-- `mediapipe_world_palm_local_to_l21_v1`：米制 MediaPipe world，腕部相对、掌面旋转到对应侧 L21，尺度固定 `1.0`。
+- `palm_local_to_l21_v1`：历史四 MCP 归一化文件，仅用于匹配旧权重。
+- `palm_local_to_l21_v2`：新的腕点/食指/中指 SVD 掌面，归一化点对齐至各侧原生 L21 根坐标。
+- `mediapipe_world_palm_local_to_l21_v1`：历史四 MCP world 原生根坐标，仅用于匹配旧权重。
+- `mediapipe_world_wrist_index_middle_canonical_right_v1`：新默认 world，腕点归零、0/5/9 三点 SVD、左右规范为右手表示，尺度固定 1.0。
 
 ### MediaPipe world 手部契约
 
@@ -148,18 +150,23 @@ world 对齐要求两套 world dataset 均存在，并声明米制来源；单�
 world 对齐 H5、CanonicalHandFrame、HandWindow 和 checkpoint 必须共同声明：
 
 ```text
-coordinate_frame = l21
-coordinate_alignment = mediapipe_world_palm_local_to_l21_v1
+coordinate_frame = hand_canonical_right
+coordinate_alignment = mediapipe_world_wrist_index_middle_canonical_right_v1
+palm_basis_version = wrist_index_middle_svd_v1
+canonical_hand = right
+handedness_normalization = dex_left_then_y_reflection
 source_landmark_space = mediapipe_world_meters
 length_unit = m
 units = m
 source_scale = 1.0
 ```
 
-坐标是腕部相对的米制坐标，保留原人手几何尺寸，只进行平移和旋转。MediaPipe 手部几何中心原点不能当作相机或身体的全局原点。
+坐标是腕部相对的米制坐标，保留原人手尺寸。中间姿态 R 是行列式 +1 的旋转；右侧乘 dex 右矩阵，左侧乘 dex 左矩阵再做 Y 镜像。左侧总变换行列式 -1，明确用于统一手性；旋转及镜像均保持距离。最终 +Y 朝食指侧，+Z 为腕点到中指 MCP，+X 为右手规范掌面法向。MediaPipe 手部几何中心原点不能当作相机或身体的全局原点。
 world Dataset 不重新对齐、重新缩放或身份重分配；实时窗口独立按侧清空，失效恢复后需要连续三帧。
 world 数据的额外输入缩放、非米制单位和不完整 checkpoint 声明均报错。normalized palm-local 允许历史 checkpoint 缺少来源声明，但拒绝将显式 world 来源配到 normalized 契约。
 训练和导出只认文件声明，初始化模型和实时模型都必须与输入契约匹配；交叉使用在加载权重或调用模型前拒绝。
+
+新 world checkpoint 还声明 `hand_side=shared`、`training_robot=right`、`angle_convention=l21_canonical_right_angles_v1`。只使用右侧 FK 训练；输出时左侧四个 MCP roll 反号，其他角度不变。导出角度声明 `angle_convention=l21_native_angles_v1`，供既有回放使用。
 
 checkpoint 必须使用原有严格 state_dict 加载和相同 coordinate_alignment guard；保留参数名称和网络结构。不会通过迁移重新训练或补写历史声明。
 

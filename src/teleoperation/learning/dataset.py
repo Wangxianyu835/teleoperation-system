@@ -16,6 +16,7 @@ from teleoperation.data.hand_h5 import load_twohand_h5, read_coordinate_alignmen
 from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
 from teleoperation.contracts.coordinates import (
     COORDINATE_FRAME, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
+    coordinate_frame_for_alignment, is_world_alignment,
 )
 
 
@@ -59,12 +60,13 @@ class TwoHandH5Dataset:
             raise ValueError("receptive_field must be positive")
 
         self.coordinate_alignment = read_coordinate_alignment(self.path)
-        self.is_world = self.coordinate_alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
+        self.is_world = is_world_alignment(self.coordinate_alignment)
+        self.is_canonical = self.coordinate_alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
         if self.is_world:
             if self.scale_factor != 1.0:
                 raise ValueError("World Dataset requires scale_factor=1.0; preserve human metre dimensions")
             self.track_identity = False
-        self.coordinate_frame = COORDINATE_FRAME
+        self.coordinate_frame = coordinate_frame_for_alignment(self.coordinate_alignment)
         with h5py.File(self.path, "r") as source:
             self.coordinate_metadata = dict(source.attrs)
             space = source.attrs.get("source_landmark_space")

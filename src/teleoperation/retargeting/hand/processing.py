@@ -54,9 +54,10 @@ class MediaPipePalmLocalProcessor:
             from .config import L21
             if L21.training.robot_scale != 1.0:
                 raise ValueError("World processing requires robot_scale=1.0 (URDF metres)")
-        # Fatal robot-reference errors propagate before any camera is opened.
-        # Each zero-pose robot basis is computed exactly once for this stream.
-        self._robot_bases = {side: build_l21_reference_basis(side) for side in SIDES}
+        # World human normalization is robot-independent. Normalized inputs
+        # retain an explicitly versioned native-root mode.
+        self._robot_bases = ({} if landmark_space == "world" else
+                             {side: build_l21_reference_basis(side) for side in SIDES})
         
         self.current_hands = {side: None for side in SIDES}
         self.valid_streak = {side: 0 for side in SIDES}
@@ -97,7 +98,8 @@ class MediaPipePalmLocalProcessor:
                             raise ValueError(f"raw shape must be (21,3), got {points.shape}")
                         if not np.isfinite(points).all():
                             raise ValueError("nonfinite raw landmarks")
-                        aligned = align_mediapipe_hand(points, self._robot_bases[side])
+                        aligned = (align_mediapipe_hand(points, side=side) if self.landmark_space == "world"
+                                   else align_mediapipe_hand(points, self._robot_bases[side]))
                     if aligned.shape != (25, 3) or not np.isfinite(aligned).all() or not np.any(aligned):
                         reason = "invalid or degenerate palm-local frame"
                     else:

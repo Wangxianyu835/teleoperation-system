@@ -39,6 +39,8 @@ from teleoperation.paths import DEFAULT_WARMSTART_CHECKPOINT, DEFAULT_CHECKPOINT
 from teleoperation.contracts.coordinates import (
     COORDINATE_FRAME, validate_coordinate_alignment, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
     validate_world_contract,
+    WORLD_PALM_LOCAL_METADATA, CANONICAL_ANGLE_CONVENTION,
+    coordinate_frame_for_alignment, is_world_alignment,
 )
 from teleoperation.retargeting.hand.predictor import _require_coordinate_alignment
 from teleoperation.learning.dataset import HAND_SIDES, TwoHandH5ChunkedGenerator, TwoHandH5Dataset
@@ -97,6 +99,9 @@ def _train(args: argparse.Namespace) -> int:
     run_name = _resolve_run_name(args.run_name)
     run_directory = Path(run_name) if hand_side == "shared" else Path(run_name) / hand_side
     alignment = read_coordinate_alignment(args.input)
+    canonical = alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
+    if canonical and hand_side != "shared":
+        raise ValueError("Canonical coordinates train one shared model; use --hand-side shared")
     model_directory = checkpoint_dir / "models" / "twohand_h5" / hand_brand / run_directory
     for name in ("model_best.pth", "model_last.pth"):
         existing = model_directory / name
@@ -209,12 +214,16 @@ def _train(args: argparse.Namespace) -> int:
 
     pos_loss = nn.MSELoss()
     vec_loss = None
+    robot_sides = ("right",) if canonical else hand_sides
     collision_losses = {
         side: _create_collision_loss(side)
-        for side in hand_sides
+        for side in robot_sides
     }
     reg_criterion = RegLoss()
-    hand_fks = _create_hand_fks(device, hand_sides)
+    hand_fks = _create_hand_fks(device, robot_sides, canonical=canonical)
+    if canonical:
+        print("training_robot=right; shared model; left output uses MCP roll sign adaptation")
+        logger.info("training_robot=right; canonical human samples pooled from either hand")
 
     output_dir = (
         checkpoint_dir
@@ -388,18 +397,29 @@ def _create_pose_model():
     return PoseTransformer(**L21.model_kwargs())
 
 
-def _create_hand_fks(device, hand_sides=HAND_SIDES):
+def _create_hand_fks(device, hand_sides=HAND_SIDES, *, canonical=False):
+    if canonical and tuple(hand_sides) != ("right",):
+        raise ValueError("Canonical training uses the right robot FK only")
     urdf_files = {"left": left_urdf_file, "right": right_urdf_file}
-    return {
+    fks = {
         side: create_hand_kinematics(
             _require_urdf(urdf_files[side], side),
             hand_cfg,
             device,
             scale_factor=scaling_factor_rb,
-            axis_correction_matrix=correction_matrix,
+            axis_correction_matrix=None if canonical else correction_matrix,
         )
         for side in hand_sides
     }
+    if canonical:
+        from teleoperation.retargeting.hand.coordinates import build_palm_basis, ROBOT_PALM_INDICES, OPERATOR_TO_CANONICAL
+        fk = fks["right"]
+        with torch.no_grad():
+            points = fk.forward(torch.zeros((1, 23), device=device))[2][0].cpu().numpy()
+        matrix = build_palm_basis(points, ROBOT_PALM_INDICES) @ OPERATOR_TO_CANONICAL["right"]
+        # Existing FK correction accepts column transforms: p @ K needs K.T.
+        fk.axis_correction_matrix = torch.as_tensor(matrix.T, device=device)
+    return fks
 
 
 def _save_checkpoint(
@@ -421,9 +441,13 @@ def _save_checkpoint(
 ):
     coordinate_alignment = validate_coordinate_alignment(coordinate_alignment, "Checkpoint save")
     world_metadata = {}
-    if coordinate_alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT:
+    if is_world_alignment(coordinate_alignment):
         world_metadata = {"length_unit": "m", "units": "m", "source_scale": scaling_factor}
         validate_world_contract({**world_metadata, "source_landmark_space": source_landmark_space}, "Checkpoint save")
+    if coordinate_alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT:
+        world_metadata.update(WORLD_PALM_LOCAL_METADATA)
+        world_metadata["angle_convention"] = CANONICAL_ANGLE_CONVENTION
+        world_metadata["training_robot"] = "right"
     write_checkpoint(
         {
             "epoch": epoch,
@@ -437,7 +461,7 @@ def _save_checkpoint(
             "val_start": val_start,
             "hand_side": hand_side,
             "hand_sides": HAND_SIDES if hand_side == "shared" else (hand_side,),
-            "coordinate_frame": COORDINATE_FRAME,
+            "coordinate_frame": coordinate_frame_for_alignment(coordinate_alignment),
             "coordinate_alignment": coordinate_alignment,
             "source_landmark_space": source_landmark_space,
             **world_metadata,

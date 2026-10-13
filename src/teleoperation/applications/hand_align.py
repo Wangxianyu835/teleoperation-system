@@ -17,7 +17,7 @@ def align_h5(input_path, output_path, landmark_space=None):
     from teleoperation.retargeting.hand.config import L21
     if metadata["source_landmark_space"] == WORLD_LANDMARK_SPACE and L21.training.robot_scale != 1.0:
         raise ValueError("World alignment requires robot_scale=1.0 (URDF metres)")
-    aligned, statistics = align_recording(raw)
+    aligned, statistics = align_recording(raw, "world" if metadata["source_landmark_space"] == WORLD_LANDMARK_SPACE else "normalized")
     with atomic_output(output_path) as temporary:
         write_aligned_copy(input_path, temporary, aligned, metadata)
     return {"input": str(input_path), "output": str(output_path), "frames": int(frame_ids.size), "sides": statistics, "coordinate_metadata": metadata}

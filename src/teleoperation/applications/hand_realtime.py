@@ -121,7 +121,7 @@ def load_palm_local_retargeter(checkpoint_path=None, device="cpu", *, left_check
             expected_coordinate_alignment=metadata["coordinate_alignment"],
         ).eval()
     except FileNotFoundError as error:
-        experiment = "world_palm_local_v1" if landmark_space == "world" else "palm_local_v2"
+        experiment = "world_canonical_shared_v1" if landmark_space == "world" else "palm_three_point_v2"
         raise FileNotFoundError(f"{error}. Train a matching model: python -m teleoperation hand train "
                                 f"--input <aligned_{landmark_space}.h5> --run-name {experiment}") from error
 

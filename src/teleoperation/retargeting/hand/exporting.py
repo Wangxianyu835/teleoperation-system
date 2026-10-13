@@ -28,7 +28,7 @@ def predict_batches(retargeter, batches, frame_count, device):
                 hand_input = torch.from_numpy(
                     batch[f"{side}_input"][side_mask].astype(np.float32)
                 ).to(device)
-                prediction = retargeter.model_for_side(side)(hand_input).detach().cpu().numpy()
+                prediction = retargeter.predict_side(hand_input, side).detach().cpu().numpy()
                 if prediction.shape != (
                     int(side_mask.sum()),
                     18,

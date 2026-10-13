@@ -57,7 +57,7 @@ def render(raw_frame, palms, payload, angles, robot_points, streaks, reasons,
          "identity tracking OFF | fixed display scales",
          (14, 45), scale=0.48)
     text(header, "q/Esc quit | 1 YZ  2 XZ  3 XY  4 ISO | w window traces | +/- zoom | s PNG", (14, 68), scale=0.48)
-    units_label = ("Palm: MediaPipe world metres. Robot: URDF metres. Same screen scale."
+    units_label = ("Palm/Robot: canonical right XYZ, metres; same screen scale."
                    if mode == "world" else "Palm: normalized coordinates. Robot: URDF units. Screen distances differ.")
     text(header, "Raw: normalized image XY. " + units_label,
          (14, 89), scale=0.43)

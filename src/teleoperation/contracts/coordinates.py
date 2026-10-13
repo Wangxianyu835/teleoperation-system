@@ -3,12 +3,17 @@ from numbers import Real
 
 COORDINATE_FRAME = "l21"
 COORDINATE_ALIGNMENT = "source_to_l21_xyz"
-PALM_LOCAL_COORDINATE_ALIGNMENT = "palm_local_to_l21_v1"
-WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT = "mediapipe_world_palm_local_to_l21_v1"
+LEGACY_PALM_LOCAL_ALIGNMENT = "palm_local_to_l21_v1"
+LEGACY_WORLD_PALM_LOCAL_ALIGNMENT = "mediapipe_world_palm_local_to_l21_v1"
+PALM_LOCAL_COORDINATE_ALIGNMENT = "palm_local_to_l21_v2"
+WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT = "mediapipe_world_wrist_index_middle_canonical_right_v1"
+CANONICAL_HAND_FRAME = "hand_canonical_right"
+CANONICAL_ANGLE_CONVENTION = "l21_canonical_right_angles_v1"
 NORMALIZED_LANDMARK_SPACE = "mediapipe_normalized"
 WORLD_LANDMARK_SPACE = "mediapipe_world_meters"
 SUPPORTED_COORDINATE_ALIGNMENTS = frozenset({
     COORDINATE_ALIGNMENT, PALM_LOCAL_COORDINATE_ALIGNMENT, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
+    LEGACY_PALM_LOCAL_ALIGNMENT, LEGACY_WORLD_PALM_LOCAL_ALIGNMENT,
 })
 
 
@@ -37,20 +42,33 @@ PALM_LOCAL_METADATA = {
     "coordinate_frame": COORDINATE_FRAME,
     "coordinate_alignment": PALM_LOCAL_COORDINATE_ALIGNMENT,
     "source_landmark_space": "mediapipe_normalized",
-    "palm_basis_version": "wrist_four_mcp_pinky_to_index_v1",
-    "palm_longitudinal": "wrist_to_four_mcp_mean",
-    "palm_lateral": "pinky_mcp_to_index_mcp",
-    "palm_normal": "lateral_cross_longitudinal",
+    "palm_basis_version": "wrist_index_middle_svd_v1",
+    "palm_reference_indices": "0,5,9",
+    "palm_longitudinal": "wrist_to_middle_mcp",
+    "palm_lateral": "middle_mcp_to_index_mcp_projected",
+    "palm_normal": "three_point_svd_signed_toward_index",
 }
 
 WORLD_PALM_LOCAL_METADATA = {
     **PALM_LOCAL_METADATA,
     "coordinate_alignment": WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
+    "coordinate_frame": CANONICAL_HAND_FRAME,
+    "origin": "wrist",
+    "canonical_hand": "right",
+    "handedness_normalization": "dex_left_then_y_reflection",
     "source_landmark_space": WORLD_LANDMARK_SPACE,
     "units": "m",
     "length_unit": "m",
     "source_scale": 1.0,
 }
+
+
+def is_world_alignment(alignment: str) -> bool:
+    return alignment in (WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, LEGACY_WORLD_PALM_LOCAL_ALIGNMENT)
+
+
+def coordinate_frame_for_alignment(alignment: str) -> str:
+    return CANONICAL_HAND_FRAME if alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT else COORDINATE_FRAME
 
 
 def landmark_source(landmark_space: str) -> str:
@@ -83,9 +101,15 @@ def validate_world_contract(metadata, context: str) -> None:
 
 
 def validate_landmark_contract(alignment, metadata, context):
-    if alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT:
+    if is_world_alignment(alignment):
         validate_world_contract(metadata, context)
-    elif alignment == PALM_LOCAL_COORDINATE_ALIGNMENT:
+    if alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT:
+        for name in ("coordinate_frame", "palm_basis_version", "canonical_hand", "handedness_normalization"):
+            value = metadata.get(name)
+            if isinstance(value, bytes): value = value.decode("utf-8")
+            if value != WORLD_PALM_LOCAL_METADATA[name]:
+                raise ValueError(f"{context} must declare {name}={WORLD_PALM_LOCAL_METADATA[name]!r}; got {value!r}")
+    elif alignment in (PALM_LOCAL_COORDINATE_ALIGNMENT, LEGACY_PALM_LOCAL_ALIGNMENT):
         # Historical normalized checkpoints may omit provenance.
         space = metadata.get("source_landmark_space", NORMALIZED_LANDMARK_SPACE)
         if isinstance(space, bytes):
