@@ -10,6 +10,7 @@ COMMANDS = (
     ('hand', 'export', 'hand_export', 'teleoperation.applications.hand:export'),
     ('hand', 'inspect', 'hand_inspect', 'teleoperation.applications.hand:inspect'),
     ('hand', 'realtime', 'hand_realtime', 'teleoperation.applications.hand:realtime'),
+    ('hand', 'vr', 'hand_vr', 'teleoperation.applications.visionpro_hand:main'),
     ('sim', 'run', 'sim_run', 'teleoperation.applications.benchmark:main'),
     ('sim', 'demo-joints', 'sim_demo_joints', 'teleoperation.applications.demo.joints:main'),
     ('dual', 'export', 'dual_export', 'teleoperation.applications.dual_export_cli:main'),

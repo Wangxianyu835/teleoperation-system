@@ -39,3 +39,17 @@ Prefer non-destructive recovery:
 
 Do not run `git reset --hard`, delete tags, or rewrite shared history unless the
 user explicitly requests it.
+
+## TransHandR Upstream Reference
+
+The user's local `D:/2026/code/TransHandR/TransHandR` project is an upstream and
+an important reference source. For Vision Pro / VR work, port its numerical
+pipeline and verify equivalence against its actual source before changing the
+algorithm. Record source paths and hashes in the implementation documentation.
+
+Keep current public input, window and result interfaces compatible. Adapt
+resource management, explicit device/hand selection and CLI wiring at the
+boundary. Document these adaptations separately from the upstream algorithm.
+Do not silently apply camera preprocessing to VR data or rewrite checkpoint
+metadata to claim compatibility. Keep the upstream VR route explicit, and
+verify existing camera workflows after changes to shared interfaces.

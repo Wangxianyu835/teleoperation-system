@@ -397,6 +397,12 @@ def replay_mounted_hand(parser):
                          '所以 8 步足够跟上，视觉上只滞后约 4 帧')
     parser.set_defaults(_handler="teleoperation.applications.replay.replay_hand_on_robot:main")
 
+def hand_vr(parser):
+    from teleoperation.cli.visionpro_options import configure
+    configure(parser)
+    parser.set_defaults(_handler="teleoperation.applications.visionpro_hand:main")
+
+
 def tools_show_robots(parser):
     parser.set_defaults(_handler="teleoperation.applications.diagnostics.show_robots:main")
 
