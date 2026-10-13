@@ -198,7 +198,7 @@ E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headles
 |---|---|---|---|---|
 | h1_2 | pose | left (0.24, +0.05, 0.19) / right (0.24, -0.05, 0.19) | left 0.10 / right 0.15 | 30 mm |
 | gr1_t2 | position | left (0.16, +0.10, 0.12) / right (0.16, -0.10, 0.12) | left 0.10 / right 0.12 | 25 mm |
-| g1 | position | left (0.16, +0.10, 0.10) / right (0.16, -0.10, 0.10) | 0.04 / 0.04 | 25 mm |
+| g1 | position | left (0.16, +0.10, 0.10) / right (0.16, -0.10, 0.10) | 0.04 / 0.06 | 25 mm |
 
 - 行程上限由 `--probe-travel` 实测（**两侧同时驱动**才有意义：只驱动一侧时另一侧解冻下垂、会把整机带歪）；超限按每轴夹取，夹取帧数写进 `--report`。
 - 中性工作点的**横向 y 必须分左右**（`+` = 机器人左侧，REP-103）：两侧都写 0 时两个腕子被命令到
@@ -329,7 +329,24 @@ E:\python3.11.7\python.exe devtools\verify_realtime_arm_bridge.py --input-npz ou
   （27.9 -> 22.4）；g1 左臂本来就需要 +0.10。
 - 真机观感仍要**你本人**看一次：本层只有残差数字，没有自动化的渲染判据。
 
-### 8.7 没做的（交接）
+### 8.7 显示与现场诊断更新（2026-10-13）
+
+实时入口现在默认将 G1 着色为浅蓝色，并设置 GUI 光源位置、关闭阴影。
+`--g1-color R G B` 接受三个 0 到 1 的数；`--original-g1-color` 保留 URDF 原材质；
+`--light-position X Y Z` 调整光源，`--shadows` 恢复阴影。材质调整只影响显示。
+
+HUD 中 `CLAMP=g1/L` 表示 G1 左侧目标已到相对中性位置的行程上限。
+JSON 报告 `bridge.clamped_by_robot` 分机器人、分侧记录限幅次数；
+旧的 `bridge.counts.clamped` 是所有机器人累计值，可能大于采集帧数。
+手部原始检出率低于 10%，或检出但没有角度时，运行结束会给出提示。
+摄像头原始帧现保留 `world_left/world_right`，保证 `--dump-npz` 可用于 world 手部回放。
+
+本机双侧行程扫描（`verify_realtime_arm_bridge.py --probe-travel --robot g1 --side both`）
+建议 G1 左侧 0.04 m、右侧 0.06 m。右侧默认值已更新。左侧 0.06 m 和两侧 0.08 m
+未通过扫描判据，因此没有统一放大全部行程。该结果是当前工作点的仿真扫描，不是整个
+机器人手臂的物理可达范围，也不能保证真人摄像头会话的跟随效果。
+
+### 8.8 没做的（交接）
 
 - **轴向已用真实会话离线复算核对**（2026-10-12）：从 `--dump-npz` 的 world 手部轨迹逐帧复算
   "操作者轴位移 -> 机器人基座系目标"，与 §8.2 的 `AxisMap` 一致。例：某一帧 `op=[-1.2, +31.7, +13.8] cm`

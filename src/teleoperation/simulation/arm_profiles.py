@@ -209,9 +209,10 @@ ARM_PROFILES: dict = {
         ik_mode="position",
         metric_scale=0.4,
         metric_offset=(0.16, 0.0, 0.10),
-        # g1 is the tight one: both sides only hold 0.04 m (left mean 19.8 / max 29.0 mm,
-        # right mean 9.4 / max 21.6 mm); 0.06 m already spikes to 40+ mm.
-        realtime_travel_m={"left": 0.04, "right": 0.04},
+        # 2026-10-13 both-arm travel probe at the current lateral neutral points:
+        # left 0.04 m mean/max 19.52/31.65 mm, right 0.06 m 19.55/30.35 mm.
+        # Left 0.06 m and both sides at 0.08 m fail the probe's residual criteria.
+        realtime_travel_m={"left": 0.04, "right": 0.06},
         # The left arm tracks much better with a lateral working point of +0.10 m: at
         # 0.04 m the mean drops from 31.2 mm (y=0) to 19.8 mm, and 0.06 m from 28.6 to
         # 19.9 mm.  The right arm's best point is the centre (18.3 mm), but -0.10 m only

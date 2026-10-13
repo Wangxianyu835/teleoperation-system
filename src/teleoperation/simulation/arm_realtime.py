@@ -316,6 +316,7 @@ class RealtimeArmBridge:
                        "held": {side: 0 for side in self.sides},
                        "fallback": {side: 0 for side in self.sides},
                        "clamped": {side: 0 for side in self.sides}}
+        self.clamped_by_robot = {name: {side: 0 for side in self.sides} for name in self.robots}
         if neutral is not None:
             self.load_neutral(neutral)
 
@@ -521,6 +522,7 @@ class RealtimeArmBridge:
             clamped = bool(np.any(np.abs(delta) > limit))
             if clamped:
                 self.counts["clamped"][side] += 1
+                self.clamped_by_robot[profile.robot_type][side] += 1
             delta = np.clip(delta, -limit, limit)
             position = np.asarray(neutral, dtype=np.float64) + delta
             info.update({
@@ -705,6 +707,8 @@ class RealtimeArmBridge:
                        "held": dict(self.counts["held"]),
                        "fallback": dict(self.counts["fallback"]),
                        "clamped": dict(self.counts["clamped"])},
+            "clamped_by_robot": {name: dict(counts)
+                                 for name, counts in self.clamped_by_robot.items()},
             "last_trace": self.trace(),
         }
 
@@ -717,6 +721,7 @@ class RealtimeArmBridge:
                        "held": {side: 0 for side in self.sides},
                        "fallback": {side: 0 for side in self.sides},
                        "clamped": {side: 0 for side in self.sides}}
+        self.clamped_by_robot = {name: {side: 0 for side in self.sides} for name in self.robots}
         if recalibrate:
             self._samples = {side: [] for side in self.sides}
             self.neutral = {side: _neutral_default() for side in self.sides}

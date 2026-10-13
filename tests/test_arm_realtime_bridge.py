@@ -222,6 +222,22 @@ class RelativeMappingTests(unittest.TestCase):
         # 夹取计数按 (机器人, 侧) 记：三台各算一次
         self.assertEqual(bridge.counts["clamped"]["right"], len(PAPER_ROBOTS))
 
+    def test_clamping_is_reported_separately_for_each_robot(self):
+        bridge = calibrated(sides=("right",))
+        # 10 cm operator lateral motion maps to 4 cm for G1: no clamping yet.
+        bridge.update(arms_world={"right": arm("right", wrist_offset=(0.08, 0., 0.))})
+        self.assertEqual(bridge.summary()["clamped_by_robot"]["g1"]["right"], 0)
+        # Only G1 hits its limit; the other two robots have more room.
+        targets = bridge.update(arms_world={"right": arm("right", wrist_offset=(0.20, 0., 0.))})
+        counts = bridge.summary()["clamped_by_robot"]
+        self.assertEqual(counts["g1"]["right"], 1)
+        self.assertEqual(counts["h1_2"]["right"], 0)
+        self.assertEqual(counts["gr1_t2"]["right"], 0)
+        self.assertEqual(targets["g1"]["right"].info["delta_base_m"][1],
+                         profile_for("g1").travel_limit("right"))
+        bridge.reset()
+        self.assertEqual(bridge.summary()["clamped_by_robot"]["g1"]["right"], 0)
+
     def test_the_override_flag_replaces_the_per_side_limit(self):
         bridge = calibrated(sides=("right",), max_travel_m=0.02)
         entry = bridge.update(
@@ -339,6 +355,38 @@ class ReportAndIoTests(unittest.TestCase):
 
 class EntryAndReplayTests(unittest.TestCase):
     """入口参数默认值 + 回放源：不用相机也能把整条循环喂起来。"""
+
+    def test_camera_frame_retains_world_points_for_recording_and_replay(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import time
+        from tests.test_world_hand_pipeline import world_frame, observation
+        from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
+        from teleoperation.simulation.realtime_teleop import CameraFrameSource, _record_frame, _save_dump
+
+        source = CameraFrameSource.__new__(CameraFrameSource)
+        source.pipeline = MediaPipePalmLocalPipeline("world")
+        source.pose_enabled = True
+        source._start_time = time.time()
+        source._input = Mock()
+        dumped = {"hand": {side: [] for side in SIDES},
+                  "world": {side: [] for side in SIDES},
+                  "arm": {side: [] for side in SIDES}, "timestamps": []}
+        frames = [world_frame(index) for index in range(3)]
+        for frame in frames:
+            source._input.next_teleop_observation.return_value = SimpleNamespace(
+                hands=observation(frame), upper_body=None)
+            source.next_frame()
+            _record_frame(dumped, source.last_raw_frame, None)
+        with tempfile.TemporaryDirectory() as folder:
+            path = _save_dump(Path(folder) / "frames.npz", dumped)
+            replay = ReplayFrameSource(path, "world")
+            for _ in frames:
+                window = replay.next_frame()
+            self.assertIsNotNone(window)
+            for side in SIDES:
+                np.testing.assert_array_equal(replay.data["world_" + side + "_hand"],
+                                              np.stack([frame["world_" + side] for frame in frames]))
 
     def test_entry_parser_defaults(self):
         args = build_parser().parse_args([])

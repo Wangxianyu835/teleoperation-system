@@ -119,6 +119,7 @@ from teleoperation.simulation.arm_realtime import (
     save_neutral,
 )
 from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+from teleoperation.simulation.scene_appearance import apply_appearance
 
 SIDES = ("left", "right")
 ARM_ENTRY = "realtime_teleop"
@@ -172,6 +173,8 @@ class CameraFrameSource:
         raw_frame = {**raw.hands, "timestamp": raw.timestamp,
                      "metadata": dict(raw.metadata)}
         self.last_raw_frame = raw_frame
+        if raw.world_hands is not None:
+            raw_frame.update({"world_" + side: raw.world_hands.get(side) for side in SIDES})
         frame = {
             **raw_frame,
             "timestamp": round(time.time() - self._start_time, 3),
@@ -343,6 +346,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sim-steps", type=int, default=8,
                         help="physics steps per frame (default 8 = about one 30 Hz frame)")
     parser.add_argument("--view", choices=("full", "front"), default="full")
+    parser.add_argument("--g1-color", type=float, nargs=3, default=(0.65, 0.80, 0.95),
+                        metavar=("R", "G", "B"), help="G1 display RGB, each in [0, 1]")
+    parser.add_argument("--original-g1-color", action="store_true",
+                        help="keep the original G1 URDF materials")
+    parser.add_argument("--light-position", type=float, nargs=3, default=(2., -4., 6.),
+                        metavar=("X", "Y", "Z"), help="PyBullet GUI light position")
+    parser.add_argument("--shadows", action="store_true",
+                        help="enable GUI shadows (off by default for visibility)")
     parser.add_argument("--frames", type=int, default=0,
                         help="stop after N frames; 0 runs until Ctrl+C or window close")
     parser.add_argument("--headless", action="store_true")
@@ -377,7 +388,10 @@ def arm_hud(bridge, driver, targets) -> str:
         text = " ".join(f"{name}={max(entry.values()):.0f}"
                         for name, entry in sorted(values.items()) if entry)
         residuals = f" res(mm) {text}"
-    return f"{bridge.status()} arm {sources}{residuals}"
+    clamped = [f"{name}/{side[0].upper()}" for name, entries in sorted(targets.items())
+               for side, target in sorted(entries.items()) if target.info.get("clamped")]
+    limit_text = "" if not clamped else " CLAMP=" + ",".join(clamped)
+    return f"{bridge.status()} arm {sources}{residuals}{limit_text}"
 
 
 def arm_lines(bridge, sides) -> dict:
@@ -505,6 +519,9 @@ def run(args) -> int:
     try:
         args.scene = "robots"                      # 手臂只存在于机器人场景
         scene = build_scene(args, sides)
+        appearance = apply_appearance(
+            scene, None if args.original_g1_color else args.g1_color,
+            args.light_position, args.shadows)
         if hasattr(scene, "frame_scene"):
             scene.frame_scene(args.view)
         if arms_wanted:
@@ -675,6 +692,7 @@ def run(args) -> int:
         "headless": bool(args.headless),
         "scene": args.scene,
         "scene_summary": scene_summary,
+        "appearance": appearance,
         "arms_enabled": bool(arms_wanted),
         "robots": list(robots),
         "arm_failures": arm_failures,
@@ -716,6 +734,12 @@ def run(args) -> int:
         entry = report["sides"][side]
         print(f"  hand {side}: raw={entry['raw_detected_frames']}/{processed} "
               f"valid={entry['valid_frames']} invalid={entry['invalid_frames']}")
+        if processed >= 30 and entry["raw_detected_frames"] < processed * 0.1:
+            print(f"[WARN] {side} hand detection is below 10%: keep the whole hand large "
+                  "enough in the color image, with visible fingers and good lighting.", flush=True)
+        elif processed >= 30 and entry["valid_frames"] == 0:
+            print(f"[WARN] {side} hand was detected but produced no angles: check valid "
+                  "three-frame windows and open-hand calibration.", flush=True)
     if bridge is not None:
         trace = bridge.trace()
         for side, entry in sorted(trace.items()):
