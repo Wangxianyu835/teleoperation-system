@@ -101,6 +101,7 @@ from teleoperation.paths import (
     PROJECT_ROOT,
 )
 from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM, RUNTIME
+from teleoperation.simulation.hand_commands import add_hand_command_arguments, build_hand_commands
 from teleoperation.robots.l21 import L21_JOINT_ORDER, MAPPING_18, L21HandAdapter
 
 SIDES = ("left", "right")
@@ -635,6 +636,7 @@ def run(args) -> int:
     elapsed, final = 0.0, {}
     try:
         scene = build_scene(args, sides)
+        commands = build_hand_commands(args, scene, sides)
         if args.scene == "robots":
             print(f"scene=three_robots: H1-2 / GR1-T2 / G1 side by side, native hands, "
                   f"{args.sim_steps} physics steps per frame.", flush=True)
@@ -670,6 +672,8 @@ def run(args) -> int:
             if window is None:
                 # 三帧窗口还没攒够（或刚丢手）：预览里不留上一帧的角度，避免误会。
                 latest = {side: None for side in sides}
+                for side in sides:
+                    commands.missing(side)
             else:
                 result = retargeter.retarget(window)
                 for side in sides:
@@ -677,10 +681,12 @@ def run(args) -> int:
                     if angles is None:
                         invalid[side] += 1
                         latest[side] = None
+                        commands.missing(side)
                         continue
                     values = np.asarray(angles.values, dtype=np.float64)
                     if values.shape != (HAND_ANGLE_DIM,) or not np.isfinite(values).all():
                         raise ValueError(f"invalid {side} angles: shape={values.shape}")
+                    values = commands.update(side, values)
                     scene.apply(side, values)
                     samples[side].append(values)
                     latest[side] = values
@@ -724,6 +730,7 @@ def run(args) -> int:
               f"{'' if not preview.note else ' note=' + preview.note}", flush=True)
     report = {
         "backend": backend,
+        "hand_commands": commands.summary(),
         "landmark_space": args.landmark_space,
         "length_unit": "m" if args.landmark_space == "world" else "normalized",
         "backend_note": note,
@@ -864,6 +871,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="PyBullet DIRECT mode: no window, useful for self checks")
     parser.add_argument("--calibration-frames", type=int, default=15)
     parser.add_argument("--smoothing", type=float, default=0.0)
+    add_hand_command_arguments(parser)
     parser.add_argument("--no-preview", action="store_true",
                         help="do not open the camera window (PyBullet window only)")
     parser.add_argument("--preview-no-mirror", action="store_true",

@@ -120,6 +120,7 @@ from teleoperation.simulation.arm_realtime import (
 )
 from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
 from teleoperation.simulation.scene_appearance import apply_appearance
+from teleoperation.simulation.hand_commands import add_hand_command_arguments, build_hand_commands
 
 SIDES = ("left", "right")
 ARM_ENTRY = "realtime_teleop"
@@ -358,6 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="stop after N frames; 0 runs until Ctrl+C or window close")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--smoothing", type=float, default=0.0)
+    add_hand_command_arguments(parser)
     parser.add_argument("--no-preview", action="store_true")
     parser.add_argument("--preview-no-mirror", action="store_true")
     parser.add_argument("--preview-window-pos", type=_window_pos, default=(20, 60),
@@ -519,6 +521,7 @@ def run(args) -> int:
     try:
         args.scene = "robots"                      # 手臂只存在于机器人场景
         scene = build_scene(args, sides)
+        commands = build_hand_commands(args, scene, sides)
         appearance = apply_appearance(
             scene, None if args.original_g1_color else args.g1_color,
             args.light_position, args.shadows)
@@ -593,13 +596,18 @@ def run(args) -> int:
                     angles = getattr(result, side + "_angles")
                     if angles is None:
                         invalid[side] += 1
+                        commands.missing(side)
                         continue
                     values = np.asarray(angles.values, dtype=np.float64)
                     if values.shape != (HAND_ANGLE_DIM,) or not np.isfinite(values).all():
                         raise ValueError(f"invalid {side} angles: shape={values.shape}")
+                    values = commands.update(side, values)
                     scene.apply(side, values)
                     samples[side].append(values)
                     latest[side] = values
+            else:
+                for side in sides:
+                    commands.missing(side)
             targets = {}
             if bridge is not None:
                 targets = bridge.update(arms_world=camera.arms(), hands=raw_frame)
@@ -682,6 +690,7 @@ def run(args) -> int:
     report = {
         "entry": ARM_ENTRY,
         "backend": backend,
+        "hand_commands": commands.summary(),
         "landmark_space": args.landmark_space,
         "length_unit": "m" if args.landmark_space == "world" else "normalized",
         "backend_note": note,
