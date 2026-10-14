@@ -716,6 +716,12 @@ class RealtimeArmBridge:
         ``map_mode="posture"`` 还要 ``"shoulder"``（同一个中性姿势下的肩 FK 点）：腕/肘目标
         就是「肩锚点 + 机器人自己的连杆长 * 你的单位方向」。老调用方不给它不会报错，只是
         那一侧在方向口径下退回位移口径，并把原因写进那一帧的 ``info``。
+
+        **这个 "shoulder" 必须是上臂的肩端**（= 肘关节的父连杆原点，``arm_points()["upper"]``），
+        即与肘刚性相连的那个点：只有它到肘的距离**与姿势无关**，配方的两个目标才同时可达。
+        用名字匹配到的肩关节连杆会随 shoulder_roll 摆动 48-102 mm（实测），配方在非中性姿势下
+        就几何上不可达 —— 现场「前臂弯曲方向相反」的根因，见 ``_posture_target``。
+        ``realtime_teleop.build_scene`` 与 ``arm_scene_driver._shoulder_shift`` 都按同一口径取点。
         """
         self.robot_anchors = {}
         for robot_type, per_side in dict(anchors or {}).items():
@@ -802,6 +808,8 @@ class RealtimeArmBridge:
         v_op_rest = _unit_direction(entry.get("fore"))
         if u_op is None or v_op is None or u_op_rest is None or v_op_rest is None:
             return None
+        # rest_u 是**刚体**上臂方向（肩锚点 -> 肘）：gain<1 时它就是插值的基准方向，
+        # 必须与 operator rest 对应同一个姿势（锚点口径见 _posture_target 的说明）。
         rest_u = _unit_direction(anchor["elbow"] - anchor["shoulder"])
         rest_v = _unit_direction(anchor["wrist"] - anchor["elbow"])
         u_base = _unit_direction(self.axis_map.apply(u_op))
@@ -838,13 +846,20 @@ class RealtimeArmBridge:
     def _posture_target(self, profile, side, state):
         """方向口径的一对目标：``(肘点, 腕点, terms)``（基座系）；缺数据返回 ``None``。
 
-        肩锚点是机器人自己的中性肩点（固定不动），两根骨头是它自己的实测长度，所以：
+        肩锚点是机器人自己的中性**上臂肩端**（= 肘的父连杆原点，见 ``set_anchors``），两根骨头
+        是它自己的实测长度，所以：
 
             elbow_target = shoulder + L_u * u          # 你的上臂方向
             wrist_target = elbow_target + L_f * v      # 你的前臂方向
 
-        两个目标一定同时可达（``wrist - elbow`` 正好是机器人的前臂向量），行为也与机器人
-        臂长无关：你的上臂转 40 度，g1（0.193+0.184 m）和 h1_2（0.331+0.229 m）就都转 40 度。
+        两个目标同时可达**有一个前提**：``L_u`` 必须是「肩锚点 -> 肘」在**任意姿势下都不变**的
+        那个长度，``L_f`` 同理。若锚点取的是名字匹配的肩关节连杆，它的 roll 关节一转，肘到锚点
+        的真实距离就变 48.5-101.7 mm（gr1_t2 左实测 +101.6 mm），此时「肩 + L_u*u」这个点根本
+        不在手臂可达的球面上，7 自由度链只能把误差摊到肘和腕上 —— 现场看到的就是
+        「H1-2 / GR1-T2 前臂弯曲方向相反」，而残差（这场肘 222 mm / 腕 98 mm）全在求解器里，
+        物理没错。改用刚体肩端后残差降到毫米级，见 ``devtools/probe_arm_segment_rigidity.py``
+        与 docs/multi-robot-arm.md。
+
         ``segments`` 那两个目标各自被逐轴夹断过（g1 每轴 40 mm），是幅度小与抽抽的来源；
         这里不夹断，因为目标本来就落在机器人自己的可达球面上。
         """

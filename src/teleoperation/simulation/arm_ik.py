@@ -92,6 +92,17 @@ ELBOW_PASS_ORDERS = ("first", "last")
 #: 而人看到的是**方向**。改成方向后两个判据同一条，现场反馈的那一项就是判据本身。
 ELBOW_RECOVERY_DEG = 25.0
 
+#: 恢复的**滞回**（度）：新支路必须比当前支路好这么多才换。
+#: 2026-10-14 现场反馈「H1-2 和 GR1-T2 的整条手臂会抽」：1 度门槛下，两支几乎一样时每帧来回换
+#: （200 帧回放：h1_2 左 123 个有效帧里恢复 19 次、g1 左上臂抖动 max 12.6 -> 26.8 度），
+#: 肉眼就是整条手臂抽。8 度滞回让「同一支路」稳定下来。
+ELBOW_RECOVERY_MARGIN_DEG = 8.0
+
+#: 恢复**尝试过**之后的冷却帧数（成功或被拒都算）：刚换过支路，接下来这么多帧不再尝试。
+#: 新支路自己会 warm start 保持住，反复尝试只是每帧多解一遍 IK（200 帧里 h1_2 左 87 次尝试）
+#: 并把手臂在两条支路之间来回搬。0 = 关（每帧都可尝试，与 2026-10-13 版行为一致）。
+ELBOW_RECOVERY_COOLDOWN_FRAMES = 12
+
 
 def quaternion_multiply(left, right) -> tuple:
     """``left * right``，PyBullet 口径 ``(x, y, z, w)``：先转 ``right`` 再转 ``left``。
@@ -128,6 +139,20 @@ def _percentile_stats(values) -> dict:
     array = np.asarray(values, dtype=np.float64)
     return {"median": round(float(np.median(array)), 2),
             "p90": round(float(np.percentile(array, 90)), 2)}
+
+
+def _spike_stats(values) -> dict:
+    """``{"median": .., "p90": .., "max": ..}`` —— 抖动是**尾部事件**。
+
+    2026-10-14 现场反馈「H1-2 和 GR1-T2 整条手臂会抽」：中位数看不出抽，必须把最大那一帧
+    留在报告里（``upper_jerk_deg.max`` / ``forearm_jerk_deg.max``），否则只能靠肉眼争。
+    """
+    if not values:
+        return {"median": None, "p90": None, "max": None}
+    array = np.asarray(values, dtype=np.float64)
+    return {"median": round(float(np.median(array)), 2),
+            "p90": round(float(np.percentile(array, 90)), 2),
+            "max": round(float(array.max()), 2)}
 
 
 def movable_joints(p, body, cid):
@@ -196,7 +221,10 @@ class PyBulletArmIK:
                  ik_mode=None, arm_force=ARM_FORCE, ik_iterations=IK_ITERATIONS,
                  residual_threshold=IK_RESIDUAL_THRESHOLD,
                  rest_poses: str = "current",
-                 elbow_recovery_deg: float = ELBOW_RECOVERY_DEG):
+                 elbow_recovery_deg: float = ELBOW_RECOVERY_DEG,
+                 elbow_recovery_margin_deg: float = ELBOW_RECOVERY_MARGIN_DEG,
+                 elbow_recovery_cooldown: int = ELBOW_RECOVERY_COOLDOWN_FRAMES,
+                 lock_others: bool = False):
         import pybullet as p
 
         if profile is None:
@@ -222,6 +250,9 @@ class PyBulletArmIK:
         self.arm_force = float(arm_force)
         self.ik_iterations = int(ik_iterations)
         self.residual_threshold = float(residual_threshold)
+        #: 求解时是否把「非本侧手臂」的关节全部锁在当前角度（见 ``_locked_arguments``）：
+        #: False = 交给 PyBullet 对整机求解（历史行为）。
+        self.ik_lock_others = bool(lock_others)
 
         # Every non-fixed joint in PyBullet order: the IK solution has one entry per
         # movable joint, so the mapping has to stay name-based (index 0 is a hip).
@@ -257,6 +288,15 @@ class PyBulletArmIK:
                               for side in self.sides}
         self.elbow_link = {side: self._limb_link(side, ELBOW_KEYWORD)
                            for side in self.sides}
+        #: 「上臂的肩端」= 肘关节的**父连杆原点**（= 肘的父关节转轴）：与肘连杆刚性相连的唯一
+        #: 肩端参考点。2026-10-14 实测（devtools/probe_arm_segment_rigidity.py）：把每个臂关节
+        #: 单独拧开 ±60/±100 度，|肘 - 这个点| = h1_2 左 185.1 mm / gr1_t2 左 178.7 mm /
+        #: g1 左 82.0 mm，最大偏差 **0.00 mm**；而 ``shoulder_link``（名字里第一个含 shoulder
+        #: 的关节的连杆 = 上臂 pitch 那一段）会随 shoulder_roll 摆动 48.5-101.7 mm（gr1_t2 左
+        #: +101.6 mm = 上臂长的 40%）。方向配方的「肩 + 上臂长*方向」必须用这个刚体点，否则两个
+        #: 位置目标在非中性姿势下**几何上同时不可达**，7 自由度链只能折中 —— 现场
+        #: 「GR1-T2 前臂还是反」（肘目标残差中位 222 mm、腕 98 mm）的根因。
+        self.upper_link = {side: self._rigid_upper_link(side) for side in self.sides}
         #: ``record_posture()`` 每帧采样的姿势（每侧一串 dict），赛后统计肩/肘动没动。
         self.posture = {side: [] for side in self.sides}
 
@@ -277,11 +317,19 @@ class PyBulletArmIK:
         self.last_elbow_world = {}
         #: 肘支路恢复（``_recover_elbow_branch``）：阈值（度，0 = 关）与每侧救回来的次数。
         self.elbow_recovery_deg = max(0.0, float(elbow_recovery_deg))
+        #: 恢复的滞回（度）与冷却帧数：见模块顶那两个常量的现场原因（2026-10-14「整条手臂抽」）。
+        self.elbow_recovery_margin_deg = max(0.0, float(elbow_recovery_margin_deg))
+        self.elbow_recovery_cooldown = max(0, int(elbow_recovery_cooldown))
+        self.elbow_recovery_wait = {}
         self.elbow_recoveries = {}
         #: 每侧「算出更差 / 手跑掉」被拒的次数（报告用：说明这条路试了多少次、成了几次）。
         self.branch_rejections = {}
         #: 每侧最后一次恢复的前后数字（报告用；没恢复过就没有这个键）。
         self.last_branch_recovery = {}
+        #: 这一帧**解**（不含物理）离两个目标点差多少：``_branch_cost`` 在把手臂 teleport 到解上
+        #: 之后量的那个数，用来把「求解器没兑现」和「物理追不上」分开（见 ``posture_summary``
+        #: 的 ``solution_elbow_mm`` / ``elbow_task_mm`` 这对数）。
+        self.last_solution_cost = {}
 
 
     # ------------------------------------------------------------------ #
@@ -336,13 +384,37 @@ class PyBulletArmIK:
                                     physicsClientId=self.cid)
         return tuple(float(value) for value in state[4])
 
-    def arm_points(self, side: str) -> dict:
-        """World ``{shoulder, elbow, wrist}`` of this arm, straight from forward kinematics.
+    def _rigid_upper_link(self, side: str) -> int:
+        """肘关节的**父连杆**索引 = 上臂的肩端（``link_position`` 直接可用）。
 
-        Used by the posture metrics ("did the shoulder and elbow take part?"), and by
-        the driver to measure the left/right forearm gap.
+        为什么不用 ``shoulder_link``（名字匹配）：那个是「名字里第一个含 shoulder 的关节」，
+        对三台机器人都是上臂 pitch 那一节，它的原点到肘的距离**随 shoulder_roll 变**（实测
+        -61.9 / +101.6 / -48.5 mm），不是一根刚体骨头；拿它当方向配方的锚点，肘目标与腕目标
+        在非中性姿势下同时不可达。父连杆原点则是肘的父关节转轴，随姿势不变（偏差 0.00 mm）。
+        父连杆索引取不到（理论上不会）时退回「名字里**最后**一个含 shoulder 的关节」。
+        """
+        elbow = int(self.elbow_link[side])
+        try:
+            parent = int(self.p.getJointInfo(self.body, elbow,
+                                             physicsClientId=self.cid)[16])
+        except Exception:                                    # noqa: BLE001 - 兜底
+            parent = 0
+        if parent > 0:
+            return parent
+        candidates = [index for index, name in self.arm[side]
+                      if SHOULDER_KEYWORD in name.lower()]
+        return int(candidates[-1]) if candidates else elbow
+
+    def arm_points(self, side: str) -> dict:
+        """World ``{shoulder, upper, elbow, wrist}`` of this arm, straight from FK.
+
+        ``shoulder`` = 名字匹配到的第一个肩关节连杆（历史口径，报告与既有测试在用）；
+        ``upper`` = 上臂的**肩端**（肘关节父连杆原点，与肘刚性相连，见 ``upper_link``），
+        方向配方与方向度量都应当用它。Used by the posture metrics ("did the shoulder and
+        elbow take part?"), and by the driver to measure the left/right forearm gap.
         """
         return {"shoulder": self.link_position(self.shoulder_link[side]),
+                "upper": self.link_position(self.upper_link[side]),
                 "elbow": self.link_position(self.elbow_link[side]),
                 "wrist": self.link_position(self.ee[side][0])}
 
@@ -367,6 +439,10 @@ class PyBulletArmIK:
         if elbow_world is not None and wrist_world is not None:
             entry["command_elbow"] = list(self.to_base(elbow_world))
             entry["command_wrist"] = list(self.to_base(wrist_world))
+        solution_cost = self.last_solution_cost.get(side)
+        if solution_cost is not None:
+            # 同一帧「解」离目标多远：与下面 posture_summary 里从姿势量到的残差成对使用。
+            entry["solution_cost"] = dict(solution_cost)
         self.posture[side].append(entry)
         return entry
 
@@ -394,6 +470,16 @@ class PyBulletArmIK:
                                      负的某轴就是「这一轴反了」（现场 2026-10-13「前臂弯曲方向
                                      和我相反」的直接证据），X/Y/Z 分开看才知道是哪一根
         ``forearm_opposite_fraction``  夹角 > 90 度的帧占比（1.0 = 整场都在反向）
+
+        ``elbow_task_mm`` / ``wrist_task_mm``   两个位置任务**各自**被兑现了多少（到命令点的距离,
+                                      median/p90/max）。方向对不上的时候，靠它区分「求解器没
+                                      兑现肘任务」和「目标链本身就指向另一边」——2026-10-14
+                                      gr1_t2 仍反向时就是这一问。
+        ``upper_jerk_deg`` / ``forearm_jerk_deg``  相邻命令帧之间**走到的**方向变化（度,
+                                      median/p90/max）；``elbow_jerk_mm`` 同理（肘点位移,mm）。
+                                      「整条手臂会抽」的可量化定义就是这两行的 max。
+        ``command_jerk_deg``         相邻命令帧之间**命令自己**转了多少度：把 max 和它对比,
+                                      就能分清「臂在抖」还是「输入本来就跳」。
         """
         from teleoperation.simulation.arm_realtime import elbow_bend_degrees
 
@@ -403,8 +489,14 @@ class PyBulletArmIK:
                  "elbow_bend_deg": {"min": None, "max": None},
                  "command_frames": 0, "upper_dir_error_deg": _percentile_stats([]),
                  "forearm_dir_error_deg": _percentile_stats([]),
+                 "elbow_task_mm": _spike_stats([]), "wrist_task_mm": _spike_stats([]),
+                 "solution_elbow_mm": _spike_stats([]),
+                 "solution_wrist_mm": _spike_stats([]),
+                 "upper_jerk_deg": _spike_stats([]), "forearm_jerk_deg": _spike_stats([]),
+                 "elbow_jerk_mm": _spike_stats([]), "command_jerk_deg": _spike_stats([]),
                  "upper_struggle_fraction": None, "forearm_dir_dot": {},
                  "forearm_opposite_fraction": None, "worst_frame": None,
+                 "worst_jerk_frame": None,
                  "elbow_recoveries": 0, "branch_rejections": 0,
                  "last_branch_recovery": None}
         if len(frames) < 2:
@@ -417,7 +509,7 @@ class PyBulletArmIK:
                 continue
             values = np.asarray([frame[name] for frame in frames], dtype=np.float64)
             ranges[name] = round(float(np.degrees(values.max() - values.min())), 2)
-        shoulders = np.asarray([frame["shoulder"] for frame in sampled], dtype=np.float64)
+        shoulders = np.asarray([frame["upper"] for frame in sampled], dtype=np.float64)
         elbows = np.asarray([frame["elbow"] for frame in sampled], dtype=np.float64)
         upper = elbows - shoulders
         norms = np.linalg.norm(upper, axis=1)
@@ -426,7 +518,9 @@ class PyBulletArmIK:
             gram = (upper / norms[:, None]) @ (upper / norms[:, None]).T
             direction_travel = float(np.degrees(np.arccos(np.clip(gram.min(), -1.0, 1.0))))
         span = float(np.linalg.norm(elbows[:, None, :] - elbows[None, :, :], axis=-1).max()) * 1000.0
-        bends = [elbow_bend_degrees(points["shoulder"], points["elbow"], points["wrist"])
+        # 肘弯曲角也从**刚体**三段量（upper-elbow-wrist）：用名字匹配的肩点会随 shoulder_roll
+        # 摆动 48-102 mm，把「锚点错」算进弯曲角里。
+        bends = [elbow_bend_degrees(points["upper"], points["elbow"], points["wrist"])
                  for points in sampled]
         bends = [value for value in bends if np.isfinite(value)]
         # 目标 vs 走到的（两段方向，基座系）：方向口径只对「方向」负责，所以这里比对方向而不是
@@ -435,20 +529,71 @@ class PyBulletArmIK:
         upper_errors, fore_errors, fore_dots, opposite = [], [], [], 0
         struggled = 0
         worst = None
+        #: 抽得最狠那一帧的原样向量（2026-10-14「整条手臂会抽」的排障入口）。
+        worst_jerk = None
+        # 2026-10-14 新增：① 肘任务到底有没有被兑现（``elbow_task_mm`` / ``wrist_task_mm``）；
+        # ② 逐帧抖动（``*_jerk_*``，含 max）——「整条手臂会抽」只能靠这两个数追。
+        elbow_task, wrist_task = [], []
+        solution_elbow, solution_wrist = [], []
+        jerk_upper, jerk_fore, jerk_elbow, jerk_command = [], [], [], []
+        previous_upper = previous_fore = previous_elbow = previous_wanted = None
         for sampled_index, frame in enumerate(sampled):
             command_elbow = frame.get("command_elbow")
             command_wrist = frame.get("command_wrist")
             if command_elbow is None or command_wrist is None:
                 continue
-            shoulder = self.to_base(frame["shoulder"])
+            # 与 `_branch_cost` 同一口径：上臂方向用刚体肩端（`upper`）。命令点是从加载时的
+            # 肩锚点推出来的，锚点换了之后 must 与记录点一致，否则误差会凭空多出 48-102 mm。
+            shoulder = self.to_base(frame["upper"])
             elbow = self.to_base(frame["elbow"])
             wrist = self.to_base(frame["wrist"])
+            elbow_task.append(float(np.linalg.norm(np.asarray(elbow, dtype=np.float64)
+                                                   - np.asarray(command_elbow,
+                                                                dtype=np.float64))) * 1000.0)
+            wrist_task.append(float(np.linalg.norm(np.asarray(wrist, dtype=np.float64)
+                                                   - np.asarray(command_wrist,
+                                                                dtype=np.float64))) * 1000.0)
+            solution_cost = frame.get("solution_cost")
+            if solution_cost is not None:
+                solution_elbow.append(float(solution_cost["elbow_mm"]))
+                solution_wrist.append(float(solution_cost["wrist_mm"]))
             achieved_u = _unit_difference(elbow, shoulder)
             achieved_f = _unit_difference(wrist, elbow)
             wanted_u = _unit_difference(command_elbow, shoulder)
             wanted_f = _unit_difference(command_wrist, command_elbow)
             if achieved_u is None or wanted_u is None:
                 continue
+            if previous_upper is not None:
+                jerk_upper.append(_direction_angle_deg(previous_upper, achieved_u))
+            previous_upper = achieved_u
+            if previous_elbow is not None:
+                jerk_elbow.append(float(np.linalg.norm(np.asarray(elbow, dtype=np.float64)
+                                                       - previous_elbow)) * 1000.0)
+            previous_elbow = np.asarray(elbow, dtype=np.float64)
+            if achieved_f is not None and wanted_f is not None:
+                if previous_fore is not None:
+                    jerk = _direction_angle_deg(previous_fore, achieved_f)
+                    jerk_fore.append(jerk)
+                    if worst_jerk is None or jerk > worst_jerk["forearm_jerk_deg"]:
+                        # 抽得最狠的那一帧的原样向量：一眼看出是「命令自己跳」还是「臂自己跳」。
+                        worst_jerk = {
+                            "sampled_frame": int(sampled_index),
+                            "forearm_jerk_deg": round(jerk, 2),
+                            "command_jerk_deg": (None if previous_wanted is None else
+                                                 round(_direction_angle_deg(previous_wanted,
+                                                                           wanted_f), 2)),
+                            "previous_achieved_fore": [round(float(v), 3) for v in previous_fore],
+                            "achieved_fore": [round(float(v), 3) for v in achieved_f],
+                            "previous_wanted_fore": (None if previous_wanted is None else
+                                                     [round(float(v), 3) for v in previous_wanted]),
+                            "wanted_fore": [round(float(v), 3) for v in wanted_f],
+                            "command_elbow": [round(float(v), 3) for v in command_elbow],
+                            "command_wrist": [round(float(v), 3) for v in command_wrist]}
+                previous_fore = achieved_f
+                if previous_wanted is not None:
+                    # 这一帧命令自己转了多少度：抖动是「臂的问题」还是「输入本来就跳」，靠它分。
+                    jerk_command.append(_direction_angle_deg(previous_wanted, wanted_f))
+                previous_wanted = wanted_f
             upper_error = _direction_angle_deg(achieved_u, wanted_u)
             upper_errors.append(upper_error)
             if upper_error > 30.0:
@@ -481,6 +626,14 @@ class PyBulletArmIK:
                 "elbow_bend_deg": ({"min": round(min(bends), 1), "max": round(max(bends), 1)}
                                    if bends else {"min": None, "max": None}),
                 "command_frames": len(fore_errors),
+                "elbow_task_mm": _spike_stats(elbow_task),
+                "wrist_task_mm": _spike_stats(wrist_task),
+                "solution_elbow_mm": _spike_stats(solution_elbow),
+                "solution_wrist_mm": _spike_stats(solution_wrist),
+                "upper_jerk_deg": _spike_stats(jerk_upper),
+                "forearm_jerk_deg": _spike_stats(jerk_fore),
+                "elbow_jerk_mm": _spike_stats(jerk_elbow),
+                "command_jerk_deg": _spike_stats(jerk_command),
                 "upper_dir_error_deg": _percentile_stats(upper_errors),
                 "forearm_dir_error_deg": _percentile_stats(fore_errors),
                 "upper_struggle_fraction": (None if not upper_errors
@@ -491,6 +644,7 @@ class PyBulletArmIK:
                 "forearm_opposite_fraction": (None if not fore_errors
                                               else round(opposite / len(fore_errors), 3)),
                 "worst_frame": worst,
+                "worst_jerk_frame": worst_jerk,
                 #: 这一侧救回过多少次反向支路（``_recover_elbow_branch``），以及最后一次的前后数字。
                 "elbow_recoveries": int(self.elbow_recoveries.get(side, 0)),
                 "branch_rejections": int(self.branch_rejections.get(side, 0)),
@@ -579,6 +733,37 @@ class PyBulletArmIK:
         return rest
 
 
+    def _locked_arguments(self, side, arguments) -> dict:
+        """Pin every non-arm joint in the IK bounds -> only this side's arm is variable.
+
+        ``--arm-ik-scope arm``（默认）用这里；``--arm-ik-scope body`` 走历史行为。
+
+        PyBullet 的 IK 把**整机**所有可动关节都当变量（``self.indices``：髋、腿、手指、另一条
+        手臂……），代价里还有 ``restPoses``，于是「手臂该去的地方」经常只被兑现一部分：实测
+        2026-10-14（``devtools/probe_arm_segment_rigidity.py`` 的 ``pose_tracking_test``）拿一条
+        **精确可达**的目标姿势（机器人自己 FK 出来的），从 5 度外解过去仍然差 3-69 mm，把迭代数
+        从 60 提到 800 反而更差（求解器去迁就别的关节了）。
+
+        这里把非本侧手臂关节的上下限都设成它们**当前**的角度：PyBullet 把上下限当硬约束，变量
+        就只剩这条臂，两个位置目标由这 7 个自由度负责。留 1e-6 rad 的缝，避免上下限完全相等被
+        当成非法区间。
+        """
+        free = {index for index, _name in self.arm[side]}
+        lower = list(arguments["lowerLimits"])
+        upper = list(arguments["upperLimits"])
+        for position, index in enumerate(self.indices):
+            if index in free:
+                continue
+            angle = float(self.p.getJointState(self.body, index,
+                                               physicsClientId=self.cid)[0])
+            lower[position] = angle - 1e-6
+            upper[position] = angle + 1e-6
+        locked = dict(arguments)
+        locked["lowerLimits"], locked["upperLimits"] = lower, upper
+        # jointRanges 只影响步长缩放，不参与「能不能到」，保持原样。
+        return locked
+
+
     def _ik_call(self, side: str, world, orientation, arguments) -> list:
         """One ``calculateInverseKinematics`` call: world target -> full solution."""
         p = self.p
@@ -647,16 +832,18 @@ class PyBulletArmIK:
         ``elbow_mm`` / ``wrist_mm`` 照记，便于报告里区分「方向对但点差一点」和「方向就不对」。
         """
         points = self.arm_points(side)
-        shoulder = np.asarray(points["shoulder"], dtype=np.float64)
+        # 方向一律以**刚体**肩端（``upper`` = 肘关节父连杆原点）为基准：``shoulder`` 那个点在
+        # 非中性姿势下会离开上臂（见 ``upper_link``），用它量方向会把「锚点错」算成「臂没动」。
+        anchor = np.asarray(points["upper"], dtype=np.float64)
         elbow = np.asarray(points["elbow"], dtype=np.float64)
         wrist = np.asarray(points["wrist"], dtype=np.float64)
         cost = {"elbow_mm": round(float(np.linalg.norm(
             elbow - np.asarray(elbow_world, dtype=np.float64))) * 1000.0, 3),
             "wrist_mm": round(float(np.linalg.norm(
                 wrist - np.asarray(world, dtype=np.float64))) * 1000.0, 3)}
-        achieved_u = _unit_difference(elbow, shoulder)
+        achieved_u = _unit_difference(elbow, anchor)
         achieved_f = _unit_difference(wrist, elbow)
-        wanted_u = _unit_difference(elbow_world, shoulder)
+        wanted_u = _unit_difference(elbow_world, anchor)
         wanted_f = _unit_difference(world, elbow_world)
         upper = (None if achieved_u is None or wanted_u is None
                  else _direction_angle_deg(achieved_u, wanted_u))
@@ -715,22 +902,30 @@ class PyBulletArmIK:
         ``elbow_recovery_deg = 0`` 关掉整条路（A/B 用，行为与历史完全一致）。
         """
         self._teleport(side, solution)
+        if self.elbow_recovery_wait.get(side, 0) > 0:
+            # 冷却中：上一次刚尝试过（成功或被拒），这段时间就认当前这一支。新支路会从自己
+            # warm start 保持住，所以冷却期不会掉回旧支路。
+            self.elbow_recovery_wait[side] -= 1
+            return solution
         current = self._branch_cost(side, world, elbow_world)
         if (self.elbow_recovery_deg <= 0.0 or current["cost_deg"] is None
                 or current["cost_deg"] <= self.elbow_recovery_deg):
             return solution
+        if self.elbow_recovery_cooldown > 0:
+            self.elbow_recovery_wait[side] = self.elbow_recovery_cooldown
         self._teleport(side, self._rest_poses(None))
         candidate, _orientation = self._ik_sequence(side, world, elbow_world, orientation,
                                                     arguments, elbow_pass, warm_start)
         self._teleport(side, candidate)
         fresh = self._branch_cost(side, world, elbow_world)
         limit = max(1.5 * current["wrist_mm"], current["wrist_mm"] + 60.0)
-        if (fresh["cost_deg"] is None or fresh["cost_deg"] > current["cost_deg"] - 1.0
+        if (fresh["cost_deg"] is None
+                or fresh["cost_deg"] > current["cost_deg"] - self.elbow_recovery_margin_deg
                 or fresh["wrist_mm"] > limit):
-            # 新的一支没好 1 度以上，或者「方向好一点、手却跑掉」-> 不动。
-            # 1 度门槛：两支几乎一样时别每帧来回换；腕残差护栏：第一版（只比方向）把 h1_2
-            # 左臂的腕残差从 139 mm 抬到 457 mm、两前臂最小间隙掉到 5.18 mm（报告
-            # ``arm_forearm_gap_mm``），那是操作者会看见的坏账，不能拿它换 4 度方向。
+            # 新的一支没好够（滞回 ``elbow_recovery_margin_deg`` 度），或者「方向好一点、手却跑掉」
+            # -> 不动。滞回 + 冷却一起解决「两支都不好时每帧来回换」——2026-10-14 现场反馈的
+            # 「整条手臂会抽」。腕残差护栏：第一版（只比方向）把 h1_2 左臂的腕残差从 139 mm
+            # 抬到 457 mm、两前臂最小间隙掉到 5.18 mm（报告 ``arm_forearm_gap_mm``）。
             self._teleport(side, solution)
             self.branch_rejections[side] = self.branch_rejections.get(side, 0) + 1
             return solution
@@ -810,6 +1005,8 @@ class PyBulletArmIK:
             "residualThreshold": self.residual_threshold,
             "physicsClientId": self.cid,
         }
+        if self.ik_lock_others:
+            arguments = self._locked_arguments(side, arguments)
         solution, target_orientation = self._ik_sequence(
             side, world, elbow_world, orientation, arguments, elbow_pass, warm_start)
         if elbow_world is not None:
@@ -817,6 +1014,10 @@ class PyBulletArmIK:
             solution = self._recover_elbow_branch(
                 side, solution, world, elbow_world, orientation, arguments,
                 elbow_pass, warm_start)
+            # 这一步把「解」量出来（``_recover_elbow_branch`` 结束时手臂正停在解上）：解到目标的
+            # 距离 vs ``record_posture`` 量到的实际姿势到目标的距离，是「求解器没兑现」和
+            # 「物理追不上」的判别式（2026-10-14 gr1_t2 前臂仍然反向时就是靠这对数分开的）。
+            self.last_solution_cost[side] = self._branch_cost(side, world, elbow_world)
         self.last_target_world[side] = world
         self.last_orientation[side] = target_orientation
         #: What the null-space term was told this frame (empty = the build-time neutral).

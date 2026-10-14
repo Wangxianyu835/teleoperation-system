@@ -112,7 +112,8 @@ from teleoperation.simulation.arm_preview import (
     build_arm_preview,
 )
 from teleoperation.simulation.arm_profiles import loadable_robots, profile_for
-from teleoperation.simulation.arm_ik import ELBOW_PASS_ORDERS, ELBOW_RECOVERY_DEG
+from teleoperation.simulation.arm_ik import (ELBOW_PASS_ORDERS, ELBOW_RECOVERY_COOLDOWN_FRAMES,
+                                             ELBOW_RECOVERY_DEG, ELBOW_RECOVERY_MARGIN_DEG)
 from teleoperation.simulation.arm_realtime import (
     DEFAULT_LATERAL_GUARD_M,
     MAP_MODES,
@@ -385,6 +386,35 @@ def build_parser() -> argparse.ArgumentParser:
                              "and yours; 0 = stay at the robot's neutral. It is an angle "
                              "blend (slerp), not a displacement scale: your 40 deg shoulder "
                              "swing stays 40 deg on every robot either way")
+    parser.add_argument("--arm-ik-scope", choices=("arm", "body"), default="arm",
+                        help="which joints the IK may move (default 'arm'): 'arm' pins every "
+                             "non-arm joint to its current angle (arm_ik._locked_arguments), "
+                             "'body' lets PyBullet solve over *all* movable joints with "
+                             "restPoses pulling them (the historical behaviour, kept for A/B). "
+                             "Measured 2026-10-14 on outputs/tmp_realtime/live_long_frames.npz, "
+                             "200 frames, --arm-map posture: 'arm' makes the forearm-reversed "
+                             "fraction 0.0 on all six sides (body: 0.099 gr1_t2 left / 0.041 g1 "
+                             "left / 0.006 gr1_t2 right), wrist residual 134.6 -> 21.2 mm "
+                             "(gr1_t2 left) and 74.9 -> 34.8 (h1_2 left), forearm direction "
+                             "error 66.0 -> 44.7 deg (gr1_t2 left); elbow jerk maxima rise "
+                             "(13.1 -> 42.7 deg on h1_2 left) because the arm now actually "
+                             "follows the operator, whose recorded direction jumps reach 153 deg "
+                             "in one frame. 3 repeats of 'arm' gave identical numbers (opposite "
+                             "fraction 0.0 on all six sides); the solver has 7 variables instead "
+                             "of ~55 so it is not slower, but no speedup is claimed -- fps over "
+                             "these runs varied 2.5-12.7 with machine load under both scopes")
+    parser.add_argument("--arm-anchor", choices=("upper", "shoulder"), default="upper",
+                        help="which FK point counts as the upper arm's shoulder end, used both "
+                             "by the direction recipe's elbow/wrist targets and by the "
+                             "shoulder-follow shift (default 'upper' = the elbow's parent link "
+                             "origin, rigid to the elbow; 'shoulder' = the name-matched shoulder "
+                             "joint link, the historical behaviour kept for A/B). Measured "
+                             "2026-10-14 with devtools/probe_arm_segment_rigidity.py: the "
+                             "name-matched point drifts 48.5-101.7 mm when shoulder_roll turns "
+                             "(gr1_t2 left +101.6 mm) while the parent link origin is 0.00 mm, "
+                             "so the old recipe asked for an elbow target off the reachable "
+                             "shell and the solver had to compromise (the field 'GR1-T2 forearm "
+                             "still reversed', 222 mm elbow residual)")
     parser.add_argument("--arm-no-shoulder-follow", action="store_true",
                         help="turn off shoulder following for the elbow/wrist targets (default: "
                              "on for the recipes that measure anchors). The commanded elbow is "
@@ -421,6 +451,20 @@ def build_parser() -> argparse.ArgumentParser:
                              "pose and the branch with the smaller forearm+0.5*upper direction "
                              "error (degrees) wins"
                              % ELBOW_RECOVERY_DEG)
+    parser.add_argument("--arm-elbow-recovery-margin-deg", type=float,
+                        default=ELBOW_RECOVERY_MARGIN_DEG, metavar="DEG",
+                        help="hysteresis of the branch recovery in degrees (default %.0f, "
+                             "0 = accept any improvement). Measured 2026-10-14: with a 1 deg "
+                             "margin the recovery fired every ~6 frames (h1_2 left: 19 "
+                             "recoveries in 123 commanded frames) and the field saw the whole "
+                             "arm twitch; 8 deg keeps one branch" % ELBOW_RECOVERY_MARGIN_DEG)
+    parser.add_argument("--arm-elbow-recovery-frames", type=int,
+                        default=ELBOW_RECOVERY_COOLDOWN_FRAMES, metavar="N",
+                        help="after any recovery attempt (accepted or rejected), wait N "
+                             "frames before trying again (default %d, 0 = try every frame). "
+                             "The accepted branch warm-starts from itself, so the cooldown "
+                             "does not fall back -- it only stops the per-frame flipping and "
+                             "the duplicate IK solves" % ELBOW_RECOVERY_COOLDOWN_FRAMES)
 
     parser.add_argument("--arm-travel-mm", type=float, default=None,
                         help="override the per-axis travel clamp for every robot (mm)")
@@ -682,7 +726,11 @@ def run(args) -> int:
                                     slew_m=(0.0 if fixed_slew_m is None else fixed_slew_m),
                                     slew_m_per_s=slew_speed_m_per_s,
                                     elbow_pass=args.arm_elbow_pass,
-                                    elbow_recovery_deg=args.arm_elbow_recovery_deg)
+                                    elbow_recovery_deg=args.arm_elbow_recovery_deg,
+                                    elbow_recovery_margin_deg=args.arm_elbow_recovery_margin_deg,
+                                    elbow_recovery_cooldown=args.arm_elbow_recovery_frames,
+                                    shoulder_anchor_key=args.arm_anchor,
+                                    lock_others=(args.arm_ik_scope == "arm"))
             # segments 口径与肘任务要的「机器人自己的量」：实测连杆长 + 中性腕/肘点（基座系）。
             # 加载后量一次即可，之后每帧只是加减法（见 arm_realtime.MAP_MODES）。
             robot_links, robot_anchors = {}, {}
@@ -692,7 +740,15 @@ def run(args) -> int:
                     robot_links[name], robot_anchors[name] = {}, {}
                     for side in sides:
                         points = adapter.arm_points(side)
-                        shoulder = np.asarray(points["shoulder"], dtype=np.float64)
+                        # 上臂的「肩端」取哪个点由 --arm-anchor 决定（默认 "upper"）：
+                        # "upper" = 肘关节父连杆原点，与肘刚性相连，|肘 - 它| 与姿势无关
+                        # （实测最大偏差 0.00 mm）；"shoulder" = 名字里第一个含 shoulder 的
+                        # 连杆（= 上臂 pitch 那节），会随 shoulder_roll 摆动 48.5-101.7 mm。
+                        # 方向配方的两个目标都建在这个锚点上：用后者会让「肩 + 上臂长*方向」
+                        # 在非中性姿势下偏离可达壳面，IK 只能折中 —— 现场
+                        # 「GR1-T2 前臂还是反」（肘残差中位 222 mm）的根因。
+                        # 复现/对比命令：E:\python3.11.7\python.exe devtools\probe_arm_segment_rigidity.py
+                        shoulder = np.asarray(points[args.arm_anchor], dtype=np.float64)
                         elbow = np.asarray(points["elbow"], dtype=np.float64)
                         wrist = np.asarray(points["wrist"], dtype=np.float64)
                         robot_links[name][side] = {
@@ -717,7 +773,10 @@ def run(args) -> int:
                              (f" (pass {args.arm_elbow_pass})"
                               if args.arm_elbow_task else ""))
 
-                print(f"arm map: {args.arm_map} | measured links (m) "
+                print(f"arm map: {args.arm_map} | shoulder end = {args.arm_anchor} "
+                      f"({'rigid: the elbow parent link' if args.arm_anchor == 'upper' else 'historical name-matched link'})"
+                      f" | ik scope = {args.arm_ik_scope}"
+                      f" | measured links (m) "
                       + " ".join(f"{name}:{side[0]}" +
                                  f" {robot_links[name][side]['upper']:.3f}"
                                  f"+{robot_links[name][side]['fore']:.3f}"
@@ -725,6 +784,9 @@ def run(args) -> int:
                       + f" | {elbow_note}"
                       + pass_note
                       + (f" | elbow branch recovery: >{args.arm_elbow_recovery_deg:.0f} deg"
+                         f" (margin {args.arm_elbow_recovery_margin_deg:.0f} deg,"
+                         f" retry every {args.arm_elbow_recovery_frames} frames)"
+
                          if args.arm_elbow_recovery_deg > 0.0 else
                          " | elbow branch recovery: off"),
                       flush=True)

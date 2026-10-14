@@ -578,3 +578,106 @@ class ArmTargetSlewTests(unittest.TestCase):
                 self.assertGreater(gaps[robot], 60.0, gaps)
 
 
+
+class FieldArmDefaultsTests(unittest.TestCase):
+    """2026-10-14 field defaults: the entry point the operator runs ships the fix.
+
+    ``PyBulletArmIK`` / ``ArmSceneDriver`` keep the historical defaults
+    (``lock_others=False``, anchor key ``"shoulder"`` still reachable) so the
+    ``devtools/verify_*.py`` numbers and the tests above keep matching old records;
+    what the field actually launches (``realtime_teleop.py``, and through it
+    ``devtools/run_realtime_arm_windows.py``) must default to the rigid anchor plus the
+    arm-only solve. See docs/multi-robot-arm.md 8.13.4.
+    """
+
+    def test_realtime_cli_defaults_to_the_rigid_anchor_and_the_arm_only_solve(self):
+        from teleoperation.simulation import arm_ik
+        from teleoperation.simulation.realtime_teleop import build_parser
+
+        args = build_parser().parse_args([])
+        self.assertEqual(args.arm_anchor, "upper")
+        self.assertEqual(args.arm_ik_scope, "arm")
+        self.assertEqual(args.arm_elbow_recovery_margin_deg,
+                         arm_ik.ELBOW_RECOVERY_MARGIN_DEG)
+        self.assertEqual(args.arm_elbow_recovery_frames,
+                         arm_ik.ELBOW_RECOVERY_COOLDOWN_FRAMES)
+        self.assertGreater(args.arm_elbow_recovery_deg, 0.0)
+
+    def test_both_switches_still_reach_the_historical_behaviour(self):
+        from teleoperation.simulation.realtime_teleop import build_parser
+
+        args = build_parser().parse_args(["--arm-ik-scope", "body",
+                                          "--arm-anchor", "shoulder",
+                                          "--arm-elbow-recovery-margin-deg", "0",
+                                          "--arm-elbow-recovery-frames", "0"])
+        self.assertEqual(args.arm_ik_scope, "body")
+        self.assertEqual(args.arm_anchor, "shoulder")
+        self.assertEqual(args.arm_elbow_recovery_margin_deg, 0.0)
+        self.assertEqual(args.arm_elbow_recovery_frames, 0)
+
+
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
+class RigidShoulderAnchorTests(unittest.TestCase):
+    """The shoulder end of the upper arm must be rigid to the elbow (8.13.2).
+
+    ``arm_points()["shoulder"]`` is a name match (the first link whose name contains
+    "shoulder"): on h1_2 / g1 that is the pitch link, on gr1_t2 the upper-arm pitch link.
+    Turning the arm's roll joint moves it 48.5-101.7 mm across the six sides, so a recipe
+    built on it ("shoulder + L_u * direction") asks for an elbow target off the arm's
+    reachable shell -- the GR1-T2 reversed-forearm root cause. The parent link of the
+    elbow joint is rigid instead: 0.00 mm.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+        from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+
+        cls.scene = ThreeRobotHandScene(sides=("right",), gui=False)
+        cls.driver = ArmSceneDriver(cls.scene, sides=("right",))
+        cls.driver.step(5)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.driver = None
+        cls.scene.close()
+
+    @staticmethod
+    def _span(points, end, start):
+        """Distance (m) between two ``arm_points()`` entries."""
+        return float(np.linalg.norm(np.asarray(points[end], dtype=np.float64)
+                                    - np.asarray(points[start], dtype=np.float64)))
+
+    def test_default_anchor_key_is_upper_and_bad_keys_are_rejected(self):
+        from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+
+        self.assertEqual(self.driver.shoulder_anchor_key, "upper")
+        with self.assertRaisesRegex(ValueError, "shoulder_anchor_key"):
+            ArmSceneDriver(self.scene, sides=("right",), shoulder_anchor_key="elbow")
+
+    def test_parent_link_anchor_is_rigid_while_the_name_match_drifts(self):
+        for robot in PAPER_ROBOTS:
+            adapter = self.driver.ik[robot]
+            roll = next(index for index, name in adapter.arm["right"]
+                        if "roll" in name.lower()
+                        and ("shoulder" in name.lower() or "upper_arm" in name.lower()))
+            with self.subTest(robot=robot):
+                start = float(pybullet.getJointState(adapter.body, roll,
+                                                     physicsClientId=adapter.cid)[0])
+                before = adapter.arm_points("right")
+                rigid_before = self._span(before, "elbow", "upper")
+                named_before = self._span(before, "elbow", "shoulder")
+                # 1.4 rad = 80 deg of roll: measured drift 39-81 mm, see 8.13.2.
+                pybullet.resetJointState(adapter.body, roll, start + 1.4,
+                                         physicsClientId=adapter.cid)
+                after = adapter.arm_points("right")
+                # The rigid span may not move at all (measured 0.00 mm; 0.01 mm allowed).
+                self.assertAlmostEqual(self._span(after, "elbow", "upper"),
+                                       rigid_before, delta=1e-5)
+                # The name-matched one does move: that is the whole bug.
+                self.assertGreater(abs(self._span(after, "elbow", "shoulder")
+                                       - named_before), 0.02)
+                pybullet.resetJointState(adapter.body, roll, start,
+                                         physicsClientId=adapter.cid)
+

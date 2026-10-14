@@ -144,7 +144,9 @@ def main(argv=None) -> int:
             links[name] = {}
             for side in sides:
                 points = adapter.arm_points(side)
-                shoulder = np.asarray(points["shoulder"], dtype=float)
+                # 上臂长度必须量「刚体肩端 -> 肘」（arm_points 的 "upper"）：名字匹配的肩点
+                # 会随 shoulder_roll 摆动几十毫米，拿它当连杆长会让比例口径系统性地跑偏。
+                shoulder = np.asarray(points["upper"], dtype=float)
                 elbow = np.asarray(points["elbow"], dtype=float)
                 wrist = np.asarray(points["wrist"], dtype=float)
                 links[name][side] = {"upper": float(np.linalg.norm(elbow - shoulder)),

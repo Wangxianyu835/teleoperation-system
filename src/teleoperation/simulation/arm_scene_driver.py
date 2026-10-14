@@ -84,7 +84,9 @@ class ArmSceneDriver:
                  ik_iterations=None, residual_threshold=None,
                  track_posture: bool = True, slew_m: float = 0.0,
                  slew_m_per_s: float = 0.0, elbow_pass: str = "first",
-                 elbow_recovery_deg=None, shoulder_anchors=None):
+                 elbow_recovery_deg=None, elbow_recovery_margin_deg=None,
+                 elbow_recovery_cooldown=None, shoulder_anchors=None,
+                 shoulder_anchor_key: str = "upper", lock_others: bool = False):
         self.scene = scene
         self.p = scene.p
         self.cid = scene.cid
@@ -116,12 +118,25 @@ class ArmSceneDriver:
         #: 肘反向支路的恢复阈值（毫米）：None = 用 arm_ik 的默认值，0 = 关（A/B 用）。
         #: 见 ``PyBulletArmIK._recover_elbow_branch``（现场「前臂弯曲方向相反」的修法）。
         self.elbow_recovery_deg = elbow_recovery_deg
+        #: 恢复的滞回（度）与「尝试过之后的冷却帧数」：0 = 关。滞回 + 冷却一起解决 2026-10-14
+        #: 现场反馈的「整条手臂会抽」（1 度门槛 + 无冷却时每 6 帧换一次支路）。
+        self.elbow_recovery_margin_deg = elbow_recovery_margin_deg
+        self.elbow_recovery_cooldown = elbow_recovery_cooldown
         #: 加载时的肩锚点（基座系，米）：``{robot: {side: [x, y, z]}}``。非空时每一帧都把腕/肘
         #: 两个目标平移「当前肩 - 锚点」，见 ``_shoulder_shift``。
         self.shoulder_anchors = {str(name): {str(side): [float(value) for value in point]
                                              for side, point in dict(per_side or {}).items()
                                              if point is not None}
                                  for name, per_side in dict(shoulder_anchors or {}).items()}
+        #: 上臂的「肩端」取哪个 FK 点：``"upper"`` = 肘的父连杆原点（刚体，默认）；
+        #: ``"shoulder"`` = 名字匹配到的肩关节连杆（历史口径，只留给 A/B 与回退）。
+        if shoulder_anchor_key not in ("upper", "shoulder"):
+            raise ValueError("shoulder_anchor_key must be 'upper' or 'shoulder', got "
+                             f"{shoulder_anchor_key!r}")
+        self.shoulder_anchor_key = str(shoulder_anchor_key)
+        #: 求解时是否把非本侧手臂的关节锁在当前角度（``arm_ik._locked_arguments``）。
+        lock_others = bool(lock_others)
+        self.lock_others = lock_others
         #: 每台每侧最后一次的平移量（毫米，报告用）。
         self.shoulder_shift_mm = {}
         #: 被斜坡削掉一部分的帧数（报告用：说明这一场有多少帧没一步到位）。
@@ -140,6 +155,11 @@ class ArmSceneDriver:
                 settings["residual_threshold"] = float(residual_threshold)
             if self.elbow_recovery_deg is not None:
                 settings["elbow_recovery_deg"] = float(self.elbow_recovery_deg)
+            if self.elbow_recovery_margin_deg is not None:
+                settings["elbow_recovery_margin_deg"] = float(self.elbow_recovery_margin_deg)
+            if self.elbow_recovery_cooldown is not None:
+                settings["elbow_recovery_cooldown"] = int(self.elbow_recovery_cooldown)
+            settings["lock_others"] = self.lock_others
             adapter = PyBulletArmIK(robot["body"], self.cid, robot_type,
                                     sides=self.sides, ik_mode=ik_mode,
                                     arm_force=arm_force, rest_poses=rest_poses,
@@ -219,11 +239,17 @@ class ArmSceneDriver:
         位置 —— 现场看到的就是「前臂弯曲方向相反」。把两个目标一起平移
         「当前肩 - 锚点」之后，目标重新落在「离当前肩正好一根上臂」的球面上，方向也才是本来
         要的那个 M(你的方向)。数字见 docs/multi-robot-arm.md 第 8.12 节。
+
+        2026-10-14 起默认「肩」指 ``arm_points()["upper"]``（= 肘关节父连杆原点，与肘刚性相连），
+        不再是名字匹配的 ``"shoulder"``：后者不随 shoulder_roll 刚性移动，这一项会把
+        「roll 转出来的 48-102 mm」误当成「躯干漂移」。锚点由 ``set_shoulder_anchors`` 写入，
+        两边必须同一口径（``realtime_teleop.build_scene`` 也用同一个 key；``--arm-anchor
+        shoulder`` 可以把这一行切回历史口径做 A/B）。
         """
         anchor = (self.shoulder_anchors.get(robot_type) or {}).get(side)
         if anchor is None:
             return None
-        current = adapter.to_base(adapter.arm_points(side)["shoulder"])
+        current = adapter.to_base(adapter.arm_points(side)[self.shoulder_anchor_key])
         return tuple(float(current[axis]) - float(anchor[axis]) for axis in range(3))
 
     def apply_each(self, side: str, targets, source: str = "base",
