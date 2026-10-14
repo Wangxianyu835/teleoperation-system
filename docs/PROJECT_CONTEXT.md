@@ -2,7 +2,7 @@
 
 > **用途**：新开一个 AI 对话时，先让它读本文件，它就能立刻了解项目全貌、环境陷阱和历史决策。
 > **文件位置**：`F:\simulation_platform\docs\PROJECT_CONTEXT.md`
-> **最后更新**：2026-10-10
+> **最后更新**：2026-10-14（§0.1 新增第 6 条「改动落点：优先在既有文件里增量修改」+ §8.1 追加本轮记录）
 
 ---
 
@@ -38,6 +38,7 @@ simulation/__main__/visionpro/mediapipe）；要兼容就新增自己的文件�
 | 3 | **不改队友已入库的算法代码** | `retargeting/` 下 `arm.py`、`tracking.py`、`inference.py`、`training.py`、`data.py`、`model.py`、`config.py`、`inspect.py`、`dual_teleop.py`、`simulation.py`、`__main__.py`、`visionpro/`、`mediapipe/` **本轮零改动**。需要兼容就在**自己的新增文件**里做转发层 / conftest 钩子 / 包装脚本，并把问题清单交给队友（RETARGETING_PIPELINE §9.1）|
 | 4 | **`.py` 里禁止非 GBK 字符** | 中文控制台 GBK 会直接 `UnicodeEncodeError` **崩溃**；提交前 `python scripts/check_gbk_safe.py --strict`（ENVIRONMENT_SETUP §6）|
 | 5 | **改前先跑一遍基线，改后再跑同一套** | 自检清单见 RETARGETING_PIPELINE §10；结论必须附**退出码 + 不变量**，不要凭"看起来对"就下结论。<br>血泪教训：本轮曾因空壳 `.venv` 报错就断言"缺依赖会连累整仓"，改了队友 `arm.py`，事后实测**完全不必要**、全部回退 |
+| 6 | （★★ 规范）**改动落点：优先在既有文件里增量修改**，不要新建 `xxx_fix.py` / `xxx_v2.py` 这类平行文件；确实要新建时，必须在**同一次提交**里登记进文档索引 | **用户 2026-10-14 明确要求**："不然你写的有时候总会这一块那一块，后面如果要改的话，会遗漏很多地方，容易出问题"。同一功能的逻辑散在多个文件里 = 本项目返工主因（对照第 3 条翻车记录）。<br>新建的三个例外：① 约定 3 禁止改的队友文件（在自己这侧写转发层 / 钩子）；② 现有文件里确实没有可挂靠的位置；③ 用户要求单独成文件。测试优先加到既有测试文件（详见 CONVENTIONS 约定 14）|
 
 ---
 
@@ -521,6 +522,8 @@ GitHub 用 **DataDome** 保护 `/signup` 等接口。响应头特征：`x-datado
 | 31 | 【2026-10-01】**把要求固化成「工程约定」**（用户要求：加上之前所有要求 + 不许在 C 盘存东西）：新增 **`docs/CONVENTIONS.md`**（13 条约定的唯一来源，每条含为什么 / 怎么守 / 怎么查 / 翻车记录）+ **`.clinerules`**（AI 自动加载版，以后新对话自动生效）+ **`scripts/preflight.ps1`**（一键自检 6 项：解释器 / GBK / C 盘零写入 / 队友代码零改动 / 大资产不入库 / 规则文件齐备；`-Full` 再加 pytest 与重定向流水线）。实测：正常路径 `RESULT: [OK]` 退出码 0；故意改 `retargeting/arm.py` 一行 → 第 4 项抓到 `M retargeting/arm.py` 并提示还原命令、退出码 1；`-Full` 下 pytest `40 passed, 3 skipped`、流水线 `7/7 PASS`；还原后 `git status` 干净。README / ENVIRONMENT_SETUP / TEAM_ONBOARDING / RETARGETING_PIPELINE §10.1 / 本节均已接入索引与指针 |
 | 32 | 【2026-10-10】**把第 9 节的复核命令变成队友真能跑的**（上一轮遗留项收尾）：原表格第 1 条写「`python scripts/validate_retarget_input.py tmp_motion/npy_replay_sample.npy` → `payloads=10 result=ok`」，但**样本文件不在仓库**（`tmp_*/` 被 .gitignore 排除），生成它的脚本也只躺在 `tmp_motion/` 里 —— 别人 clone 后跑这条必然 `FileNotFoundError`（"数字是对的、命令是死的"）。① 先**实测复现**，确认表格数字无误：双手 12 帧 → `payloads=10 / source=mediapipe_approx / left_shape=(3, 25, 3) / right_shape=(3, 25, 3) / result=ok`，**退出码 0**；单手 8 帧（`--drop-right`）→ `payloads=6 / right_shape=None / result=ok`，**退出码 0**；顺手测出规律 **payload 数 = 帧数 - 2**（`HandWindowBuffer` 攒满 3 帧才吐 payload）；② 新增 **`scripts/make_npy_replay_sample.py`**（只依赖 numpy，不导入 `retargeting` 包，`--frames/--fps/--drop-right/--out` 可选，固定种子可复现），把生成器正式入库；③ 表格改成「先造样本 → 再校验」两步并附实测数字与日期，§8 文件表 + README 目录树同步登记；`check_gbk_safe.py --strict` 与 `check_no_c_drive.py --strict` 均 `[OK]` 退出码 0 |
 | 33 | 【2026-10-10】**收尾时抓到一个"看着像回归"的口径 bug（已被本次自检抓到）**：跑 `preflight.ps1 -Full` 时流水线显示 `6/7 PASS`（本会话早先是 `7/7`），一度怀疑改坏了东西。逐行读源码 + 重跑定位：`run_retargeting_pipeline.py` 第 0 步（造原始数据）在 `tmp_motion/pipeline/raw_twohand.h5` 已存在时**按设计跳过**，但旧版**不把这一步记入汇总**（于是只在汇总里剩 6 行），而 `preflight.ps1` 又硬编码打印 `($pass/7 PASS)` —— 两处叠加就成了"7 项里像挂了一项"。① 修 `run_retargeting_pipeline.py`：跳过时记入 `skipped`，汇总新增 `[SKIP]` 行与 `统计：PASS=.. FAIL=.. SKIP=..`（共 N 项），docstring 写明**判据是 `FAIL=0`，不是"必须 7/7"**；② 修 `preflight.ps1`：不再写死 `/7`，改印 `(PASS=.. FAIL=0 SKIP=..; 6 or 7 steps ...)`；③ 两分支实测（均 `结论：全链路跑通`、退出码 0）：复用已有 raw → `PASS=6 FAIL=0 SKIP=1`；全新目录 `--work-dir tmp_motion/pipeline_fresh0` → `PASS=7 FAIL=0 SKIP=0`；④ 口径同步到 CONVENTIONS 约定 5（含新翻车记录 + 版本表第 2 版）、自检清单第 7 项、`.clinerules`、`RETARGETING_PIPELINE` §5/§9/§10 —— 免得下一个接手的人重踩 |
+
+| 34 | 【2026-10-14】**用户新增一条长期要求 -> 落成「约定 14」**：以后改代码**尽量在原有代码的基础上增加代码**，不要动不动新添一个文件 —— "不然你写的有时候总会这一块那一块，后面如果要改的话，会遗漏很多地方，容易出问题"。落地三处（约定 12 要求的同步）：① `docs/CONVENTIONS.md` 新增**约定 14**（6 条怎么守：先找落点 / 就地增量 / 不建 `xxx_fix.py` 这类平行文件 / 3 个新建例外 / 新建必须在同一次提交里登记进文档 / 测试加进既有测试文件；附"为什么"）；② `.clinerules`「工程习惯」同步同一段；③ 本节 §0.1 新增第 6 条（标为 ★★ 规范）。另：`F:\simulation_platform_cs` 侧的实时手臂入口本轮实测可用（`devtools\run_realtime_arm_windows.py` 两个窗口：摄像头预览 + PyBullet 三机器人；`--check` 退出码 0，摄像头窗口 `position=(20,60)` 置顶，`neutral mode track`）|
 
 ### 8.2 已掌握的 Git 工作流
 
