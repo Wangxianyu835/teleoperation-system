@@ -350,26 +350,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--arm-axis-signs", default=None, metavar="-1,1,-1")
     parser.add_argument("--arm-gain", type=float, nargs=2, action="append", default=None,
                         metavar=("ROBOT", "GAIN"), help="override metric_scale for one robot")
-    parser.add_argument("--arm-map", choices=MAP_MODES, default="chain",
-                        help="how operator motion becomes a target. 'chain' (default, "
-                             "unchanged) = wrist minus shoulder, one gain. 'segments' = the "
-                             "paper's scale_joints: one term per bone, scaled by the robot's "
-                             "own measured link lengths, which is also what the elbow task "
-                             "needs. Measured 2026-10-13 on a synthetic 'fists at the chest, "
-                             "only the upper arm swings' stream: the target moved 0.0 mm on "
-                             "all three robots with 'chain' (that is why that motion gets no "
-                             "reaction at all) vs 68-74 / 8-10 / 2 mm with 'segments'. It is "
-                             "not a cure on its own: when a robot's two bone lengths have "
-                             "almost the same ratio as yours (g1 0.193/0.184) the two terms "
-                             "cancel again, and only the elbow task can move the shoulder. "
-                             "See docs/multi-robot-arm.md 8.10. 'posture' (added 2026-10-13 evening, after the field verdict "
-                              "that both displacement recipes do not look like the operator) "
-                              "= move the DIRECTION instead of a displacement, with the "
-                              "robot's own measured bone lengths: elbow = shoulder_anchor + "
-                              "L_u*M(unit(你的上臂)), wrist = elbow + L_f*M(unit(你的前臂)). "
-                              "Your 40 deg shoulder swing is then 40 deg on every robot, the "
-                              "per-axis travel clamp does not apply, and both targets are "
-                              "always reachable. See 8.11")
+    parser.add_argument("--arm-map", choices=MAP_MODES, default="posture",
+                        help="how operator motion becomes a target. 'posture' (default since "
+                             "2026-10-14: the field round of 2026-10-13/14 accepted this one and "
+                             "rejected both displacement recipes) = move the DIRECTION instead of "
+                             "a displacement, with the robot's own measured bone lengths: "
+                             "elbow = shoulder_anchor + L_u*M(unit(你的上臂)), wrist = elbow + "
+                             "L_f*M(unit(你的前臂)). Your 40 deg shoulder swing is then 40 deg on "
+                             "every robot, the per-axis travel clamp does not apply, and both "
+                             "targets are always reachable. 'chain' (the historical default, "
+                             "kept for A/B: pass it explicitly) = wrist minus shoulder, one gain. "
+                             "It cannot move the shoulder when only the upper arm swings "
+                             "(measured 0.0 mm of target travel on all three robots) and its "
+                             "per-axis clamp caps the arm at 40-150 mm, which in the field looked "
+                             "like 'the upper arm will not rise' and 'the arms will not open'; it "
+                             "also hands the IK no elbow target, so the bending direction is the "
+                             "solver's own choice (the GR1-T2 complaint). 'segments' = the "
+                             "paper's scale_joints: one term per bone, scaled by the robot's own "
+                             "measured link lengths, which is also what the elbow task needs; it "
+                             "cancels again when the robot's two bone ratios match yours "
+                             "(g1 0.193/0.184). See docs/multi-robot-arm.md 8.10 / 8.11 / 8.15")
     parser.add_argument("--arm-elbow-task", action="store_true",
                         help="also hand the IK an elbow position target (the paper's elbow "
                              "task; needs --arm-map segments; --arm-map posture builds the "
@@ -873,6 +873,15 @@ def run(args) -> int:
                          if args.arm_elbow_recovery_deg > 0.0 else
                          " | elbow branch recovery: off"),
                       flush=True)
+            else:
+                # chain 口径（历史默认）：不量连杆长、也不给肘位置目标。这一行必须打出来 ——
+                # 2026-10-14 现场那次跑的就是默认 chain，日志里一行口径提示都没有，于是
+                # 「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂反」被读成「代码被改坏了」
+                # （实测证据与 A/B 见 docs/multi-robot-arm.md 8.15）。
+                print(f"arm map: chain (no elbow task: a wrist target only) | ik scope = "
+                      f"{args.arm_ik_scope} | in this recipe the upper arm cannot move on its "
+                      f"own and the per-axis travel clamp caps the arm (g1 40 mm); pass "
+                      f"--arm-map posture for the direction recipe", flush=True)
             gains = {str(pair[0]): float(pair[1]) for pair in (args.arm_gain or [])}
             axis_map = AxisMap()
             if args.arm_axis_order and args.arm_axis_signs:

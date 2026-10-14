@@ -3,7 +3,7 @@
 > 2026-10-11：本文保留原分支的运行与验收历史。合并后的入口、坐标数据差异及测试结果见 [main 集成记录](integration-2026-10-11.md)，本文的历史机器路径与测试数量不代表当前 main。
 
 > **适用版本**：`origin/current-state`（包 `src/teleoperation`，CLI `python -m teleoperation`）
-> **最后更新**：2026-10-14（基线仍是 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`；本轮新增"摄像头窗口那句话的判据修正"实测记录 —— `summarise_camera_window` 改按报告的 `window_rect` 判断，不再把按 q 正常退出误报成窗口没开）· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
+> **最后更新**：2026-10-14（基线仍是 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`；本轮两件事 —— ① "摄像头窗口那句话的判据修正"实测记录：`summarise_camera_window` 改按报告的 `window_rect` 判断，不再把按 q 正常退出误报成窗口没开；② **加手臂的实时入口 `devtools/run_realtime_arm_windows.py`**：默认口径由 `chain` 改为 `posture`（现场「大臂抬不起来 / 张不开怀抱」的直接修复，见 `multi-robot-arm.md` §8.15））· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
 > [`contracts.md`](contracts.md)（H5 / 命令契约，字段以它为准）· [`architecture.md`](architecture.md)（模块层次）·
 > 注意：`docs/archive/`（旧布局手册，只读参考）已随上游 `10ebd9f` 被整体删除，
 > 旧布局的对照表保留在 §5（本文档内，自足）。
@@ -176,6 +176,23 @@ $py='E:\python3.11.7\python.exe'
 & $py devtools\run_realtime_windows.py --scene hands      # 换成 L21 手场景
 & $py devtools\run_realtime_windows.py --check            # 只体检（解释器/依赖/模型/相机），不开窗口
 ```
+
+**手 + 手臂一起动（`devtools/run_realtime_arm_windows.py`）**：上面那个入口只驱动手指，手臂被
+场景每帧锁在中性姿态（`docs/multi-robot-arm.md` §8）。要连手臂一起驱动就换这个入口，前置条件
+一样，只多要一个 pose 模型（`datasets/pose_landmarker_lite.task`）：
+
+```powershell
+$py='E:\python3.11.7\python.exe'
+& $py devtools\run_realtime_arm_windows.py           # 手 18 维 + 手臂（默认方向口径 posture）
+& $py devtools\run_realtime_arm_windows.py --check   # 只体检
+```
+
+- 启动行 `arm map: posture | ...` 是**默认**（2026-10-14 起）：方向口径把你的上臂 / 前臂方向
+  1:1 搬到三台机器人自己的连杆上，逐轴行程夹子不再参与。
+- 历史口径 `chain` 仍在（显式 `--arm-map chain`）：它不给 IK 肘目标、肩的行程被夹在 40-150 mm，
+  现场表现就是「大臂抬不起来 / 张不开怀抱」—— 默认改成 posture 的原因与 A/B 数字见
+  `docs/multi-robot-arm.md` §8.10 / §8.15。
+- 参数、验收与已知未解决项（GR1-T2 的肘任务残差 175.8 mm）都在 `docs/multi-robot-arm.md` §8。
 
 - PyCharm 配置：Script path 指向该文件，Working directory = `F:\simulation_platform_cs`，
   Parameters 留空即可；**解释器选错也能起来** —— 它发现当前解释器缺

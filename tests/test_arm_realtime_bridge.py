@@ -1157,6 +1157,16 @@ class PostureMappingTests(unittest.TestCase):
         self.assertIn("right", summary["shoulder_anchors_m"]["g1"])
         self.assertIn("posture", summary["counts"])
 
+    def test_the_live_entry_defaults_to_the_direction_recipe(self):
+        """2026-10-14 现场第三轮：默认 chain 时「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂反」
+        三个症状全回来了（chain 不给肘目标，肩只被逐轴行程夹到 40-150 mm）。入口默认改 posture，
+        显式 ``--arm-map chain`` 仍然要能进（A/B 与老记录靠它复现）。
+        """
+        self.assertEqual(build_parser().parse_args([]).arm_map, "posture")
+        self.assertEqual(build_parser().parse_args(["--arm-map", "chain"]).arm_map, "chain")
+        self.assertEqual(build_parser().parse_args(["--arm-map", "segments"]).arm_map,
+                         "segments")
+
 
 # --------------------------------------------------------------------------- #
 # 2026-10-13 现场第二个症状（H1-2 手臂与手掌交界处偶尔抽搐）的修法：关键点跳变护栏。

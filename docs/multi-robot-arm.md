@@ -1,9 +1,9 @@
 # 多机器人手臂驱动：按 robot_type 选臂并驱动机器人关节
 
-最后更新：2026-10-14（§8.14 **中性标定永远等不到数据**：现场「三台机器人一动不动卡在胸前」的四步定位、`--arm-calibrate-mode track`（CLI 新默认，库默认仍 `hold`）、`record_posture` 静默丢掉腕命令、以及改前就存在的 `--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
+最后更新：2026-10-14（§8.15 **「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」的根因是那场跑在默认 `chain` 口径上**：`--arm-map` 的 CLI 默认改为 `posture`、chain 时也打印启动行、`report_table.py` 加行程与夹断列）| 前一轮 §8.14 中性标定永远等不到数据（`--arm-calibrate-mode track`、`record_posture` 静默丢腕命令、`--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
 相关代码：`src/teleoperation/simulation/arm_ik.py`、`arm_profiles.py`、`arm_scene_driver.py`、
 `arm_realtime.py`、`realtime_teleop.py`、`arm_preview.py`
-相关测试：`tests/test_arm_ik_multi_robot.py`（28 个用例）、`tests/test_arm_realtime_bridge.py`（83 个用例）、
+相关测试：`tests/test_arm_ik_multi_robot.py`（28 个用例）、`tests/test_arm_realtime_bridge.py`（84 个用例）、
 `tests/test_arm_preview.py`（21 个用例）；
 离线验收 `devtools/verify_arm_multi_robot.py`、`devtools/verify_realtime_arm_bridge.py`、
 `devtools/verify_arm_wing.py`、`devtools/probe_elbow_task.py`、`devtools/probe_posture_task.py`、
@@ -714,7 +714,7 @@ g1 其实跟着转了约 35 度，看不出"完全不动"。所以 (a)(b) 在 g1
 
 | 开关 | 默认 | 作用 |
 |---|---|---|
-| `--arm-map {chain,segments}` | `chain` | 位移口径：`segments` = 论文 `scale_joints`（上臂段 + 前臂段，各按「机器人连杆长 / 你的连杆长」缩放） |
+| `--arm-map {chain,segments}` | `chain`（**2026-10-14 起 CLI 默认改为 `posture`**，见 §8.15；库/桥的默认仍是 `chain`） | 位移口径：`segments` = 论文 `scale_joints`（上臂段 + 前臂段，各按「机器人连杆长 / 你的连杆长」缩放） |
 | `--arm-elbow-task` | 关 | 把肘也当位置目标交给 IK（论文的肘任务），需要 `--arm-map segments` |
 | `--arm-elbow-gain 0-1` | 1.0 | 肘目标的力度（残差与幅度的折中旋钮） |
 | `--arm-elbow-pass {first,last}` | `last` | 肘任务放第几遍；`first` 会被腕姿态收尾拉回（肘误差 141-256 mm） |
@@ -1417,6 +1417,111 @@ neutral keeps converging while you hold still.
   `--arm-travel-mm`（现场判定，改完重跑本节这套 A/B）。
 - §8.13.8 那三条（肘残差、前臂方向 20-40 度、前臂 jerk）本轮**没有动**，阈值与结论都照旧。
 - 本轮全部是离线夹具 + 单元测试；**没有真机验证**，也没有现场摄像头实拍验证。
+
+
+### 8.15 「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」：那一场跑在默认 `chain` 口径上（2026-10-14 现场第三轮）
+
+#### 8.15.1 现场原话与真正的变量
+
+> 改代码之前，我的手臂向上平举时三个机器人的大臂都能抬起来，现在抬不起来了；我张开手臂时
+> 机器人也张不开怀抱（和之前一样）；GR1-T2 的大臂与小臂夹角是反的，和之前一样。
+
+这一场的命令是 `E:\python3.11.7\python.exe devtools\run_realtime_arm_windows.py`（**不带任何开关**），
+日志 `outputs/tmp_realtime/live_now.out.log` / `short_run.log` 里**没有** `arm map:` 那一行 ——
+因为那一行历史上只在 `--arm-map segments|posture` 时打印。也就是说这一场跑的是**入口的历史默认
+`chain`**；而 §8.10-§8.13 修好的东西（肘位置目标、方向口径、刚性肩锚点、IK 只动本侧手臂）全在
+`posture` 那一支里。之前几场现场是**显式带 `--arm-map posture`** 跑的
+（`outputs/tmp_realtime/` 里 68 行启动日志都是 posture，其余 8 行是 segments，**一行 chain 都没有**）。
+
+于是三句反馈有同一个根因：
+
+| 现场症状 | `chain` 口径下的机制（本次逐项复现） |
+|---|---|
+| 大臂抬不起来 | 目标是「中性工作点 + 缩放的（腕 - 肩）位移」，先被 profile 的**逐轴行程上限**剪断（g1 每轴 40 mm、h1_2 150 mm）；§8.10.1 已量过「只动大臂」时目标位移恒为 **0.0 mm** |
+| 张不开怀抱 | 同一根夹子：目标位移被压在 40-150 mm，横向那半程也一起被削（§8.9 / §8.10.4） |
+| GR1-T2 前臂夹角反 | `chain` **不向 IK 交任何肘目标**，7 自由度冗余链的弯肘方向是求解器自己的选择 —— 现场看到的「反」不是映射算错，而是**没有要求** |
+
+#### 8.15.2 A/B：同一份录制、同样代码与默认，只差 `--arm-map`
+
+```powershell
+cd F:\simulation_platform_cs
+$env:PYTHONPATH = "$pwd\src"
+# A: 历史默认（现场这一场就是它）
+E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --input-npz outputs\tmp_realtime\live_long_frames.npz --frames 200 --headless --report outputs\tmp_realtime\ab15_chain.json
+# B: 方向口径（现场之前几场一直在显式用的那一支）
+E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --input-npz outputs\tmp_realtime\live_long_frames.npz --frames 200 --headless --arm-map posture --report outputs\tmp_realtime\ab16_posture.json
+E:\python3.11.7\python.exe devtools\report_table.py outputs\tmp_realtime\ab15_chain.json outputs\tmp_realtime\ab16_posture.json
+```
+
+| 机器人/侧 | 肩行程（度） | 上臂方向行程（度） | 肘跨距（mm） | 前臂反向帧占比 | 前臂方向误差中位（度） | 夹断帧数 | 腕任务残差中位（mm） |
+|---|---|---|---|---|---|---|---|
+| h1_2 左 | 50.11 -> **119.1** | 48.09 -> 110.08 | 271.4 -> **561.1** | - -> 0.011 | - -> 18.79 | 370 -> **0** | 3.06 -> 23.64 |
+| h1_2 右 | 44.48 -> **186.83** | 44.27 -> 164.87 | 250.4 -> **663.7** | - -> 0.000 | - -> 10.54 | 460 -> **0** | 2.55 -> 21.06 |
+| gr1_t2 左 | 78.65 -> **168.28** | 79.93 -> 154.84 | 333.6 -> **494.1** | - -> 0.028 | - -> 43.00 | 370 -> **0** | 2.64 -> 14.48 |
+| gr1_t2 右 | 88.51 -> **149.97** | 87.70 -> 135.03 | 359.4 -> **479.8** | - -> 0.000 | - -> 35.61 | 460 -> **0** | 2.27 -> 14.50 |
+| g1 左 | 37.24 -> **243.6** | 35.73 -> 177.68 | 123.0 -> **395.8** | - -> 0.017 | - -> 10.17 | 370 -> **0** | 3.72 -> 16.46 |
+| g1 右 | 25.56 -> **164.38** | 24.45 -> 174.84 | 85.1 -> **392.2** | - -> 0.000 | - -> 8.36 | 460 -> **0** | 3.64 -> 12.78 |
+
+读三条：
+
+1. **「大臂抬不起来」看第 1、2 列**：六侧全部变好，g1 左 37.2 -> 243.6 度（6.5 倍）、上臂方向行程
+   35.7 -> 177.7 度（5 倍）；
+2. **「张不开怀抱」看第 3 列**：六侧全部变好，g1 两臂 123 / 85 -> 396 / 392 mm，h1_2 右 250 -> 664 mm，
+   而 `bridge.counts.clamped` 从 370 / 460 帧掉到 **0 / 0** —— 那个夹子不再是主角；
+3. **「前臂反」看第 4、5 列**：`chain` 那一列是 `-`，因为 chain **不要求肘**，报告里没有「要的方向」
+   可比 —— 这正是「夹角反了」在 chain 下**量不出来**的原因（只能看到机器人自己弯到哪）。
+   `posture` 下六侧反向帧占比 0.000-0.028，前臂方向误差中位 8.4-43.0 度。
+
+#### 8.15.3 改动（按约定 14，全部落在既有文件里，没有新文件）
+
+| 文件 | 改动 |
+|---|---|
+| `src/teleoperation/simulation/realtime_teleop.py` | `--arm-map` 的 **CLI 默认 `chain` -> `posture`**（库 / 桥默认仍是 `chain`，`devtools/verify_*.py` 与老 A/B 记录逐字不变）；help 文案改写；**chain 时也打印一行启动提示**（说明它不给肘目标、肩被夹在 40-150 mm，并指向 `--arm-map posture`）——这一次现场就是「日志里一行口径提示都没有」才被读成「代码被改坏了」 |
+| `devtools/report_table.py` | 读表脚本加「肩行程 / 上臂方向行程 / 肘跨距 / 夹断帧数」四列、缺字段打 `-`（改前读 chain 报告会 `TypeError: unsupported format string passed to NoneType.__format__` 直接崩 —— 工具崩了就没人看得到这一层） |
+| `tests/test_arm_realtime_bridge.py` | `PostureMappingTests` 新增 1 条：入口默认是 `posture`，显式 `--arm-map chain` / `segments` 仍能进 |
+| `docs/multi-robot-arm.md` | 本节 + §8.10.6 的默认值行加注 |
+| `docs/RETARGETING_PIPELINE.md` | 实时入口小节记录新默认（现场不再需要加开关） |
+
+#### 8.15.4 验收（改动后，本机实测：命令 + 退出码 + 关键不变量）
+
+| 命令 | 退出码 | 关键不变量 |
+|---|---|---|
+| `E:\python3.11.7\python.exe -m pytest tests\test_arm_realtime_bridge.py tests\test_arm_preview.py tests\test_arm_ik_multi_robot.py -q` | 0 | `137 passed, 49 subtests passed`（含新增的那 1 条） |
+| 8.15.2 的两条 `--headless` 命令 | 0 / 0 | 报告 `bridge.map_mode` 分别是 `chain` / `posture`；六侧的肩行程 / 肘跨距 / 夹断帧数见上表 |
+| `E:\python3.11.7\python.exe devtools\report_table.py`（两份报告一起读） | 0 | 不再抛 `TypeError`，缺字段打 `-` |
+| `powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -Base d8bca93` | 0 | 8 项全过；第 4 项 `809 teammate-owned files under baseline: 0 modified/deleted`；第 8 项 `Ran 353 tests ... OK (skipped=3)` |
+| `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | 0 | 未发现 GBK 无法编码的字符 |
+
+#### 8.15.5 现场怎么跑（这一次不用再加开关）
+
+```powershell
+cd F:\simulation_platform_cs
+E:\python3.11.7\python.exe devtools\run_realtime_arm_windows.py
+```
+
+启动行现在（默认）应当是：
+
+```
+arm map: posture | shoulder end = upper (rigid: the elbow parent link) | ik scope = arm |
+measured links (m) ... | elbow task: built by the direction recipe (pass last) |
+elbow branch recovery: >25 deg (margin 8 deg, retry every 12 frames)
+```
+
+看到 `arm map: chain ...` 就说明显式退回历史口径了（它会自己把代价写在那一行里）。
+动作按 §8.13.6 的三条看：抬到肩高屈肘伸肘两次（看前臂方向）、重复 10 次（看抽不抽）、
+张开怀抱（看幅度）。
+
+#### 8.15.6 如实说（本轮没解决什么）
+
+- **GR1-T2 仍是六侧里最差的一侧**：`posture` 下它前臂方向误差中位 43.0 / 35.6 度、反向帧占比
+  0.028 / 0.000，而**肘任务残差中位 175.8 mm（max 271.0）**，h1_2 / g1 是 27.7-72.1 mm
+  （§8.13.8 记的是同一件事：肘任务的世界点与「腕任务用的那个 link 帧点」是不是同一口径，
+  以及关节限位有没有把合法姿势排除掉 —— 这两条本轮仍未查，加迭代数不是办法）。
+- 幅度与精度仍是同一根跷跷板：`posture` 下腕任务残差中位 12.8-23.6 mm（chain 是 2.3-3.7 mm，
+  但那是「目标本来就被夹小」换来的），末帧快照还会出现 g1 左 102.2 mm 这种数（§8.11.4 已说明）。
+- **没有真机验证**：本轮的机制复现在 2026-10-13 那份真实录制（200 帧）上，现场摄像头帧率 /
+  站位 / 光照仍是另一层（§8.14.9 的 `no_pose_landmarks` 那些帧任何口径都不会让机器人动）。
+
 
 
 
