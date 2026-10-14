@@ -5,7 +5,7 @@
 > 内容必须与本文件一致** —— 两者冲突时以本文件为准，并立即修 `.clinerules`。
 >
 > **文件位置**：`F:\simulation_platform_cs\docs\CONVENTIONS.md`
-> **最后更新**：2026-10-10（第 1.1 版：基线随上游推进到 `10ebd9f`，`apps/` -> `applications/` 改名与 `tests/` 删除已同步）
+> **最后更新**：2026-10-14（第 1.2 版：新增约定 14「改动落点：优先在既有文件里增量修改」；preflight 第 4 项默认放行两个规则文件）
 > **相关文档**：架构 → [`architecture.md`](architecture.md) · 接口与 H5 契约 → [`contracts.md`](contracts.md) ·
 > 上手 → [`README.md`](../README.md) · 旧布局对照见 [`RETARGETING_PIPELINE.md`](RETARGETING_PIPELINE.md) §5
 
@@ -49,6 +49,7 @@ powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full    # 再�
 | **11** | ★★ | 提交信息 `类型: 说明`，**一个提交一件事**；**中文提交信息写入消息文件** | 历史不可读；PowerShell 引号会破坏中文提交信息 |
 | **12** | ★★ | **文档随代码同步更新**；**改约定必须同步两处**（本文件末尾版本表 + `.clinerules`）| 下一个人（或下一个 AI）把同一个坑再踩一遍 |
 | **13** | ★★ | **破坏性 / 不可逆操作先说明再执行**（删目录、搬移缓存、`git reset --hard`、改用户级环境变量）| 用户数据丢失且不可恢复 |
+| **14** | ★★ | **改动落点：优先在既有文件里增量修改**，不要新建 `xxx_fix.py` / `xxx_v2.py` 这类平行文件；确实要新建时，必须在同一次提交里把它登记进文档索引 | 同一功能的逻辑散在好几个文件里（"这一块那一块"），后续修改容易漏改、出问题（用户 2026-10-14 明确要求）|
 
 > 级别含义：**★★★ 硬约束**（违反 = 返工，没有例外）· **★★ 规范**（违反必须当场说明理由，并写进文档）
 
@@ -342,6 +343,30 @@ git commit -F outputs\tmp_commit\msg.txt
 
 ---
 
+### 约定 14 ★★ 改动落点：优先在既有文件里增量修改
+
+**用户 2026-10-14 明确要求**：以后改代码时**尽量在原有代码的基础上增加**，不要动不动新增一个文件 ——
+"不然你写的有时候总会这一块那一块，后面如果要改的话，会遗漏很多地方，容易出问题"。
+
+**怎么守**（按顺序）：
+
+1. **先找落点**：用 `git log --follow` 或直接搜符号，确认要改的逻辑**现在住哪个文件**，就改在那份文件里。
+2. **就地增量**：在既有函数 / 分支 / 命令行开关旁边加（例如给 `realtime_teleop.build_parser()` 加一个
+   `--xxx` 开关、给 `arm_realtime.py` 的既有类加一个构造参数），保持**单一入口**、单一实现。
+3. **不要平行文件**：禁止 `xxx_fix.py`、`xxx_v2.py`、`xxx_new.py`、`xxx_final.py` 这类同功能副本；
+   也不要把一条逻辑拆成"入口一个文件、计算一个文件、包装又一个文件"。
+4. **新建的三个例外**：① 约定 3 禁止改的队友文件（`src/teleoperation/**`，基线 `10ebd9f` 已跟踪的 747 个）
+   ——要兼容就在自己这侧的文件里写；② 现有文件里确实没有可挂靠的位置（全新的自检工具，如
+   `devtools/check_*.py`）；③ 用户明确要求单独成文件。
+5. **新建要登记**：在**同一次提交**里把新文件写进对应文档（`docs/*.md` 的索引 / 清单），
+   免得下一个人（或下一个 AI）找不到、忘了改。
+6. **测试同理**：优先加到既有 `tests/test_*.py` 里新增 `TestCase`，不要一个小改动建一个测试文件。
+
+**为什么**：同一个功能的代码散在多个文件里，改一处忘一处 —— 这类"遗漏"是本项目返工的主要来源
+（对照约定 3 的翻车记录：一次改动了 4 个文件、事后全部回退）。
+
+---
+
 ## 3. 基线与验收口径（`devtools/preflight.ps1` 的 8 项）
 
 ### 3.1 检查项一览
@@ -352,7 +377,7 @@ git commit -F outputs\tmp_commit\msg.txt
 | 2 | `.py` 非 GBK 字符（`devtools/check_gbk_safe.py --strict`）| 约定 4 | 把 `✓ → ≥ ⚠` 换成 `[OK] -> >= !` |
 | 2b | 同一规则走队友 CLI：`python -m teleoperation tools check-gbk-safe --strict` | 约定 4 | 同上（他这份是出货树的权威检查）|
 | 3 | C 盘零写（`devtools/check_no_c_drive.py --strict`：7 个环境变量 + 7 处默认缓存位置）| 约定 1 | `. .\devtools\env_e_drive_cache.ps1 -Persist`；或 `preflight.ps1 -Fix`（只改当前进程）|
-| 4 | 队友已入库文件零改动（`git diff <基线> -- .`；`A` 状态放行）| 约定 3 | `git checkout <基线> -- <文件>`，逻辑搬进自己的新文件；确需例外用 `-Allow <路径>` |
+| 4 | 队友已入库文件零改动（`git diff <基线> -- .`；`A` 状态放行；`.clinerules`、`docs/CONVENTIONS.md` 与 `devtools/**` 默认放行 —— 前两者是**规则文件**、后者是本支自己的工具链，见约定 12/14）| 约定 3 | `git checkout <基线> -- <文件>`，逻辑搬进自己的新文件；确需例外用 `-Allow <路径>` |
 | 5 | 没有禁入库目录/大资产进暂存（`lib/`、`.venv/`、`outputs/`、`tmp_*`，或 `.pt/.h5/...` > 5 MB）| 约定 7 | `git restore --staged <路径>`，文件搬进 `outputs/tmp_*/` |
 | 6 | 规则文件在位（`.clinerules`、`docs/CONVENTIONS.md`）| 约定 12 | 补回文件 |
 | 7 | 架构边界：11 个旧布局根条目名（`scripts`、`retargeting`、`teleop`...）+ `src/teleoperation/**` 里的 `sys.path.insert` | 原属队友 `tests/architecture/test_boundaries.py:107`（上游 `10ebd9f` 已删该文件），现由本脚本自查 | 改名/搬家（我们的工具目录固定叫 `devtools/`）|
@@ -436,5 +461,6 @@ Python 报 `invalid PYTHONUTF8 value`）—— 这也是约定 10"看退出码�
 |---|---|---|---|
 | 2026-10-10 | v1.0 | 首版：旧布局（`retargeting/` 等）的约定移植到 `current-state` 布局；新增 `devtools/` 工具链与 `docs/RETARGETING_PIPELINE.md`；确认两个关键结论 —— 必须 `PYTHONUTF8=1`、工具目录必须叫 `devtools/`（队友架构黑名单）| `docs/CONVENTIONS.md`、`.clinerules`、`docs/RETARGETING_PIPELINE.md`、`devtools/*` |
 | 2026-10-10 | v1.1 | **基线随上游推进到 `10ebd9f`**（`src/teleoperation/apps/` -> `applications/` 整目录改名；上游删除整个 `tests/`、`docs/archive/`、`configs/` 与两个 `datasets/raw/*.h5`）：本支 rebase 到新基线、同步 49 处路径引用，并把所有钉死的数字刷新（基线 `747` 文件 / `Ran 19 tests` / `errors=0`）；`preflight.ps1` 的 `-Base` 默认值由 `42bbe10` 改为 `10ebd9f` | `docs/CONVENTIONS.md`、`.clinerules`、`docs/RETARGETING_PIPELINE.md`、`devtools/*` |
+| 2026-10-14 | v1.2 | **新增约定 14「改动落点：优先在既有文件里增量修改」**（用户 2026-10-14 明确要求：不要动不动新建文件，否则"这一块那一块"、以后容易漏改）；同步 `.clinerules`。配套：`preflight.ps1` 第 4 项把 `.clinerules`、`docs/CONVENTIONS.md` 与 `devtools/**` 加进默认放行名单 —— 前两者是本支自己维护的**规则文件**（改约定本身是受控动作）、后者是本支自己的工具链（`.clinerules` 布局说明里就写着"我加的、可改"），都不是队友算法代码；其余基线文件（`src/teleoperation/**`、`assets/**`、`datasets/**`、`docs/**`、`pyproject.toml`、`README.md`）照旧零改动 | `docs/CONVENTIONS.md`、`.clinerules`、`devtools/preflight.ps1` |
 
 > 改约定 = 本表加一行 + `.clinerules` 同步（约定 12）。

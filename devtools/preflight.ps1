@@ -44,6 +44,8 @@
 #                  suite of its own, so the measured value here is 0 -- pass
 #                  -MaxErr 0 once upstream re-adds their suite (CONVENTIONS 3.3).
 #   -Allow <paths> user-approved exception(s) to rule 3 (comma separated)
+#                  (the rule files .clinerules / docs/CONVENTIONS.md and the
+#                   devtools/ toolchain are always allowed; see rule 12/14)
 #   -Fix           dot-source devtools\env_e_drive_cache.ps1 in this process
 #                  before checking the C: drive rule (process only -- NEVER
 #                  writes the User-level environment, that is the user's call)
@@ -70,6 +72,15 @@ Set-Location $repo
 # so any edit to a tracked baseline file is caught, not just the four big dirs.
 $teamPaths = @('.')
 $allowPaths = @($Allow | Where-Object { $_ })
+
+# This branch's own workflow files are never rule-3 violations: the rule files
+# ARE the conventions (rule 12 says keep CONVENTIONS.md and .clinerules in sync),
+# and .clinerules itself documents devtools/ as "ours, editable" tooling that
+# the teammate line merely merged.  Everything else under the baseline
+# (src/teleoperation, assets, datasets, docs, pyproject.toml, README...) stays
+# protected -- add single-file exceptions with -Allow.
+$allowPaths += @('.clinerules', 'docs/CONVENTIONS.md')
+$allowPrefix = @('devtools/')
 
 # Things that must never be committed (rule 7).
 $forbiddenPrefix = @('lib/', 'linkerhand_sdk/', '.venv/', 'data/', 'outputs/',
@@ -200,6 +211,7 @@ if ($LASTEXITCODE -ne 0) {
         $path = $parts[-1]
         if ($status -like 'A*') { continue }              # my own new file: allowed
         if ($allowPaths -contains $path) { continue }     # -Allow: user approved
+        if (@($allowPrefix | Where-Object { $path.StartsWith($_) }).Count) { continue }  # our toolchain
         if ($status -like 'R*') { $viol += "$status $($parts[1]) -> $path"; continue }
         if ($baseFiles -contains $path) { $viol += "$status $path" }
     }
