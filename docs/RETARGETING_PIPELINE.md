@@ -3,7 +3,7 @@
 > 2026-10-11：本文保留原分支的运行与验收历史。合并后的入口、坐标数据差异及测试结果见 [main 集成记录](integration-2026-10-11.md)，本文的历史机器路径与测试数量不代表当前 main。
 
 > **适用版本**：`origin/current-state`（包 `src/teleoperation`，CLI `python -m teleoperation`）
-> **最后更新**：2026-10-10（基线 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`，本文路径与数字已同步）· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
+> **最后更新**：2026-10-14（基线仍是 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`；本轮新增"摄像头窗口那句话的判据修正"实测记录 —— `summarise_camera_window` 改按报告的 `window_rect` 判断，不再把按 q 正常退出误报成窗口没开）· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
 > [`contracts.md`](contracts.md)（H5 / 命令契约，字段以它为准）· [`architecture.md`](architecture.md)（模块层次）·
 > 注意：`docs/archive/`（旧布局手册，只读参考）已随上游 `10ebd9f` 被整体删除，
 > 旧布局的对照表保留在 §5（本文档内，自足）。
@@ -194,8 +194,14 @@ $py='E:\python3.11.7\python.exe'
   同时打印它的**实际屏幕矩形**：`camera window placed at 28,91 (640x480) [always on top],
   screen ... title='camera: MediaPipe 21-landmark input (q/Esc quits)'`；矩形落在可见桌面之外会再打
   一行 `WARNING: the camera window is outside the visible desktop`。`--preview-no-topmost` 关掉置顶。
-  跑完启动器还会读报告回一句 `[OK] camera window stayed open at [x, y, w, h]` 或
-  `[WARN] the camera window did NOT stay open: <原因>` —— 下次"只看见机器人窗口"，先看这两行。
+  跑完启动器还会读报告回三选一的一句：`[OK] camera window stayed open at [x, y, w, h]`（还在显示）/
+  `[OK] camera window was open at [x, y, w, h] ... it is closed now because the run ended`（开过、
+  随本次运行结束关闭）/ `[WARN] the camera window did NOT stay open: <原因>` + 一行重试命令
+  —— 下次"只看见机器人窗口"，先看这几行。判据是报告里的 `window_rect`（只有成功的 `_place()`
+  才写），**不是** `preview.window`：后者读的是写报告那一刻的 `CameraPreview.show`，而入口收尾用
+  后台线程调 `preview.close()` 把它置 `False`（`realtime_teleop.py:1045` ->
+  `realtime_hand_sim.py:535`），两者是竞态 —— 2026-10-14 之前这里会把"按 q 正常退出"误报成
+  "窗口没开"（修正记录见本节下一条）。
 - 实测 2026-10-10（`E:\python3.11.7\python.exe`）：`--check` 退出码 `0`（`modules present`、
   `model asset .../outputs/hand_landmarker.task (7819105 bytes)`、`cameras readable: [0]`）；
   工作目录被故意设成 `devtools` 时打印 `working directory ... -> F:\simulation_platform_cs`
@@ -269,6 +275,18 @@ $py='E:\python3.11.7\python.exe'
     [28, 91, 640, 480] (mirrored=True)`。`--frames 25 --preview-window-pos 300,200
     --preview-no-topmost` -> 退出码 `1`，`placed at 308,231 (640x480)`（= 请求的 300,200 加窗口边框
     8,31）、且**没有** `[always on top]` 标记 —— 两个开关都确实生效。
+  - 摄像头窗口那句话的判据修正（2026-10-14，仍在既有文件 `devtools/run_realtime_windows.py` 里改
+    `summarise_camera_window`，未新增模块）：三机器人长跑按 q 退出后末尾报的是
+    `[WARN] the camera window did NOT stay open: unknown reason`，而同一份日志里有
+    `camera window: on (mirrored), title='camera: hands + arms (q/Esc quits)', position=(20, 60)`、
+    报告里有 `window_rect=[28, 91, 640, 480]` —— 假警报，根因是 `preview.window` 与收尾 `close()`
+    的竞态（同一天两次正常退出：长跑报 `False`、`--frames 40` 短跑报 `True`，两次窗口都开着）。
+    改成按 `window_rect` 三段判断后，"开过但已随退出关闭"必须报 `[OK] ... was open at [...]`，
+    该场景由既有 `tests/test_arm_preview.py::CameraWindowSummaryTests`（4 条：还在显示 / 关过但开过 /
+    从没开成带 note 与重试命令 / 没要求窗口时保持安静）锁定。验收：`preflight.ps1 -Base d8bca93
+    -Full` 退出码 `0`、unittest `Ran 352 tests [OK (skipped=3)]`；`check_gbk_safe.py --strict`
+    退出码 `0`。同一次 `--frames 40` 实跑里报告为 `window_rect=[28, 91, 640, 480]`、
+    `arm_failures={}`、`fps=7.9`，窗口确实开在屏幕左上角。
   - 预览分支的无显示器验证：`--headless --frames 30 --preview-dump-dir outputs\tmp_preview_probe
     --preview-dump-frames 3`：退出码 `1`，`camera preview: window=off ... dumped_png=3`，写出 3 张
     约 280 KB 的带骨架 PNG —— 证明 `_PreviewCapture` 代理、`annotate`/HUD、dump 三者在 `--headless`
