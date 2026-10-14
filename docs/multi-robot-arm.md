@@ -1382,6 +1382,7 @@ neutral keeps converging while you hold still.
 | `E:\python3.11.7\python.exe devtools\check_no_c_drive.py --strict` | **0** | `[OK]` 未发现 C 盘写入隐患 |
 | `run_realtime_arm_windows.py ... --arm-calibrate-frames 30`（**不带**模式开关，检验 CLI 默认） | **0** | 报告 `bridge.calibrate_mode=track`、HUD `cal=track left=0/30`；横轴 ptp 200.0 / 208.6 mm，与显式 `track30` **逐位相同** |
 | 同上再加 `--arm-travel-mode scale` | **0** | `clamped` 仍 535（该计数器与模式无关）；最大轴照旧钉在 2 x 上限，非最大轴按比例变小（左 y 405.2 -> 352.3、z 440.3 -> 407.4 mm） |
+| `powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -Base d8bca93` | **0** | `RESULT: [OK] all checks passed (2 warning(s))`（8 项全过）；第 4 项 `809 teammate-owned files under baseline: 0 modified/deleted`；第 8 项 `Ran 348 tests in 78.3s [OK (skipped=3)]` + `python -m teleoperation --help -> exit 0`（`--help` 崩溃修复在**文档化的 CLI 冒烟路径**上复验）；**不要**用默认基线 `10ebd9f` 跑，否则队友线 49 个文件会被算成「改了队友文件」（§8.3 已说明，属已知假 FAIL） |
 
 #### 8.14.8 改动清单（谁的文件 / 谁的默认值）
 
@@ -1395,6 +1396,9 @@ neutral keeps converging while you hold still.
 | `outputs/tmp_realtime/**` | 稀疏夹具、A/B 脚本、对照表、诊断脚本（已 gitignore，不入库） |
 
 **这些文件都在我们这一侧**，没有踩到队友已入库的 `retargeting/**`、`config/**`、`input_adapters/**`。
+
+**落地提交**：`87d3b53 fix: 实时手臂中性标定加 --arm-calibrate-mode（CLI 默认 track），并修 --help 崩溃`
+（6 文件 / +601 -39，本机 `cs/multi-robot-arm` 分支；未 push）。
 
 #### 8.14.9 如实说（本轮没解决的）
 
