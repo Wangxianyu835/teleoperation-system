@@ -163,6 +163,13 @@ class ArmProfile:
 ARM_PROFILES: dict = {
     "h1_2": ArmProfile(
         robot_type="h1_2",
+        # 2026-10-13 实测（1560 帧现场录制 outputs\tmp_realtime\live_long_frames.npz，
+        # 同一份输入只改 --arm-orientation）：带姿态约束残差 95.8 / 133.3 mm、
+        # 姿态误差 46.0 / 46.4 度、肩 yaw 绕 322.4 / 235.5 度；position-only ->
+        # 17.1 / 3.9 mm、1.5 / 0.4 度、209.6 / 68.7 度。三点造的腕坐标系在手臂接近
+        # 伸直时平面法向会翻号（复算：4~7% 的帧命令 >60 度/帧的姿态跳变，最大近 180 度）。
+        # 因此入口 --arm-orientation 默认 off；本 profile 仍是 pose（机器人能力），
+        # 要用姿态约束得显式 --arm-orientation on。详见 docs/multi-robot-arm.md 8.8。
         ik_mode="pose",
         metric_scale=0.7,
         metric_offset=(0.24, 0.0, 0.19),

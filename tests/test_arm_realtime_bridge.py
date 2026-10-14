@@ -20,12 +20,18 @@ import numpy as np
 
 from teleoperation.simulation.arm_profiles import PAPER_ROBOTS, profile_for
 from teleoperation.simulation.arm_realtime import (
+    DEFAULT_LATERAL_GUARD_M,
+    GLITCH_HOLD_FRAMES,
+    MAX_DIRECTION_RATE_DEG_S,
+    MIN_ELBOW_PLANE_SINE,
     AxisMap,
     RealtimeArmBridge,
     arm_reach,
     elbow_bend_degrees,
     load_neutral,
+    relative_wrist_rotation,
     save_neutral,
+    wrist_orientation_frame,
 )
 from teleoperation.simulation.realtime_teleop import ReplayFrameSource, build_parser
 
@@ -61,6 +67,35 @@ def open_hand(centre=(0.5, 0.5, 0.0), span: float = 1.0) -> np.ndarray:
     for x, y in offsets:
         points.append(wrist + np.array([x, y, 0.0]) * span)
     return np.asarray(points, dtype=np.float64)
+
+
+def bent_arm(side: str, wrist_offset=(0.0, 0.06, 0.10)) -> np.ndarray:
+    """米制 (肩, 肘, 腕)，但肘是弯的：前臂不平行上臂，所以手臂平面能张成（有姿态）。
+
+    默认偏移 (0, 0.06, 0.10) 与上臂 (0, 0.30, 0) 的夹角约 24 度，远大于
+    ``MIN_ELBOW_PLANE_SINE``，所以这一帧一定给得出腕坐标系。
+    """
+    sign = 1.0 if side == "left" else -1.0
+    shoulder = np.array([0.17 * sign, -0.35, 0.0])
+    elbow = shoulder + UPPER_ARM
+    wrist = elbow + FORE_ARM + np.asarray(wrist_offset, dtype=np.float64)
+    return np.stack((shoulder, elbow, wrist))
+
+
+def axis_angle(axis, angle_rad: float) -> np.ndarray:
+    """Rodrigues 公式：绕 ``axis`` 转 ``angle_rad`` 的 3x3 旋转（测试里造「动过的手」）。"""
+    axis = np.asarray(axis, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
+    cross = np.array([[0.0, -axis[2], axis[1]],
+                      [axis[2], 0.0, -axis[0]],
+                      [-axis[1], axis[0], 0.0]])
+    return np.eye(3) + np.sin(angle_rad) * cross + (1.0 - np.cos(angle_rad)) * (cross @ cross)
+
+
+def rotate_arm(points, rotation, origin) -> np.ndarray:
+    """把整条手臂绕 ``origin`` 转 ``rotation``（用来造「你转了一下前臂」的帧）。"""
+    array = np.asarray(points, dtype=np.float64)
+    return (rotation @ (array - np.asarray(origin, dtype=np.float64)).T).T + np.asarray(origin)
 
 
 def calibrated(sides=SIDES, frames: int = 4, **kwargs) -> RealtimeArmBridge:
@@ -196,7 +231,10 @@ class RelativeMappingTests(unittest.TestCase):
         np.testing.assert_allclose(moved.position, still, atol=1e-9)
 
     def test_shorter_arms_get_a_larger_gain_capped_by_the_band(self):
-        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=1)
+        # 这一例专门测「短臂 -> 归一化放大」：合成臂长 0.30 m 正好压在可信下限上，
+        # 显式放宽到 0.15 m，免得这条断言和 MIN_PLAUSIBLE_ARM_REACH_M 的边界耦合。
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=1,
+                                   min_plausible_reach_m=0.15)
         short = np.stack((np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.15, 0.0]),
                           np.array([0.0, 0.30, 0.0])))
         bridge.update(arms_world={"right": short})
@@ -230,6 +268,181 @@ class RelativeMappingTests(unittest.TestCase):
         self.assertAlmostEqual(abs(delta[1]), 0.02, places=9)
         self.assertEqual(entry.info["travel_limit_m"], 0.02)
 
+
+
+class TravelModeAndGuardTests(unittest.TestCase):
+    """2026-10-13 三个护栏：行程等比缩 / 横向护栏 / 标定可信度。
+
+    现场那场 1560 帧的旧口径实测（outputs\\tmp_guard\\ab_baseline.json）：
+    行程夹取 6599 次（每帧每轴都夹）、h1_2 肩关节行程 322 度、前臂间距最小 2.21 mm。
+    """
+
+    def test_defaults_match_the_documented_guards(self):
+        bridge = RealtimeArmBridge(PROFILES, sides=SIDES)
+        self.assertEqual(bridge.travel_mode, "clip")
+        self.assertEqual(DEFAULT_LATERAL_GUARD_M, 0.0)      # 2026-10-13 晚：默认不拦横向
+        self.assertAlmostEqual(bridge.lateral_guard_m, DEFAULT_LATERAL_GUARD_M, places=9)
+        self.assertTrue(bridge.gain_quality_guard)
+        report = bridge.summary()
+        self.assertEqual(report["travel_mode"], "clip")
+        for key in ("guarded", "gain_guarded"):
+            self.assertEqual(set(report["counts"][key]), set(SIDES))
+
+    def test_constructor_rejects_bad_guard_settings(self):
+        with self.assertRaises(ValueError):
+            RealtimeArmBridge(PROFILES, sides=SIDES, travel_mode="squash")
+        with self.assertRaises(ValueError):
+            RealtimeArmBridge(PROFILES, sides=SIDES, lateral_guard_m=-0.01)
+        with self.assertRaises(ValueError):
+            RealtimeArmBridge(PROFILES, sides=SIDES, min_plausible_reach_m=0.0)
+
+    def test_the_entry_parser_exposes_the_guard_flags(self):
+        args = build_parser().parse_args([])
+        self.assertEqual(args.arm_travel_mode, "clip")
+        self.assertAlmostEqual(args.arm_lateral_guard_mm,
+                               1000.0 * DEFAULT_LATERAL_GUARD_M, places=9)
+        self.assertEqual(args.arm_lateral_guard_mm, 0.0)        # 默认不拦横向
+        self.assertFalse(args.no_arm_gain_quality_guard)
+        legacy = build_parser().parse_args(["--arm-travel-mode", "scale",
+                                            "--arm-lateral-guard-mm", "20",
+                                            "--no-arm-gain-quality-guard"])
+        self.assertEqual(legacy.arm_travel_mode, "scale")
+        self.assertEqual(legacy.arm_lateral_guard_mm, 20.0)     # 恢复旧护栏
+        self.assertTrue(legacy.no_arm_gain_quality_guard)
+
+    def test_the_entry_parser_defaults_the_slew_to_a_speed(self):
+        """斜坡默认是速率（mm/s），固定 mm/帧 只作为复现旧数字的 override。"""
+        args = build_parser().parse_args([])
+        self.assertEqual(args.arm_slew_mm, None)
+        self.assertGreater(args.arm_slew_mm_s, 0.0)
+        # 30 fps 下换算回来就是 2026-10-13 那次实测用的 20 mm/帧。
+        self.assertAlmostEqual(args.arm_slew_mm_s / 30.0, 20.0, places=9)
+        fixed = build_parser().parse_args(["--arm-slew-mm", "20"])
+        self.assertEqual(fixed.arm_slew_mm, 20.0)
+
+    @staticmethod
+    def _overflow(bridge, side="right", offset=(0.50, 0.20, 0.30), robot="g1"):
+        """一个「手跑出机器人行程」的请求：三个轴都超上限，返回 (目标, 中性, 请求)。"""
+        entry = bridge.update(
+            arms_world={side: arm(side, wrist_offset=offset)})[robot][side]
+        neutral = np.asarray(entry.info["neutral_m"], dtype=np.float64)
+        wanted = AxisMap().apply(np.asarray(offset, dtype=np.float64))
+        return entry, neutral, wanted * float(entry.info["gain"])
+
+    def test_scale_mode_keeps_the_direction_and_lands_the_longest_axis_on_the_limit(self):
+        bridge = calibrated(sides=("right",), travel_mode="scale")
+        entry, neutral, wanted = self._overflow(bridge)
+        limit = float(entry.info["travel_limit_m"])
+        self.assertTrue(entry.info["clamped"])
+        self.assertGreater(float(np.max(np.abs(wanted))), limit)
+        delta = np.asarray(entry.position) - neutral
+        np.testing.assert_allclose(delta, wanted * (limit / np.max(np.abs(wanted))),
+                                   atol=1e-9)
+        self.assertAlmostEqual(float(np.max(np.abs(delta))), limit, places=9)
+        self.assertEqual(bridge.counts["clamped"]["right"], len(PAPER_ROBOTS))
+
+    def test_clip_mode_still_pins_every_axis_on_the_box_edge(self):
+        bridge = calibrated(sides=("right",), travel_mode="clip")
+        entry, neutral, wanted = self._overflow(bridge)
+        limit = float(entry.info["travel_limit_m"])
+        delta = np.asarray(entry.position) - neutral
+        self.assertTrue(bool(np.all(np.abs(wanted) > limit)))
+        np.testing.assert_allclose(np.abs(delta), np.full(3, limit), atol=1e-9)
+        scaled = wanted * (limit / np.max(np.abs(wanted)))
+        self.assertGreater(float(np.linalg.norm(delta)), float(np.linalg.norm(scaled)))
+
+    def test_the_default_mode_only_cuts_the_axis_that_is_over_the_limit(self):
+        """回归（2026-10-13 现场"横向摆动丢失"）：只有一个轴超限时，别的轴必须原样保留。
+
+        现场那次复合位移 (-9.3, +6.4, +24.5) cm 里只有 op_z（纵深，MediaPipe 最抖的轴）
+        超限。``scale`` 把整条位移等比压小，于是横向 9.0 cm 的请求只剩 0.42 倍；``clip``
+        （现在的默认）只压超限的那一轴，横向按 gain 原样过去。
+        """
+        offset = (0.09, 0.0, 0.24)          # 操作者系：横向 9 cm + 纵深 24 cm
+        deltas = {}
+        for mode in ("clip", "scale"):
+            bridge = calibrated(sides=("right",), travel_mode=mode)
+            entry = bridge.update(
+                arms_world={"right": arm("right", wrist_offset=offset)})["g1"]["right"]
+            neutral = np.asarray(entry.info["neutral_m"], dtype=np.float64)
+            deltas[mode] = np.asarray(entry.position) - neutral
+            gain = float(entry.info["gain"])
+            limit = float(entry.info["travel_limit_m"])
+            self.assertTrue(entry.info["clamped"])
+        wanted = AxisMap().apply(np.asarray(offset, dtype=np.float64)) * gain
+        self.assertGreater(abs(wanted[0]), limit)                  # 纵深确实超限
+        self.assertLess(abs(wanted[1]), limit)                     # 横向没超限
+        # 超限轴两模式都钉在上限；横向：clip 原样、scale 被拖小。
+        self.assertAlmostEqual(abs(deltas["clip"][0]), limit, places=9)
+        self.assertAlmostEqual(abs(deltas["scale"][0]), limit, places=9)
+        self.assertAlmostEqual(deltas["clip"][1], wanted[1], places=9)
+        self.assertLess(abs(deltas["scale"][1]), abs(deltas["clip"][1]))
+        self.assertAlmostEqual(abs(deltas["scale"][1] / deltas["clip"][1]), limit / abs(wanted[0]),
+                               places=9)
+
+
+    def test_the_lateral_guard_keeps_the_left_wrist_on_the_left_side(self):
+        # 护栏默认已经是 0（2026-10-13 晚，见 §8.9），这里显式给 20 mm 测机制本身。
+        bridge = calibrated(sides=("left",), lateral_guard_m=0.02)
+        entry = bridge.update(
+            arms_world={"left": arm("left", wrist_offset=(-0.50, 0.0, 0.0))})["h1_2"]["left"]
+        neutral = np.asarray(entry.info["neutral_m"], dtype=np.float64)
+        wanted = AxisMap().apply(np.array([-0.50, 0.0, 0.0])) * float(entry.info["gain"])
+        wanted = wanted * (float(entry.info["travel_limit_m"]) / np.max(np.abs(wanted)))
+        self.assertLess(neutral[1] + wanted[1], 0.0)     # 不加护栏时腕目标会到身体右侧
+        self.assertTrue(entry.info["guarded"])
+        self.assertAlmostEqual(entry.position[1], 0.02, places=9)
+        self.assertGreaterEqual(bridge.counts["guarded"]["left"], 1)
+
+    def test_the_default_guard_is_off_so_the_target_really_does_cross_the_midline(self):
+        """默认不再拦横向（2026-10-13 晚的决定）：跨中线是操作者自己把右手横过身体中线。
+
+        代价写在 §8.9：要恢复"窗口里永不跨中线"就给 `--arm-lateral-guard-mm 20`。
+        """
+        bridge = calibrated(sides=("left",))
+        self.assertEqual(bridge.lateral_guard_m, 0.0)
+        entry = bridge.update(
+            arms_world={"left": arm("left", wrist_offset=(-0.50, 0.0, 0.0))})["h1_2"]["left"]
+        self.assertFalse(entry.info["guarded"])
+        self.assertLess(entry.position[1], 0.0)          # 前臂贴到 2.21 mm 的机制就是这个
+        self.assertEqual(bridge.counts["guarded"]["left"], 0)
+
+    def test_a_plausible_calibration_is_still_normalised(self):
+        bridge = calibrated(sides=("right",))
+        entry = bridge.update(arms_world={"right": arm("right")})["g1"]["right"]
+        self.assertTrue(entry.info["gain_trusted"])
+        self.assertEqual(entry.info["gain_source"], "neutral")
+        self.assertEqual(bridge.counts["gain_guarded"]["right"], 0)
+
+    def test_an_implausible_calibration_switches_the_normalisation_off(self):
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=2)
+        tiny = np.stack((np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.12, 0.0]),
+                         np.array([0.0, 0.24, 0.0])))       # 肩到腕 0.24 m：不是人的手臂
+        for _ in range(2):
+            bridge.update(arms_world={"right": tiny})       # 标定帧：不计入护栏计数
+        before = bridge.counts["gain_guarded"]["right"]
+        entry = bridge.update(arms_world={"right": tiny})["h1_2"]["right"]
+        self.assertEqual(bridge.counts["gain_guarded"]["right"] - before,
+                         len(PAPER_ROBOTS))
+        self.assertFalse(entry.info["gain_trusted"])
+        self.assertEqual(entry.info["gain_source"], "metric_scale")
+        self.assertAlmostEqual(entry.info["gain"], profile_for("h1_2").metric_scale,
+                               places=6)
+        self.assertIn("below", entry.info["gain_guard_reason"])
+        self.assertFalse(bridge.summary()["arm_length_trust"]["right"]["trusted"])
+
+    def test_left_and_right_reaches_that_disagree_are_not_trusted(self):
+        bridge = RealtimeArmBridge(PROFILES, sides=SIDES, calibration_frames=1)
+        short = np.stack((np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.16, 0.0]),
+                          np.array([0.0, 0.32, 0.0])))      # 0.32 m 本身合格，但和 0.60 差 47%
+        entry = None
+        for _ in range(2):
+            entry = bridge.update(arms_world={"left": arm("left"),
+                                              "right": short})["h1_2"]["left"]
+        self.assertFalse(entry.info["gain_trusted"])
+        self.assertIn("differ by", entry.info["gain_guard_reason"])
+        self.assertAlmostEqual(entry.info["gain"], profile_for("h1_2").metric_scale,
+                               places=6)
 
 
 class HoldAndFallbackTests(unittest.TestCase):
@@ -411,6 +624,529 @@ class EntryAndReplayTests(unittest.TestCase):
         self.assertEqual(metadata["source_scale"], 1.0)
         self.assertIn("right", metadata["world_invalid_reasons"])
         self.assertNotIn("left", metadata["world_invalid_reasons"])
+
+
+class WristOrientationFrameTests(unittest.TestCase):
+    """腕坐标系（三点 -> 3x3）：右手系正交，直臂时说「不知道」。
+
+    这是论文「手腕完整位姿」约束里我们做得到的那部分（见 arm_realtime 模块 docstring）。
+    """
+
+    def test_the_frame_is_orthonormal_right_handed_and_points_down_the_forearm(self):
+        points = bent_arm("right")
+        frame = wrist_orientation_frame(points)
+        np.testing.assert_allclose(frame.T @ frame, np.eye(3), atol=1e-12)
+        self.assertAlmostEqual(float(np.linalg.det(frame)), 1.0, places=12)
+        forearm = points[2] - points[1]
+        np.testing.assert_allclose(frame[:, 0], forearm / np.linalg.norm(forearm),
+                                   atol=1e-12)
+        # z 是上臂 x 前臂：与上臂、前臂都垂直（肘的拐向）
+        upper = points[1] - points[0]
+        self.assertAlmostEqual(float(frame[:, 2] @ upper), 0.0, places=12)
+        self.assertAlmostEqual(float(frame[:, 2] @ forearm), 0.0, places=12)
+
+    def test_a_straight_or_squashed_arm_has_no_planar_frame(self):
+        shoulder = np.array([0.17, -0.35, 0.0])
+        straight = np.stack((shoulder, shoulder + UPPER_ARM, shoulder + 2.0 * UPPER_ARM))
+        self.assertIsNone(wrist_orientation_frame(straight))
+        self.assertIsNone(wrist_orientation_frame(None))
+        self.assertIsNone(wrist_orientation_frame(np.zeros((3, 3))))
+
+    def test_a_rotation_of_the_whole_arm_comes_back_as_the_relative_rotation(self):
+        neutral = bent_arm("right")
+        reference = wrist_orientation_frame(neutral)
+        # 绕「中性腕坐标系的 z 轴」转 40 度：世界系里的轴是 reference[:, 2]，所以
+        # 相对旋转在**中性帧自己的基**里就是绕 z 转 40 度（这正是我们要发给机器人的
+        # 那个量：操作者的前臂 z 对应机器人中性 EE 的 z）。
+        rotation = axis_angle(reference[:, 2], np.radians(40.0))
+        moved = rotate_arm(neutral, rotation, neutral[0])
+        relative = relative_wrist_rotation(moved, reference)
+        np.testing.assert_allclose(relative, axis_angle((0.0, 0.0, 1.0), np.radians(40.0)),
+                                   atol=1e-9)
+        # 没动的时候是单位阵 -> 相对姿态是零旋转
+        np.testing.assert_allclose(relative_wrist_rotation(neutral, reference), np.eye(3),
+                                   atol=1e-12)
+
+    def test_the_relative_rotation_needs_both_a_neutral_frame_and_a_valid_arm(self):
+        self.assertIsNone(relative_wrist_rotation(bent_arm("right"), None))
+        self.assertIsNone(relative_wrist_rotation(None, np.eye(3)))
+
+
+class NeutralOrientationTests(unittest.TestCase):
+    """中性记录里多存一份「腕坐标系」，姿态目标就成了**相对中性**的四元数。"""
+
+    def _calibrated_on_a_bent_arm(self, frames: int = 4) -> RealtimeArmBridge:
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=frames)
+        for _ in range(frames):
+            bridge.update(arms_world={"right": bent_arm("right")})
+        return bridge
+
+    def test_sitting_still_gives_an_identity_relative_orientation(self):
+        bridge = self._calibrated_on_a_bent_arm()
+        entry = bridge.update(arms_world={"right": bent_arm("right")})["h1_2"]["right"]
+        self.assertTrue(entry.valid)
+        np.testing.assert_allclose(entry.orientation, (0.0, 0.0, 0.0, 1.0), atol=1e-9)
+        self.assertGreaterEqual(bridge.counts["oriented"]["right"], 1)
+        self.assertTrue(bridge.summary()["neutral"]["right"]["orientation_recorded"])
+
+    def test_rotating_the_forearm_sends_that_relative_rotation(self):
+        from teleoperation.retargeting.arm.wrist_targets import (
+            rotation_matrix_to_quaternion)
+
+        bridge = self._calibrated_on_a_bent_arm()
+        neutral = bent_arm("right")
+        reference = wrist_orientation_frame(neutral)
+        # 绕中性帧的 z 轴（= 肘的拐向）转 -35 度；相对旋转在中性帧基里就是绕 z 转 -35 度。
+        rotation = axis_angle(reference[:, 2], np.radians(-35.0))
+        moved = rotate_arm(neutral, rotation, neutral[0])
+        entry = bridge.update(arms_world={"right": moved})["h1_2"]["right"]
+        expected = rotation_matrix_to_quaternion(
+            axis_angle((0.0, 0.0, 1.0), np.radians(-35.0)))
+        # 四元数有正负两种写法：取与期望同号的那个比较
+        sign = 1.0 if float(np.dot(entry.orientation, expected)) >= 0.0 else -1.0
+        np.testing.assert_allclose(np.asarray(entry.orientation) * sign, expected,
+                                   atol=1e-6)
+        # 姿态与位置互不干扰：位置仍是「中性 + 位移」
+        self.assertIsNotNone(entry.position)
+        self.assertIn("delta_base_m", entry.info)
+
+    def test_only_a_pose_profile_gets_the_orientation_target(self):
+        bridge = self._calibrated_on_a_bent_arm()
+        neutral = bent_arm("right")
+        rotation = axis_angle(wrist_orientation_frame(neutral)[:, 2], np.radians(30.0))
+        moved = rotate_arm(neutral, rotation, neutral[0])
+        targets = bridge.update(arms_world={"right": moved})
+        self.assertIsNotNone(targets["h1_2"]["right"].orientation)
+        for name in ("gr1_t2", "g1"):        # position-only profiles
+            with self.subTest(robot=name):
+                self.assertIsNone(targets[name]["right"].orientation)
+
+    def test_the_robot_independent_orientation_target_is_available(self):
+        """``orientation_target()`` 给的是「操作者那一份」，与哪台机器人无关。
+
+        回归：调用方曾经用 ``per_side[sorted(per_side)[0]].orientation`` 取姿态，而
+        ``sorted(['g1','gr1_t2','h1_2'])[0]`` 是 ``g1``（position-only -> None），
+        于是 h1_2 的 pose 约束被静默丢掉（2026-10-12 现场那次就是这样）。
+        """
+        bridge = self._calibrated_on_a_bent_arm()
+        neutral = bent_arm("right")
+        rotation = axis_angle(wrist_orientation_frame(neutral)[:, 2], np.radians(25.0))
+        targets = bridge.update(arms_world={"right": rotate_arm(neutral, rotation, neutral[0])})
+        by_side = bridge.orientation_target()
+        self.assertIsNotNone(by_side["right"])
+        np.testing.assert_allclose(by_side["right"], targets["h1_2"]["right"].orientation,
+                                   atol=1e-12)
+        # 机器人无关：g1 / gr1_t2 的 target 里没有（position-only），但这一份有
+        self.assertIsNone(targets["g1"]["right"].orientation)
+        # orientation="off" 时一律 None
+        bridge_off = RealtimeArmBridge(PROFILES, sides=("right",), orientation="off",
+                                       neutral=bridge.neutral_record())
+        bridge_off.update(arms_world={"right": neutral})
+        self.assertIsNone(bridge_off.orientation_target()["right"])
+
+    def test_the_hand_fallback_carries_no_relative_orientation(self):
+        bridge = self._calibrated_on_a_bent_arm()
+        entry = bridge.update(arms_world={"right": None},
+                              hands={"right": open_hand()})["h1_2"]["right"]
+        self.assertEqual(entry.source, "hand")
+        self.assertIsNone(entry.orientation)
+        self.assertIn("no elbow", entry.info["orientation_source"])
+
+
+class NeutralOrientationRecordTests(unittest.TestCase):
+    """老中性记录不带姿态 -> 退化成位置模式；新记录带姿态 -> 存读一致。"""
+
+    def test_an_old_neutral_record_still_works_as_position_only(self):
+        payload = {"format": "realtime_arm_neutral_v1",
+                   "sides": {"right": {"offset": [0.0, 0.6, 0.0], "reach": 0.6,
+                                       "samples": 4, "complete": True}}}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "old_neutral.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            loaded = load_neutral(path)
+            self.assertTrue(loaded["sides"]["right"]["complete"])
+            self.assertIsNone(loaded["sides"]["right"]["orientation"])
+            bridge = RealtimeArmBridge(PROFILES, sides=("right",), neutral=loaded)
+            entry = bridge.update(arms_world={"right": bent_arm("right")})["h1_2"]["right"]
+        self.assertTrue(entry.valid)
+        self.assertIsNone(entry.orientation)
+        self.assertEqual(bridge.counts["oriented"]["right"], 0)
+
+    def test_the_neutral_frame_survives_a_save_and_load_round_trip(self):
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=4)
+        for _ in range(4):
+            bridge.update(arms_world={"right": bent_arm("right")})
+        reference = wrist_orientation_frame(bent_arm("right"))
+        with tempfile.TemporaryDirectory() as folder:
+            path = save_neutral(Path(folder) / "neutral.json", bridge.neutral_record())
+            loaded = load_neutral(path)
+            reused = RealtimeArmBridge(PROFILES, sides=("right",), neutral=loaded)
+            entry = reused.update(arms_world={"right": bent_arm("right")})["h1_2"]["right"]
+        np.testing.assert_allclose(loaded["sides"]["right"]["orientation"], reference,
+                                   atol=1e-9)
+        np.testing.assert_allclose(entry.orientation, (0.0, 0.0, 0.0, 1.0), atol=1e-9)
+
+
+# --------------------------------------------------------------------------- #
+# 2026-10-13 现场症状的两条出口：两段式映射（--arm-map segments）与肘位置任务
+# --------------------------------------------------------------------------- #
+def segment_links(upper: float = 0.30, fore: float = 0.20) -> dict:
+    """每台机器人每侧一个假连杆长（米）：只测两段式映射的算术，不接仿真。"""
+    return {name: {side: {"upper": upper, "fore": fore} for side in SIDES}
+            for name in PAPER_ROBOTS}
+
+
+def segment_anchors() -> dict:
+    """每台每侧的中性肘/腕点（基座系，米）：只测肘目标长得对不对。"""
+    return {name: {side: {"elbow": [0.10, 0.20, 0.05], "wrist": [0.10, 0.45, 0.05]}
+                   for side in SIDES}
+            for name in PAPER_ROBOTS}
+
+
+def swung_bent_arm(side: str, angle: float) -> np.ndarray:
+    """弯肘中性姿势上把上臂绕「肩->腕」轴转 angle、腕点不动：现场那个「只摆大臂」。
+
+    必须用弯肘的姿势：直臂时上臂方向就**在**「肩->腕」轴上，绕它转等于没转（位移恒为 0），
+    那是几何事实，不是 bug。现场「握拳贴胸」正是弯肘的。
+    """
+    points = bent_arm(side)
+    shoulder, elbow, wrist = points
+    return np.stack((shoulder,
+                     shoulder + axis_angle(wrist - shoulder, angle) @ (elbow - shoulder),
+                     wrist))
+
+
+def calibrated_bent(sides=SIDES, frames: int = 4, **kwargs) -> RealtimeArmBridge:
+    """同 ``calibrated()``，但中性姿势是**弯肘**的（见 ``swung_bent_arm``）。"""
+    bridge = RealtimeArmBridge(PROFILES, sides=sides, calibration_frames=frames, **kwargs)
+    for _ in range(frames):
+        bridge.update(arms_world={side: bent_arm(side) for side in sides})
+    return bridge
+
+
+class SegmentsMappingTests(unittest.TestCase):
+    """只动大臂这一帧：chain 给不出目标（现场零反应），segments 给得出；肘任务再把它交给 IK。"""
+
+    def test_only_swinging_the_upper_arm_gives_an_empty_target_with_chain(self):
+        # 现场症状的复现：手留在胸前、只把肘摆开，历史口径下目标**一点都不动**。
+        bridge = calibrated_bent(sides=("right",), map_mode="chain")
+        neutral = profile_for("h1_2").realtime_neutral("right")
+        entry = bridge.update(arms_world={"right": swung_bent_arm("right", 0.8)})["h1_2"]["right"]
+        self.assertEqual(entry.info["map"], "chain")
+        np.testing.assert_allclose(entry.position, neutral, atol=1e-9)
+
+    def test_the_same_frame_does_move_the_target_with_segments(self):
+        bridge = calibrated_bent(sides=("right",), map_mode="segments",
+                                 robot_links=segment_links())
+        neutral = np.asarray(profile_for("h1_2").realtime_neutral("right"), dtype=float)
+        entry = bridge.update(arms_world={"right": swung_bent_arm("right", 0.8)})["h1_2"]["right"]
+        self.assertEqual(entry.info["map"], "segments")
+        self.assertGreater(float(np.linalg.norm(np.asarray(entry.position) - neutral)),
+                           0.005)
+
+    def test_segments_falls_back_to_chain_when_link_lengths_are_missing(self):
+        bridge = calibrated_bent(sides=("right",), map_mode="segments")
+        entry = bridge.update(arms_world={"right": arm("right")})["h1_2"]["right"]
+        self.assertEqual(entry.info["map"], "chain (segments unavailable)")
+
+    def test_elbow_target_is_the_upper_arm_term_added_to_the_anchor(self):
+        bridge = calibrated_bent(sides=("right",), map_mode="segments",
+                                 robot_links=segment_links(), elbow_task=True,
+                                 anchors=segment_anchors())
+        entry = bridge.update(arms_world={"right": swung_bent_arm("right", 0.8)})["h1_2"]["right"]
+        anchor = np.asarray(segment_anchors()["h1_2"]["right"]["elbow"], dtype=float)
+        self.assertEqual(entry.info["elbow_task"], "on")
+        self.assertIsNotNone(entry.elbow)
+        # info 里那份是给报告用的、保留 4 位小数，所以容差给 2e-4 而不是 1e-5。
+        np.testing.assert_allclose(np.asarray(entry.elbow) - anchor,
+                                   np.asarray(entry.info["elbow_delta_base_m"]),
+                                   atol=2e-4)
+        # 肘目标动了几十毫米，而同一帧的腕目标几乎不动 —— 这正是「只摆大臂」该有的样子。
+        self.assertGreater(float(np.linalg.norm(np.asarray(entry.elbow) - anchor)), 0.005)
+
+    def test_elbow_target_survives_a_neutral_record_round_trip(self):
+        bridge = calibrated_bent(sides=("right",), map_mode="segments",
+                                 robot_links=segment_links(), elbow_task=True,
+                                 anchors=segment_anchors())
+        with tempfile.TemporaryDirectory() as folder:
+            save_neutral(Path(folder) / "neutral.json", bridge.neutral_record())
+            loaded = load_neutral(Path(folder) / "neutral.json")
+        self.assertIsNotNone(loaded["sides"]["right"]["upper"])
+        self.assertIsNotNone(loaded["sides"]["right"]["fore"])
+        reused = RealtimeArmBridge(PROFILES, sides=("right",), map_mode="segments",
+                                   robot_links=segment_links(), elbow_task=True,
+                                   anchors=segment_anchors(), neutral=loaded)
+        entry = reused.update(arms_world={"right": swung_bent_arm("right", 0.8)})["h1_2"]["right"]
+        self.assertEqual(entry.info["map"], "segments")
+        self.assertEqual(entry.info["elbow_task"], "on")
+
+    def test_elbow_task_without_the_segments_map_is_refused(self):
+        # 两个目标必须出自同一条按连杆长缩放的链，否则它们互相打架（实测腕残差 107 mm）。
+        with self.assertRaises(ValueError):
+            RealtimeArmBridge(PROFILES, sides=("right",), elbow_task=True)
+
+    def test_elbow_task_without_anchor_is_recorded_not_guessed(self):
+        bridge = calibrated_bent(sides=("right",), map_mode="segments",
+                                 robot_links=segment_links(), elbow_task=True)
+        entry = bridge.update(arms_world={"right": swung_bent_arm("right", 0.8)})["h1_2"]["right"]
+        self.assertIsNone(entry.elbow)
+        self.assertTrue(entry.info["elbow_task"].startswith("off"))
+
+
+# --------------------------------------------------------------------------- #
+# 2026-10-13 晚：方向口径（--arm-map posture）—— 现场判定两种位移口径都不像之后加的
+# --------------------------------------------------------------------------- #
+#: 每台一套**不同**的假连杆长（米，与实测量级一致）：方向口径的幅度不该随臂长变。
+POSTURE_LINKS = {"g1": (0.193, 0.184), "gr1_t2": (0.280, 0.250), "h1_2": (0.331, 0.229)}
+#: 这些用例喂帧用的帧长（秒）：现场摄像头 8-12 fps，比名义 1/30 s 更接近真值。
+#: 跳变护栏的上限按帧长换算（600 度/秒 x 0.25 s = 150 度/帧），所以「一帧转 40-60 度」
+#: 在这里是正常手速、不该被拦；护栏本身另有一组用例（DirectionGlitchGuardTests）。
+TEST_FRAME_DT = 0.25
+
+
+def posture_links() -> dict:
+    """每台每侧一套假连杆长（米）：只测方向口径的算术，不接仿真。"""
+    return {name: {side: {"upper": POSTURE_LINKS[name][0],
+                          "fore": POSTURE_LINKS[name][1]}
+                   for side in SIDES}
+            for name in PAPER_ROBOTS}
+
+
+def posture_anchors() -> dict:
+    """每台每侧的中性肩/肘/腕点（基座系，米）：只测方向口径的算术，不接仿真。"""
+    entries = {}
+    for name in PAPER_ROBOTS:
+        entries[name] = {}
+        for side in SIDES:
+            sign = 1.0 if side == "left" else -1.0
+            shoulder = np.array([0.0, 0.20 * sign, 1.20])
+            entries[name][side] = {
+                "shoulder": list(shoulder),
+                "elbow": list(shoulder + np.array([0.0, 0.0, -0.20])),
+                "wrist": list(shoulder + np.array([0.10, 0.0, -0.20]))}
+    return entries
+
+
+def unit(vector) -> np.ndarray:
+    """测试里的单位化小工具（方向断言全用它，避免重复写三遍）。"""
+    values = np.asarray(vector, dtype=np.float64)
+    return values / float(np.linalg.norm(values))
+
+
+def raised_arm(side: str, angle: float) -> np.ndarray:
+    """把**上臂方向**绕 x 轴转 ``angle``（x 轴垂直于上臂，所以方向真的转了 angle）。
+
+    不要用 ``swung_bent_arm`` 量方向：那个动作是「绕肩->腕轴摆肘」，上臂方向与那根轴只差
+    约 8.5 度，所以方向只转得到 5.9 度（它量的是位移口径下的目标位移，不是方向）。前臂
+    向量保持不动、跟着肘走，所以这一帧的 ``operator_fore_deg`` 是 0。
+    """
+    points = bent_arm(side)
+    shoulder, elbow, wrist = points
+    upper = axis_angle(np.array([1.0, 0.0, 0.0]), angle) @ (elbow - shoulder)
+    return np.stack((shoulder, shoulder + upper, shoulder + upper + (wrist - elbow)))
+
+
+def posture_bridge(side: str = "right", **kwargs) -> RealtimeArmBridge:
+    """方向口径的桥，中性姿势是弯肘的（上臂与前臂方向不同，才测得出两个方向）。
+
+    ``frame_dt=TEST_FRAME_DT``：现场摄像头 8-12 fps，一帧几百度/秒是正常手速；用名义 1/30 s
+    会把「一帧转 40-60 度」也判成关键点跳变（护栏的上限是 600 度/秒），那测的就不是方向口径了。
+    """
+    kwargs.setdefault("frame_dt", TEST_FRAME_DT)
+    return calibrated_bent(sides=(side,), map_mode="posture",
+                           robot_links=posture_links(), anchors=posture_anchors(),
+                           **kwargs)
+
+
+class PostureMappingTests(unittest.TestCase):
+    """方向口径：你的方向一比一搬过去，长度用机器人自己的 —— 幅度与臂长无关。"""
+
+    def test_robot_arm_directions_follow_the_operators_verbatim(self):
+        # 现场症状的根因是「幅度被短基线/行程夹掉」，所以这里断言的是**方向**：
+        # 同一帧、三台臂长完全不同的机器人，上臂方向都等于你的方向（过 axis_map）。
+        frame = raised_arm("right", np.radians(40.0))
+        for name in PAPER_ROBOTS:
+            with self.subTest(robot=name):
+                bridge = posture_bridge()
+                entry = bridge.update(arms_world={"right": frame})[name]["right"]
+                self.assertEqual(entry.info["map"], "posture")
+                here = np.asarray(posture_anchors()[name]["right"]["shoulder"], dtype=float)
+                expected = unit(bridge.axis_map.apply(frame[1] - frame[0]))
+                np.testing.assert_allclose(
+                    unit(np.asarray(entry.elbow, dtype=float) - here), expected, atol=1e-9)
+                expected_fore = unit(bridge.axis_map.apply(frame[2] - frame[1]))
+                np.testing.assert_allclose(
+                    unit(np.asarray(entry.position, dtype=float)
+                        - np.asarray(entry.elbow, dtype=float)), expected_fore, atol=1e-9)
+                # 「你转 40 度，机器人就转 40 度」：与它是 g1 还是 h1_2 无关。
+                self.assertAlmostEqual(entry.info["operator_upper_deg"], 40.0, places=2)
+                self.assertAlmostEqual(entry.info["robot_upper_deg"], 40.0, places=2)
+                self.assertIsNotNone(entry.elbow)
+
+    def test_target_lengths_are_the_robots_own_bones(self):
+        # 两根骨头的长度是机器人自己量出来的（不是你的、也不是被 gain 缩放的）。
+        for name in PAPER_ROBOTS:
+            with self.subTest(robot=name):
+                bridge = posture_bridge()
+                entry = bridge.update(
+                    arms_world={"right": raised_arm("right", 0.6)})[name]["right"]
+                here = np.asarray(posture_anchors()[name]["right"]["shoulder"], dtype=float)
+                upper = float(np.linalg.norm(np.asarray(entry.elbow, dtype=float) - here))
+                fore = float(np.linalg.norm(np.asarray(entry.position, dtype=float)
+                                            - np.asarray(entry.elbow, dtype=float)))
+                self.assertAlmostEqual(upper, POSTURE_LINKS[name][0], places=9)
+                self.assertAlmostEqual(fore, POSTURE_LINKS[name][1], places=9)
+
+    def test_both_targets_are_reachable_together(self):
+        # 腕目标与肘目标同出一源（腕 - 肘 正好是机器人的前臂向量），所以 IK2 不会互相拉扯；
+        # 位移口径下两个目标各自被逐轴夹断，正是现场「抽抽」的来源。
+        bridge = posture_bridge()
+        entry = bridge.update(arms_world={"right": raised_arm("right", 1.1)})["h1_2"]["right"]
+        here = np.asarray(posture_anchors()["h1_2"]["right"]["shoulder"], dtype=float)
+        wrist = np.asarray(entry.position, dtype=float)
+        elbow = np.asarray(entry.elbow, dtype=float)
+        ceiling = POSTURE_LINKS["h1_2"][0] + POSTURE_LINKS["h1_2"][1]
+        self.assertLessEqual(float(np.linalg.norm(wrist - here)), ceiling + 1e-9)
+        self.assertAlmostEqual(float(np.linalg.norm(wrist - elbow)),
+                               POSTURE_LINKS["h1_2"][1], places=9)
+
+    def test_amplitude_is_not_squeezed_by_the_travel_ceiling(self):
+        # 现场症状：g1 每轴 40 mm 的行程上限把大臂压得看不出来。方向口径下目标位移是
+        # 「你的转角 x 机器人自己的上臂长」，落在大臂自己的球面上，不受那个上限约束。
+        bridge = posture_bridge()
+        rest = bridge.update(arms_world={"right": raised_arm("right", 0.0)})["g1"]["right"]
+        swung = bridge.update(
+            arms_world={"right": raised_arm("right", np.radians(60.0))})["g1"]["right"]
+        travel = float(np.linalg.norm(np.asarray(swung.position)
+                                      - np.asarray(rest.position)))
+        self.assertGreater(travel, 2.0 * profile_for("g1").travel_limit("right"))
+        self.assertFalse(swung.info["travel_limit_applied"])
+        self.assertFalse(swung.info["clamped"])
+
+    def test_zero_gain_keeps_the_robots_own_neutral_direction(self):
+        bridge = posture_bridge(posture_gain=0.0)
+        entry = bridge.update(arms_world={"right": raised_arm("right", 0.9)})["h1_2"]["right"]
+        anchors = posture_anchors()["h1_2"]["right"]
+        here = np.asarray(anchors["shoulder"], dtype=float)
+        rest = np.asarray(anchors["elbow"], dtype=float) - here
+        np.testing.assert_allclose(unit(np.asarray(entry.elbow, dtype=float) - here),
+                                   unit(rest), atol=1e-9)
+        self.assertEqual(entry.info["robot_upper_deg"], 0.0)
+
+    def test_gain_out_of_range_is_refused(self):
+        with self.assertRaises(ValueError):
+            RealtimeArmBridge(PROFILES, sides=("right",), map_mode="posture",
+                              posture_gain=1.5)
+
+    def test_elbow_target_needs_no_elbow_task_flag(self):
+        # 方向口径下肘目标由口径自己给出：--arm-elbow-task 不需要，给了也不冲突。
+        entry = posture_bridge().update(
+            arms_world={"right": raised_arm("right", 0.6)})["h1_2"]["right"]
+        self.assertEqual(entry.info["elbow_target"], "posture")
+        other = posture_bridge(elbow_task=True).update(
+            arms_world={"right": raised_arm("right", 0.6)})["h1_2"]["right"]
+        self.assertEqual(other.info["map"], "posture")
+        np.testing.assert_allclose(other.elbow, entry.elbow, atol=1e-12)
+
+    def test_missing_shoulder_anchor_falls_back_to_chain_with_a_reason(self):
+        anchors = {name: {side: {"elbow": [0.10, 0.20, 0.05],
+                                 "wrist": [0.10, 0.45, 0.05]}
+                          for side in SIDES}
+                   for name in PAPER_ROBOTS}
+        bridge = calibrated_bent(sides=("right",), map_mode="posture",
+                                 robot_links=posture_links(), anchors=anchors)
+        entry = bridge.update(arms_world={"right": raised_arm("right", 0.8)})["h1_2"]["right"]
+        self.assertIn("posture unavailable", entry.info["map"])
+        self.assertIn("shoulder anchor", entry.info["map"])
+        self.assertIsNone(entry.elbow)
+
+    def test_summary_reports_the_gain_and_which_sides_can_run_it(self):
+        summary = posture_bridge(posture_gain=0.5).summary()
+        self.assertEqual(summary["map_mode"], "posture")
+        self.assertEqual(summary["posture_gain"], 0.5)
+        self.assertTrue(all(summary["posture_available"]["g1"].values()))
+        self.assertIn("right", summary["shoulder_anchors_m"]["g1"])
+        self.assertIn("posture", summary["counts"])
+
+
+# --------------------------------------------------------------------------- #
+# 2026-10-13 现场第二个症状（H1-2 手臂与手掌交界处偶尔抽搐）的修法：关键点跳变护栏。
+# --------------------------------------------------------------------------- #
+class DirectionGlitchGuardTests(unittest.TestCase):
+    """单帧方向变化超过人手臂角速度上限 -> 判为关键点跳变，保持上一帧。
+
+    依据（``outputs/tmp_realtime/check_arm_jitter.py`` 量同一份录音）：每帧方向变化中位
+    4.7-6.9 度、p90 21-35 度、**最大 153 度**。方向口径 1:1 搬方向，于是跳变直接变成
+    「一帧里把肘转 153 度」的请求，IK 只好翻支路或抽一下。
+    """
+
+    def _rotated(self, side, degrees, **kwargs):
+        """把这一侧的手臂绕肩整体转 ``degrees`` 度后的一帧（上臂/前臂方向都跟着转）。"""
+        points = arm(side, **kwargs)
+        rotation = axis_angle(np.array([1.0, 0.0, 0.0]), np.radians(degrees))
+        return rotate_arm(points, rotation, points[0])
+
+    def _bridge(self, **kwargs) -> RealtimeArmBridge:
+        """名义 1/30 s 的桥：护栏上限 = 600/30 = 20 度/帧，所以 120 度的跳变必然触发。"""
+        return posture_bridge(frame_dt=1.0 / 30.0, **kwargs)
+
+    def test_a_single_frame_spike_is_held_and_counted(self):
+        bridge = self._bridge()
+        first = bridge.update(arms_world={"right": bent_arm("right")})["h1_2"]["right"]
+        # 名义帧长 1/30 s -> 上限 600/30 = 20 度；转 120 度必然触发
+        spike = bridge.update(arms_world={"right": self._rotated("right", 120.0)})["h1_2"]["right"]
+        self.assertEqual(bridge.counts["direction_glitch"]["right"], 1)
+        self.assertGreater(spike.info["operator_direction_glitch_deg"], 100.0)
+        # 保持上一帧 -> 肘/腕两个目标与上一帧逐位相同
+        np.testing.assert_allclose(spike.position, first.position, atol=0.0)
+        np.testing.assert_allclose(spike.elbow, first.elbow, atol=0.0)
+
+    def test_a_persistent_change_is_accepted_after_the_hold_limit(self):
+        bridge = self._bridge()
+        bridge.update(arms_world={"right": bent_arm("right")})
+        targets = [bridge.update(arms_world={"right": self._rotated("right", 120.0)})["h1_2"]["right"]
+                   for _ in range(GLITCH_HOLD_FRAMES + 1)]
+        self.assertEqual(bridge.counts["direction_glitch"]["right"], GLITCH_HOLD_FRAMES)
+        self.assertEqual(bridge.counts["direction_glitch_kept"]["right"], 1)
+        # 放过去之后必须真的动了，不能一直卡在旧方向上
+        moved = np.linalg.norm(np.asarray(targets[-1].position, dtype=float)
+                               - np.asarray(targets[0].position, dtype=float))
+        self.assertGreater(moved, 0.01)
+
+    def test_a_rate_of_zero_turns_the_guard_off(self):
+        bridge = self._bridge(max_direction_rate_deg_s=0.0)
+        first = bridge.update(arms_world={"right": bent_arm("right")})["h1_2"]["right"]
+        spike = bridge.update(arms_world={"right": self._rotated("right", 120.0)})["h1_2"]["right"]
+        self.assertEqual(bridge.counts["direction_glitch"]["right"], 0)
+        self.assertGreater(np.linalg.norm(np.asarray(spike.position, dtype=float)
+                                          - np.asarray(first.position, dtype=float)), 0.01)
+
+    def test_a_data_gap_resets_the_baseline_instead_of_faking_a_glitch(self):
+        bridge = self._bridge()
+        bridge.update(arms_world={"right": bent_arm("right")})
+        bridge.update(arms_world={"right": None})            # 断流一帧（没检到）
+        entry = bridge.update(arms_world={"right": self._rotated("right", 120.0)})["h1_2"]["right"]
+        self.assertEqual(bridge.counts["direction_glitch"]["right"], 0)
+        self.assertEqual(entry.info["operator_direction_glitch_deg"], 0.0)
+
+    def test_the_frame_dt_scales_the_limit(self):
+        # 半秒一帧时 600 度/秒 = 300 度/帧，所以 120 度是正常移动，不该拦。
+        slow = self._bridge()
+        slow.update(arms_world={"right": bent_arm("right")}, frame_dt=0.5)
+        slow.update(arms_world={"right": self._rotated("right", 120.0)}, frame_dt=0.5)
+        self.assertEqual(slow.counts["direction_glitch"]["right"], 0)
+        # 33 ms 一帧时同一动作就是 3600 度/秒，必须拦。
+        fast = self._bridge()
+        fast.update(arms_world={"right": bent_arm("right")}, frame_dt=1.0 / 30.0)
+        fast.update(arms_world={"right": self._rotated("right", 120.0)}, frame_dt=1.0 / 30.0)
+        self.assertEqual(fast.counts["direction_glitch"]["right"], 1)
+
+    def test_the_entry_parser_exposes_the_guard_flag(self):
+        args = build_parser().parse_args([])
+        self.assertEqual(args.arm_direction_rate_deg_s, MAX_DIRECTION_RATE_DEG_S)
+        args = build_parser().parse_args(["--arm-direction-rate-deg-s", "0"])
+        self.assertEqual(args.arm_direction_rate_deg_s, 0.0)
+
 
 
 if __name__ == "__main__":

@@ -112,16 +112,28 @@ from teleoperation.simulation.arm_preview import (
     build_arm_preview,
 )
 from teleoperation.simulation.arm_profiles import loadable_robots, profile_for
+from teleoperation.simulation.arm_ik import ELBOW_PASS_ORDERS, ELBOW_RECOVERY_DEG
 from teleoperation.simulation.arm_realtime import (
+    DEFAULT_LATERAL_GUARD_M,
+    MAP_MODES,
+    MAX_DIRECTION_RATE_DEG_S,
+    TRAVEL_MODES,
     AxisMap,
     RealtimeArmBridge,
     load_neutral,
     save_neutral,
 )
-from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+from teleoperation.simulation.arm_scene_driver import SLEW_MAX_STEP_M, ArmSceneDriver
 
 SIDES = ("left", "right")
 ARM_ENTRY = "realtime_teleop"
+#: 摄像头循环名义帧长（秒）：第一帧还没有"上一帧"可比，斜坡按它换算，
+#: 这样第一帧也是 20 mm/帧（旧口径），不会退化成"一步跳到工作点"。
+NOMINAL_FRAME_DT = 1.0 / 30.0
+#: 斜坡默认速率（mm/s）：600 mm/s 在 30 fps 下正好是 20 mm/帧（与 2026-10-13 实测口径同速），
+#: 现场 10-12 fps 下按帧换算成 50-60 mm/帧、再被 SLEW_MAX_STEP_M（40 mm）压到 40 mm/帧 ——
+#: 40 mm 是实测拐点（横摆传递 0.80，再快没有改善而残差变大）。见 docs/multi-robot-arm.md §8.9。
+DEFAULT_ARM_SLEW_MM_PER_S = 600.0
 #: HUD 里把来源缩成一个字母：P = pose 手臂（主），H = 手部兜底，- = 无数据（保持上一帧）。
 SOURCE_SHORT = {"pose": "P", "hand": "H", "none": "-"}
 
@@ -309,16 +321,158 @@ def build_parser() -> argparse.ArgumentParser:
                         help="drive only these robots (repeatable; default: all three)")
     parser.add_argument("--no-arms", action="store_true",
                         help="baseline behaviour: drive the hands only, arms stay held")
-    parser.add_argument("--arm-orientation", choices=("off", "auto", "on"), default="auto",
+    parser.add_argument("--arm-orientation", choices=("off", "auto", "on"), default="off",
                         help="auto = keep the orientation constraint where the profile has one "
-                             "(h1_2 only)")
+                             "(h1_2 only); off = position-only for every robot (default since "
+                             "2026-10-13); on = force the constraint. Measured on a 1560 frame "
+                             "live recording, same input, only this flag changed: h1_2 wrist "
+                             "residual 95.8 / 133.3 mm -> 17.1 / 3.9 mm, orientation error "
+                             "46.0 / 46.4 deg -> 1.5 / 0.4 deg, shoulder yaw travel 322.4 / "
+                             "235.5 deg -> 209.6 / 68.7 deg (the 3-point wrist frame flips its "
+                             "elbow-plane normal: 4-7%% of frames command a >60 deg step, max "
+                             "~178 deg). g1 / gr1_t2 are position-only either way")
     parser.add_argument("--arm-axis-order", default=None, metavar="ZXY",
                         help="robot axes taken from operator axes (default from arm_realtime)")
     parser.add_argument("--arm-axis-signs", default=None, metavar="-1,1,-1")
     parser.add_argument("--arm-gain", type=float, nargs=2, action="append", default=None,
                         metavar=("ROBOT", "GAIN"), help="override metric_scale for one robot")
+    parser.add_argument("--arm-map", choices=MAP_MODES, default="chain",
+                        help="how operator motion becomes a target. 'chain' (default, "
+                             "unchanged) = wrist minus shoulder, one gain. 'segments' = the "
+                             "paper's scale_joints: one term per bone, scaled by the robot's "
+                             "own measured link lengths, which is also what the elbow task "
+                             "needs. Measured 2026-10-13 on a synthetic 'fists at the chest, "
+                             "only the upper arm swings' stream: the target moved 0.0 mm on "
+                             "all three robots with 'chain' (that is why that motion gets no "
+                             "reaction at all) vs 68-74 / 8-10 / 2 mm with 'segments'. It is "
+                             "not a cure on its own: when a robot's two bone lengths have "
+                             "almost the same ratio as yours (g1 0.193/0.184) the two terms "
+                             "cancel again, and only the elbow task can move the shoulder. "
+                             "See docs/multi-robot-arm.md 8.10. 'posture' (added 2026-10-13 evening, after the field verdict "
+                              "that both displacement recipes do not look like the operator) "
+                              "= move the DIRECTION instead of a displacement, with the "
+                              "robot's own measured bone lengths: elbow = shoulder_anchor + "
+                              "L_u*M(unit(你的上臂)), wrist = elbow + L_f*M(unit(你的前臂)). "
+                              "Your 40 deg shoulder swing is then 40 deg on every robot, the "
+                              "per-axis travel clamp does not apply, and both targets are "
+                              "always reachable. See 8.11")
+    parser.add_argument("--arm-elbow-task", action="store_true",
+                        help="also hand the IK an elbow position target (the paper's elbow "
+                             "task; needs --arm-map segments; --arm-map posture builds the "
+                             "elbow target by itself, so this flag is not needed there). "
+                             "Off by default. Measured "
+                             "0.01-0.06 deg of upper-arm motion without it (the redundant "
+                             "7 DoF chain keeps its configuration, which is why the upper "
+                             "arm 'does not move') vs 7-33 deg with it. Cost: the wrist "
+                             "residual grows when the two targets disagree, so try it and "
+                             "watch --arm-trace / the report")
+    parser.add_argument("--arm-elbow-pass", choices=ELBOW_PASS_ORDERS, default="last",
+                        help="which IK pass carries the elbow target (default 'last': with "
+                             "'first' the wrist-pose finishing pass pulls the elbow back "
+                             "again, measured elbow error 141-256 mm)")
+    parser.add_argument("--arm-elbow-gain", type=float, default=1.0, metavar="0-1",
+                        help="how much of the upper-arm displacement to hand the elbow "
+                             "target (default 1.0 = the whole term). PyBullet gives the two "
+                             "position targets equal weight, so this is the only knob on the "
+                             "trade: measured 2026-10-13 on a real recording (120 frames, "
+                             "h1_2 right) 1.0 gave 83.98 deg of shoulder travel at 65.75 mm "
+                             "wrist residual (ceiling 30) where the wrist-only run gave 49.93 "
+                             "deg at 6.38 mm. Lower it to buy wrist accuracy back")
+    parser.add_argument("--arm-posture-gain", type=float, default=1.0, metavar="0-1",
+                        help="direction recipe only (--arm-map posture): 1.0 (default) = the "
+                             "robot's upper arm / forearm point exactly where yours point; "
+                             "0.5 = stop halfway between the robot's own neutral direction "
+                             "and yours; 0 = stay at the robot's neutral. It is an angle "
+                             "blend (slerp), not a displacement scale: your 40 deg shoulder "
+                             "swing stays 40 deg on every robot either way")
+    parser.add_argument("--arm-no-shoulder-follow", action="store_true",
+                        help="turn off shoulder following for the elbow/wrist targets (default: "
+                             "on for the recipes that measure anchors). The commanded elbow is "
+                             "'load-time shoulder anchor + upper-arm length * your direction', a "
+                             "point fixed to the robot BASE; when the torso is pushed by the arm "
+                             "reaction forces the distance from the CURRENT shoulder stops being "
+                             "one upper arm, so the 7 DoF chain compromises and the elbow lands "
+                             "somewhere else (the field 'bends the opposite way'). With it on, "
+                             "both targets are shifted by 'current FK shoulder - anchor' every "
+                             "frame. Use this flag to reproduce the old numbers")
+    parser.add_argument("--arm-direction-rate-deg-s", type=float,
+                        default=MAX_DIRECTION_RATE_DEG_S, metavar="DEG/S",
+                        help="operator direction glitch guard (default %.0f deg/s, 0 = off). "
+                             "A single-frame direction change faster than a human joint can "
+                             "turn is a landmark jump, not your arm: measured on the recording "
+                             "(outputs/tmp_realtime/live_long_frames.npz) the median step is "
+                             "4.7-6.9 deg at ~10 fps but the MAX is 153 deg. The direction "
+                             "recipe copies directions 1:1, so such a jump asks the IK to swing "
+                             "the elbow 153 deg in one frame -- it either flips branch or jerks "
+                             "(the field 'H1-2 twitches at the wrist'). Over the limit the "
+                             "previous direction is held and counted in counts.direction_glitch"
+                             % MAX_DIRECTION_RATE_DEG_S)
+    parser.add_argument("--arm-elbow-recovery-deg", type=float, default=ELBOW_RECOVERY_DEG,
+                        metavar="MM",
+                        help="elbow branch recovery threshold in degrees (default %.0f, "
+                             "0 = off). The IK starts from the current pose and pays for "
+                             "distance to restPoses, so once a frame drops the elbow into the "
+                             "flipped branch every later frame is solved from there and never "
+                             "comes back -- the field complaint 'GR1-T2 bends the opposite way' "
+                             "(200-frame replay, 2026-10-13: gr1_t2 left 91%% of frames with "
+                             ">30 deg elbow error, 29%% with the forearm more than 90 deg away "
+                             "from the asked direction; h1_2 right was 5 deg). Above this "
+                             "threshold the same pass sequence is re-solved from the load "
+                             "pose and the branch with the smaller forearm+0.5*upper direction "
+                             "error (degrees) wins"
+                             % ELBOW_RECOVERY_DEG)
+
     parser.add_argument("--arm-travel-mm", type=float, default=None,
                         help="override the per-axis travel clamp for every robot (mm)")
+    parser.add_argument("--arm-travel-mode", choices=TRAVEL_MODES, default="clip",
+                        help="what to do when the requested wrist target exceeds the travel "
+                             "limit. 'clip' = cut each axis on its own (default since "
+                             "2026-10-13: measured on a live composite step of "
+                             "(-9.3, +6.4, +24.5) cm, where only op_z is over the limit, it "
+                             "keeps g1's lateral wrist travel at 3.44 cm / shoulder roll 5.5 "
+                             "deg / elbow 7.1 deg). 'scale' = shrink the whole step so its "
+                             "longest axis lands exactly on the limit, direction kept: one "
+                             "over-limit axis (the jittery MediaPipe depth) then shrinks every "
+                             "axis, which is what made the robot look like it only ever swung "
+                             "up and down (same step: g1 lateral 1.31 cm, roll 2.0 deg, elbow "
+                             "2.8 deg). See docs/multi-robot-arm.md 8.8")
+    parser.add_argument("--arm-lateral-guard-mm", type=float,
+                        default=1000.0 * DEFAULT_LATERAL_GUARD_M, metavar="MM",
+                        help="keep each wrist target on its own side of the body: left wrist "
+                             "y >= +MM, right wrist y <= -MM (**default 0 = off** since "
+                             "2026-10-13 evening; 20 was the daytime default). It was added "
+                             "because h1_2's neutral working point is only y=+-0.05 m while the "
+                             "per-axis travel limit is 0.10 / 0.15 m, so the targets can legally "
+                             "cross the midline and the two forearms touch (measured on a 1560 "
+                             "frame session: gap down to 2.21 mm). Cost measured 2026-10-13: "
+                             "swing the left hand +-9 cm and h1_2's lateral swing drops from "
+                             "0.49 to 0.43 of the operator's, and a 9.0 cm inward request lands "
+                             "at 2.9 cm instead of 6.3 cm -- that half of the swing is what the "
+                             "operator complained was missing, and the crossing itself is the "
+                             "operator's own hand crossing the midline")
+    parser.add_argument("--no-arm-gain-quality-guard", action="store_true",
+                        help="trust the calibrated arm length even when it is not humanly "
+                             "possible. In the measured live_long session the pose "
+                             "calibration gave 0.2742 m (left) / 0.3976 m (right), 31%% apart "
+                             "-> gain h1_2 left 1.4 (the 2x cap), and then every axis of "
+                             "every frame slammed into the travel limit")
+    parser.add_argument("--arm-slew-mm-s", type=float, default=DEFAULT_ARM_SLEW_MM_PER_S,
+                        metavar="MM/S",
+                        help="how fast the commanded wrist target may follow the hand, as a "
+                             "**speed** (mm/s, default 600 = 20 mm per 1/30 s frame). The app "
+                             "converts it every frame with the loop's measured interval, so a "
+                             "10 fps camera gets 40 mm/frame (the SLEW_MAX_STEP_M ceiling) "
+                             "instead of 20: the recorded operator's hand moves 37 mm/frame "
+                             "(median) / 147 mm/frame (p90) at 10.05 fps, so a fixed "
+                             "20 mm/frame cap put the robot on 13%% of the hand speed and the "
+                             "measured lateral swing transfer was only 0.43 (0.80 with this "
+                             "default). 0 = off (jump straight there; the two-pass IK can then "
+                             "lock into a bad branch)")
+    parser.add_argument("--arm-slew-mm", type=float, default=None, metavar="MM",
+                        help="fixed per-frame cap (mm), overriding --arm-slew-mm-s. Give this "
+                             "to reproduce a 2026-10-13 number exactly (that session ran "
+                             "20 mm/frame at 10 fps = 200 mm/s); leave it None to let the app "
+                             "scale the speed with the measured frame time")
     parser.add_argument("--arm-ik-iterations", type=int, default=60,
                         help="PyBullet IK maxNumIterations per pass (default 60: measured "
                              "2026-10-12, 60/1e-4 beats 200/1e-5 in residual AND speed here)")
@@ -377,7 +531,13 @@ def arm_hud(bridge, driver, targets) -> str:
         text = " ".join(f"{name}={max(entry.values()):.0f}"
                         for name, entry in sorted(values.items()) if entry)
         residuals = f" res(mm) {text}"
-    return f"{bridge.status()} arm {sources}{residuals}"
+    # sat / guard 是累计帧数：sat 一直涨说明手已经跑出机器人行程（目标被钉住，
+    # 再动也不跟）；guard 是横向护栏把手腕挡回本侧的帧数。现场用这两个数一眼分辨
+    # "手在动但机器人不跟"到底是行程不够还是护栏在挡。
+    pinned = sum((bridge.counts.get("clamped") or {}).values())
+    guarded = sum((bridge.counts.get("guarded") or {}).values())
+    tail = f" sat={pinned}" + ("" if not guarded else f" guard={guarded}")
+    return f"{bridge.status()} arm {sources}{residuals}{tail}"
 
 
 def arm_lines(bridge, sides) -> dict:
@@ -490,6 +650,7 @@ def run(args) -> int:
         args.backend, checkpoint, args.device, args.calibration_frames,
         args.smoothing, args.landmark_space)
     scene = camera = preview = driver = bridge = None
+    fixed_slew_m = None
     arm_failures = {}
     processed = 0
     started = None
@@ -508,9 +669,65 @@ def run(args) -> int:
         if hasattr(scene, "frame_scene"):
             scene.frame_scene(args.view)
         if arms_wanted:
+            # 斜坡两种口径（见 §8.9）：给了 --arm-slew-mm 就用固定 mm/帧（复现旧数字），
+            # 否则按 --arm-slew-mm-s 的速率每帧换算 —— 现场 8-12 fps 下固定 20 mm/帧
+            # 只有 0.2 m/s，而录制里操作者手速中位就是 0.37 m/s，摆动会被整段削掉。
+            fixed_slew_m = (None if args.arm_slew_mm is None
+                            else max(0.0, float(args.arm_slew_mm)) / 1000.0)
+            slew_speed_m_per_s = (0.0 if fixed_slew_m is not None
+                                  else max(0.0, float(args.arm_slew_mm_s)) / 1000.0)
             driver = ArmSceneDriver(scene, sides=sides, robots=robots,
                                     ik_iterations=args.arm_ik_iterations,
-                                    residual_threshold=args.arm_ik_residual_threshold)
+                                    residual_threshold=args.arm_ik_residual_threshold,
+                                    slew_m=(0.0 if fixed_slew_m is None else fixed_slew_m),
+                                    slew_m_per_s=slew_speed_m_per_s,
+                                    elbow_pass=args.arm_elbow_pass,
+                                    elbow_recovery_deg=args.arm_elbow_recovery_deg)
+            # segments 口径与肘任务要的「机器人自己的量」：实测连杆长 + 中性腕/肘点（基座系）。
+            # 加载后量一次即可，之后每帧只是加减法（见 arm_realtime.MAP_MODES）。
+            robot_links, robot_anchors = {}, {}
+            if args.arm_map in ("segments", "posture"):
+                for name in robots:
+                    adapter = driver.ik[name]
+                    robot_links[name], robot_anchors[name] = {}, {}
+                    for side in sides:
+                        points = adapter.arm_points(side)
+                        shoulder = np.asarray(points["shoulder"], dtype=np.float64)
+                        elbow = np.asarray(points["elbow"], dtype=np.float64)
+                        wrist = np.asarray(points["wrist"], dtype=np.float64)
+                        robot_links[name][side] = {
+                            "upper": float(np.linalg.norm(elbow - shoulder)),
+                            "fore": float(np.linalg.norm(wrist - elbow))}
+                        # arm_points 给的是世界坐标 -> 基座系（肘目标按基座系给）
+                        robot_anchors[name][side] = {
+                            # 肩锚点只有方向口径（--arm-map posture）用：腕/肘目标 =
+                            # 肩锚点 + 机器人自己的连杆长 * 你的单位方向。
+                            "shoulder": list(adapter.to_base(shoulder)),
+                            "elbow": list(adapter.to_base(elbow)),
+                            "wrist": list(adapter.to_base(wrist))}
+                if not args.arm_no_shoulder_follow:
+                    # 肘/腕目标按「当前肩 - 加载锚点」平移（见 ArmSceneDriver._shoulder_shift）：
+                    # 躯干被手臂反作用力推着走时，目标仍然落在「离当前肩正好一根上臂」的球面上。
+                    driver.set_shoulder_anchors(robot_anchors)
+                elbow_note = ("elbow task: built by the direction recipe (pass "
+                              f"{args.arm_elbow_pass})"
+                              if args.arm_map == "posture" else
+                              f"elbow task {'on' if args.arm_elbow_task else 'off'}")
+                pass_note = ("" if args.arm_map == "posture" else
+                             (f" (pass {args.arm_elbow_pass})"
+                              if args.arm_elbow_task else ""))
+
+                print(f"arm map: {args.arm_map} | measured links (m) "
+                      + " ".join(f"{name}:{side[0]}" +
+                                 f" {robot_links[name][side]['upper']:.3f}"
+                                 f"+{robot_links[name][side]['fore']:.3f}"
+                                 for name in robots for side in sides)
+                      + f" | {elbow_note}"
+                      + pass_note
+                      + (f" | elbow branch recovery: >{args.arm_elbow_recovery_deg:.0f} deg"
+                         if args.arm_elbow_recovery_deg > 0.0 else
+                         " | elbow branch recovery: off"),
+                      flush=True)
             gains = {str(pair[0]): float(pair[1]) for pair in (args.arm_gain or [])}
             axis_map = AxisMap()
             if args.arm_axis_order and args.arm_axis_signs:
@@ -527,11 +744,25 @@ def run(args) -> int:
                 orientation=args.arm_orientation, gains=gains,
                 max_travel_m=(None if args.arm_travel_mm is None
                               else float(args.arm_travel_mm) / 1000.0),
-                neutral=neutral, fallback_hand=not args.no_arm_fallback)
+                travel_mode=args.arm_travel_mode,
+                lateral_guard_m=max(0.0, float(args.arm_lateral_guard_mm)) / 1000.0,
+                gain_quality_guard=not args.no_arm_gain_quality_guard,
+                neutral=neutral, fallback_hand=not args.no_arm_fallback,
+                map_mode=args.arm_map, robot_links=robot_links,
+                elbow_task=args.arm_elbow_task, elbow_gain=args.arm_elbow_gain,
+                posture_gain=args.arm_posture_gain,
+                max_direction_rate_deg_s=args.arm_direction_rate_deg_s,
+                anchors=robot_anchors)
             print(f"arms: {', '.join(robots)} | ik_mode "
-                  f"{({name: profiles[name].ik_mode for name in robots})} | travel limit "
-                  f"{bridge.travel_limits()} m | "
-                  f"neutral {'reused from ' + str(args.neutral_json) if neutral else str(args.arm_calibrate_frames) + ' frames'}",
+                  f"{({name: profiles[name].ik_mode for name in robots})} | "
+                  f"orientation {args.arm_orientation} | travel limit "
+                  f"{bridge.travel_limits()} m ({args.arm_travel_mode}) | "
+                  f"lateral guard {args.arm_lateral_guard_mm} mm | "
+                  f"neutral {'reused from ' + str(args.neutral_json) if neutral else str(args.arm_calibrate_frames) + ' frames'} | "
+                  + (f"target slew {fixed_slew_m * 1000.0:.1f} mm/frame (fixed)"
+                     if fixed_slew_m is not None else
+                     f"target slew {args.arm_slew_mm_s:.0f} mm/s "
+                     f"(ceiling {SLEW_MAX_STEP_M * 1000.0:.0f} mm/frame)"),
                   flush=True)
         if args.input_npz is not None:
             camera = ReplayFrameSource(args.input_npz, args.landmark_space)
@@ -585,17 +816,35 @@ def run(args) -> int:
                     latest[side] = values
             targets = {}
             if bridge is not None:
-                targets = bridge.update(arms_world=camera.arms(), hands=raw_frame)
+                # 这一帧的真实时长先算出来：斜坡的速率口径与关键点跳变护栏都要用它
+                # （现场摄像头 8-12 fps，名义 1/30 s 会把 600 度/秒算成 20 度/帧）。
+                frame_dt = _median_interval(marks) or NOMINAL_FRAME_DT
+                targets = bridge.update(arms_world=camera.arms(), hands=raw_frame,
+                                        frame_dt=frame_dt)
+                orientation_by_side = bridge.orientation_target()
+                # 斜坡：速率（mm/s）-> 这一帧最多走多少米。现场摄像头循环帧率不固定
+                # （8-12 fps），固定 mm/帧 会把跟随速度绑在帧率上，摆动被整段削掉（§8.9）。
+                # 第一帧拿不到间隔，用名义 1/30 s（= 旧口径 20 mm/帧），不是"关掉斜坡"。
+                driver.update_slew(frame_dt)
                 for side in sides:
                     per_side = {name: entry[side] for name, entry in targets.items()}
                     positions = {name: target.position for name, target in per_side.items()
                                  if target.position is not None}
                     if len(positions) != len(per_side):
                         continue        # 还有机器人没目标：这一侧整侧跳过（保持上一帧）
-                    orientation = per_side[sorted(per_side)[0]].orientation
+                    # 肘位置任务（--arm-elbow-task）：只给量到锚点的那几台，缺的退回只喂腕。
+                    elbows = {name: target.elbow for name, target in per_side.items()
+                              if getattr(target, "elbow", None) is not None} or None
+                    orientation = orientation_by_side[side]
                     try:
+                        # orientation 是**相对中性**的四元数（同一份给三台，各自乘自己的
+                        # 中性 EE 朝向 —— orientation_frame="neutral" 就是这件事）。
+                        # 取自 bridge.orientation_target()：不能从某一台的 target 里挑，
+                        # 那样会挑到 position-only 的那台（None，姿态被静默丢掉）。
                         driver.apply_each(side, positions, source="base",
-                                          orientation=orientation)
+                                          orientation=orientation,
+                                          orientation_frame="neutral",
+                                          elbows=elbows)
                     except Exception as error:  # noqa: BLE001 - 一台坏不该拖垮整场
                         if side not in arm_failures:
                             arm_failures[side] = f"{type(error).__name__}: {error}"
@@ -629,6 +878,8 @@ def run(args) -> int:
         # "Not connected to physics server"。
         arm_residuals = {} if driver is None else driver.residuals_mm()
         arm_hold_drift = {} if driver is None else driver.hold_drift()
+        arm_posture = {} if driver is None else driver.posture_summary()
+        arm_gap = {} if driver is None else driver.forearm_gap_summary()
         arm_summary = None if driver is None else driver.summary()
         scene_summary = scene.summary() if hasattr(scene, "summary") else None
         elapsed = time.perf_counter() - started
@@ -651,8 +902,33 @@ def run(args) -> int:
         if entry:
             text = " ".join(f"{side}={value:.1f}" for side, value in sorted(entry.items()))
             print(f"  arm {robot}: wrist residual mm {text}", flush=True)
+    for robot, per_side in sorted(arm_posture.items()):
+        for side, entry in sorted(per_side.items()):
+            if not entry or entry.get("frames", 0) < 2:
+                continue
+            bend = entry["elbow_bend_deg"]
+            print(f"  arm {robot}/{side}: shoulder travel {entry['shoulder_travel_deg']:.1f} deg, "
+                  f"upper arm swept {entry['upper_arm_dir_travel_deg']:.1f} deg, "
+                  f"elbow moved {entry['elbow_span_mm']:.0f} mm, "
+                  f"elbow bend {bend['min']}-{bend['max']} deg", flush=True)
+    if arm_gap:
+        text = " ".join(f"{robot}={value:.0f}" for robot, value in sorted(
+            (arm_gap.get("min_mm") or {}).items()))
+        print(f"  arm forearm gap (worst): {text} mm "
+              f"[worst {arm_gap.get('worst_mm')} mm over {arm_gap.get('frames')} frames]",
+              flush=True)
     if arm_hold_drift:
         print(f"  arm hold drift: {json.dumps(arm_hold_drift, ensure_ascii=False)}", flush=True)
+    if bridge is not None:
+        for side, entry in sorted((bridge.summary().get("arm_length_trust") or {}).items()):
+            if not entry.get("trusted"):
+                print(f"  arm gain guard [{side}]: {entry.get('reason')}; using "
+                      f"profile.metric_scale instead of arm-length normalisation", flush=True)
+        arm_guarded_total_print = sum((bridge.counts.get("guarded") or {}).values())
+        if arm_guarded_total_print:
+            print(f"  arm lateral guard: {arm_guarded_total_print} frames had a wrist target "
+                  f"pushed back to its own side "
+                  f"(limit {1000.0 * bridge.lateral_guard_m:.0f} mm)", flush=True)
     if preview is not None:
         print(f"camera preview: window={'on' if preview.show else 'off'} "
               f"mirror={'on' if preview.mirror else 'off'} "
@@ -662,6 +938,9 @@ def run(args) -> int:
               f"{'' if not preview.note else ' note=' + preview.note}", flush=True)
     arm_valid_total = 0 if bridge is None else sum(bridge.counts["valid"].values())
     arm_clamped_total = 0 if bridge is None else sum(bridge.counts["clamped"].values())
+    arm_guarded_total = 0 if bridge is None else sum(bridge.counts["guarded"].values())
+    arm_gain_guarded_total = (0 if bridge is None
+                              else sum(bridge.counts["gain_guarded"].values()))
     report = {
         "entry": ARM_ENTRY,
         "backend": backend,
@@ -680,7 +959,19 @@ def run(args) -> int:
         "arm_failures": arm_failures,
         "arm_targets_valid_frames": arm_valid_total,
         "arm_clamped_frames": arm_clamped_total,
+        "arm_guarded_frames": arm_guarded_total,
+        "arm_gain_guarded_frames": arm_gain_guarded_total,
+        "arm_travel_mode": args.arm_travel_mode,
+        "arm_lateral_guard_mm": float(args.arm_lateral_guard_mm),
+        "arm_slew_mm_per_s": (None if fixed_slew_m is not None
+                              else float(args.arm_slew_mm_s)),
+        "arm_slew_mm_fixed": (None if fixed_slew_m is None else fixed_slew_m * 1000.0),
+        "arm_slew_ceiling_mm": SLEW_MAX_STEP_M * 1000.0,
+        "arm_slew_mm_last_frame": (None if driver is None
+                                   else round(1000.0 * driver.slew_m, 3)),
         "arm": arm_summary,
+        "arm_posture": arm_posture,
+        "arm_forearm_gap_mm": arm_gap,
         "bridge": (None if bridge is None else bridge.summary()),
         "arm_last_targets": {
             robot: {side: target.describe() for side, target in sorted(per_side.items())}
