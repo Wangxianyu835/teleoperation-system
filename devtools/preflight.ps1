@@ -44,8 +44,9 @@
 #                  suite of its own, so the measured value here is 0 -- pass
 #                  -MaxErr 0 once upstream re-adds their suite (CONVENTIONS 3.3).
 #   -Allow <paths> user-approved exception(s) to rule 3 (comma separated)
-#                  (the rule files .clinerules / docs/CONVENTIONS.md and the
-#                   devtools/ toolchain are always allowed; see rule 12/14)
+#                  (this branch's own rule files + run manual + toolchain --
+#                   .clinerules, docs/CONVENTIONS.md, docs/RETARGETING_PIPELINE.md,
+#                   devtools/** -- are always allowed; see rule 12/14)
 #   -Fix           dot-source devtools\env_e_drive_cache.ps1 in this process
 #                  before checking the C: drive rule (process only -- NEVER
 #                  writes the User-level environment, that is the user's call)
@@ -73,13 +74,15 @@ Set-Location $repo
 $teamPaths = @('.')
 $allowPaths = @($Allow | Where-Object { $_ })
 
-# This branch's own workflow files are never rule-3 violations: the rule files
-# ARE the conventions (rule 12 says keep CONVENTIONS.md and .clinerules in sync),
-# and .clinerules itself documents devtools/ as "ours, editable" tooling that
-# the teammate line merely merged.  Everything else under the baseline
-# (src/teleoperation, assets, datasets, docs, pyproject.toml, README...) stays
-# protected -- add single-file exceptions with -Allow.
-$allowPaths += @('.clinerules', 'docs/CONVENTIONS.md')
+# This branch's own workflow files are never rule-3 violations: the rule files ARE
+# the conventions (rule 12 says keep CONVENTIONS.md and .clinerules in sync),
+# docs/RETARGETING_PIPELINE.md is this branch's run/acceptance manual, and
+# .clinerules itself documents devtools/ + docs/ as "ours, editable" -- the
+# teammate line merely merged them into the baseline.  Everything else under the
+# baseline (src/teleoperation/**, assets/**, datasets/**, the team-wide
+# docs/contracts.md + architecture.md + TEAM_ONBOARDING.md, pyproject.toml,
+# README.md...) stays protected -- add single-file exceptions with -Allow.
+$allowPaths += @('.clinerules', 'docs/CONVENTIONS.md', 'docs/RETARGETING_PIPELINE.md')
 $allowPrefix = @('devtools/')
 
 # Things that must never be committed (rule 7).
