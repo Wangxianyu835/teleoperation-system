@@ -429,16 +429,25 @@ class PyBulletArmIK:
         say whether the arm went the way it was asked to: 2026-10-13 现场反馈
         「GR1-T2 前臂弯曲方向和我相反」要的就是「要的方向 vs 走到的方向」这一对比，
         见 ``posture_summary`` 的 ``forearm_dir_error_deg`` / ``forearm_dir_dot``。
+
+        两个命令点**各自**记，不共用条件：``command_wrist`` 从第一次 ``solve`` 起每帧都在，
+        ``command_elbow`` 只在 ``--arm-elbow-task`` 打开、且这台量到肘锚点时才在。
         """
         entry = {name: float(self.p.getJointState(self.body, index,
                                                  physicsClientId=self.cid)[0])
                  for index, name in self.arm[side]}
         entry.update(self.arm_points(side))
-        elbow_world = self.last_elbow_world.get(side)
+        # 两个命令点各自记：``command_wrist`` 从第一次 ``solve`` 起每帧都有；
+        # ``command_elbow`` 只在 ``--arm-elbow-task`` 打开、且这台量到肘锚点时才存在。
+        # 2026-10-14 之前两者共用一个 ``and`` 条件 —— 默认（肘任务关）于是**一个都没记**，
+        # ``posture_summary`` 的整个「要的方向 vs 走到的方向」家族静默变成 None，
+        # ``--arm-frame-dump`` 的 ``cmd_wrist`` 也全是 NaN：A/B 里看着像「这臂没收到命令」。
         wrist_world = self.last_target_world.get(side)
-        if elbow_world is not None and wrist_world is not None:
-            entry["command_elbow"] = list(self.to_base(elbow_world))
+        if wrist_world is not None:
             entry["command_wrist"] = list(self.to_base(wrist_world))
+        elbow_world = self.last_elbow_world.get(side)
+        if elbow_world is not None:
+            entry["command_elbow"] = list(self.to_base(elbow_world))
         solution_cost = self.last_solution_cost.get(side)
         if solution_cost is not None:
             # 同一帧「解」离目标多远：与下面 posture_summary 里从姿势量到的残差成对使用。
@@ -480,6 +489,10 @@ class PyBulletArmIK:
                                       「整条手臂会抽」的可量化定义就是这两行的 max。
         ``command_jerk_deg``         相邻命令帧之间**命令自己**转了多少度：把 max 和它对比,
                                       就能分清「臂在抖」还是「输入本来就跳」。
+
+        ``command_frames``           两个命令点都在（方向族算得出来）的帧数
+        ``wrist_command_frames``     有**腕**命令点的帧数：命令记录本身有没有工作，看它
+        ``command_note``             方向族为空的原因（``--arm-elbow-task`` 关 / 一条命令都没记到）
         """
         from teleoperation.simulation.arm_realtime import elbow_bend_degrees
 
@@ -487,7 +500,8 @@ class PyBulletArmIK:
         empty = {"frames": len(frames), "shoulder_range_deg": {}, "shoulder_travel_deg": 0.0,
                  "upper_arm_dir_travel_deg": 0.0, "elbow_span_mm": 0.0,
                  "elbow_bend_deg": {"min": None, "max": None},
-                 "command_frames": 0, "upper_dir_error_deg": _percentile_stats([]),
+                 "command_frames": 0, "wrist_command_frames": 0, "command_note": None,
+                 "upper_dir_error_deg": _percentile_stats([]),
                  "forearm_dir_error_deg": _percentile_stats([]),
                  "elbow_task_mm": _spike_stats([]), "wrist_task_mm": _spike_stats([]),
                  "solution_elbow_mm": _spike_stats([]),
@@ -537,21 +551,32 @@ class PyBulletArmIK:
         solution_elbow, solution_wrist = [], []
         jerk_upper, jerk_fore, jerk_elbow, jerk_command = [], [], [], []
         previous_upper = previous_fore = previous_elbow = previous_wanted = None
+        wrist_frames = 0
+        command_note = None
         for sampled_index, frame in enumerate(sampled):
             command_elbow = frame.get("command_elbow")
             command_wrist = frame.get("command_wrist")
-            if command_elbow is None or command_wrist is None:
+            # 腕命令点从第一次 solve 起每帧都在（见 record_posture）；肘命令点只有
+            # ``--arm-elbow-task`` 打开时才记。缺肘命令**不等于**「这臂没收到命令」：
+            # 这里照算 ``wrist_task_mm``，只把方向族跳过，并把原因写进 ``command_note``
+            # （在这个修复之前是整段 continue，报告里只剩 None）。
+            if command_wrist is None:
                 continue
+            wrist_frames += 1
             # 与 `_branch_cost` 同一口径：上臂方向用刚体肩端（`upper`）。命令点是从加载时的
             # 肩锚点推出来的，锚点换了之后 must 与记录点一致，否则误差会凭空多出 48-102 mm。
             shoulder = self.to_base(frame["upper"])
             elbow = self.to_base(frame["elbow"])
             wrist = self.to_base(frame["wrist"])
-            elbow_task.append(float(np.linalg.norm(np.asarray(elbow, dtype=np.float64)
-                                                   - np.asarray(command_elbow,
-                                                                dtype=np.float64))) * 1000.0)
             wrist_task.append(float(np.linalg.norm(np.asarray(wrist, dtype=np.float64)
                                                    - np.asarray(command_wrist,
+                                                                dtype=np.float64))) * 1000.0)
+            if command_elbow is None:
+                command_note = ("elbow command not recorded (--arm-elbow-task off): "
+                                "direction metrics need it, wrist_task_mm does not")
+                continue
+            elbow_task.append(float(np.linalg.norm(np.asarray(elbow, dtype=np.float64)
+                                                   - np.asarray(command_elbow,
                                                                 dtype=np.float64))) * 1000.0)
             solution_cost = frame.get("solution_cost")
             if solution_cost is not None:
@@ -626,6 +651,10 @@ class PyBulletArmIK:
                 "elbow_bend_deg": ({"min": round(min(bends), 1), "max": round(max(bends), 1)}
                                    if bends else {"min": None, "max": None}),
                 "command_frames": len(fore_errors),
+                "wrist_command_frames": wrist_frames,
+                # 方向族没数时写明原因（缺肘命令 / 一条命令都没记到），不留给读者一个裸的 None。
+                "command_note": ("no command point recorded for this side"
+                                 if wrist_frames == 0 else command_note),
                 "elbow_task_mm": _spike_stats(elbow_task),
                 "wrist_task_mm": _spike_stats(wrist_task),
                 "solution_elbow_mm": _spike_stats(solution_elbow),

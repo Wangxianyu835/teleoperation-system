@@ -101,6 +101,23 @@ MIN_ELBOW_PLANE_SINE = 0.05
 #: roll 5.5 度、肘 7.1 度，横摆传递比 0.43 -> 0.49，而残差反而更小（15.1 -> 13.5 mm）。
 #: ``scale`` 当初是为了躲"盒角 IK 到不了"，实测那个担心只在 gain 被坏标定放大到 2.19 时成立。
 TRAVEL_MODES = ("clip", "scale")
+#: 中性标定没攒够 ``calibration_frames`` 帧时怎么办（``--arm-calibrate-mode``）：
+#:
+#: ``hold``  历史行为：攒够帧之前目标一直钉在中性工作点上（``valid=False, held=True``）。
+#: ``track`` 只要这一侧有 1 帧有效手臂，就先把**已有样本的中位数**当临时中性开始跟手；
+#:           攒够帧时中性收敛到最终中位数（与 ``hold`` 的终值逐位相同），HUD 显示
+#:           ``cal=track n/N``。
+#:
+#: 为什么要有 ``track``（2026-10-14 那场 live_round2，85% 的帧没有任何有效手臂数据）：
+#: ``hold`` 下进度卡在 ``cal=left=15/30 right=16/30`` 整整 4 分钟，三台机器人全部停在中性
+#: 工作点上 —— 现场看到的就是「手臂卡在胸前举着」。这不是臂映射的错，是「没有数据就永远不
+#: 开始」。``track`` 让「只要看见一次就动」，同时把「为什么这一帧没跟手」逐帧记到
+#: ``counts["held_reason"]``（见 ``HOLD_REASONS``），下一次排查不用再靠猜。
+CALIBRATE_MODES = ("hold", "track")
+#: 没跟手的那一帧属于哪一类（``summary()["counts"]["held_reason"]``）：标定中 / 这一帧没有
+#: pose 手臂关键点 / 有手臂但短于 ``MIN_OPERATOR_REACH_M``（关键点抖动） / 其他（例如这一侧
+#: 没有 pose 后端）。现场排查"手臂不动"先看这四个数。
+HOLD_REASONS = ("calibrating", "no_pose_landmarks", "reach_below_min", "other")
 #: 「操作者位移 -> 目标位移」的口径：
 #:
 #: ``chain``    肩->腕整段一个 gain（历史口径；等效于论文那条「只给腕一个目标」的路径）
@@ -536,6 +553,7 @@ class RealtimeArmBridge:
 
     def __init__(self, profiles=(), sides=SIDES, axis_map=None,
                  calibration_frames: int = 30,
+                 calibrate_mode: str = "hold",
                  arm_length_reference: float = REFERENCE_REACH_M,
                  normalise_arm_length: bool = True,
                  arm_length_band=ARM_LENGTH_BAND,
@@ -572,6 +590,9 @@ class RealtimeArmBridge:
                 "went to 107 mm and the elbow still missed its target by 200+ mm)")
         if int(calibration_frames) < 1:
             raise ValueError("calibration_frames must be >= 1")
+        if calibrate_mode not in CALIBRATE_MODES:
+            raise ValueError(f"calibrate_mode must be one of {CALIBRATE_MODES},"
+                             f" got {calibrate_mode!r}")
         if orientation not in ("off", "auto", "on"):
             raise ValueError(
                 f"orientation must be 'off', 'auto' or 'on', got {orientation!r}")
@@ -607,6 +628,8 @@ class RealtimeArmBridge:
         self.robot_anchors = {}
         self.set_robot_anchors(anchors)
         self.calibration_frames = int(calibration_frames)
+        #: 标定没攒够帧时的口径（``hold`` / ``track``，见 ``CALIBRATE_MODES``）。
+        self.calibrate_mode = str(calibrate_mode)
         self.arm_length_reference = float(arm_length_reference)
         self.normalise_arm_length = bool(normalise_arm_length)
         self.arm_length_band = (float(arm_length_band[0]), float(arm_length_band[1]))
@@ -655,7 +678,10 @@ class RealtimeArmBridge:
                        "elbow": {side: 0 for side in self.sides},
                        "direction_glitch": {side: 0 for side in self.sides},
                        "direction_glitch_kept": {side: 0 for side in self.sides},
-                       "gain_guarded": {side: 0 for side in self.sides}}
+                       "gain_guarded": {side: 0 for side in self.sides},
+                       #: 「这一帧没跟手」按 ``HOLD_REASONS`` 分类，现场排查先看它。
+                       "held_reason": {side: {kind: 0 for kind in HOLD_REASONS}
+                                       for side in self.sides}}
         if neutral is not None:
             self.load_neutral(neutral)
 
@@ -881,11 +907,13 @@ class RealtimeArmBridge:
                 for side in self.sides}
 
     def status(self) -> str:
-        """HUD 用的一行中性标定状态。"""
+        """HUD 用的一行中性标定状态（``track`` 模式多一个前缀，表示已经在跟手）。"""
         if not self.calibrating:
             return "cal=ok"
         parts = " ".join(f"{side}={len(self._samples[side])}/{self.calibration_frames}"
                          for side in self.sides)
+        if self.calibrate_mode == "track":
+            return f"cal=track {parts}"
         return f"cal={parts}"
 
 
@@ -959,6 +987,9 @@ class RealtimeArmBridge:
         标定完成后取均值（SVD 投影回真旋转）作为**姿态基准**。直臂帧是 ``None``，跳过。
         2026-10-13 起还记上臂段 (肘-肩) 与「前臂+手」段 (腕-肘) 的中性向量：两段式映射
         （``map_mode="segments"``）拿它们当基准 —— 同一份中性记录多吃四个数，不用多站一次。
+
+        这一帧的中位数写进 ``neutral[side]`` 的动作在 ``_refresh_neutral``：``hold`` 模式下
+        只有攒够帧那一次才写（历史行为），``track`` 模式下每来一帧都刷新（临时中性）。
         """
         entry = self.neutral[side]
         if entry["complete"] or data["arm"] is None:
@@ -967,20 +998,34 @@ class RealtimeArmBridge:
         self._samples[side].append((points[2] - points[0], arm_reach(points),
                                     wrist_orientation_frame(points),
                                     points[1] - points[0], points[2] - points[1]))
-        if len(self._samples[side]) < self.calibration_frames:
+        self._refresh_neutral(side)
+
+    def _refresh_neutral(self, side) -> None:
+        """把已有样本的中位数写进 ``neutral[side]``；攒够 ``calibration_frames`` 才算完成。
+
+        ``hold``：样本不够直接返回 —— ``neutral[side]`` 一直是空的，那一侧就停在
+        profile 的中性工作点上（历史行为，改前逐字一致）。
+        ``track``：样本有 1 帧就发布一个**临时**中性（``complete`` 仍为 False），攒够帧后
+        自动收敛成与 ``hold`` 同一个终值（同一批样本、同一个中位数）。
+        """
+        samples = self._samples[side]
+        if not samples:
             return
-        offsets = np.stack([sample[0] for sample in self._samples[side]], axis=0)
-        reaches = np.asarray([sample[1] for sample in self._samples[side]],
-                             dtype=np.float64)
-        uppers = np.stack([sample[3] for sample in self._samples[side]], axis=0)
-        fores = np.stack([sample[4] for sample in self._samples[side]], axis=0)
+        enough = len(samples) >= self.calibration_frames
+        if not enough and self.calibrate_mode != "track":
+            return
+        entry = self.neutral[side]
+        offsets = np.stack([sample[0] for sample in samples], axis=0)
+        reaches = np.asarray([sample[1] for sample in samples], dtype=np.float64)
+        uppers = np.stack([sample[3] for sample in samples], axis=0)
+        fores = np.stack([sample[4] for sample in samples], axis=0)
         entry["offset"] = np.median(offsets, axis=0)
         entry["reach"] = float(np.median(reaches))
-        entry["orientation"] = _average_rotation([sample[2] for sample in self._samples[side]])
+        entry["orientation"] = _average_rotation([sample[2] for sample in samples])
         entry["upper"] = np.median(uppers, axis=0)
         entry["fore"] = np.median(fores, axis=0)
-        entry["samples"] = int(len(self._samples[side]))
-        entry["complete"] = True
+        entry["samples"] = int(len(samples))
+        entry["complete"] = bool(enough)
 
     def _guard_direction(self, side, upper, fore):
         """单帧方向变化超过人手臂的物理上限 -> 判为关键点跳变，保持上一帧。
@@ -1028,7 +1073,7 @@ class RealtimeArmBridge:
             # 跳变护栏当成跳变（实测左臂 30% 的帧被判跳变，一部分就是这么来的）。
             self._last_direction.pop(side, None)
             self._glitch_streak.pop(side, None)
-        if entry["complete"] and data["arm"] is not None:
+        if self._has_neutral(side) and data["arm"] is not None:
             points = data["arm"]
             offset = points[2] - points[0]
             state = {
@@ -1076,6 +1121,7 @@ class RealtimeArmBridge:
         previous = self._last_state[side]
         if previous is None:
             self.counts["held"][side] += 1
+            self._count_hold(side, data)
             return {
                 "source": SOURCE_NONE,
                 "valid": False,
@@ -1095,13 +1141,46 @@ class RealtimeArmBridge:
         held.update({"valid": False, "held": True,
                      "reason": self._hold_reason(side, data)})
         self.counts["held"][side] += 1
+        self._count_hold(side, data)
         return held
+
+    def _has_neutral(self, side) -> bool:
+        """这一侧现在有没有可用的中性基准。
+
+        ``hold``：必须有攒够帧的完整中性（``complete``）—— 与改前逐字一致。
+        ``track``：``_refresh_neutral`` 一发布临时中性（第 1 帧有效数据）就算有，
+        所以「只要看见一次就开始跟手」。
+        """
+        entry = self.neutral[side]
+        if entry["offset"] is None:
+            return False
+        return bool(entry["complete"]) or self.calibrate_mode == "track"
+
+    def _count_hold(self, side, data) -> None:
+        """把「这一帧为什么没跟手」记进 ``counts["held_reason"]``（``HOLD_REASONS``）。
+
+        现场的「HUD 上 cal 一直不动、手臂一动不动」里，两种情形长得一模一样：
+        没检到关键点（`no_pose_landmarks`）和这一帧被臂长判据拒了（`reach_below_min`，
+        关键点抖动导致「肩-腕」< 150 mm）。分开计数才不用下一次再猜。
+        """
+        reason = data.get("reason") or ""
+        if not self._has_neutral(side):
+            kind = "calibrating"
+        elif data.get("arm") is not None:
+            kind = "other"
+        elif "pose arm reach" in reason:
+            kind = "reach_below_min"
+        elif reason:
+            kind = "no_pose_landmarks"
+        else:
+            kind = "other"
+        self.counts["held_reason"][side][kind] += 1
 
     def _hold_reason(self, side, data) -> str:
         """保持上一帧时解释为什么（标定中 / 没检到 / 帧被拒）。"""
-        entry = self.neutral[side]
-        if not entry["complete"]:
-            return (f"calibrating {len(self._samples[side])}/{self.calibration_frames}"
+        if not self._has_neutral(side):
+            prefix = "tracking" if self.calibrate_mode == "track" else "calibrating"
+            return (f"{prefix} {len(self._samples[side])}/{self.calibration_frames}"
                     f" ({data['side']})")
         return data["reason"] or "no arm data in this frame"
 
@@ -1515,6 +1594,12 @@ class RealtimeArmBridge:
             "orientation_frame": "neutral_relative",
             "normalise_arm_length": self.normalise_arm_length,
             "arm_length_reference_m": self.arm_length_reference,
+            # 标定没攒够帧时的口径 + 每侧进度：2026-10-14 现场那场 4 分钟停在 cal=15/30、
+            # 三台机器人一动不动，报告里却看不到这一点。写进来，下次先看数字再猜。
+            "calibrate_mode": self.calibrate_mode,
+            "calibration_frames": self.calibration_frames,
+            "calibration_progress": {side: list(value) for side, value
+                                     in self.calibration_progress().items()},
             # 2026-10-13 三个护栏：行程等比缩 / 横向护栏 / 标定可信度。都在报告里留痕，
             # 免得下一次看数字的人以为 gain 1.4 那种值真是"算"出来的。
             "travel_mode": self.travel_mode,
@@ -1595,7 +1680,10 @@ class RealtimeArmBridge:
                        "elbow": dict(self.counts["elbow"]),
                        "direction_glitch": dict(self.counts["direction_glitch"]),
                        "direction_glitch_kept": dict(self.counts["direction_glitch_kept"]),
-                       "gain_guarded": dict(self.counts["gain_guarded"])},
+                       "gain_guarded": dict(self.counts["gain_guarded"]),
+                       # 没跟手的帧为什么没跟手（``HOLD_REASONS``）：现场排查第一眼看它。
+                       "held_reason": {side: dict(kinds) for side, kinds
+                                       in self.counts["held_reason"].items()}},
             "last_trace": self.trace(),
         }
 
@@ -1616,7 +1704,9 @@ class RealtimeArmBridge:
                        "elbow": {side: 0 for side in self.sides},
                        "direction_glitch": {side: 0 for side in self.sides},
                        "direction_glitch_kept": {side: 0 for side in self.sides},
-                       "gain_guarded": {side: 0 for side in self.sides}}
+                       "gain_guarded": {side: 0 for side in self.sides},
+                       "held_reason": {side: {kind: 0 for kind in HOLD_REASONS}
+                                       for side in self.sides}}
         if recalibrate:
             self._samples = {side: [] for side in self.sides}
             self.neutral = {side: _neutral_default() for side in self.sides}

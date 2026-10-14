@@ -1,9 +1,9 @@
 # 多机器人手臂驱动：按 robot_type 选臂并驱动机器人关节
 
-最后更新：2026-10-14（§8.13 **肩锚点不是肘的父连杆 + IK 只该动这条手臂**：现场「GR1-T2 前臂还是反的 / 整条手臂抽」的几何根因、三个新开关与四格 A/B）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
+最后更新：2026-10-14（§8.14 **中性标定永远等不到数据**：现场「三台机器人一动不动卡在胸前」的四步定位、`--arm-calibrate-mode track`（CLI 新默认，库默认仍 `hold`）、`record_posture` 静默丢掉腕命令、以及改前就存在的 `--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
 相关代码：`src/teleoperation/simulation/arm_ik.py`、`arm_profiles.py`、`arm_scene_driver.py`、
 `arm_realtime.py`、`realtime_teleop.py`、`arm_preview.py`
-相关测试：`tests/test_arm_ik_multi_robot.py`（28 个用例）、`tests/test_arm_realtime_bridge.py`（75 个用例）、
+相关测试：`tests/test_arm_ik_multi_robot.py`（28 个用例）、`tests/test_arm_realtime_bridge.py`（83 个用例）、
 `tests/test_arm_preview.py`（21 个用例）；
 离线验收 `devtools/verify_arm_multi_robot.py`、`devtools/verify_realtime_arm_bridge.py`、
 `devtools/verify_arm_wing.py`、`devtools/probe_elbow_task.py`、`devtools/probe_posture_task.py`、
@@ -155,7 +155,7 @@ MediaPipeCameraInput.next_teleop_observation()   # 同一帧：手 21 点 + pose
 | `src/teleoperation/simulation/arm_preview.py` | **采集窗口的手臂层**：`ArmCameraPreview`（子类化基线预览，基线文件零改动）、`finite_arm_points`、`outside_frame`、`build_arm_preview` |
 | `devtools/verify_realtime_arm_bridge.py` | 离线验收（无相机、无人可跑），含 `--probe-travel` / `--probe-lateral` 两个"只量参数、不改文件"的模式 |
 | `devtools/run_realtime_arm_windows.py` | PyCharm 一键入口（`--check` 只体检） |
-| `tests/test_arm_realtime_bridge.py` | 30 个用例（轴向 / 几何 / 标定 / 相对映射 / 夹取 / 保持兜底 / 报告 IO / 入口默认值 / 回放元数据） |
+| `tests/test_arm_realtime_bridge.py` | 83 个用例（轴向 / 几何 / 标定 / 相对映射 / 夹取 / 保持兜底 / 报告 IO / 入口默认值 / 回放元数据 / 标定口径 hold-vs-track / 帮助文案可渲染） |
 | `tests/test_arm_preview.py` | 21 个用例（合法点才画 / NaN 与形状不对当"没有" / `--no-arm-overlay` 逐像素等于基线 / 镜像翻面 / 画面外提示 / `build_arm_preview` 开关语义） |
 | `arm_profiles.py`（改） | `realtime_travel_m` / `realtime_offset` + `realtime_neutral(side)` / `travel_limit(side)` |
 | `arm_scene_driver.py`（改） | `__init__` 透传 `ik_iterations` / `residual_threshold` |
@@ -1221,6 +1221,201 @@ powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -Base d8bc
 
 **下一轮待办**：① 上面第一条（肘任务的帧口径 / 限位）；② 现场判定本轮三条改动；③ §8.12.7 留下的
 四条仍未做（gr1_t2 收敛、左右不对称的录制对照、`verify_arm_wing.py` 的 `posture` 模式、§8.11.4 的②）。
+
+### 8.14 「三台机器人一动不动地卡在胸前」：中性标定永远等不到数据（2026-10-14，`--arm-calibrate-mode`）
+
+#### 8.14.1 现场症状与四步定位
+
+2026-10-14 `live_round2` 现场（原话「手臂卡在胸前举着，怎么动都不跟」）：
+
+1. HUD 的标定行**四分钟没变过**：`cal=left=15/30 right=16/30`。
+2. 三台机器人的腕目标恒等于各自 profile 的中性工作点（HUD `arm h1_2: left=[ +0, +0, +0]mm` 那一行）。
+3. 那份录像里 **85% 的帧没有任何有效手臂数据**（`counts["held_reason"]`：`no_pose_landmarks` 为主，
+   另有一批 `reach_below_min` —— 关键点抖动导致「肩-腕」短于 `MIN_OPERATOR_REACH_M`）。
+4. 于是 `hold` 口径下永远攒不够 `--arm-calibrate-frames` 帧 -> `_has_neutral()` 恒为 False
+   -> 三台全部停在 `valid=False, held=True`（`_target_from_state` 末尾那条退路）。
+
+**这不是臂映射的错，是「没有数据就永远不开始」**：映射 / 增益 / IK 那一路在本场里一次都没被执行到。
+离线复算把这一点钉死了 —— 同一份稀疏输入，`hold` 的横轴指令行程只有 **8.2 mm**，`track` 是 **200.0 mm**。
+
+#### 8.14.2 两个口径
+
+| 口径 | 行为 | HUD | 谁在用 |
+|---|---|---|---|
+| `hold` | 攒够 `N` 帧之前目标钉在 profile 的中性工作点（`valid=False, held=True`），一帧都不跟 | `cal=left=15/30 right=16/30` | `RealtimeArmBridge` 的**构造默认值**（历史行为逐字保留） |
+| `track` | 这一侧**第 1 帧有效手臂**就把「已有样本的中位数」当临时中性开始跟手；攒够帧时收敛到与 `hold` **逐位相同**的终值 | `cal=track left=15/30 right=16/30` | `realtime_teleop` 的 **CLI 默认**（2026-10-14 起） |
+
+```powershell
+E:\python3.11.7\python.exe devtools\run_realtime_arm_windows.py                          # track（新默认）
+E:\python3.11.7\python.exe devtools\run_realtime_arm_windows.py --arm-calibrate-mode hold  # 回到历史行为
+```
+
+刻意留的分工：**库（`RealtimeArmBridge(calibrate_mode=...)`）默认仍是 `hold`，只有 CLI 默认 `track`**。
+这样队友的离线探针与既有调用点行为一个字都不变，本节这套 hold/track 对照也才可复现 ——
+两条都由 `tests/test_arm_realtime_bridge.py::CalibrateModeTests` 钉住。
+
+「为什么这一帧没跟手」逐帧计入 `counts["held_reason"]`（`calibrating` / `no_pose_landmarks` /
+`reach_below_min` / `other`，见 `arm_realtime.HOLD_REASONS`），退出摘要里成行打印。
+现场先看这四个数，不要先怀疑臂映射。
+
+#### 8.14.3 离线 A/B（可复现，本机实测）
+
+夹具 `outputs/tmp_realtime/ab_sparse_arms.npz`（300 帧，故意稀疏：手臂左 15 / 右 16 帧有效，手部密集），
+四条命令只有「标定口径 + 门槛帧数」两个开关不同：
+
+```powershell
+cd F:\simulation_platform_cs
+$py = "E:\python3.11.7\python.exe"
+foreach ($tag in @("hold30", "track30", "hold8", "track15")) {
+    $mode   = if ($tag -like "track*") { "track" } else { "hold" }
+    $frames = [int]($tag -replace "\D", "")
+    & $py devtools\run_realtime_arm_windows.py --input-npz outputs\tmp_realtime\ab_sparse_arms.npz `
+        --headless --frames 300 --arm-calibrate-frames $frames --arm-calibrate-mode $mode `
+        --report "outputs\tmp_realtime\ab_calmode_$tag.json" `
+        --arm-frame-dump "outputs\tmp_realtime\ab_calmode_${tag}_frames.npz"
+    "== $tag exit=$LASTEXITCODE"      # 期望四个 0
+}
+& $py outputs\tmp_realtime\ab_calmode_compare.py     # 汇总 -> outputs\tmp_realtime\ab_calmode_table.txt
+```
+
+四条退出码全 **0**，比较脚本给出的表（节选；`cmd ptp xyz` = 命令点在机器人基座系逐轴的峰峰值 mm）：
+
+| 配置 | 模式 | 标定进度 | complete | arm valid | cmd frames | cmd ptp xyz 左 | cmd ptp xyz 右 | clamped |
+|---|---|---|---|---|---|---|---|---|
+| `hold`  cal-frames=30（现场设置） | hold | 15/30 | False | 177 | 299 | **8.2** / 397.2 / 416.7 | **8.2** / 630.3 / 320.1 | 0 |
+| `track` cal-frames=30（新默认） | track | 15/30 | False | 207 | 299 | **200.0** / 405.2 / 440.3 | **208.6** / 467.3 / 329.3 | 535 |
+| `hold`  cal-frames=8（对照：门槛够得着） | hold | 8/8 | True | 193 | 299 | 119.9 / 406.1 / 416.7 | 122.6 / 630.3 / 320.1 | 150 |
+| `track` cal-frames=15（对照：门槛够得着） | track | 15/15 | True | 207 | 299 | 200.0 / 405.2 / 440.3 | 208.6 / 467.3 / 329.3 | 535 |
+
+怎么读这张表（四个坑，本轮全踩过）：
+
+1. **`arm applied` 不能用来判「跟没跟手」**：`hold` 也在「施加命令」（施加的是预设工作点），
+   两种模式都是 600 帧（`arm.applied_frames`，两侧之和）。判据只有 `cmd ptp xyz` / `arm valid` / `clamped`。
+2. **只看最大轴会把真症状藏起来**：四个配置的 y/z 两轴都是几百毫米（操作者本来就在上下前后动），
+   差异全在**横轴**：`hold` 8.2 mm vs `track` 200.0 mm —— 这正是现场那句「大臂不左右摆」。
+3. **`hold8` 是「不是映射的错」的对照组**：门槛降到 8 帧（这份录像够得着）后 `complete=True`，
+   横轴立刻有 119.9 mm。它没到 200.0 是因为前 8 帧还在等 + `gain_trusted` 在 `complete` 之前
+   退回 `metric_scale`（见比较脚本末段「why」块）。
+4. **`clamped` 是「计数器之和」，不是帧数**：逐机器人逐侧计数（3 台 x 2 侧 = 6 个），记的是
+   「这一帧的请求超过了该侧 `realtime_travel_m`」（`arm_realtime.py`：`request = max|delta|`，
+   `clamped = request > limit`），**与 `--arm-travel-mode` 无关**（clip / scale 都记）。
+   `track` 的 535 表示上限经常在工作，不是「堵死了」；横轴 ptp 恰好 200.0 mm = 2 x h1_2 左限 0.10 m。
+
+#### 8.14.4 同轮修掉的两个「证据看不见」的缺陷（不修这两个，这张表根本读不出来）
+
+1. `src/teleoperation/simulation/arm_ik.py::record_posture`：`command_wrist` 与 `command_elbow`
+   被**同一个 `and`** 串起来，于是在默认 `--arm-elbow-task off` 下**两个都没记** ->
+   `posture_summary()` 的「asked vs achieved」整族变成 `None`、逐帧 dump 里 `cmd_wrist` 全 NaN。
+   离线 A/B 看起来就像「手臂根本没收到命令」，真症状（横轴 8 mm）被埋进「没有数据」。
+   修法：两者**各自独立**记录（腕从第一次 `solve` 起每帧都记；肘只在肘任务开且有锚点测量时记），
+   `posture_summary()` 新增 `wrist_command_frames` 与 `command_note` 两个字段（肘命令缺失时也照算
+   `wrist_task_mm`），不再静默返回 `None`。验收指标：`cmd frames` 从 0（全 NaN）变成 299。
+2. `outputs/tmp_realtime/ab_calmode_compare.py` 的列口径：原来的 `applied` 是**手**的计数
+   （`scene_summary.applied_frames`），拿它判手臂必然看错（两种模式都是 300）。现在分成
+   `arm cmd`（命令点被记下的帧数；修 `record_posture` 前是 0）/ `arm applied`（IK 真正施加的帧数）/
+   `hand applied`，并补 `cmd ptp xyz` 与 `wrist ptp xyz`（逐轴峰峰值）以及末段「why」块
+   （中性锚点是「操作者自己的中性记录」还是「profile 预设工作点」、`gain_trusted`、
+   逐侧 `realtime_travel_m`）。
+
+#### 8.14.5 顺手修的 `--help` 崩溃（不修的话这个新开关根本查不到）
+
+`argparse` 渲染帮助时会对每条 `help` **再做一次 `%` 格式化**
+（`argparse.py::_expand_help` -> `self._get_help_string(action) % params`）。所以 help 字符串里
+任何剩下的裸 `%` 都会抛异常，整条命令的帮助都打不开 —— 这是**改前就存在**的缺陷：
+
+```powershell
+# 取改前的文件（checkpoint 803a275）直接跑：
+E:\python3.11.7\python.exe outputs\tmp_realtime\old_realtime_teleop.py --help; $LASTEXITCODE
+# 改前：退出码 1，TypeError: %o format: an integer is required, not dict（argparse.py 第 640 行）
+# 改后：退出码 0，帮助全文正常打印，含 --arm-calibrate-mode {hold,track}
+```
+
+凶手是 `--arm-elbow-recovery-deg` 那段文案里的 `91%%`：它自己先用 `"% CONST"` 格式化过一道，
+`%%` 被吃成一个 `%`，argparse 再看到就崩。修法：那一块改成 f-string，**字面百分号只留 `%%`
+给 argparse**；顺手把它错写的 `metavar="MM"` 改成 `DEG`。守卫是新增的
+`tests/test_arm_realtime_bridge.py::HelpTextTests`（3 条）：`build_parser().format_help()`
+不抛异常、渲染结果里含 `91% of frames`、且**不含** `%%`。
+
+#### 8.14.6 现场怎么看
+
+```powershell
+cd F:\simulation_platform_cs
+E:\python3.11.7\python.exe devtools\run_realtime_arm_windows.py --arm-map posture
+```
+
+启动行 + 提示语里这四处就是本节（一行行核对，对不上就是默认没生效）：
+
+```
+arms: h1_2, gr1_t2, g1 | ik_mode {...} | orientation off | travel limit {...} m (clip) |
+      ... | neutral mode track | neutral 30 frames | target slew 600 mm/s (ceiling 40 mm/frame)
+[INFO ] arms follow all three robots; keep a neutral arm pose for about 30 frames per side:
+         the arms already follow you from the first frame that sees your arm
+         (--arm-calibrate-mode track) while that neutral builds up
+keep a neutral arm pose (elbows slightly bent, hands in front of the chest) for about 30
+frames per side; the arms already follow from the first frame that sees your arm, and the
+neutral keeps converging while you hold still.
+```
+
+- `neutral mode track` = 本节生效；`hold` 时这一行是 `neutral mode hold`，提示语换成
+  `until then the arms hold their working point.`
+- 判据①**第一帧就该动**：抬手 / 摆臂，三台都要有反应，不用等 30 帧。
+- 判据②**中性仍在收敛**：继续站定 2-3 秒，`cal=track n/30` 走满后变成 `cal=ok`；
+  之后的目标轨迹与 `hold` 攒够帧后的终值一致（同一批样本、同一个中位数）。
+- 退出摘要先看 `arm held frames:` 那一行：`calibrating` 很大 = 还在等标定（`hold` 才常见）；
+  `no_pose_landmarks` 很大 = 摄像头压根没看到手臂（调站位 / 光照，别调参数）；
+  `reach_below_min` 大 = 关键点抖动（见 §8.9）。
+- 退出摘要的 WARN 也分口径：`track` 下没攒够不再是「calibration never completed」，而是
+  `the neutral is still a temporary median (cal=track ...)`，并明说「手臂照常跟手」。
+
+#### 8.14.7 验收（改动后本机实测：命令 + 退出码 + 关键不变量）
+
+| 命令 | 退出码 | 关键不变量 |
+|---|---|---|
+| 8.14.3 的四条 A/B 命令（wrapper 直接调用，无需 PYTHONPATH） | **0 / 0 / 0 / 0** | `hold30` 横轴 8.2 mm vs `track30` 200.0 mm；每侧 `cmd frames=299`（修 `record_posture` 前 0 / 全 NaN） |
+| `E:\python3.11.7\python.exe outputs\tmp_realtime\ab_calmode_compare.py` | **0** | 生成 `ab_calmode_table.txt`（30 行），含逐轴 `cmd ptp xyz` 与「why」块 |
+| `E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --help`（`PYTHONPATH=src`） | **0** | 帮助全文打印，含 `--arm-calibrate-mode {hold,track}` 与 `91% of frames`；**改前退出码 1 + `TypeError`**（见 8.14.5） |
+| `E:\python3.11.7\python.exe devtools\run_realtime_arm_windows.py --help` | **0** | 现场入口自己也能打开帮助（改前同样崩） |
+| `E:\python3.11.7\python.exe outputs\tmp_realtime\diag_help_crash.py` | **0** | `[CRASH]` **0** 条（改前 1 条，指向 `--arm-elbow-recovery-deg`）；末尾 `parse_args(['--help']) -> SystemExit(0)` |
+| `E:\python3.11.7\python.exe -m pytest tests -q` | **0** | `345 passed, 3 skipped, 309 subtests passed in 84.85s` |
+| `E:\python3.11.7\python.exe -m unittest discover -s tests` | **0** | `Ran 348 tests in 76.296s` + `OK (skipped=3)`（比改前多 3 条 = `HelpTextTests`） |
+| `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | **0** | `[OK]` 未发现 GBK 无法编码的字符 |
+| `E:\python3.11.7\python.exe devtools\check_no_c_drive.py --strict` | **0** | `[OK]` 未发现 C 盘写入隐患 |
+| `run_realtime_arm_windows.py ... --arm-calibrate-frames 30`（**不带**模式开关，检验 CLI 默认） | **0** | 报告 `bridge.calibrate_mode=track`、HUD `cal=track left=0/30`；横轴 ptp 200.0 / 208.6 mm，与显式 `track30` **逐位相同** |
+| 同上再加 `--arm-travel-mode scale` | **0** | `clamped` 仍 535（该计数器与模式无关）；最大轴照旧钉在 2 x 上限，非最大轴按比例变小（左 y 405.2 -> 352.3、z 440.3 -> 407.4 mm） |
+
+#### 8.14.8 改动清单（谁的文件 / 谁的默认值）
+
+| 文件 | 改动 |
+|---|---|
+| `src/teleoperation/simulation/arm_realtime.py` | `RealtimeArmBridge(calibrate_mode=...)`（库默认仍是 `hold`）、临时中性、`HOLD_REASONS` 分类计数、`status()` 带模式前缀 |
+| `src/teleoperation/simulation/realtime_teleop.py` | `--arm-calibrate-mode {hold,track}`（CLI 默认 `track`）、HUD 与退出摘要、按模式的 WARN 文案、`--help` 崩溃修复 + `metavar` 修正 |
+| `src/teleoperation/simulation/arm_ik.py` | `record_posture` 腕 / 肘独立记录；`posture_summary()` 新增 `wrist_command_frames` / `command_note` |
+| `devtools/run_realtime_arm_windows.py` | 启动提示语按模式分支；`--arm-calibrate-mode` 透传 |
+| `tests/test_arm_realtime_bridge.py` | `CalibrateModeTests`（标定口径）、`HelpTextTests`（帮助可渲染 / 无 `%%` 泄漏） |
+| `outputs/tmp_realtime/**` | 稀疏夹具、A/B 脚本、对照表、诊断脚本（已 gitignore，不入库） |
+
+**这些文件都在我们这一侧**，没有踩到队友已入库的 `retargeting/**`、`config/**`、`input_adapters/**`。
+
+#### 8.14.9 如实说（本轮没解决的）
+
+- A/B 用的是**合成稀疏夹具**（300 帧，手臂左 15 / 右 16 帧有效），复现的是「帧稀疏 -> 标定门永远
+  够不着」这一条**机制**，不是现场那场录像的全部干扰（光照 / 站位 / 摄像头帧率）。
+- `track` 只解决「不开始」：`track30` 里 `no_pose_landmarks` 仍有 170 / 182 帧，那些帧**任何口径都
+  不会让机器人动** —— 现场的第一优先级仍是「MediaPipe 到底有没有看到手臂」（§8.9 / §8.12.6 的
+  站位与光照清单）。
+- `track` 开头几帧的中性基准是**临时中位数**（样本少时更抖），所以「看见就动」那一瞬间的幅度 /
+  方向可能偏；站定几秒后与 `hold` 一致。要严格可复现的离线对照仍用 `hold`。
+- **行程上限确实在压幅度**（本轮查过，不再是猜测）：`track30` 的 `clamped=535`（6 个计数器之和）
+  与横轴 ptp 恰好 2 x h1_2 左限 0.10 m，都说明「请求超过该侧上限」经常发生。同一条命令再加
+  `--arm-travel-mode scale`：`clamped` 与**最大轴**的 ptp 都不变（`request = max|delta|`，两种模式
+  都把最大轴压到正好等于上限），只有**非最大轴**按比例变小（左 y 405.2 -> 352.3、z 440.3 -> 407.4 mm）。
+  也就是说 `travel_mode` 改变不了「最大轴被压到上限」这件事，要真正放开横向幅度只能抬
+  `--arm-travel-mm`（现场判定，改完重跑本节这套 A/B）。
+- §8.13.8 那三条（肘残差、前臂方向 20-40 度、前臂 jerk）本轮**没有动**，阈值与结论都照旧。
+- 本轮全部是离线夹具 + 单元测试；**没有真机验证**，也没有现场摄像头实拍验证。
+
+
+
 
 
 

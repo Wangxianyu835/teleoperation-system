@@ -98,9 +98,16 @@ def main(argv) -> int:
     if getattr(args, "preview_window_pos", None) is not None:
         base.log("INFO", f"the camera window is moved to {args.preview_window_pos} and kept "
                          f"on top; look for the window titled {PREVIEW_WINDOW!r}")
+    if args.arm_calibrate_mode == "hold":
+        follow = ("the arms hold their working point until then "
+                  "(--arm-calibrate-mode hold)")
+    else:
+        follow = (f"the arms already follow you from the first frame that sees your arm "
+                  f"(--arm-calibrate-mode {args.arm_calibrate_mode}) while that neutral "
+                  f"builds up")
     base.log("INFO", f"arms follow {', '.join(args.robot) if args.robot else 'all three robots'}"
                      f"; keep a neutral arm pose for about {args.arm_calibrate_frames} frames "
-                     f"per side (arms hold until then)")
+                     f"per side: {follow}")
     base.log("INFO", "add --arm-trace to print how far your wrist moved on each axis "
                      "(use it once to confirm the left/right/forward directions)")
     status = int(entry_main(args))

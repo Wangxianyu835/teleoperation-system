@@ -53,8 +53,20 @@ import 它们的公开接口并复用基线入口里那几个纯工具函数；�
 手臂走的是**相对**重定向：启动后前 ``--arm-calibrate-frames`` 帧要**保持一个中性姿势不动**
 （建议双手抬到胸前、肘略弯，和你平时开始操作前的姿势一致），程序取这些帧的中位数作为
 原点；之后你手腕相对肩的位移（米）按 ``profile.metric_scale``（再按你标定时的臂长归一化）
-搬进机器人基座系。标定期间手臂停在各自的中性工作点，不会乱跑。``--save-neutral FILE``
-可以存下这次的中性姿势，下次 ``--neutral-json FILE`` 直接复用，不用再站一次。
+搬进机器人基座系。``--save-neutral FILE`` 可以存下这次的中性姿势，下次 ``--neutral-json FILE``
+直接复用，不用再站一次。
+
+``--arm-calibrate-mode`` 决定"还没攒够帧"时怎么办：
+
+``track``（**默认**）这一侧第 1 帧有效手臂就开始跟手（中位数是临时基准，HUD 显示
+        ``cal=track n/30``），你继续站定，中性会收敛成与 ``hold`` 相同的终值。
+        理由见 ``arm_realtime.CALIBRATE_MODES``：2026-10-14 现场 85% 的帧没有任何手臂
+        数据，``hold`` 下三台机器人一动不动地停在胸前姿势上整整 4 分钟。
+``hold``  历史行为：攒够帧之前停在 profile 的中性工作点上，一帧都不跟。
+
+不管哪种口径，"为什么这一帧没跟手"都会计数并在退出时打印
+（``calibrating`` / ``no_pose_landmarks`` / ``reach_below_min`` / ``other``，见
+``arm_realtime.HOLD_REASONS``）—— 现场排查先看这行，不要先怀疑臂映射。
 
 轴向约定（要现场核对一次）
 --------------------------
@@ -115,6 +127,7 @@ from teleoperation.simulation.arm_profiles import loadable_robots, profile_for
 from teleoperation.simulation.arm_ik import (ELBOW_PASS_ORDERS, ELBOW_RECOVERY_COOLDOWN_FRAMES,
                                              ELBOW_RECOVERY_DEG, ELBOW_RECOVERY_MARGIN_DEG)
 from teleoperation.simulation.arm_realtime import (
+    CALIBRATE_MODES,
     DEFAULT_LATERAL_GUARD_M,
     MAP_MODES,
     MAX_DIRECTION_RATE_DEG_S,
@@ -437,9 +450,14 @@ def build_parser() -> argparse.ArgumentParser:
                              "(the field 'H1-2 twitches at the wrist'). Over the limit the "
                              "previous direction is held and counted in counts.direction_glitch"
                              % MAX_DIRECTION_RATE_DEG_S)
+    # 这条的 help 用 f-string 而不是 "% CONST"（与上面两条不同）：argparse 会对每条 help
+    # 再做一次 % 格式化（_format_action），"% CONST" 那一道会把 "91%%" 吃成 "91%"，argparse
+    # 再撞上裸 % 就抛 TypeError: %o format ...，整个 --help 直接崩（2026-10-14 实测）。
+    # 所以最终字符串里的字面百分号必须是 %%，也就是这里不能再有第二道 % 格式化。
     parser.add_argument("--arm-elbow-recovery-deg", type=float, default=ELBOW_RECOVERY_DEG,
-                        metavar="MM",
-                        help="elbow branch recovery threshold in degrees (default %.0f, "
+                        metavar="DEG",
+                        help=f"elbow branch recovery threshold in degrees (default "
+                             f"{ELBOW_RECOVERY_DEG:.0f}, "
                              "0 = off). The IK starts from the current pose and pays for "
                              "distance to restPoses, so once a frame drops the elbow into the "
                              "flipped branch every later frame is solved from there and never "
@@ -449,8 +467,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "from the asked direction; h1_2 right was 5 deg). Above this "
                              "threshold the same pass sequence is re-solved from the load "
                              "pose and the branch with the smaller forearm+0.5*upper direction "
-                             "error (degrees) wins"
-                             % ELBOW_RECOVERY_DEG)
+                             "error (degrees) wins")
     parser.add_argument("--arm-elbow-recovery-margin-deg", type=float,
                         default=ELBOW_RECOVERY_MARGIN_DEG, metavar="DEG",
                         help="hysteresis of the branch recovery in degrees (default %.0f, "
@@ -527,7 +544,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--calibration-frames", type=int, default=15,
                         help="open-hand calibration frames for the geometric backend")
     parser.add_argument("--arm-calibrate-frames", type=int, default=30,
-                        help="neutral frames per side before the arms start following (default 30)")
+                        help="neutral frames per side before the neutral is final (default 30). "
+                             "With --arm-calibrate-mode hold the arms also stay on the working "
+                             "point until then; with track (default) they follow from the first "
+                             "frame that sees your arm")
+    parser.add_argument("--arm-calibrate-mode", choices=CALIBRATE_MODES, default="track",
+                        help="hold = stay on the working point until the neutral has enough "
+                             "frames (historical); track = start following from the first frame "
+                             "that sees your arm and let the neutral converge (default). See "
+                             "CALIBRATE_MODES in arm_realtime.py for the 2026-10-14 field evidence")
     parser.add_argument("--neutral-json", type=Path, default=None,
                         help="reuse a neutral pose saved by --save-neutral")
     parser.add_argument("--save-neutral", type=Path, default=None,
@@ -536,6 +561,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="print the operator-side delta per axis (use this to check the axes)")
     parser.add_argument("--dump-npz", type=Path, default=None,
                         help="record the raw frames (hands + pose arms) for offline replay")
+    parser.add_argument("--arm-frame-dump", type=Path, default=None,
+                        help="record every frame's arm samples (shoulder/upper/elbow/wrist in the "
+                             "robot base frame plus the command that produced them) to an .npz; "
+                             "devtools/show_arm_direction.py turns two of those into A/B figures")
     parser.add_argument("--input-npz", type=Path, default=None,
                         help="replay a recorded session instead of the camera (no camera needed)")
     parser.add_argument("--sim-steps", type=int, default=8,
@@ -674,6 +703,60 @@ def _save_dump(path, dumped) -> Path:
     return target
 
 
+def _collect_arm_frames(driver, robots, sides) -> dict:
+    """逐帧手臂样本（机器人**基座系**）先读进内存，供 ``_save_arm_frames`` 落盘。
+
+    数据源是 ``PyBulletArmIK.record_posture``：每次写下一帧命令**之前**采样一次，所以第 i 条
+    记录就是第 i 帧物理结算后的姿势 —— 与报告 ``arm.posture`` 的指标同源（同一份列表）。
+
+    键名 ``{robot}_{side}_{field}``：
+
+    ``points``      (N, 4, 3)，四行按 ``(shoulder, upper, elbow, wrist)`` 排
+                    （``upper`` = 肘的父连杆原点 = 刚体肩端，方向配方用的锚点）
+    ``cmd_elbow``   (N, 3)，产生这一帧姿势的肘命令点（基座系；没命令的帧全 NaN）
+    ``cmd_wrist``   (N, 3)，同上，腕命令点
+
+    为什么存基座系而不是世界系：三台机器人摆位不同，基座系里「上/下/左/右」才是机器人
+    自己的身体坐标，两张图叠在一起看方向才不会互相误导（报告里的方向指标也是基座系）。
+
+    **必须在 PyBullet 还连着的时候调用**（``adapter.to_base`` 会查基座位姿）：调用点在
+    ``run()`` 的 ``finally`` 里断开连接**之前**。2026-10-14 现场把落盘放在 finally 之后，
+    ``--arm-frame-dump`` 每次都以 ``Not connected to physics server`` 结束（断开被丢到
+    后台线程，于是变成「有时成功有时失败」的竞态），这里按同一份数据改成先读后写。
+    """
+    arrays = {}
+    for name in robots:
+        adapter = driver.ik.get(name)
+        if adapter is None:
+            continue
+        for side in sides:
+            frames = list(adapter.posture.get(side) or [])
+            points, command_elbows, command_wrists = [], [], []
+            for frame in frames:
+                points.append([adapter.to_base(frame[key])
+                               for key in ("shoulder", "upper", "elbow", "wrist")])
+                for key, sink in (("command_elbow", command_elbows),
+                                  ("command_wrist", command_wrists)):
+                    value = frame.get(key)
+                    sink.append(np.full(3, np.nan, dtype=np.float64) if value is None
+                                else np.asarray(value, dtype=np.float64))
+            arrays[f"{name}_{side}_points"] = np.asarray(
+                points, dtype=np.float64).reshape(-1, 4, 3)
+            arrays[f"{name}_{side}_cmd_elbow"] = np.asarray(
+                command_elbows, dtype=np.float64).reshape(-1, 3)
+            arrays[f"{name}_{side}_cmd_wrist"] = np.asarray(
+                command_wrists, dtype=np.float64).reshape(-1, 3)
+    return arrays
+
+
+def _save_arm_frames(path, arrays) -> Path:
+    """把 ``_collect_arm_frames`` 读到的数组写成 npz（不碰 PyBullet，断连后也能写）。"""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(target, **arrays)
+    return target
+
+
 def run(args) -> int:
     """采集 -> 手 + 臂 -> 仿真；0 = 至少一侧给出过输出，1 = 全程没有手也没有臂。"""
     sides = tuple(SIDES if args.side == "both" else (args.side,))
@@ -803,6 +886,7 @@ def run(args) -> int:
             bridge = RealtimeArmBridge(
                 [profiles[name] for name in robots], sides=sides, axis_map=axis_map,
                 calibration_frames=args.arm_calibrate_frames,
+                calibrate_mode=args.arm_calibrate_mode,
                 orientation=args.arm_orientation, gains=gains,
                 max_travel_m=(None if args.arm_travel_mm is None
                               else float(args.arm_travel_mm) / 1000.0),
@@ -820,6 +904,7 @@ def run(args) -> int:
                   f"orientation {args.arm_orientation} | travel limit "
                   f"{bridge.travel_limits()} m ({args.arm_travel_mode}) | "
                   f"lateral guard {args.arm_lateral_guard_mm} mm | "
+                  f"neutral mode {args.arm_calibrate_mode} | "
                   f"neutral {'reused from ' + str(args.neutral_json) if neutral else str(args.arm_calibrate_frames) + ' frames'} | "
                   + (f"target slew {fixed_slew_m * 1000.0:.1f} mm/frame (fixed)"
                      if fixed_slew_m is not None else
@@ -842,9 +927,15 @@ def run(args) -> int:
                   f"arms (shoulder/elbow/wrist); the PyBullet window shows the three robots.",
                   flush=True)
         if bridge is not None:
-            print("keep a neutral arm pose (elbows slightly bent, hands in front of the chest) "
-                  f"for about {args.arm_calibrate_frames} frames per side; until then the arms hold "
-                  "their working point.", flush=True)
+            if args.arm_calibrate_mode == "track":
+                print("keep a neutral arm pose (elbows slightly bent, hands in front of the "
+                      f"chest) for about {args.arm_calibrate_frames} frames per side; the arms "
+                      "already follow from the first frame that sees your arm, and the neutral "
+                      "keeps converging while you hold still.", flush=True)
+            else:
+                print("keep a neutral arm pose (elbows slightly bent, hands in front of the "
+                      f"chest) for about {args.arm_calibrate_frames} frames per side; until "
+                      "then the arms hold their working point.", flush=True)
         started = time.perf_counter()
 
         while True:
@@ -943,6 +1034,10 @@ def run(args) -> int:
         arm_posture = {} if driver is None else driver.posture_summary()
         arm_gap = {} if driver is None else driver.forearm_gap_summary()
         arm_summary = None if driver is None else driver.summary()
+        # --arm-frame-dump 的数据也必须在这里读（to_base 要查基座位姿）：
+        # 放在 finally 之后就是「断连后再问 PyBullet」，见 _collect_arm_frames 的说明。
+        arm_frames = (None if (args.arm_frame_dump is None or driver is None)
+                      else _collect_arm_frames(driver, robots, sides))
         scene_summary = scene.summary() if hasattr(scene, "summary") else None
         elapsed = time.perf_counter() - started
     finally:
@@ -1075,6 +1170,27 @@ def run(args) -> int:
             print(f"  arm  {side}: source={entry['source']} "
                   f"delta_op_cm={entry['delta_op_cm']} reach_m={entry['operator_reach_m']} "
                   f"elbow_deg={entry['elbow_bend_deg']}")
+    if bridge is not None:
+        # 「这一帧为什么没跟手」的分布（HOLD_REASONS）：现场判断"手臂不动"的第一手证据 ——
+        # 2026-10-14 那场只看 HUD 的 cal=15/30 是猜不出原因的，这一行直接给出分类。
+        held_reasons = bridge.counts["held_reason"]
+        if any(sum(kinds.values()) for kinds in held_reasons.values()):
+            shown = []
+            for side, kinds in sorted(held_reasons.items()):
+                counts = ", ".join(f"{kind}={count}" for kind, count in kinds.items() if count)
+                shown.append(f"{side} [{counts or 'none'}]")
+            print("  arm  held frames: " + " | ".join(shown), flush=True)
+        if bridge.calibrating:
+            if args.arm_calibrate_mode == "track":
+                # track 下「中性没攒够」不是故障：手臂已经在跟手，只是基准还是临时中位数。
+                print(f"[WARN] the neutral is still a temporary median ({bridge.status()}): the "
+                      f"arms follow anyway (--arm-calibrate-mode track); keep both arms visible "
+                      f"and hold still to finish it, or rerun with --arm-calibrate-mode hold to "
+                      f"gate on the full neutral.", flush=True)
+            else:
+                print(f"[WARN] the neutral calibration never completed ({bridge.status()}): "
+                      "check the held-frame breakdown above and keep both arms visible in the "
+                      "camera window.", flush=True)
     if args.save_neutral and bridge is not None:
         if bridge.calibrating:
             print("[WARN] --save-neutral skipped: the neutral calibration never completed",
@@ -1086,6 +1202,9 @@ def run(args) -> int:
     if args.dump_npz is not None and dumped["timestamps"]:
         print(f"raw frames dumped: {_save_dump(args.dump_npz, dumped)} "
               f"({len(dumped['timestamps'])} frames)", flush=True)
+    if arm_frames is not None:
+        print(f"arm frames dumped: {_save_arm_frames(args.arm_frame_dump, arm_frames)}",
+              flush=True)
     if args.report:
         path = Path(args.report)
         path.parent.mkdir(parents=True, exist_ok=True)

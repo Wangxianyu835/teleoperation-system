@@ -20,8 +20,10 @@ import numpy as np
 
 from teleoperation.simulation.arm_profiles import PAPER_ROBOTS, profile_for
 from teleoperation.simulation.arm_realtime import (
+    CALIBRATE_MODES,
     DEFAULT_LATERAL_GUARD_M,
     GLITCH_HOLD_FRAMES,
+    HOLD_REASONS,
     MAX_DIRECTION_RATE_DEG_S,
     MIN_ELBOW_PLANE_SINE,
     AxisMap,
@@ -194,6 +196,93 @@ class CalibrationTests(unittest.TestCase):
         bridge = RealtimeArmBridge(PROFILES, sides=SIDES, calibration_frames=4)
         bridge.update(arms_world={side: arm(side) for side in SIDES})
         self.assertEqual(bridge.status(), "cal=left=1/4 right=1/4")
+
+
+class CalibrateModeTests(unittest.TestCase):
+    """还没攒够中性帧时跟不跟手（``--arm-calibrate-mode``）。
+
+    2026-10-14 现场：85% 的帧没有任何可用手臂数据，``hold`` 下标定进度停在
+    ``cal=left=15/30 right=16/30`` 整整 4 分钟，三台机器人一动不动 —— 用户看到的就是
+    「手臂卡在胸前举着」。``track`` 让「看见一次就动」，代价只是开头几帧还没有基准。
+    """
+
+    def test_hold_is_the_constructor_default_and_keeps_the_working_point(self):
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=4)
+        self.assertEqual(bridge.calibrate_mode, "hold")
+        moved = {"right": arm("right", wrist_offset=(0.0, 0.0, 0.08))}
+        pinned = bridge.update(arms_world=moved)["h1_2"]["right"]
+        self.assertTrue(pinned.held and not pinned.valid)
+        # 改前的行为逐字保留：目标就是这一侧的 profile 中性工作点。
+        reference = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=4)
+        working = reference.update(arms_world={"right": None})["h1_2"]["right"]
+        np.testing.assert_allclose(pinned.position, working.position, atol=0.0)
+
+    def test_track_mode_follows_the_operator_before_the_neutral_is_complete(self):
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=30,
+                                   calibrate_mode="track")
+        hold = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=30)
+        for _ in range(3):                       # 现场要求站定 30 帧，这里站 3 帧
+            bridge.update(arms_world={"right": arm("right")})
+            hold.update(arms_world={"right": arm("right")})
+        self.assertTrue(bridge.calibrating)      # 30 帧远没攒够
+        moved = {"right": arm("right", wrist_offset=(0.0, 0.0, 0.08))}
+        tracking = bridge.update(arms_world=moved)["h1_2"]["right"]
+        pinned = hold.update(arms_world=moved)["h1_2"]["right"]
+        self.assertTrue(tracking.valid and not tracking.held)
+        self.assertEqual(tracking.reason, "")
+        self.assertTrue(pinned.held and not pinned.valid)
+        # 同一帧、同一个操作者动作：track 已经离开工作点，hold 还在原地。
+        self.assertGreater(np.linalg.norm(np.asarray(tracking.position, dtype=np.float64)
+                                          - np.asarray(pinned.position, dtype=np.float64)),
+                           0.01)
+        self.assertEqual(bridge.counts["held"]["right"], 0)
+        self.assertEqual(bridge.status(), "cal=track right=4/30")
+
+    def test_track_and_hold_converge_to_the_same_neutral(self):
+        frames = [arm("right")] * 3 + [arm("right", wrist_offset=(0.0, 0.0, 0.02))]
+        tracking = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=4,
+                                     calibrate_mode="track")
+        hold = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=4)
+        for frame in frames:
+            tracking.update(arms_world={"right": frame})
+            hold.update(arms_world={"right": frame})
+        self.assertTrue(tracking.neutral["right"]["complete"])
+        self.assertFalse(tracking.calibrating)
+        # 同一批样本、同一个中位数：攒够之后的临时基准与终值没有区别。
+        np.testing.assert_allclose(tracking.neutral["right"]["offset"],
+                                   hold.neutral["right"]["offset"], atol=0.0)
+        np.testing.assert_allclose(tracking.neutral["right"]["upper"],
+                                   hold.neutral["right"]["upper"], atol=0.0)
+        self.assertEqual(tracking.neutral["right"]["samples"],
+                         hold.neutral["right"]["samples"])
+
+    def test_held_frames_are_classified_for_the_field_log(self):
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=2,
+                                   calibrate_mode="track")
+        bridge.update(arms_world={"right": None})              # 一条数据都没有
+        bridge.update(arms_world={"right": arm("right")})      # 有效
+        bridge.update(arms_world={"right": arm("right")})      # 标定恰好攒够
+        bridge.update(arms_world={"right": None})              # 保持上一帧
+        squashed = np.stack((np.zeros(3), np.array([0.0, 0.02, 0.0]),
+                             np.array([0.0, 0.04, 0.0])))
+        bridge.update(arms_world={"right": squashed})           # 被臂长判据拒
+        reasons = bridge.counts["held_reason"]["right"]
+        self.assertEqual(reasons["calibrating"], 1)
+        self.assertEqual(reasons["no_pose_landmarks"], 1)
+        self.assertEqual(reasons["reach_below_min"], 1)
+        # 报告里能直接读到同一份计数（现场拿到报告不用再翻 HUD 日志）。
+        self.assertEqual(bridge.summary()["counts"]["held_reason"]["right"], reasons)
+        self.assertEqual(sorted(reasons), sorted(HOLD_REASONS))
+
+    def test_a_bad_calibrate_mode_is_refused(self):
+        with self.assertRaises(ValueError):
+            RealtimeArmBridge(PROFILES, sides=SIDES, calibrate_mode="still")
+        args = build_parser().parse_args([])
+        self.assertEqual(args.arm_calibrate_mode, CALIBRATE_MODES[1])   # track 是现场默认
+        hold = build_parser().parse_args(["--arm-calibrate-mode", "hold"])
+        self.assertEqual(hold.arm_calibrate_mode, CALIBRATE_MODES[0])
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["--arm-calibrate-mode", "still"])
 
 
 class RelativeMappingTests(unittest.TestCase):
@@ -1146,6 +1235,39 @@ class DirectionGlitchGuardTests(unittest.TestCase):
         self.assertEqual(args.arm_direction_rate_deg_s, MAX_DIRECTION_RATE_DEG_S)
         args = build_parser().parse_args(["--arm-direction-rate-deg-s", "0"])
         self.assertEqual(args.arm_direction_rate_deg_s, 0.0)
+
+
+class HelpTextTests(unittest.TestCase):
+    """``--help`` 必须真的打得开（全入口，不只手臂那几个参数）。
+
+    argparse 在渲染帮助时会对每条 ``help`` 再做一次 ``%`` 格式化
+    （``_format_action`` -> ``_get_help_string(action) % params``）。所以 help 字符串里
+    **任何**剩下的裸 ``%`` 都会抛 ``TypeError: %o format: an integer is required, not
+    dict`` —— 2026-10-14 现场那条命令就是这么崩的：``--help`` 退出码 1，用户根本查不到新参数
+    （``--arm-calibrate-mode``）。凶手是 ``--arm-elbow-recovery-deg`` 那段 ``91%%``：
+    它自己先用 ``"% CONST"`` 格式化过一道，``%%`` 被吃成一个 ``%``，argparse 再看到就崩。
+
+    修法是那一块改成 f-string，字面百分号只留 ``%%`` 给 argparse。本测试就是那条不变量的
+    看门人：``format_help()`` 不抛异常、参数在帮助里、而且最后渲染出来的是一个 ``%``
+    而不是两个。
+    """
+
+    def test_help_renders_and_lists_the_arm_options(self):
+        text = build_parser().format_help()      # 裸 '%' 会在这里抛 TypeError
+        for option in ("--arm-calibrate-mode", "--arm-calibrate-frames",
+                       "--arm-elbow-recovery-deg", "--arm-map", "--arm-travel-mode"):
+            self.assertIn(option, text)
+
+    def test_a_literal_percent_survives_as_one_percent(self):
+        text = build_parser().format_help()
+        # argparse 把 %% 还原成 %：报告数字里的百分号必须只出现一次。
+        self.assertIn("91% of frames", text)
+        self.assertNotIn("%%", text)
+
+    def test_the_calibrate_mode_choices_are_listed(self):
+        text = build_parser().format_help()
+        self.assertIn("--arm-calibrate-mode {hold,track}", text)
+        self.assertIn("--arm-calibrate-frames", text)
 
 
 
