@@ -39,8 +39,12 @@ Run -> Edit Configurations -> Python -> 新建：
 窗口位置：PyBullet 窗口先出现且尺寸大，OpenCV 窗口按系统默认位置出现时容易被它整个盖住
 （IDE 里跑最典型的症状就是"只看见机器人窗口"）。所以入口会把摄像头窗口挪到
 ``--preview-window-pos``（默认 ``20,60``）并置顶，并把它的**实际屏幕矩形**打进日志；
-本文件在进程结束后还会读报告回一句 ``camera window stayed open at (...)`` 或
-``the camera window did NOT stay open: <原因>``。``--preview-no-topmost`` 关掉置顶。
+本文件在进程结束后还会读报告回一句 ``camera window ... at (...)`` 或
+``the camera window did NOT stay open: <原因>``。判据是报告里的 ``window_rect``
+（只有成功的 ``_place()`` 才写），**不是** ``window`` 字段 —— 后者读的是写报告那一刻的
+``CameraPreview.show``，而入口收尾时用后台线程调 ``close()`` 把它置 ``False``，
+于是"按 q 正常退出"也会被写成 ``False``（2026-10-14 实测，详见
+``summarise_camera_window`` 的说明）。``--preview-no-topmost`` 关掉置顶。
 
 解释器：本文件除了缺依赖会重跑到 E:，还会检查 ``cv2`` 有没有 GUI ——
 headless 版 wheel（``GUI: NONE``）能读摄像头但开不了窗口，只跑仿真时看起来"正常"，
@@ -275,6 +279,17 @@ def summarise_camera_window(report: Path, want_window: bool) -> None:
 
     入口在预览失败时只打一行 note 就继续跑仿真（设计如此：不拖累重定向与仿真），
     所以在 IDE 里很容易"只看见机器人窗口"。这里在进程结束后明确回一句结论。
+
+    **别把 ``preview["window"]`` 当成"窗口开没开"**：它读的是写报告那一刻的
+    ``CameraPreview.show``，而入口收尾的 ``finally`` 里用后台线程调 ``preview.close()``
+    （``simulation/realtime_teleop.py:1045``，最多等 2 s），``close()`` 又无条件把
+    ``show`` 置 ``False``（``applications/realtime_hand_sim.py:535``）—— 写报告与关窗是
+    **竞态**，正常退出时这个字段可 ``True`` 可 ``False``（2026-10-14 实测：按 q 退出的长跑
+    报 ``False``，``--frames 40`` 的短跑报 ``True``，两次窗口都是开着的）。
+
+    真正能证明"窗口开过、且被摆到屏幕可见处"的是 ``window_rect``：它只在成功的
+    ``_place()`` 里写（先 ``imshow`` 再 ``moveWindow`` + 置顶）。所以分三段判断：
+    还在显示 -> OK；显示过（有矩形）-> OK（已随本次运行结束关闭）；从没开成 -> WARN + 重试命令。
     """
     if not want_window:
         return
@@ -286,9 +301,15 @@ def summarise_camera_window(report: Path, want_window: bool) -> None:
     preview = data.get("preview") or {}
     if not preview:
         return
+    rect = preview.get("window_rect")
     if preview.get("window"):
-        log("OK", f"camera window stayed open at {preview.get('window_rect')} "
+        log("OK", f"camera window stayed open at {rect} "
                   f"(mirrored={preview.get('mirrored')})")
+        return
+    if rect:
+        log("OK", f"camera window was open at {rect} "
+                  f"(mirrored={preview.get('mirrored')}) while the run lasted; it is closed "
+                  f"now because the run ended (q/Esc or the PyBullet window was closed)")
         return
     log("WARN", f"the camera window did NOT stay open: "
                 f"{preview.get('note') or 'unknown reason'}")
