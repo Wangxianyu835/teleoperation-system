@@ -212,6 +212,8 @@ class RealtimeL21Scene:
         self._prepare_physics(p.setGravity, (0, 0, 0))
         p.setTimeStep(1.0 / 240.0, physicsClientId=self.cid)
         self.bodies = {}
+        self.base_positions = {}
+        self.view = "full"
         self.joint_index = {}
         self.adapters = {}
         for side in self.sides:
@@ -221,6 +223,7 @@ class RealtimeL21Scene:
                 raise FileNotFoundError(f"L21 model not found: {urdf}")
             p.setAdditionalSearchPath(str(directory), physicsClientId=self.cid)
             base = list(BASE_POSITIONS[side]) if len(self.sides) > 1 else [0.0, 0.0, 0.3]
+            self.base_positions[side] = base
             body = p.loadURDF(str(urdf), base, useFixedBase=True, physicsClientId=self.cid)
             names = {}
             for index in range(p.getNumJoints(body, physicsClientId=self.cid)):
@@ -236,15 +239,39 @@ class RealtimeL21Scene:
             # MAPPING_18（它内部用 values[index-1] 取值）。传 17 项的
             # L21_JOINT_ORDER 会让所有维度错位一格（探针实测到过）。
             self.adapters[side] = L21HandAdapter(list(MAPPING_18), parse_joint_limits(urdf))
-        if self.gui:
-            # 20 cm 的手在默认视角下几乎看不见，直接把镜头推到手上。
-            p.resetDebugVisualizerCamera(
-                cameraDistance=0.7 if len(self.sides) > 1 else 0.55,
-                cameraYaw=40, cameraPitch=-20,
-                cameraTargetPosition=[0.0, 0.0, 0.3], physicsClientId=self.cid,
-            )
+        self.frame_scene("full")
         self.applied = {side: 0 for side in self.sides}
         self.loss_reported = False
+
+    def frame_scene(self, view="full") -> None:
+        """Front: both palms toward the camera; full: original URDF layout.
+
+        Both native palms face +X. A -90 degree world-Z rotation points them
+        toward a yaw=0 camera on -Y, with the fingers still pointing upward.
+        Only rigid display poses change; native joint angles remain untouched.
+        """
+        if view not in ("full", "front"):
+            raise ValueError(f"Unknown L21 view: {view}")
+        if not self.alive():
+            return
+        if view != self.view:
+            orientation = self.p.getQuaternionFromEuler([0, 0, -np.pi / 2 if view == "front" else 0])
+            for side, body in self.bodies.items():
+                dynamics = self.p.getDynamicsInfo(body, -1, physicsClientId=self.cid)
+                # resetBasePositionAndOrientation expects the inertial/COM pose,
+                # whereas loadURDF takes the root-link pose (different on left).
+                position, rotation = self.p.multiplyTransforms(
+                    self.base_positions[side], orientation, dynamics[3], dynamics[4])
+                self.p.resetBasePositionAndOrientation(body, position, rotation, physicsClientId=self.cid)
+            self.view = view
+        if self.gui:
+            self.p.resetDebugVisualizerCamera(
+                cameraDistance=0.7 if len(self.sides) > 1 else 0.55,
+                cameraYaw=0 if view == "front" else 40,
+                cameraPitch=0 if view == "front" else -20,
+                cameraTargetPosition=[0.0, 0.0, 0.43 if view == "front" else 0.3],
+                physicsClientId=self.cid,
+            )
 
     def _prepare_physics(self, call, positional, timeout: float = 15.0) -> None:
         """Call a PyBullet setup function, retrying until the server answers.

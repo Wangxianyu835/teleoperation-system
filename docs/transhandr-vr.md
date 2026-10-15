@@ -95,13 +95,19 @@ $session = Get-Date -Format 'yyyyMMdd_HHmmss'
 & $py -m teleoperation hand vr `
     --input-h5 datasets/raw/visionpro_hand_arm_20261012_213812_live.h5 `
     --checkpoint $vrCheckpoint --hand both --hand-mapping same `
-    --scene hands --device cpu --fps 30 --frames 0 `
+    --scene hands --view front --device cpu --fps 30 --frames 0 `
     --report "outputs/tmp_realtime/vr_both_same_$session.json"
 ```
 
 双手模式 `--source-hand` 省略时自动取 `both`；也可显式传 `--source-hand both`。
 传入单侧来源或遗漏 `--hand-mapping same` 会在加载模型和创建窗口之前失败。
 实时连接时，将 `--input-h5 ...` 替换为 `--ip '<头显地址>'`；其余双手参数相同。
+
+`--view front` 将两只 L21 手整体绕世界 Z 轴旋转 -90°，掌面同向朝向位于 -Y 的相机，
+手指朝上、左右并排；相机 yaw=0°、pitch=0°，观察中心位于掌部高度。
+这是显示层刚体旋转，不修改左右手角度、VR 输入或 URDF。
+基座重定位按根链接到惯性中心的变换计算，避免左手 URDF 的惯性偏移导致显示位置偏移。
+`--view full` 保留原始基座朝向和斜视角；默认仍为 `full`。该视角也适用于摄像头的 L21 手部场景。
 
 ### 边界适配（不属于上游算法）
 
