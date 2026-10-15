@@ -208,6 +208,15 @@ $py='E:\python3.11.7\python.exe'
   —— 它就是上面那个入口的**固化档**（同一个 parser、同一套两个窗口、同一份报告、同一套退出码），
   只把 `--arm-elbow-follow operator` 钉死；加 `--off` 就是历史行为对照档。PyCharm 里把 Script path
   指到它、直接 Run 即可（细节见 `multi-robot-arm.md` §8.17.10）。
+- **「跑一会 GR1-T2 的大臂与小臂夹角反过来」已定位并修掉**（2026-10-15，§8.18）：不是 §8.17 那一档
+  的锅（同一条确定性命令上 `off` / `operator` 两档的逐帧命令点只差 0.2-1.2 度），而是它下面两层的
+  斜坡 —— `--arm-map posture` 的命令点是刚性的一对（腕 = 肘 + L_f*v），而
+  `ArmSceneDriver._slew_target` 只限速**腕**那一点：快速动作时肘目标一步走 145.9 mm、腕每帧最多
+  40 mm，这一对从 250.6 mm 缩到 51.1 mm，那条方向成了噪声、IK 只能把前臂折到反方向。修法是
+  `apply_each(..., elbow_rigid=...)`（入口 `rigid_elbow_robots()` 只标记方向口径那几台）在**会压扁
+  这一对的帧**上改为保持上一帧下发的那一对。同一份 200 帧回放：前臂反向帧 7 -> 3、压扁帧 11 -> 0，
+  前臂抽动与腕残差不动。**现场不用加开关**，默认路径就带着它（复现/对照命令见 §8.18.3，四个候选
+  修法的对比表见 §8.18.4）。
 
 - PyCharm 配置：Script path 指向该文件，Working directory = `F:\simulation_platform_cs`，
   Parameters 留空即可；**解释器选错也能起来** —— 它发现当前解释器缺

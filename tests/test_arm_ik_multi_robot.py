@@ -497,6 +497,119 @@ class ArmTargetSlewTests(unittest.TestCase):
         self.assertGreater(self.driver.slew_limited, 0)
         self.assertEqual(self.driver.describe()["target_slew_mm"], 20.0)
 
+    def test_the_cap_makes_way_when_it_would_squash_a_rigid_elbow_pair(self):
+        """2026-10-15 现场「跑一会 GR1-T2 的大臂与小臂夹角反过来」的根因回归。
+
+        ``--arm-map posture`` 的两个命令点是**刚性**的一对（``wrist = elbow + L_f*v``），
+        而斜坡（``_slew_target``）只削腕那一点：肘目标一步跳到新位置、腕每帧最多走
+        ``slew_m``，两点于是被拉近。实测 200 帧回放（``--arm-slew-mm 40``）gr1_t2 左臂
+        命令的前臂段 250.6 -> 51 mm（11 帧），同一批帧里 IK 把前臂折到反方向（7 帧、
+        最大 128.7 度）。
+
+        这里钉护栏的边界（``SLEW_PAIR_FLOOR_RATIO``）：① 斜坡不会把这一对压扁时照旧
+        限速、肘目标逐字不动；② 会压扁的那一帧放弃限速（按请求值一步到位）并计数；
+        ③ 未标记 ``elbow_rigid`` 时连护栏都不参与（``--arm-elbow-task`` 那条路逐字不变）。
+        数字与复现命令见 docs/multi-robot-arm.md 8.18。
+        """
+        robot = "gr1_t2"
+        adapter = self.driver.ik[robot]
+        origin = self.wrist_in_base(adapter, "left")
+        shape = np.array([0.0, -0.18, -0.18])       # |shape| = 0.2546 m（像一根前臂）
+        # ① 一对完好的目标：肘在腕前面 254.6 mm，斜坡生效但不会把它压扁。
+        wrist_ok = tuple(origin + np.array([0.05, 0.0, 0.0]))
+        elbow_ok = tuple(origin + np.array([0.05, 0.0, 0.0]) + shape)
+        # ② 肘目标离起点只有 50 mm：限速后的腕离肘只剩 51 mm << 0.6*254.6 mm（现场那种压扁）。
+        elbow_near = tuple(origin + np.array([0.05, 0.0, 0.0]))
+        wrist_near = tuple(origin + np.array([0.05, 0.0, 0.0]) + shape)
+        captured = {}
+        original = adapter.solve
+
+        def spy(side, position, **kwargs):
+            captured[side] = {
+                "wrist": np.asarray(position, dtype=np.float64),
+                "elbow": (None if kwargs.get("elbow") is None
+                          else np.asarray(kwargs["elbow"], dtype=np.float64))}
+            return original(side, position, **kwargs)
+
+        adapter.solve = spy
+        try:
+            for case, wrist, elbow, rigid, fresh in (
+                    ("rate limited", wrist_ok, elbow_ok, {robot}, False),
+                    ("squash hold", wrist_near, elbow_near, {robot}, False),
+                    ("squash unmarked", wrist_near, elbow_near, None, False),
+                    ("squash first frame", wrist_near, elbow_near, {robot}, True)):
+                self.driver.commanded.pop((robot, "left"), None)
+                self.driver.slew_m = self.SLEW_M
+                self.driver.slew_limited = 0
+                self.driver.slew_pair_skips = 0
+                if fresh:
+                    self.driver.commanded_pair.pop((robot, "left"), None)
+                held_before = self.driver.commanded_pair.get((robot, "left"))
+                # 每一档都从「这一刻腕的真实位置」起算（几档之间机器人真的动了）。
+                start = self.wrist_in_base(adapter, "left")
+                targets = {item: profile_for(item).realtime_neutral("left")
+                           for item in PAPER_ROBOTS}
+                targets[robot] = wrist
+                self.driver.apply_each("left", targets, source="base",
+                                       elbows={robot: elbow}, elbow_rigid=rigid)
+                fed = captured["left"]
+                pair = float(np.linalg.norm(fed["wrist"] - fed["elbow"]))
+                with self.subTest(case=case):
+                    if case == "rate limited":
+                        # 斜坡生效、这一对只是正常地被削一点（护栏不介入）。
+                        self.assertLessEqual(
+                            float(np.linalg.norm(fed["wrist"] - start)),
+                            self.SLEW_M + 1e-9)
+                        np.testing.assert_allclose(
+                            fed["elbow"], np.asarray(elbow, dtype=np.float64),
+                            atol=1e-12)
+                        self.assertEqual(self.driver.slew_pair_skips, 0)
+                        self.assertGreater(pair, 0.6 * float(np.linalg.norm(shape)))
+                        # 这一对被记下来，供下一帧的护栏保持。
+                        stored = self.driver.commanded_pair[(robot, "left")]
+                        np.testing.assert_allclose(
+                            np.asarray(stored[0], dtype=np.float64), fed["elbow"],
+                            atol=1e-12)
+                        np.testing.assert_allclose(
+                            np.asarray(stored[1], dtype=np.float64), fed["wrist"],
+                            atol=1e-12)
+                    elif case == "squash hold":
+                        # 会压扁的那一帧保持上一帧下发的那一对：两个点都不动、不跳。
+                        self.assertEqual(self.driver.slew_pair_skips, 1)
+                        self.assertIsNotNone(held_before)
+                        np.testing.assert_allclose(fed["elbow"],
+                                                   np.asarray(held_before[0],
+                                                              dtype=np.float64),
+                                                   atol=1e-12)
+                        np.testing.assert_allclose(fed["wrist"],
+                                                   np.asarray(held_before[1],
+                                                              dtype=np.float64),
+                                                   atol=1e-12)
+                        self.assertGreater(pair, 0.6 * float(np.linalg.norm(shape)))
+                    elif case == "squash unmarked":
+                        # 不标记就不护栏：肘目标逐字、这一对被压扁（历史行为，不是回归）。
+                        np.testing.assert_allclose(
+                            fed["elbow"], np.asarray(elbow, dtype=np.float64),
+                            atol=1e-12)
+                        self.assertEqual(self.driver.slew_pair_skips, 0)
+                        self.assertLess(pair, 0.6 * float(np.linalg.norm(shape)))
+                    else:
+                        # 还没有可保持的一对（第一帧）时按请求值一步到位。
+                        self.assertEqual(self.driver.slew_pair_skips, 1)
+                        np.testing.assert_allclose(fed["wrist"],
+                                                   np.asarray(wrist, dtype=np.float64),
+                                                   atol=1e-12)
+                        np.testing.assert_allclose(fed["elbow"],
+                                                   np.asarray(elbow, dtype=np.float64),
+                                                   atol=1e-12)
+            self.assertGreater(self.driver.slew_limited, 0)
+        finally:
+            adapter.solve = original
+            self.driver.commanded.pop((robot, "left"), None)
+            self.driver.commanded_pair.pop((robot, "left"), None)
+            self.driver.slew_m = self.SLEW_M
+            self.driver.slew_pair_skips = 0
+
     def test_the_speed_form_survives_a_slow_camera_loop(self):
         """2026-10-13：斜坡改成速率口径（mm/s），每帧按实测间隔换算。
 
@@ -639,6 +752,25 @@ class FieldArmDefaultsTests(unittest.TestCase):
         self.assertEqual(build_parser().parse_args([]).arm_elbow_follow, "off")
         self.assertEqual(build_parser().parse_args(
             ["--arm-elbow-follow", "operator"]).arm_elbow_follow, "operator")
+
+    def test_only_the_posture_recipe_is_marked_as_a_rigid_elbow_pair(self):
+        """入口只把「方向口径」那几台标成刚性的一对（斜坡整体平移的作用范围）。
+
+        ``--arm-elbow-task`` 的肘目标是独立位置目标，不能被斜坡拖着走（8.15 的 A/B 要
+        继续逐字有效）；这条钉的是入口那一步的判据。数字见 8.18。
+        """
+        from teleoperation.simulation.realtime_teleop import rigid_elbow_robots
+
+        class Fake:
+            def __init__(self, elbow, info):
+                self.elbow = elbow
+                self.info = info
+
+        per_side = {"gr1_t2": Fake((0.1, 0.2, 0.3), {"elbow_target": "posture"}),
+                    "g1": Fake((0.1, 0.2, 0.3), {"elbow_task": "on"}),
+                    "h1_2": Fake(None, {"elbow_target": "posture"})}
+        self.assertEqual(rigid_elbow_robots(per_side), {"gr1_t2"})
+        self.assertEqual(rigid_elbow_robots({}), set())
 
 
 @unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")

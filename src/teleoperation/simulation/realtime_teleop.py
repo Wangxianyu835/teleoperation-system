@@ -791,6 +791,25 @@ def _save_arm_frames(path, arrays) -> Path:
     return target
 
 
+def rigid_elbow_robots(per_side) -> set:
+    """哪些机器人的「肘目标」与腕目标是**刚性**成对的（斜坡必须把两点整体平移）。
+
+    只有 ``--arm-map posture`` 的配方是这样：``wrist = elbow + L_f * v``
+    （``arm_realtime._posture_target`` 推出来的两个点，随 ``info["elbow_target"] ==
+    "posture"`` 标记）。``--arm-elbow-task`` 的肘目标是独立的位置目标（只打 ``elbow_task``，
+    没有 ``elbow_target`` 键），它那条路的 A/B 数字在 docs/multi-robot-arm.md 8.15，
+    必须逐字不变。
+
+    为什么这件事要紧：斜坡（``ArmSceneDriver._slew_target``）只削**腕**那一点，不限速的
+    肘目标会比腕先走；一对刚性目标于是被拉近，命令自己的前臂方向被压成噪声（实测 200 帧
+    回放：前臂段 250.6 -> 51 mm，11 帧），IK 就把前臂折到反方向 —— 现场「跑一会 GR1-T2
+    的大臂与小臂夹角反过来」。数字与复现命令见 docs/multi-robot-arm.md 8.18。
+    """
+    return {name for name, target in per_side.items()
+            if getattr(target, "elbow", None) is not None
+            and (target.info or {}).get("elbow_target") == "posture"}
+
+
 def run(args) -> int:
     """采集 -> 手 + 臂 -> 仿真；0 = 至少一侧给出过输出，1 = 全程没有手也没有臂。"""
     sides = tuple(SIDES if args.side == "both" else (args.side,))
@@ -1039,6 +1058,11 @@ def run(args) -> int:
                     # 肘位置任务（--arm-elbow-task）：只给量到锚点的那几台，缺的退回只喂腕。
                     elbows = {name: target.elbow for name, target in per_side.items()
                               if getattr(target, "elbow", None) is not None} or None
+                    # 方向口径的那一对是刚性的（腕 = 肘 + L_f*v）：斜坡只削了腕那一点，
+                    # 快速动作时两点会被拉近、命令自己的前臂方向被压成噪声（现场
+                    # GR1-T2「跑一会夹角反过来」的根因）。标记之后，斜坡在**会压扁这一对的
+                    # 那些帧**上让路（见 arm_scene_driver.SLEW_PAIR_FLOOR_RATIO 与 8.18）。
+                    rigid = rigid_elbow_robots(per_side) or None
                     orientation = orientation_by_side[side]
                     try:
                         # orientation 是**相对中性**的四元数（同一份给三台，各自乘自己的
@@ -1049,6 +1073,7 @@ def run(args) -> int:
                                           orientation=orientation,
                                           orientation_frame="neutral",
                                           elbows=elbows,
+                                          elbow_rigid=rigid,
                                           elbow_bend_deg=(None if bend_by_side is None
                                                           else bend_by_side[side]))
                     except Exception as error:  # noqa: BLE001 - 一台坏不该拖垮整场

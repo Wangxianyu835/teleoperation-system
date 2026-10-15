@@ -1,6 +1,6 @@
 # 多机器人手臂驱动：按 robot_type 选臂并驱动机器人关节
 
-最后更新：2026-10-14 深夜（§8.16 **「肘/小臂不跟手」的机制是 PyBullet `restPoses` 把解往加载姿势拽**：探针 A/B 把「精确可达目标」的残差从 6.6-140.1 mm 打到 0.0 mm / 拽动 35.0 度打到 0.00 度，证明主因是零空间代价项而不是链路帧口径；但同一条现场录制上换 `--arm-rest-poses live` **不是一边倒的赢**（肘任务只 3/6 侧变好、腕精度中位 17.2 -> 40.5 mm 变差），所以 CLI 默认仍留在 `current`、`live` 只作实验档）| 前一轮 §8.15「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」的根因是那场跑在默认 `chain` 口径上（`--arm-map` 默认改 `posture`、`report_table.py` 加行程与夹断列）| 前一轮 §8.14 中性标定永远等不到数据（`--arm-calibrate-mode track`、`record_posture` 静默丢腕命令、`--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
+最后更新：2026-10-15（§8.18 「跑一会 GR1-T2 的大臂与小臂夹角反过来」的根因是**斜坡只削了腕那一点**：`--arm-map posture` 的命令点是刚性的一对（腕 = 肘 + L_f*v），肘目标不限速、腕每帧最多 40 mm，于是这一对被拉近（命令的前臂段 250.6 -> 51.1 mm）、IK 把前臂折到反方向；修法是标记 `elbow_rigid` 后在会压扁的帧上保持上一对，四个候选修法的 A/B 见 §8.18.4）| 前一轮 §8.17 「肘跟手」交付（`--arm-elbow-follow`）与现场固化档入口 §8.17.10 | 更早 §8.16 **「肘/小臂不跟手」的机制是 PyBullet `restPoses` 把解往加载姿势拽**：探针 A/B 把「精确可达目标」的残差从 6.6-140.1 mm 打到 0.0 mm / 拽动 35.0 度打到 0.00 度，证明主因是零空间代价项而不是链路帧口径；但同一条现场录制上换 `--arm-rest-poses live` **不是一边倒的赢**（肘任务只 3/6 侧变好、腕精度中位 17.2 -> 40.5 mm 变差），所以 CLI 默认仍留在 `current`、`live` 只作实验档）| 前一轮 §8.15「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」的根因是那场跑在默认 `chain` 口径上（`--arm-map` 默认改 `posture`、`report_table.py` 加行程与夹断列）| 前一轮 §8.14 中性标定永远等不到数据（`--arm-calibrate-mode track`、`record_posture` 静默丢腕命令、`--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
 相关代码：`src/teleoperation/simulation/arm_ik.py`、`arm_profiles.py`、`arm_scene_driver.py`、
 `arm_realtime.py`、`realtime_teleop.py`、`arm_preview.py`
 相关测试：`tests/test_arm_ik_multi_robot.py`（31 个用例）、`tests/test_arm_realtime_bridge.py`（84 个用例）、
@@ -1911,4 +1911,131 @@ E:\python3.11.7\python.exe devtools\report_table.py outputs\tmp_realtime\ab_ef_o
 | 同上 + `--input-npz outputs\tmp_realtime\live_long_frames.npz --frames 200 --headless --report tmp_ik_frame\ef_launcher_probe.json` | **0** | 启动行 `... \| elbow follow = operator \| ...`（钉子确实到了 parser 与场景驱动），报告里有 `elbow_posture` |
 | 同上 + `--off` | **0** | 启动行 `elbow follow = off`（对照档有效） |
 | `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | **0** | `未发现 GBK 无法编码的字符` |
+
+
+### 8.18 「跑一会 GR1-T2 的大臂与小臂夹角反过来」：斜坡只削了腕那一点（2026-10-15）
+
+现场原话：**「刚开始还行，跑一会大臂小臂夹角反过来」**，跑的是 §8.17.10 那个固化档。结论先给：
+
+1. **不是「肘跟手」那一档带来的**（8.18.1）：同一份录制上 `--arm-elbow-follow off` / `operator`
+   两档的命令点序列几乎逐位相同，这一档既不是病根也不是解药。
+2. **病根在它下面两层的斜坡上**（8.18.2、8.18.3）：`--arm-map posture` 的两个命令点是**刚性**的
+   一对（`wrist = elbow + L_f*v`），而 `ArmSceneDriver._slew_target` 只限速**腕**那一点。快速动作时
+   肘目标一步跳到新位置、腕每帧最多走 40 mm，两点被拉近到「命令自己的前臂段从 250.6 mm 缩到
+   51.1 mm」，那条方向就成了噪声，IK 只能把前臂折到反方向 —— 现场看到的「夹角反过来」。
+3. **修法**（8.18.4、8.18.5）：`ArmSceneDriver.apply_each(..., elbow_rigid=...)`，由入口把「方向口径」
+   那几台标成刚性；斜坡在**会压扁这一对的帧上不放行**，改为**保持上一帧下发的那一对**。四个候选
+   修法的 A/B 表在 8.18.4：这一版把 GR1-T2 左臂的**前臂反向帧 7 -> 3**（剩下的 3 帧在未修复的
+   版本里逐帧相同）、**压扁帧 11 -> 0**，而前臂抽动 / 腕残差 / 肘任务都不动，g1 的前臂间距还从
+   0.55 mm 改善到 23.8 mm。
+
+#### 8.18.1 先排除：这一档不是病根
+
+同一条确定性命令（同一份 `live_long_frames.npz`、200 帧、`--arm-direction-rate-deg-s 0
+--arm-slew-mm 40`），只差 `--arm-elbow-follow`，`--arm-frame-dump` 逐帧转储对比：
+
+| 指标（gr1_t2 左） | `off` | `operator` |
+|---|---|---|
+| 命令自己的前臂段 `|腕-肘|` 最小值（mm） | 51.1 | 51.1 |
+| 压扁帧（< 50% 名义 250.6 mm） | 11 | 11 |
+| `forearm_dir_error` 中位（度） | 51.01 | 50.11 |
+| 前臂反向帧（> 90 度） | 7 | 8 |
+| `elbow_recoveries` / `bridge.counts` | 3 / 逐位相同 | 3 / 逐位相同 |
+
+两档的**逐帧命令点差 0.2-1.2 度**（那是 §8.17 那一档的零空间参考在起作用），病根症状一模一样 ——
+也就是说这一场「反」与 §8.17 的新功能无关，它只是把老问题一起带进了现场。
+
+#### 8.18.2 抓到的帧：一对刚性目标被斜坡压扁
+
+`posture_summary` 的 `worst_frame`（第 19 帧）原始数字：`wanted_fore [0.911, -0.387, 0.144]`、
+`achieved_fore [-0.732, -0.291, -0.616]`、`forearm_error_deg 128.74`；命令点是
+`elbow [0.108, 0.115, 0.292]` / `wrist [0.155, 0.095, 0.300]` —— **两点只差 51.1 mm**（该台自己的
+前臂长是 250.6 mm）。逐帧位移（`--arm-frame-dump`，基座系）：
+
+| 帧 | 肘命令这一步走了 | 腕命令这一步走了 | 命令的 `|腕-肘|` | IK 走到的前臂方向 vs 命令 |
+|---|---|---|---|---|
+| 17 | -（还没数据） | - | 250.6 mm | 一致 |
+| 18 | **145.9 mm** | 42.4 mm | **79.3 mm** | 100.3 度 |
+| 19 | 4.8 mm | 44.4 mm | **51.1 mm** | **128.7 度** |
+| 20 | 26.3 mm | 44.1 mm | 61.4 mm | 125.2 度 |
+| 21 | 32.9 mm | 40.8 mm | 93.8 mm | 91.5 度 |
+
+读法：肘目标**不限速**、腕目标每帧最多 40 mm（记录里含逐帧肩平移，所以是 42-44 mm），于是这一对
+被拉近；`L_f*v` 只剩 51 mm 时它的**方向**已经由噪声说了算，而 IK 要同时满足两个几乎重合的位置
+目标 —— 走出来的手臂就是折回去的那一条。这正是「跑一会（动作快起来）才出现」的原因：站着不动时
+腕的斜坡不会生效。
+
+#### 8.18.3 复现与对照（命令 + 逐帧转储）
+
+```
+E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --input-npz outputs\tmp_realtime\live_long_frames.npz --frames 200 --headless --arm-map posture --arm-direction-rate-deg-s 0 --arm-slew-mm 40 --report tmp_ik_frame\g_off.json --arm-frame-dump tmp_ik_frame\g_off_arm.npz
+```
+
+对照组只要把 `--arm-slew-mm 40` 换成 `--arm-slew-mm 0`（= 这一对不会被削）：命令的 `|腕-肘|`
+**逐帧恒为 250.6 mm**、压扁帧 **0**、前臂反向帧 **7 -> 2** —— 这一步就把「压扁」与「IK 本身走
+反」（§8.13/§8.14 那一类）分开了。逐帧分析工具：`tmp_ik_frame/probe_frames.py`（临时工具，不入库；
+读 `--arm-frame-dump` 的 npz + `--arm-trace` 的日志）。
+
+#### 8.18.4 四个候选修法的 A/B（同一份 200 帧、同一条命令，只差修法）
+
+| 修法 | 命令 `[腕-肘]` 最小（mm） | 压扁帧 | 前臂反向帧 | 方向误差中位（度） | 上臂方向误差中位（度） | 前臂抽动 max（度） | 前臂间距 min（mm，g1） | 腕残差 h1_2 左右（mm） |
+|---|---|---|---|---|---|---|---|---|
+| V0 不改（肘新鲜、腕限速） | 51.1 | 11 | 7 | 51.01 | 66.75 | 26.41 | 0.55 | 33.36 / 31.31 |
+| V1 两点**整体平移**（否） | 250.6 | 0 | **23** | 59.40 | 70.92 | 27.08 | 17.29 | 33.12 / 31.34 |
+| V2 全程关斜坡（否） | 250.6 | 0 | 2 | 41.88 | 57.78 | **130.11** | 2.94 | **45.34 / 51.64** |
+| V3 会压扁就按请求值一步到位（否） | 166.7 | 0 | **1** | 45.11 | 61.74 | **69.54** | 0.44 | 33.52 / 31.41 |
+| V4 会压扁就**保持上一对**（采用） | **151.1** | **0** | **3** | 50.27 | 65.77 | **26.32** | **23.76** | 33.21 / 31.27 |
+
+（前臂反向帧 / 方向误差 / 抽动都是 gr1_t2 左臂；腕残差两档判据 30 mm。V4 的
+`target_slew_pair_skips` = 37 帧，V3 = 9 帧。）
+
+读三条：
+
+1. **V1（先试的「整体平移两点」）被数据否掉**：形状保住了，但肘目标被拖离配方点 —— 那条上臂方向
+   就被污染了（`upper_err` 66.8 -> 70.9 度、前臂反向帧 7 -> **23**、g1 两侧与 h1_2 两侧全线变差）。
+   「方向口径」的肘目标不只是「跟腕保持 L_f 的那一点」，它同时是**上臂方向**的载体（§8.11.1）。
+2. **V2（全程关斜坡）方向指标最好，但代价不能收**：腕残差 h1_2 左 33.4 -> **45.3** mm 越过 30 mm
+   判据、前臂抽动 max 26 -> **130** 度 —— 「目标到达前先慢慢走过去」这件事正是斜坡存在的理由
+   （§8.9），不能为了这一项把它关掉。
+3. **V3（会压扁的那帧按请求值一步到位）症状最好（7 -> 1 帧）但要跳一步**：前臂抽动 max
+   26 -> 69.5 度，而「手臂会抽」正是 §8.13.4 刚修掉的东西。**V4 取折中**：不跳、也不压扁，
+   残差与抽动按兵不动，间距还顺带改善（g1 0.55 -> 23.76 mm；那一项本来是「两前臂贴中线」的老问题）。
+   代价是那 37 帧（200 帧里 18%）这一对**保持不动** —— 手上感觉是「动作快的时候机器人等一下再跟」。
+
+#### 8.18.5 改动清单（都在既有文件里，约定 14）
+
+| 文件 | 改了什么 |
+|---|---|
+| `src/teleoperation/simulation/arm_scene_driver.py` | `apply_each(..., elbow_rigid=None)`（新参数，默认 `None` = 老调用方逐字不变）；`SLEW_PAIR_FLOOR_RATIO = 0.6`；会压扁的帧改为「保持上一帧下发的那一对」（新状态 `commanded_pair`）；报告新增 `target_slew_pair_skips`（`describe()` 与 `summary()` 各一处） |
+| `src/teleoperation/simulation/realtime_teleop.py` | 新增模块级 `rigid_elbow_robots(per_side)`：只把 `info["elbow_target"] == "posture"` 那几台标成刚性，并在 `apply_each` 时传 `elbow_rigid`（`--arm-elbow-task` 那条独立肘目标的路**不标记**，§8.15 的 A/B 继续逐字有效） |
+| `tests/test_arm_ik_multi_robot.py` | `ArmTargetSlewTests` 新增 `test_the_cap_makes_way_when_it_would_squash_a_rigid_elbow_pair`（4 个 subTest：照旧限速 / 护栏保持上一对 / 未标记不护栏 / 第一帧还没有可保持的一对）；`FieldArmDefaultsTests` 新增 `test_only_the_posture_recipe_is_marked_as_a_rigid_elbow_pair` |
+
+护栏的判据：限速后的 `[腕命令 - 肘命令] < 0.6 * [请求的 腕-肘]`（方向口径里右边恒等于该台自己的
+前臂长，所以这实际上是一条**绝对**地板：GR1-T2 151 mm、H1-2 137 mm、G1 111 mm）。
+
+#### 8.18.6 验收（命令 + 退出码 + 关键不变量）
+
+| 命令 | 退出码 | 关键不变量 |
+|---|---|---|
+| 8.18.3 那两条 `--headless`（`--arm-slew-mm 40` / `0`，各带 `--arm-frame-dump`） | 0 / 0 | 40 档：命令 `[腕-肘]` 最小 151.1 mm（= 地板值）、压扁帧 0、前臂反向帧 3、`target_slew_pair_skips` 37；0 档：恒 250.6 mm、压扁帧 0、反向帧 2 |
+| 同上 + `--arm-elbow-follow operator`（`tmp_ik_frame/g_on_g4.json`） | 0 | 前臂反向帧 4（`off` 档 3）、前臂方向误差中位 49.41（`off` 档 50.27）—— 这一档在修好之后仍然不恶化 |
+| `E:\python3.11.7\python.exe -m pytest tests -q` | **0** | `371 passed, 3 skipped, 346 subtests passed`（上一轮基线 369 / 3 / 342；本轮新增 2 条用例 + 4 个 subTest；末尾 `nanobind: leaked ...` 是队友 `roboticstoolbox` 既有的引用计数提示，不是失败） |
+| `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | **0** | `[OK]` |
+| `E:\python3.11.7\python.exe devtools\check_no_c_drive.py --strict` | **0** | `[OK]`（七项缓存都在 `E:\cache`） |
+| `powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -Base d8bca93` | **0** | `RESULT: [OK] all checks passed (2 warning(s))`；第 4 项 `809 teammate-owned files under baseline: 0 modified/deleted`；`unittest discover -> Ran 374 tests [OK (skipped=3)]` |
+
+#### 8.18.7 如实说（这一轮没解决什么）
+
+- **只有本机回放证据**：现场那一次（324 帧、`arm_run_20261015_141233.json`）报告里
+  `target_slew_limited_frames=986`、GR1-T2 左臂前臂方向误差中位 46.9 度、反向帧 0.4%，与本节机制
+  一致；但**没有现场对照**（现场跑一次要人站镜头前，而且必须按 q/Esc 退出报告才会落盘，见 §8.17.10）。
+- **剩下那 3 帧「反」不是本节修的**：GR1-T2 左臂第 184-186 帧（104.7 / 105.1 / 92.5 度）在**未修复**
+  的版本里逐帧数字相同，属于 §8.13/§8.14 那一类（IK 支路 / 目标本身），要单独查。
+- **系统性的 45-50 度中位前臂方向误差没动**：GR1-T2 左臂在**每一版**（V0-V4）里都是 42-59 度，
+  现场旧长跑里也有 34-51 度 —— 这是另一件事。
+- **护栏的语义是「等一等」，不是「跳过」**：37/200 帧这一对保持不动，现场如果觉得「快动作时有点
+  跟不上」，可以把 `SLEW_PAIR_FLOOR_RATIO` 调小（0.4 会让护栏更少介入）或换 V3 那条路（症状更好
+  但要跳一步）—— 两条路的数据都在 8.18.4 的表里，换之前请重跑那一张表。
+- **`--arm-lateral-guard-mm` 仍只动腕那一点**（默认 0，今天是关的）：一旦打开，这一对同样会被那个
+  护栏压偏（`arm_realtime._apply_lateral_guard` 原地改的是腕目标），需要和本节同一套处理。留作下一轮。
 
