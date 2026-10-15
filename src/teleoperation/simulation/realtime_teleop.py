@@ -411,6 +411,20 @@ def build_parser() -> argparse.ArgumentParser:
                              "and yours; 0 = stay at the robot's neutral. It is an angle "
                              "blend (slerp), not a displacement scale: your 40 deg shoulder "
                              "swing stays 40 deg on every robot either way")
+    parser.add_argument("--arm-posture-frame", choices=("auto", "mapped", "delta"),
+                        default="auto",
+                        help="direction recipe only (--arm-map posture): which frame the "
+                             "operator's directions are carried in. 'auto' (default) = each "
+                             "robot uses its own ArmProfile.posture_frame, which is 'mapped' "
+                             "for h1_2/g1 and 'delta' for gr1_t2 (measured on the same 200 "
+                             "frame replay: gr1_t2 elbow residual median 197 -> 26 mm left / "
+                             "138 -> 50 mm right, while h1_2 right would go 10 -> 46 deg the "
+                             "other way -- so it is per robot, not global). 'mapped' = the "
+                             "historical absolute frame (the robot points where you point; "
+                             "assumes your neutral pose and its loaded pose agree). 'delta' = "
+                             "your rotation from your own neutral is applied to the robot's "
+                             "own neutral direction (you did not move = it stays in its own "
+                             "loaded pose). See docs/multi-robot-arm.md 8.19")
     parser.add_argument("--arm-ik-scope", choices=("arm", "body"), default="arm",
                         help="which joints the IK may move (default 'arm'): 'arm' pins every "
                              "non-arm joint to its current angle (arm_ik._locked_arguments), "
@@ -568,6 +582,14 @@ def build_parser() -> argparse.ArgumentParser:
                              "to reproduce a 2026-10-13 number exactly (that session ran "
                              "20 mm/frame at 10 fps = 200 mm/s); leave it None to let the app "
                              "scale the speed with the measured frame time")
+    parser.add_argument("--arm-slew-pair-floor", type=float, default=None, metavar="RATIO",
+                        help="floor for the rigid elbow-wrist pair (the --arm-map posture "
+                             "recipe): the cap may not shrink that pair below RATIO of the "
+                             "requested one, otherwise that frame keeps the pair sent on the "
+                             "previous frame (see docs/multi-robot-arm.md 8.18). 0 = the guard "
+                             "off, i.e. the historical behaviour, which is what an on-site A/B "
+                             "uses; leave it None to use arm_scene_driver.SLEW_PAIR_FLOOR_RATIO "
+                             "(0.6)")
     parser.add_argument("--arm-ik-iterations", type=int, default=60,
                         help="PyBullet IK maxNumIterations per pass (default 60: measured "
                              "2026-10-12, 60/1e-4 beats 200/1e-5 in residual AND speed here)")
@@ -862,6 +884,7 @@ def run(args) -> int:
                                     rest_poses=args.arm_rest_poses,
                                     slew_m=(0.0 if fixed_slew_m is None else fixed_slew_m),
                                     slew_m_per_s=slew_speed_m_per_s,
+                                    slew_pair_floor_ratio=args.arm_slew_pair_floor,
                                     elbow_pass=args.arm_elbow_pass,
                                     elbow_recovery_deg=args.arm_elbow_recovery_deg,
                                     elbow_recovery_margin_deg=args.arm_elbow_recovery_margin_deg,
@@ -909,12 +932,17 @@ def run(args) -> int:
                 pass_note = ("" if args.arm_map == "posture" else
                              (f" (pass {args.arm_elbow_pass})"
                               if args.arm_elbow_task else ""))
+                # 方向口径搬谁的方向（8.19）：auto 时逐台摊开，读日志的人不必去 profile 表里对照。
+                frame_note = ("" if args.arm_posture_frame != "auto" else
+                              " (" + ", ".join(f"{name}:{profiles[name].posture_frame}"
+                                               for name in robots) + ")")
 
                 print(f"arm map: {args.arm_map} | shoulder end = {args.arm_anchor} "
                       f"({'rigid: the elbow parent link' if args.arm_anchor == 'upper' else 'historical name-matched link'})"
                       f" | ik scope = {args.arm_ik_scope}"
                       f" | rest poses = {args.arm_rest_poses}"
                       f" | elbow follow = {args.arm_elbow_follow}"
+                      f" | posture frame = {args.arm_posture_frame}{frame_note}"
                       f" | measured links (m) "
                       + " ".join(f"{name}:{side[0]}" +
                                  f" {robot_links[name][side]['upper']:.3f}"
@@ -962,6 +990,8 @@ def run(args) -> int:
                 map_mode=args.arm_map, robot_links=robot_links,
                 elbow_task=args.arm_elbow_task, elbow_gain=args.arm_elbow_gain,
                 posture_gain=args.arm_posture_gain,
+                posture_frame=(None if args.arm_posture_frame == "auto"
+                               else args.arm_posture_frame),
                 max_direction_rate_deg_s=args.arm_direction_rate_deg_s,
                 anchors=robot_anchors)
             print(f"arms: {', '.join(robots)} | ik_mode "
@@ -974,7 +1004,11 @@ def run(args) -> int:
                   + (f"target slew {fixed_slew_m * 1000.0:.1f} mm/frame (fixed)"
                      if fixed_slew_m is not None else
                      f"target slew {args.arm_slew_mm_s:.0f} mm/s "
-                     f"(ceiling {SLEW_MAX_STEP_M * 1000.0:.0f} mm/frame)"),
+                     f"(ceiling {SLEW_MAX_STEP_M * 1000.0:.0f} mm/frame)")
+                  # 压扁护栏（见 arm_scene_driver.SLEW_PAIR_FLOOR_RATIO 与 8.18）：
+                  # 0 = 关（历史行为）。现场一眼看出这一场跑的是哪一档。
+                  + f" | pair floor {driver.slew_pair_floor_ratio:.2f}"
+                  + ("" if driver.slew_pair_floor_ratio > 0.0 else " (off)"),
                   flush=True)
         if args.input_npz is not None:
             camera = ReplayFrameSource(args.input_npz, args.landmark_space)
@@ -1045,6 +1079,11 @@ def run(args) -> int:
                 # 于是那一侧如实退回历史行为（不猜、不保持一个假姿势）。
                 bend_by_side = (bridge.elbow_bend_target()
                                 if args.arm_elbow_follow == "operator" else None)
+                # delta 档（gr1_t2 等）把「你没动」定义成「本机停在自己的加载姿势」，所以那一档
+                # 零空间参考的基准要换成**你的中性肘弯**；mapped 档仍旧用本机加载姿势下的夹角
+                # （见 arm_realtime.elbow_bend_neutral 与 docs/multi-robot-arm.md 8.19）。
+                bend_neutral = (bridge.elbow_bend_neutral()
+                                if bend_by_side is not None else None)
                 # 斜坡：速率（mm/s）-> 这一帧最多走多少米。现场摄像头循环帧率不固定
                 # （8-12 fps），固定 mm/帧 会把跟随速度绑在帧率上，摆动被整段削掉（§8.9）。
                 # 第一帧拿不到间隔，用名义 1/30 s（= 旧口径 20 mm/帧），不是"关掉斜坡"。
@@ -1063,6 +1102,15 @@ def run(args) -> int:
                     # GR1-T2「跑一会夹角反过来」的根因）。标记之后，斜坡在**会压扁这一对的
                     # 那些帧**上让路（见 arm_scene_driver.SLEW_PAIR_FLOOR_RATIO 与 8.18）。
                     rigid = rigid_elbow_robots(per_side) or None
+                    # 零空间参考的基准：只有**这一台用的是 delta 档**时才换成你的中性肘弯
+                    # （mapped 档保持历史行为，见 8.19）。缺数据/非 posture 口径一律 None。
+                    bend_baseline = None
+                    if bend_neutral is not None:
+                        bend_baseline = {
+                            name: (bend_neutral[side]
+                                   if (getattr(target, "info", None) or {}).get(
+                                       "posture_frame") == "delta" else None)
+                            for name, target in per_side.items()}
                     orientation = orientation_by_side[side]
                     try:
                         # orientation 是**相对中性**的四元数（同一份给三台，各自乘自己的
@@ -1074,6 +1122,7 @@ def run(args) -> int:
                                           orientation_frame="neutral",
                                           elbows=elbows,
                                           elbow_rigid=rigid,
+                                          elbow_bend_baseline=bend_baseline,
                                           elbow_bend_deg=(None if bend_by_side is None
                                                           else bend_by_side[side]))
                     except Exception as error:  # noqa: BLE001 - 一台坏不该拖垮整场
@@ -1202,6 +1251,11 @@ def run(args) -> int:
                               else float(args.arm_slew_mm_s)),
         "arm_slew_mm_fixed": (None if fixed_slew_m is None else fixed_slew_m * 1000.0),
         "arm_slew_ceiling_mm": SLEW_MAX_STEP_M * 1000.0,
+        "arm_slew_pair_floor_ratio": (None if driver is None
+                                      else round(driver.slew_pair_floor_ratio, 4)),
+        # 方向口径搬谁的方向：auto（每台按 profile，见 bridge.posture_frame_by_robot）/
+        # mapped / delta。见 docs/multi-robot-arm.md 8.19。
+        "arm_posture_frame": args.arm_posture_frame,
         "arm_slew_mm_last_frame": (None if driver is None
                                    else round(1000.0 * driver.slew_m, 3)),
         "arm": arm_summary,

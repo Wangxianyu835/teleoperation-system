@@ -1105,10 +1105,12 @@ class PostureMappingTests(unittest.TestCase):
     def test_robot_arm_directions_follow_the_operators_verbatim(self):
         # 现场症状的根因是「幅度被短基线/行程夹掉」，所以这里断言的是**方向**：
         # 同一帧、三台臂长完全不同的机器人，上臂方向都等于你的方向（过 axis_map）。
+        # 2026-10-15：这一条钉的是**绝对档**（历史口径）。gr1_t2 的默认已经换成相对档
+        # （profile.posture_frame，见 8.19），所以要显式给 mapped 才测得到绝对档。
         frame = raised_arm("right", np.radians(40.0))
         for name in PAPER_ROBOTS:
             with self.subTest(robot=name):
-                bridge = posture_bridge()
+                bridge = posture_bridge(posture_frame="mapped")
                 entry = bridge.update(arms_world={"right": frame})[name]["right"]
                 self.assertEqual(entry.info["map"], "posture")
                 here = np.asarray(posture_anchors()[name]["right"]["shoulder"], dtype=float)
@@ -1178,6 +1180,54 @@ class PostureMappingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             RealtimeArmBridge(PROFILES, sides=("right",), map_mode="posture",
                               posture_gain=1.5)
+
+    def test_the_frame_is_per_robot_by_default_and_can_be_forced(self):
+        """方向口径搬谁的方向：默认逐台（gr1_t2 相对档，另两台绝对档），旗子能强制。"""
+        default = posture_bridge()
+        expected = {"h1_2": "mapped", "gr1_t2": "delta", "g1": "mapped"}
+        self.assertEqual({name: profile_for(name).posture_frame for name in PAPER_ROBOTS},
+                         expected)
+        entry = default.update(arms_world={"right": raised_arm("right", 0.3)})
+        for name, frame in expected.items():
+            with self.subTest(robot=name, case="default"):
+                self.assertEqual(entry[name]["right"].info["posture_frame"], frame)
+        summary = json.loads(json.dumps(default.summary()))
+        self.assertEqual(summary["posture_frame"], "profile")
+        self.assertEqual(summary["posture_frame_by_robot"], expected)
+
+        for frame in ("mapped", "delta"):
+            forced = posture_bridge(posture_frame=frame)
+            forced_entry = forced.update(arms_world={"right": raised_arm("right", 0.3)})
+            with self.subTest(case="forced " + frame):
+                self.assertEqual(json.loads(json.dumps(forced.summary()))["posture_frame"],
+                                 frame)
+                for name in PAPER_ROBOTS:
+                    self.assertEqual(forced_entry[name]["right"].info["posture_frame"], frame)
+
+    def test_the_delta_frame_turns_the_robots_own_neutral_by_your_rotation(self):
+        """相对档的两条不变量：「你没动 = 本机停在自己中性方向」与「你转多少它就转多少」。
+
+        2026-10-15：绝对档在 gr1_t2 上不成立（它加载姿势下前臂朝后下方），于是给它叠加一个
+        常数偏移 —— 现场看到的就是「GR1-T2 的手臂怎么拐就怎么拐、对不准」。数字见 8.19。
+        """
+        bridge = posture_bridge(posture_frame="delta")
+        here = {name: np.asarray(posture_anchors()[name]["right"]["elbow"], dtype=float)
+                - np.asarray(posture_anchors()[name]["right"]["shoulder"], dtype=float)
+                for name in PAPER_ROBOTS}
+        still = bridge.update(arms_world={"right": raised_arm("right", 0.0)})
+        turned = bridge.update(arms_world={"right": raised_arm("right", np.radians(40.0))})
+        for name in PAPER_ROBOTS:
+            with self.subTest(robot=name, case="neutral frame"):
+                anchor = np.asarray(posture_anchors()[name]["right"]["shoulder"], dtype=float)
+                np.testing.assert_allclose(
+                    unit(np.asarray(still[name]["right"].elbow, dtype=float) - anchor),
+                    unit(here[name]), atol=1e-9)
+                self.assertEqual(still[name]["right"].info["robot_upper_deg"], 0.0)
+            with self.subTest(robot=name, case="turn is copied"):
+                info = turned[name]["right"].info
+                # 绝对档下 gr1_t2 这两个数差 20 度上下（常数偏移）；相对档下逐字相等。
+                self.assertAlmostEqual(info["robot_upper_deg"], info["operator_upper_deg"],
+                                       places=4)
 
     def test_elbow_target_needs_no_elbow_task_flag(self):
         # 方向口径下肘目标由口径自己给出：--arm-elbow-task 不需要，给了也不冲突。

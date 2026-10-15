@@ -870,8 +870,14 @@ class PyBulletArmIK:
             rest[self.position_of[index]] = float(value)
         return rest
 
-    def posture_from_bend(self, side: str, bend_deg) -> dict:
+    def posture_from_bend(self, side: str, bend_deg, neutral_bend=None) -> dict:
         """操作者这一帧的肘弯 ``bend_deg`` -> 本机肘关节的零空间参考角（``{关节名: 弧度}``）。
+
+        ``neutral_bend``（度，可选）是**换基准**用的：给 ``None``（默认、历史口径）时基准是
+        「**本机**加载姿势下的夹角」，与方向口径的 ``mapped`` 档配套；给一个数时基准换成它 ——
+        ``delta`` 档要用**操作者自己中性那一帧的肘弯**，因为那一档的「你没动」= 本机停在自己的
+        加载姿势，位置任务命令的形状本来就是本机的加载姿势。两档混用会差一个常数，那就是
+        「零空间项跟位置任务对着干」（见 arm_realtime.elbow_bend_neutral 与 8.19）。
 
         ``bend_deg`` 是**度**，且与 ``arm_realtime.elbow_bend_degrees`` 同一个口径
         （180 = 完全伸直，0 = 完全折起）；写进关节是弧度 —— 量纲在这里换，别在调用方换。
@@ -897,7 +903,10 @@ class PyBulletArmIK:
         bend = float(bend_deg)
         if not np.isfinite(bend):
             return {}
-        change = min(bend, BEND_STRAIGHT_DEG) - float(bend_at_hold)
+        baseline = float(bend_at_hold) if neutral_bend is None else float(neutral_bend)
+        if not np.isfinite(baseline):
+            return {}
+        change = min(bend, BEND_STRAIGHT_DEG) - baseline
         index = self.index_of[str(name)]
         position = self.position_of[index]
         value = float(self.hold[index]) + radians(change / float(slope))

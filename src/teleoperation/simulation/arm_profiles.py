@@ -41,6 +41,19 @@ PAPER_ROBOTS = ("h1_2", "gr1_t2", "g1")
 #: purpose: this is the only place our side names it, and it stays ``loadable=False``.
 TRON2A = "tron2a"
 
+#: 方向口径（``--arm-map posture``）搬的是**谁的方向**（见 docs/multi-robot-arm.md 8.19）：
+#:
+#: ``mapped`` = 操作者的**绝对**方向过 ``axis_map``（历史口径）：机器人在任何姿势下都被要求指到
+#: 同一个方向。隐含前提是「操作者的中性方向与本机加载姿势的方向差不多」；不成立时会给这一侧叠加
+#: 一个**常数**偏移（"你没动"也要它先拆开一大截）。
+#: ``delta`` = 把操作者相对**自己中性**的那个旋转套在本机**自己的**中性方向上：你没动，本机停在
+#: 自己的加载姿势；你转多少，它转多少。
+#:
+#: 它是**每台机器人加载姿势的属性**，所以住在 profile 里（不是一条全局开关）：同一份 200 帧录制
+#: 的 A/B 上，gr1_t2 换 delta 后上臂方向误差 65.8 -> 8.2 度、肘任务残差中位 197.5 -> 25.6 mm，
+#: 而 h1_2 / g1 在 mapped 下本来就准（9.9-19.1 度），换 delta 反而退化到 21-46 度。
+POSTURE_FRAMES = ("mapped", "delta")
+
 
 @dataclass(frozen=True)
 class ArmProfile:
@@ -58,6 +71,9 @@ class ArmProfile:
     ee_keywords: tuple = ("wrist", "hand")
     #: "pose" = constrain position and orientation, "position" = position only.
     ik_mode: str = "pose"
+    #: 方向口径（``--arm-map posture``）里搬谁的方向：见 ``POSTURE_FRAMES`` 与
+    #: docs/multi-robot-arm.md 8.19。每台各自的加载姿势不同，所以它是**每台的属性**。
+    posture_frame: str = "mapped"
     #: Operator metre -> robot base-frame metre.
     metric_scale: float = 1.0
     #: Target centre in the robot's base frame (metres).
@@ -84,6 +100,10 @@ class ArmProfile:
             raise ValueError(
                 f"{self.robot_type}: ik_mode must be 'pose' or 'position', "
                 f"got {self.ik_mode!r}")
+        if self.posture_frame not in POSTURE_FRAMES:
+            raise ValueError(
+                f"{self.robot_type}: posture_frame must be one of {POSTURE_FRAMES},"
+                f" got {self.posture_frame!r}")
         if self.metric_scale <= 0.0:
             raise ValueError(f"{self.robot_type}: metric_scale must be > 0")
         if len(self.metric_offset) != 3:
@@ -194,6 +214,14 @@ ARM_PROFILES: dict = {
     "gr1_t2": ArmProfile(
         robot_type="gr1_t2",
         ik_mode="position",
+        # 方向口径用**相对**档（见 POSTURE_FRAMES 与 docs/multi-robot-arm.md 8.19）：
+        # 它加载姿势下前臂朝后下方（基座系 (-0.80, +0.09, -0.60)，肘弯 111.2 度），与操作者
+        # 中性（右 72.5 / 左 138.9 度）差得最远，绝对口径于是给它叠加一个常数偏移，把它顶到
+        # 自己限位的角落（实测肩 pitch -2.785 rad / 限位 -2.79、肘 2.272 / 限位 2.27）。
+        # 同一份 200 帧录制 A/B：肘任务残差中位 197.5 -> 25.6 mm（左）/ 137.6 -> 49.7 mm（右），
+        # 上臂方向误差 65.8 -> 8.2 度（左）/ 45.3 -> 16.0 度（右）；另两台换过来反而变差，
+        # 所以这一项是 per-robot 的，不是全局默认。
+        posture_frame="delta",
         metric_scale=0.4,
         metric_offset=(0.16, 0.0, 0.12),
         # Probe: left up to 0.10 m (mean 13.3 / max 28.2 mm), right up to 0.12 m
@@ -340,6 +368,8 @@ def describe(robot_type: str) -> dict:
         "robot_type": profile.robot_type,
         "loadable": profile.loadable,
         "ik_mode": profile.ik_mode,
+        # 方向口径搬谁的方向（见 POSTURE_FRAMES 与 docs/multi-robot-arm.md 8.19）。
+        "posture_frame": profile.posture_frame,
         "metric_scale": profile.metric_scale,
         "metric_offset": list(profile.metric_offset),
         "realtime_offset": {side: list(profile.realtime_neutral(side)) for side in SIDES},

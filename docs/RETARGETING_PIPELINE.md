@@ -3,7 +3,7 @@
 > 2026-10-11：本文保留原分支的运行与验收历史。合并后的入口、坐标数据差异及测试结果见 [main 集成记录](integration-2026-10-11.md)，本文的历史机器路径与测试数量不代表当前 main。
 
 > **适用版本**：`origin/current-state`（包 `src/teleoperation`，CLI `python -m teleoperation`）
-> **最后更新**：2026-10-15（基线仍是 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`；本轮四件事 —— ① "摄像头窗口那句话的判据修正"实测记录：`summarise_camera_window` 改按报告的 `window_rect` 判断，不再把按 q 正常退出误报成窗口没开；② **加手臂的实时入口 `devtools/run_realtime_arm_windows.py`**：默认口径由 `chain` 改为 `posture`（现场「大臂抬不起来 / 张不开怀抱」的直接修复，见 `multi-robot-arm.md` §8.15）；③ 当晚复查：`realtime_teleop` 多了 `--arm-rest-poses {current,zero,live}`（默认 `current` = 行为不变），「肘 / 小臂不跟手」定位到 PyBullet `restPoses` 这个零空间代价项，见 `multi-robot-arm.md` §8.16）；④ **「肘 / 小臂不跟手」接上线**：`realtime_teleop` 多了 `--arm-elbow-follow {off,operator}`（**默认 `off`**，实测把 4 个源文件退回 `2170cfb` 逐字同路），`operator` 把操作者这一帧的肘弯（绝对角）交给每台机器人**自己实测的**肘关节当零空间参考（论文 `PostureTask` 的等价物）；同一份回放 200 帧的确定性 A/B 是肘任务中位 5/6 侧改善、腕任务 6/6 侧不恶化，见 `multi-robot-arm.md` §8.17；同节 §8.17.10 另给了一个**固化档入口** `devtools/run_realtime_arm_elbow_follow_windows.py`（= 上面那个入口 + 钉住 `operator`，加 `--off` 就是历史档，现场一键还原这一版）。**做 A/B 请注意**：现场口径的「关键点跳变护栏 / 速率斜坡」按**墙钟时间**换算，同一条命令两次跑可能差一帧判定、整场分叉（§8.17.4 实测），确定性做法是加 `--arm-direction-rate-deg-s 0 --arm-slew-mm 40`）· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
+> **最后更新**：2026-10-15（§8.19 **方向口径落成每台的属性**：原来搬的是操作者的绝对方向，gr1_t2 加载姿势下前臂朝后下方，于是"你没动"也要它先拆开 97 度、被顶进限位一角（肘任务残差中位 197.5 mm）；换成相对档后 25.6 mm，h1_2/g1 换过去反而退化所以仍是绝对档 —— 新旗子 `--arm-posture-frame {auto,mapped,delta}` 默认 `auto`。基线仍是 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`；本轮四件事 —— ① "摄像头窗口那句话的判据修正"实测记录：`summarise_camera_window` 改按报告的 `window_rect` 判断，不再把按 q 正常退出误报成窗口没开；② **加手臂的实时入口 `devtools/run_realtime_arm_windows.py`**：默认口径由 `chain` 改为 `posture`（现场「大臂抬不起来 / 张不开怀抱」的直接修复，见 `multi-robot-arm.md` §8.15）；③ 当晚复查：`realtime_teleop` 多了 `--arm-rest-poses {current,zero,live}`（默认 `current` = 行为不变），「肘 / 小臂不跟手」定位到 PyBullet `restPoses` 这个零空间代价项，见 `multi-robot-arm.md` §8.16）；④ **「肘 / 小臂不跟手」接上线**：`realtime_teleop` 多了 `--arm-elbow-follow {off,operator}`（**默认 `off`**，实测把 4 个源文件退回 `2170cfb` 逐字同路），`operator` 把操作者这一帧的肘弯（绝对角）交给每台机器人**自己实测的**肘关节当零空间参考（论文 `PostureTask` 的等价物）；同一份回放 200 帧的确定性 A/B 是肘任务中位 5/6 侧改善、腕任务 6/6 侧不恶化，见 `multi-robot-arm.md` §8.17；同节 §8.17.10 另给了一个**固化档入口** `devtools/run_realtime_arm_elbow_follow_windows.py`（= 上面那个入口 + 钉住 `operator`，加 `--off` 就是历史档，现场一键还原这一版）。**做 A/B 请注意**：现场口径的「关键点跳变护栏 / 速率斜坡」按**墙钟时间**换算，同一条命令两次跑可能差一帧判定、整场分叉（§8.17.4 实测），确定性做法是加 `--arm-direction-rate-deg-s 0 --arm-slew-mm 40`）· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
 > [`contracts.md`](contracts.md)（H5 / 命令契约，字段以它为准）· [`architecture.md`](architecture.md)（模块层次）·
 > 注意：`docs/archive/`（旧布局手册，只读参考）已随上游 `10ebd9f` 被整体删除，
 > 旧布局的对照表保留在 §5（本文档内，自足）。
@@ -215,9 +215,22 @@ $py='E:\python3.11.7\python.exe'
   40 mm，这一对从 250.6 mm 缩到 51.1 mm，那条方向成了噪声、IK 只能把前臂折到反方向。修法是
   `apply_each(..., elbow_rigid=...)`（入口 `rigid_elbow_robots()` 只标记方向口径那几台）在**会压扁
   这一对的帧**上改为保持上一帧下发的那一对。同一份 200 帧回放：前臂反向帧 7 -> 3、压扁帧 11 -> 0，
-  前臂抽动与腕残差不动。**现场不用加开关**，默认路径就带着它（复现/对照命令见 §8.18.3，四个候选
-  修法的对比表见 §8.18.4）。
+  前臂抽动与腕残差不动。**现场不用加开关**，默认路径就带着它；要现场对照/调可以把护栏地板
+  写成 `--arm-slew-pair-floor 0.4`（更少介入）或 `0`（关掉 = 历史行为），报告里看
+  `arm_slew_pair_floor_ratio` 与 `arm.target_slew_pair_skips`（复现/对照命令见 §8.18.3，
+  四个候选修法的对比表见 §8.18.4）。
 
+- **「GR1-T2 的手臂怎么拐就怎么拐、达不到 H1-2 那样准」是**方向口径的口径问题**，不是机器人手臂的问题**
+  （2026-10-15，§8.19）：逐帧证据先把「机器人跟不上」排除掉 —— 六个机位的 `elbow_task_mm`（实际到达）
+  与 `solution_elbow_mm`（IK 自己解出来的）**逐位相同**（gr1_t2 左 197.5 / 197.5），两个目标点的半径
+  也逐帧等于机器人自己的连杆长（`|cmd_elbow-upper|` 178.6 vs 178.7 mm），关节到达角与命令角逐列相同。
+  真正的问题在映射层：原口径搬的是**你的绝对方向**（`u = axis_map(你的上臂方向)`），而 gr1_t2 加载
+  姿势下前臂朝**后**下方（基座系 `(-0.80,+0.09,-0.60)`，肘弯 111.2 度）—— 同一句「指向前下方」对它
+  等于「先拆开 97 度」，它于是被顶进自己限位的一角（肩 pitch -2.785 / 限位 -2.79，肘 2.272 / 2.27）。
+  新增 `--arm-posture-frame {auto,mapped,delta}`（**默认 `auto` = 逐台按 `ArmProfile.posture_frame`**）：
+  gr1_t2 用 `delta`（把你的旋转套在本机自己的中性方向上），h1_2 / g1 仍是 `mapped`。同一份 200 帧回放：
+  gr1_t2 左肘任务残差中位 196.4 -> **28.6** mm、上臂方向误差 65.0 -> **9.2** 度；右 129.6 -> **47.6** mm；
+  **h1_2 / g1 六个读数逐位不变**，`--arm-posture-frame mapped` 与改前逐位相同。见 §8.19.6 的对照表。
 - PyCharm 配置：Script path 指向该文件，Working directory = `F:\simulation_platform_cs`，
   Parameters 留空即可；**解释器选错也能起来** —— 它发现当前解释器缺
   `cv2`/`mediapipe`/`pybullet` 时会打印 `[WARN] current interpreter ... lacks: ...`，然后用

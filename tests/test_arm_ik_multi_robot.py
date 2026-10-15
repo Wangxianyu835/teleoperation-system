@@ -506,11 +506,14 @@ class ArmTargetSlewTests(unittest.TestCase):
         命令的前臂段 250.6 -> 51 mm（11 帧），同一批帧里 IK 把前臂折到反方向（7 帧、
         最大 128.7 度）。
 
-        这里钉护栏的边界（``SLEW_PAIR_FLOOR_RATIO``）：① 斜坡不会把这一对压扁时照旧
-        限速、肘目标逐字不动；② 会压扁的那一帧放弃限速（按请求值一步到位）并计数；
-        ③ 未标记 ``elbow_rigid`` 时连护栏都不参与（``--arm-elbow-task`` 那条路逐字不变）。
-        数字与复现命令见 docs/multi-robot-arm.md 8.18。
+        这里钉护栏的边界（``SLEW_PAIR_FLOOR_RATIO`` / ``slew_pair_floor_ratio``）：① 斜坡不会把
+        这一对压扁时照旧限速、肘目标逐字不动；② 会压扁的那一帧**保持上一帧下发的那一对**
+        （两个点都不动）并计数；③ 未标记 ``elbow_rigid`` 时连护栏都不参与
+        （``--arm-elbow-task`` 那条路逐字不变）；④ 把地板调成 0（现场 ``--arm-slew-pair-floor
+        0``）就是历史行为：照旧限速、照旧压扁。数字与复现命令见 docs/multi-robot-arm.md 8.18。
         """
+        from teleoperation.simulation.arm_scene_driver import SLEW_PAIR_FLOOR_RATIO
+
         robot = "gr1_t2"
         adapter = self.driver.ik[robot]
         origin = self.wrist_in_base(adapter, "left")
@@ -533,15 +536,18 @@ class ArmTargetSlewTests(unittest.TestCase):
 
         adapter.solve = spy
         try:
-            for case, wrist, elbow, rigid, fresh in (
-                    ("rate limited", wrist_ok, elbow_ok, {robot}, False),
-                    ("squash hold", wrist_near, elbow_near, {robot}, False),
-                    ("squash unmarked", wrist_near, elbow_near, None, False),
-                    ("squash first frame", wrist_near, elbow_near, {robot}, True)):
+            for case, wrist, elbow, rigid, fresh, floor in (
+                    ("rate limited", wrist_ok, elbow_ok, {robot}, False, None),
+                    ("squash hold", wrist_near, elbow_near, {robot}, False, None),
+                    ("squash unmarked", wrist_near, elbow_near, None, False, None),
+                    ("squash first frame", wrist_near, elbow_near, {robot}, True, None),
+                    ("floor off", wrist_near, elbow_near, {robot}, False, 0.0)):
                 self.driver.commanded.pop((robot, "left"), None)
                 self.driver.slew_m = self.SLEW_M
                 self.driver.slew_limited = 0
                 self.driver.slew_pair_skips = 0
+                self.driver.slew_pair_floor_ratio = (
+                    SLEW_PAIR_FLOOR_RATIO if floor is None else floor)
                 if fresh:
                     self.driver.commanded_pair.pop((robot, "left"), None)
                 held_before = self.driver.commanded_pair.get((robot, "left"))
@@ -593,7 +599,7 @@ class ArmTargetSlewTests(unittest.TestCase):
                             atol=1e-12)
                         self.assertEqual(self.driver.slew_pair_skips, 0)
                         self.assertLess(pair, 0.6 * float(np.linalg.norm(shape)))
-                    else:
+                    elif case == "squash first frame":
                         # 还没有可保持的一对（第一帧）时按请求值一步到位。
                         self.assertEqual(self.driver.slew_pair_skips, 1)
                         np.testing.assert_allclose(fed["wrist"],
@@ -602,6 +608,13 @@ class ArmTargetSlewTests(unittest.TestCase):
                         np.testing.assert_allclose(fed["elbow"],
                                                    np.asarray(elbow, dtype=np.float64),
                                                    atol=1e-12)
+                    else:
+                        # 地板 0 = 关护栏：肘目标逐字、腕照旧限速，这一对被压扁（历史行为）。
+                        self.assertEqual(self.driver.slew_pair_skips, 0)
+                        np.testing.assert_allclose(fed["elbow"],
+                                                   np.asarray(elbow, dtype=np.float64),
+                                                   atol=1e-12)
+                        self.assertLess(pair, 0.6 * float(np.linalg.norm(shape)))
             self.assertGreater(self.driver.slew_limited, 0)
         finally:
             adapter.solve = original
@@ -609,6 +622,7 @@ class ArmTargetSlewTests(unittest.TestCase):
             self.driver.commanded_pair.pop((robot, "left"), None)
             self.driver.slew_m = self.SLEW_M
             self.driver.slew_pair_skips = 0
+            self.driver.slew_pair_floor_ratio = SLEW_PAIR_FLOOR_RATIO
 
     def test_the_speed_form_survives_a_slow_camera_loop(self):
         """2026-10-13：斜坡改成速率口径（mm/s），每帧按实测间隔换算。
@@ -752,6 +766,28 @@ class FieldArmDefaultsTests(unittest.TestCase):
         self.assertEqual(build_parser().parse_args([]).arm_elbow_follow, "off")
         self.assertEqual(build_parser().parse_args(
             ["--arm-elbow-follow", "operator"]).arm_elbow_follow, "operator")
+
+    def test_the_direction_frame_is_per_robot_and_the_entry_default_is_auto(self):
+        """方向口径搬谁的方向：入口默认 ``auto``（逐台按 profile），旗子能整体强制。
+
+        2026-10-15：gr1_t2 的加载姿势让「搬绝对方向」给它叠加一个常数偏移（肘任务残差中位
+        197.5 mm、上臂方向误差 65.8 度），换成相对档后同一份 200 帧降到 25.6 mm / 8.2 度；而
+        h1_2 / g1 换过去反而变差（9.9 -> 45.5 / 18.8 -> 26.1 度）。所以默认值是**每台的**属性
+        —— 见 ``arm_profiles.POSTURE_FRAMES`` 与 docs/multi-robot-arm.md 8.19。
+        """
+        from teleoperation.simulation.realtime_teleop import build_parser
+
+        self.assertEqual(build_parser().parse_args([]).arm_posture_frame, "auto")
+        self.assertEqual(build_parser().parse_args(
+            ["--arm-posture-frame", "delta"]).arm_posture_frame, "delta")
+        self.assertEqual({name: profile_for(name).posture_frame for name in PAPER_ROBOTS},
+                         {"h1_2": "mapped", "gr1_t2": "delta", "g1": "mapped"})
+        self.assertEqual(describe("gr1_t2")["posture_frame"], "delta")
+        self.assertEqual(describe("h1_2")["posture_frame"], "mapped")
+
+    def test_a_bad_direction_frame_is_refused_at_construction(self):
+        with self.assertRaises(ValueError):
+            ArmProfile(robot_type="h1_2", posture_frame="relative")
 
     def test_only_the_posture_recipe_is_marked_as_a_rigid_elbow_pair(self):
         """入口只把「方向口径」那几台标成刚性的一对（斜坡整体平移的作用范围）。
@@ -1002,6 +1038,56 @@ class ElbowPostureTests(unittest.TestCase):
             with self.subTest(robot=robot, case="off"):
                 self.assertEqual(off[robot]["posture"], {})
                 self.assertEqual(self.driver.ik[robot].last_posture["right"], {})
+
+    def test_the_reference_baseline_can_be_moved_to_the_operators_neutral(self):
+        """``delta`` 档（gr1_t2 的默认）要把零空间参考的基准换成**你的**中性肘弯。
+
+        两种写法必须逐位等价：``posture_from_bend(side, X, neutral_bend=N)`` 与
+        ``posture_from_bend(side, X - N + 本机加载夹角)``；基准给成这一帧的角时参考就是加载角
+        （变化量 0）。混用两个基准会差一个常数，那正是 §8.17.4 第一次 A/B 翻车的原因。
+        """
+        for robot in PAPER_ROBOTS:
+            adapter = self.driver.ik[robot]
+            for side in SIDES:
+                self.reset_to_hold()
+                name, _slope, bend_at_hold = adapter.elbow_posture[side]
+                hold = float(adapter.hold[adapter.index_of[name]])
+                neutral = 138.9          # 现场那条录制里操作者的中性肘弯（§8.17）
+                with self.subTest(robot=robot, side=side, case="neutral is zero change"):
+                    moved = adapter.posture_from_bend(side, neutral, neutral_bend=neutral)
+                    self.assertEqual(list(moved), [name])
+                    self.assertAlmostEqual(moved[name], hold, places=9)
+                with self.subTest(robot=robot, side=side, case="equals shifting the bend"):
+                    moved = adapter.posture_from_bend(side, neutral - 20.0,
+                                                      neutral_bend=neutral)[name]
+                    shifted = adapter.posture_from_bend(
+                        side, bend_at_hold + (neutral - 20.0) - neutral)[name]
+                    self.assertAlmostEqual(moved, shifted, places=9)
+
+    def test_apply_each_moves_the_baseline_only_for_the_robots_it_is_told_to(self):
+        """接线：``elbow_bend_baseline`` 只对点名的那几台换基，其余保持历史基准。"""
+        self.reset_to_hold()
+        share = 138.9
+        baseline = {"gr1_t2": 100.0}
+        targets = {robot: adapter.arm_points("right")["wrist"]
+                   for robot, adapter in self.driver.ik.items()}
+        report = self.driver.apply_each("right", targets, source="world",
+                                        elbow_bend_deg=share,
+                                        elbow_bend_baseline=baseline)
+        for robot, adapter in self.driver.ik.items():
+            name = adapter.elbow_posture["right"][0]
+            expected = adapter.posture_from_bend(
+                "right", share, neutral_bend=baseline.get(robot))[name]
+            with self.subTest(robot=robot):
+                self.assertAlmostEqual(report[robot]["posture"][name], expected, places=5)
+        historical = self.driver.apply_each("right", targets, source="world",
+                                           elbow_bend_deg=share)
+        for robot, adapter in self.driver.ik.items():
+            name = adapter.elbow_posture["right"][0]
+            with self.subTest(robot=robot, case="no baseline"):
+                self.assertAlmostEqual(historical[robot]["posture"][name],
+                                       adapter.posture_from_bend("right", share)[name],
+                                       places=5)
 
 
 @unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")

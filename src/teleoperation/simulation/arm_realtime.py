@@ -75,7 +75,8 @@ from pathlib import Path
 
 import numpy as np
 
-from teleoperation.simulation.arm_profiles import SIDES, ArmProfile
+from teleoperation.simulation.arm_profiles import (POSTURE_FRAMES, SIDES,
+                                                    ArmProfile)
 
 AXIS_NAMES = ("X", "Y", "Z")
 #: 默认轴向映射，见模块 docstring（约定，不是标定）。
@@ -136,6 +137,17 @@ HOLD_REASONS = ("calibrating", "no_pose_landmarks", "reach_below_min", "other")
 #: ``_posture_target``），也不受 ``travel_limit`` 逐轴夹断的影响（目标天然落在机器人
 #: 自己那根「上臂+前臂」可达球面上，逐轴夹断正是把 g1 的幅度压成 40 mm 的那个上限）。
 MAP_MODES = ("chain", "segments", "posture")
+#: 方向口径（posture）搬的是**谁的方向** —— 这是**每台机器人加载姿势的属性**，所以默认值住在
+#: ``arm_profiles.ArmProfile.posture_frame``（那张表），这里只是重导出给调用方与报告用：
+#:
+#: ``mapped`` = 操作者的**绝对**方向过 ``axis_map``（历史口径）：机器人在任何姿势下都被要求
+#: 指到同一个方向。它有一个隐含前提 —— 操作者的中性方向与本机加载姿势的方向差不多；前提不成立
+#: 时会给这一侧叠加一个**常数**偏移，于是"你没动"也要它先拆开一大截（实测 gr1_t2 左臂肘任务
+#: 残差中位 197 mm）。
+#: ``delta`` = 把操作者相对**自己中性**的那个旋转，套在本机**自己的**中性方向上：你没动，本机
+#: 就停在自己的加载姿势；你转多少，它转多少。
+#: 同一份 200 帧录制的 A/B 与逐项数字见 docs/multi-robot-arm.md 8.19。
+POSTURE_FRAMES = POSTURE_FRAMES
 #: 人手臂关节的最大角速度（度/秒）：单帧方向变化超过它，就当作关键点跳变而不是你的手。
 #: 上限的依据：肩关节峰值约 500 度/秒（日常摆动 100-300），所以 600 是"比人快"的界。
 #: 实测这本来历（outputs/tmp_realtime/live_long_frames.npz，口径见
@@ -227,6 +239,39 @@ def _slerp_direction(start, end, gain: float):
         return rotation @ start
     return ((np.sin((1.0 - gain) * angle) / sine) * start
             + (np.sin(gain * angle) / sine) * end)
+
+
+def _rotation_between_directions(start, end):
+    """把单位方向 ``start`` 转到 ``end`` 的**最小**旋转（3x3；缺数据返回 ``None``）。
+
+    方向口径的 ``delta`` 档用它：操作者这一帧相对自己中性转了 R，就把**同一个 R** 套在本机
+    自己的中性方向上（``R @ rest_u``），而不是把操作者的绝对方向直接搬过来。这样
+    「你没动 = 本机停在自己的加载姿势」是恒等式，而不是靠两台手臂的加载姿势恰好一致。
+
+    两条边界：两方向平行（R = I）、反向（旋转不唯一，绕一个与自身垂直的固定轴转 180 度，
+    与 ``_slerp_direction`` 的兜底同一口径：结果是确定的，不是随机的）。
+    """
+    start = _unit_direction(start)
+    end = _unit_direction(end)
+    if start is None or end is None:
+        return None
+    cross = np.cross(start, end)
+    sine = float(np.linalg.norm(cross))
+    cosine = float(np.clip(np.dot(start, end), -1.0, 1.0))
+    if sine <= 1e-9:
+        if cosine > 0.0:
+            return np.eye(3)
+        axis = np.cross(start, np.array([0.0, 0.0, 1.0]))
+        if float(np.linalg.norm(axis)) <= 1e-9:
+            axis = np.cross(start, np.array([1.0, 0.0, 0.0]))
+        axis = axis / float(np.linalg.norm(axis))
+        return 2.0 * np.outer(axis, axis) - np.eye(3)
+    axis = cross / sine
+    angle = float(np.arctan2(sine, cosine))
+    skew = np.array([[0.0, -axis[2], axis[1]],
+                     [axis[2], 0.0, -axis[0]],
+                     [-axis[1], axis[0], 0.0]])
+    return np.eye(3) + np.sin(angle) * skew + (1.0 - np.cos(angle)) * (skew @ skew)
 
 
 def _angle_between_deg(left, right) -> float:
@@ -571,6 +616,7 @@ class RealtimeArmBridge:
                  elbow_task: bool = False,
                  elbow_gain: float = 1.0,
                  posture_gain: float = 1.0,
+                 posture_frame: str | None = None,
                  max_direction_rate_deg_s: float = MAX_DIRECTION_RATE_DEG_S,
                  frame_dt: float | None = None,
                  anchors=None):
@@ -625,6 +671,14 @@ class RealtimeArmBridge:
         if not 0.0 <= float(posture_gain) <= 1.0:
             raise ValueError(f"posture_gain must be within 0..1, got {posture_gain!r}")
         self.posture_gain = float(posture_gain)
+        #: 方向口径**搬谁的方向**：``None``（默认）= 按每台自己的 ``profile.posture_frame``
+        #: （``auto``，见 arm_profiles.POSTURE_FRAMES 与 docs/multi-robot-arm.md 8.19）；
+        #: 给 ``mapped`` / ``delta`` 就**强制**全部机器人用那一档（A/B 与探针用）。
+        if posture_frame is not None and posture_frame not in POSTURE_FRAMES:
+            raise ValueError(
+                f"posture_frame must be None (per-robot) or one of {POSTURE_FRAMES},"
+                f" got {posture_frame!r}")
+        self.posture_frame = None if posture_frame is None else str(posture_frame)
         self.robot_anchors = {}
         self.set_robot_anchors(anchors)
         self.calibration_frames = int(calibration_frames)
@@ -843,20 +897,51 @@ class RealtimeArmBridge:
         if (rest_u is None or rest_v is None
                 or u_base is None or v_base is None):
             return None
+        frame = self.posture_frame_of(profile)
+        if frame == "delta":
+            # 相对档：不搬你的**绝对**方向，而是把你相对自己中性的那个旋转套在本机自己的中性
+            # 方向上 —— 「你没动 = 本机停在自己的加载姿势」于是是恒等式，而不是靠两台手臂的
+            # 加载姿势恰好一致（见 POSTURE_FRAMES 与 docs/multi-robot-arm.md 8.19）。
+            u_base = self._turned_direction(u_op_rest, u_op, rest_u)
+            v_base = self._turned_direction(v_op_rest, v_op, rest_v)
+            if u_base is None or v_base is None:
+                return None
         upper = float(links["upper"])
         fore = float(links["fore"])
         if not (np.isfinite(upper) and np.isfinite(fore)) or upper <= 0.0 or fore <= 0.0:
             return None
         return {
             "shoulder": np.asarray(anchor["shoulder"], dtype=np.float64),
-            # 机器人这一侧最终要指的方向：gain=1 就是你的方向本身。
+            # 机器人这一侧最终要指的方向：gain=1 时是绝对档里的「你的方向本身」，或相对档里
+            # 「本机自己的中性方向被你的旋转转过去之后」的那个方向。
             "u": _slerp_direction(rest_u, u_base, self.posture_gain),
             "v": _slerp_direction(rest_v, v_base, self.posture_gain),
             "u_rest": rest_u, "v_rest": rest_v,
             "u_op": u_op, "v_op": v_op,
             "u_op_rest": u_op_rest, "v_op_rest": v_op_rest,
             "upper": upper, "fore": fore,
+            "frame": frame,
         }
+
+    def posture_frame_of(self, profile) -> str:
+        """这一台的方向口径档：``--arm-posture-frame`` 的强制值优先，否则用 profile 自己的。
+
+        每台的加载姿势不同（gr1_t2 的前臂在加载姿势下朝后下方），所以默认值是**每台的**属性，
+        见 ``arm_profiles.POSTURE_FRAMES`` 与 docs/multi-robot-arm.md 8.19。
+        """
+        return str(self.posture_frame or profile.posture_frame)
+
+    def _turned_direction(self, op_rest, op_now, robot_rest):
+        """把「操作者从 ``op_rest`` 转到 ``op_now``」的那个旋转套在 ``robot_rest`` 上。
+
+        三个输入都先过 ``axis_map``（前两个）或已经是基座系（第三个）；缺数据返回 ``None``，
+        调用方据此退回绝对档（不是静默用半截数据）。
+        """
+        rotation = _rotation_between_directions(self.axis_map.apply(op_rest),
+                                                self.axis_map.apply(op_now))
+        if rotation is None:
+            return None
+        return _unit_direction(rotation @ np.asarray(robot_rest, dtype=np.float64))
 
     def _posture_unavailable(self, profile, side) -> str:
         """方向口径这一侧缺什么 —— 写进那一帧的 ``info``，别让下一个人猜。"""
@@ -1247,6 +1332,9 @@ class RealtimeArmBridge:
                     # 「幅度不再被臂长和站位缩放」的可证伪证据（现场症状正好相反）。
                     info.update({
                         "posture_gain": self.posture_gain,
+                        # 这一台这一帧用的是哪一档方向口径（mapped = 搬你的绝对方向；
+                        # delta = 把你相对中性的旋转套在本机自己的中性方向上，见 8.19）。
+                        "posture_frame": terms["frame"],
                         "operator_direction_glitch_deg": _round_or_none(
                             state.get("direction_glitch_deg"), 1),
                         "operator_upper_deg": round(_angle_between_deg(
@@ -1461,6 +1549,25 @@ class RealtimeArmBridge:
         origin = np.zeros(3, dtype=np.float64)
         return float(elbow_bend_degrees(origin, u, u + v))
 
+    def elbow_bend_neutral(self) -> dict:
+        """``{side: 你中性姿势下的肘弯（度）or None}``：``delta`` 档零空间参考的基准。
+
+        方向口径换成 ``delta`` 之后，位置任务在**你中性那一帧**要的形状就是本机自己的加载姿势
+        （``_posture_target`` 的 u/v 都是本机自己的中性方向被你的旋转转过去的），所以「肘跟手」
+        那条零空间参考也必须以**你的中性肘弯**为基准：
+
+            参考 = 本机加载姿势的肘角 + (你的肘弯 - 你中性时的肘弯) / 斜率
+
+        绝对档（历史口径）用的是「本机加载姿势下的夹角」（``posture_from_bend`` 自己量）。两者
+        差一个常数，混用就是让零空间项跟位置任务对着干 —— 8.17.4 第一次 A/B 正是被这个常数
+        做成了喜忧参半。这里只暴露这个数，换基由调用方按台决定（``elbow_bend_baseline``）。
+        """
+        out = {}
+        for side in self.sides:
+            entry = self.neutral[side]
+            out[side] = self._bend_of(entry.get("upper"), entry.get("fore"))
+        return out
+
     def elbow_bend_target(self) -> dict:
         """``{side: 这一帧的肘弯（度）or None}``：机器人无关的那一份「姿势」目标。
 
@@ -1660,6 +1767,13 @@ class RealtimeArmBridge:
             "map_mode": self.map_mode,
             # 方向口径的力度（map_mode="posture" 时生效）：1 = 机器人方向完全对齐你的方向。
             "posture_gain": self.posture_gain,
+            # 方向口径搬谁的方向（map_mode="posture" 时生效）：``profile`` = 每台按自己
+            # ``ArmProfile.posture_frame``（命令行 ``--arm-posture-frame auto`` 的默认），
+            # ``mapped`` / ``delta`` = 命令行强制全部机器人用那一档（见 8.19）。
+            "posture_frame": self.posture_frame or "profile",
+            # 每台这一场真正生效的档 —— 读报告的人不必再去 profile 表里对照。
+            "posture_frame_by_robot": {name: self.posture_frame_of(profile)
+                                       for name, profile in self.profiles.items()},
             # 方向口径这一侧能不能跑（要肩锚点 + 机器人自己的连杆长）：跑不了时那一帧的
             # info["map"] 会写明 "chain (posture unavailable: ...)"。
             "posture_available": {

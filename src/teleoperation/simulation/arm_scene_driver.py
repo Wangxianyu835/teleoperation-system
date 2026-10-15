@@ -90,7 +90,8 @@ class ArmSceneDriver:
                  ik_mode=None, rest_poses: str = "current",
                  ik_iterations=None, residual_threshold=None,
                  track_posture: bool = True, slew_m: float = 0.0,
-                 slew_m_per_s: float = 0.0, elbow_pass: str = "first",
+                 slew_m_per_s: float = 0.0, slew_pair_floor_ratio: float | None = None,
+                 elbow_pass: str = "first",
                  elbow_recovery_deg=None, elbow_recovery_margin_deg=None,
                  elbow_recovery_cooldown=None, shoulder_anchors=None,
                  shoulder_anchor_key: str = "upper", lock_others: bool = False):
@@ -113,6 +114,13 @@ class ArmSceneDriver:
         #: 跟随速率（米/秒）：非 0 时每帧用 ``update_slew(dt)`` 换算成 ``slew_m``。
         #: 摄像头循环帧率不固定（现场 8-12 fps），按速率给才不会"帧率一低就变慢"。
         self.slew_m_per_s = max(0.0, float(slew_m_per_s))
+        #: 「肘-腕」这一对（``elbow_rigid``）的地板比例：斜坡一次不许把这一对压到请求长度的
+        #: 这个比例以下，否则这一帧保持上一帧下发的那一对（见 ``SLEW_PAIR_FLOOR_RATIO`` 与 8.18）。
+        #: 0 = 关护栏。``None``（默认）= 用 ``SLEW_PAIR_FLOOR_RATIO``，于是现场可以用
+        #: ``--arm-slew-pair-floor 0`` 回到历史行为做 A/B，也可以给 0.4 让护栏少介入。
+        self.slew_pair_floor_ratio = (
+            SLEW_PAIR_FLOOR_RATIO if slew_pair_floor_ratio is None
+            else max(0.0, float(slew_pair_floor_ratio)))
         #: 每台每侧最后一次**下发**的基座系目标（斜坡的起点）。
         self.commanded = {}
         #: 「肘-腕」这一对最后一次下发的值（``elbow_rigid`` 的护栏在会压扁的帧上保持它）。
@@ -266,7 +274,8 @@ class ArmSceneDriver:
 
     def apply_each(self, side: str, targets, source: str = "base",
                    orientation=None, orientation_frame: str = "absolute",
-                   elbows=None, elbow_bend_deg=None, elbow_rigid=None) -> dict:
+                   elbows=None, elbow_bend_deg=None, elbow_rigid=None,
+                   elbow_bend_baseline=None) -> dict:
         """One frame for one side with a target per robot: ``{robot_type: position}``.
 
         ``elbows`` = optional ``{robot_type: point}`` in the same space: the paper's
@@ -282,6 +291,15 @@ class ArmSceneDriver:
         joint and bend slope.  ``None`` (default) leaves the reference exactly where it
         was, so an older caller is byte-for-byte unchanged.
 
+        ``elbow_bend_baseline`` = optional ``{robot_type: bend or None}`` that **moves the
+        baseline** of that robot's posture reference: a robot listed with a number measures
+        the operator's bend change against *that* number instead of against its own loaded
+        bend.  The ``delta`` direction frame (``ArmProfile.posture_frame``) needs this,
+        because there its "operator did not move" pose *is* the robot's loaded pose, so the
+        baseline has to be the operator's neutral bend (``arm_realtime.elbow_bend_neutral``).
+        Mixing the two puts a constant between the posture reference and the position task
+        -- the 8.17.4 failure.  ``None`` (default) = every robot keeps its own loaded bend.
+
         ``elbow_rigid`` = optional collection of robot types whose elbow target forms a
         **rigid pair with the wrist target** (the ``--arm-map posture`` recipe:
         ``wrist = elbow + L_f * v``, see ``arm_realtime._posture_target``).  The slew cap
@@ -292,7 +310,9 @@ class ArmSceneDriver:
         -- the "GR1-T2 大臂与小臂夹角反过来" the operator reports after a while.  For a
         robot listed here the cap is therefore **skipped and the pair that was sent on the
         previous frame is held** on the frames where it would squash the pair
-        (``SLEW_PAIR_FLOOR_RATIO``), and applies exactly as before on every other frame:
+        (``slew_pair_floor_ratio``, default ``SLEW_PAIR_FLOOR_RATIO``; **0 switches the guard
+        off**, which is the historical behaviour and what an on-site A/B uses), and applies
+        exactly as before on every other frame:
         measured 2026-10-15, gr1_t2 left commanded forearm never below 151 mm (was 51 mm),
         squashed frames 11 -> 0, achieved forearm pointing away from the command 7 -> 3
         frames (the 3 remaining frames are the older IK branch burst, identical in the
@@ -325,7 +345,7 @@ class ArmSceneDriver:
             if self.slew_m > 0.0 and source == "base":
                 requested = tuple(float(value) for value in wanted)
                 wanted = self._slew_target(robot_type, side, adapter, wanted)
-                if rigid:
+                if rigid and self.slew_pair_floor_ratio > 0.0:
                     # 压扁护栏：斜坡只许把**腕**慢慢挪过去，不许把「肘-腕」这一对压成
                     # 退化目标（见 ``apply_each`` docstring 与 8.18）。会压扁就这一帧
                     # **保持上一帧下发的那一对**（两个点都不动）：不跳、不压扁，等操作者
@@ -336,7 +356,7 @@ class ArmSceneDriver:
                     narrowed = float(np.linalg.norm(
                         np.asarray(wanted, dtype=np.float64)
                         - np.asarray(elbow, dtype=np.float64)))
-                    if narrowed < SLEW_PAIR_FLOOR_RATIO * shape:
+                    if narrowed < self.slew_pair_floor_ratio * shape:
                         held = self.commanded_pair.get((robot_type, side))
                         if held is None:
                             wanted = requested
@@ -360,8 +380,11 @@ class ArmSceneDriver:
                                   for axis, value in enumerate(elbow))
                 self.shoulder_shift_mm.setdefault(robot_type, {})[side] = round(
                     1000.0 * float(np.linalg.norm(np.asarray(shift, dtype=np.float64))), 2)
+            baseline = (None if elbow_bend_baseline is None
+                        else elbow_bend_baseline.get(robot_type))
             posture = (None if elbow_bend_deg is None
-                       else adapter.posture_from_bend(side, elbow_bend_deg))
+                       else adapter.posture_from_bend(side, elbow_bend_deg,
+                                                      neutral_bend=baseline))
             values = adapter.solve(side, wanted,
                                    orientation=orientation, source=source,
                                    orientation_frame=orientation_frame,
@@ -570,6 +593,8 @@ class ArmSceneDriver:
             "target_slew_ceiling_mm": round(1000.0 * SLEW_MAX_STEP_M, 3),
             "target_slew_limited_frames": self.slew_limited,
             "target_slew_pair_skips": self.slew_pair_skips,
+            #: 护栏的地板比例（0 = 关）：现场调它 / 对照旧行为就是这一项。
+            "target_slew_pair_floor_ratio": round(self.slew_pair_floor_ratio, 4),
             "robots": {robot_type: adapter.describe()
                        for robot_type, adapter in self.ik.items()},
         }
@@ -596,6 +621,8 @@ class ArmSceneDriver:
             "target_slew_limited_frames": self.slew_limited,
             #: 其中有多少帧为了让「肘-腕」这一对不退化而放弃限速（``elbow_rigid``）；见 8.18。
             "target_slew_pair_skips": self.slew_pair_skips,
+            #: 护栏的地板比例（0 = 关护栏 = 历史行为）：报告里一眼看出这一场用的哪一档。
+            "target_slew_pair_floor_ratio": round(self.slew_pair_floor_ratio, 4),
             "hands": self.scene.summary(),
             "robots": self.describe()["robots"],
         }

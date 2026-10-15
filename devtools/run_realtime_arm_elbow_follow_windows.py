@@ -26,6 +26,13 @@ PyCharm 怎么配（和你上次那个一样，只换 Script path）
   方便你在两个档之间来回看。
 - 你如果已经自己写了 ``--arm-elbow-follow xxx``，本文件不覆盖你的选择。
 - 其余开关（``--robot`` / ``--side`` / ``--arm-trace`` / ``--print-every`` ...）原样透传给同一个 parser。
+  现场想「感觉一下旧行为」：``--arm-slew-pair-floor 0``（关掉压扁护栏）；想让护栏少介入：
+  ``--arm-slew-pair-floor 0.4``。默认 0.6，见 ``docs/multi-robot-arm.md`` 8.18。
+- **方向口径搬谁的方向是逐台的**（2026-10-15，8.19）：``--arm-posture-frame`` 默认 ``auto`` =
+  gr1_t2 用相对档（你的旋转套在它自己的中性方向上）、h1_2 / g1 用绝对档 —— 这就是现场
+  「GR1-T2 的手臂怎么拐就怎么拐」的修复（同一份 200 帧回放：它左臂肘任务残差中位
+  197.5 -> 25.6 mm，另两台一个数都不动）。想整体对照：``--arm-posture-frame mapped``（旧档）
+  或 ``--arm-posture-frame delta``。启动行会打印 ``posture frame = auto (h1_2:mapped, ...)``。
 
 两个窗口：摄像头预览（默认镜像，标题 ``camera: hands + arms (q/Esc quits)``，按 q/Esc 退出）
 + PyBullet（H1-2 / GR1-T2 / G1 三台并排、各自原装手）。

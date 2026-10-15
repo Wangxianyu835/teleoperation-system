@@ -1,6 +1,6 @@
 # 多机器人手臂驱动：按 robot_type 选臂并驱动机器人关节
 
-最后更新：2026-10-15（§8.18 「跑一会 GR1-T2 的大臂与小臂夹角反过来」的根因是**斜坡只削了腕那一点**：`--arm-map posture` 的命令点是刚性的一对（腕 = 肘 + L_f*v），肘目标不限速、腕每帧最多 40 mm，于是这一对被拉近（命令的前臂段 250.6 -> 51.1 mm）、IK 把前臂折到反方向；修法是标记 `elbow_rigid` 后在会压扁的帧上保持上一对，四个候选修法的 A/B 见 §8.18.4）| 前一轮 §8.17 「肘跟手」交付（`--arm-elbow-follow`）与现场固化档入口 §8.17.10 | 更早 §8.16 **「肘/小臂不跟手」的机制是 PyBullet `restPoses` 把解往加载姿势拽**：探针 A/B 把「精确可达目标」的残差从 6.6-140.1 mm 打到 0.0 mm / 拽动 35.0 度打到 0.00 度，证明主因是零空间代价项而不是链路帧口径；但同一条现场录制上换 `--arm-rest-poses live` **不是一边倒的赢**（肘任务只 3/6 侧变好、腕精度中位 17.2 -> 40.5 mm 变差），所以 CLI 默认仍留在 `current`、`live` 只作实验档）| 前一轮 §8.15「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」的根因是那场跑在默认 `chain` 口径上（`--arm-map` 默认改 `posture`、`report_table.py` 加行程与夹断列）| 前一轮 §8.14 中性标定永远等不到数据（`--arm-calibrate-mode track`、`record_posture` 静默丢腕命令、`--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
+最后更新：2026-10-15（§8.19 「GR1-T2 的手臂怎么拐就怎么拐」的根因是**方向口径搬的是操作者的绝对方向**，而 gr1_t2 加载姿势下前臂朝后下方（基座系 `(-0.80,+0.09,-0.60)`）—— 同一句「指向前下方」对它等于「先拆开 97 度」，于是被顶进自己限位的一角并把残差全摊在肘上：换相对档（`delta`）后肘任务残差中位 197.5 -> 25.6 mm、上臂方向误差 65.8 -> 8.2 度；h1_2 / g1 换过去反而退化（9.9 -> 45.5 / 18.8 -> 26.1 度），所以口径落成**每台的属性**（`ArmProfile.posture_frame`，新旗子 `--arm-posture-frame {auto,mapped,delta}` 默认 `auto`），另两台六个读数逐位不动）| 本轮 §8.18 「跑一会 GR1-T2 的大臂与小臂夹角反过来」的根因是**斜坡只削了腕那一点**：`--arm-map posture` 的命令点是刚性的一对（腕 = 肘 + L_f*v），肘目标不限速、腕每帧最多 40 mm，于是这一对被拉近（命令的前臂段 250.6 -> 51.1 mm）、IK 把前臂折到反方向；修法是标记 `elbow_rigid` 后在会压扁的帧上保持上一对（现场开关 `--arm-slew-pair-floor`，0 = 关 = 旧行为），四个候选修法的 A/B 见 §8.18.4）| 前一轮 §8.17 「肘跟手」交付（`--arm-elbow-follow`）与现场固化档入口 §8.17.10 | 更早 §8.16 **「肘/小臂不跟手」的机制是 PyBullet `restPoses` 把解往加载姿势拽**：探针 A/B 把「精确可达目标」的残差从 6.6-140.1 mm 打到 0.0 mm / 拽动 35.0 度打到 0.00 度，证明主因是零空间代价项而不是链路帧口径；但同一条现场录制上换 `--arm-rest-poses live` **不是一边倒的赢**（肘任务只 3/6 侧变好、腕精度中位 17.2 -> 40.5 mm 变差），所以 CLI 默认仍留在 `current`、`live` 只作实验档）| 前一轮 §8.15「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」的根因是那场跑在默认 `chain` 口径上（`--arm-map` 默认改 `posture`、`report_table.py` 加行程与夹断列）| 前一轮 §8.14 中性标定永远等不到数据（`--arm-calibrate-mode track`、`record_posture` 静默丢腕命令、`--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
 相关代码：`src/teleoperation/simulation/arm_ik.py`、`arm_profiles.py`、`arm_scene_driver.py`、
 `arm_realtime.py`、`realtime_teleop.py`、`arm_preview.py`
 相关测试：`tests/test_arm_ik_multi_robot.py`（31 个用例）、`tests/test_arm_realtime_bridge.py`（84 个用例）、
@@ -2007,11 +2007,13 @@ E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --input-n
 | 文件 | 改了什么 |
 |---|---|
 | `src/teleoperation/simulation/arm_scene_driver.py` | `apply_each(..., elbow_rigid=None)`（新参数，默认 `None` = 老调用方逐字不变）；`SLEW_PAIR_FLOOR_RATIO = 0.6`；会压扁的帧改为「保持上一帧下发的那一对」（新状态 `commanded_pair`）；报告新增 `target_slew_pair_skips`（`describe()` 与 `summary()` 各一处） |
-| `src/teleoperation/simulation/realtime_teleop.py` | 新增模块级 `rigid_elbow_robots(per_side)`：只把 `info["elbow_target"] == "posture"` 那几台标成刚性，并在 `apply_each` 时传 `elbow_rigid`（`--arm-elbow-task` 那条独立肘目标的路**不标记**，§8.15 的 A/B 继续逐字有效） |
-| `tests/test_arm_ik_multi_robot.py` | `ArmTargetSlewTests` 新增 `test_the_cap_makes_way_when_it_would_squash_a_rigid_elbow_pair`（4 个 subTest：照旧限速 / 护栏保持上一对 / 未标记不护栏 / 第一帧还没有可保持的一对）；`FieldArmDefaultsTests` 新增 `test_only_the_posture_recipe_is_marked_as_a_rigid_elbow_pair` |
+| `src/teleoperation/simulation/realtime_teleop.py` | 新增模块级 `rigid_elbow_robots(per_side)`：只把 `info["elbow_target"] == "posture"` 那几台标成刚性，并在 `apply_each` 时传 `elbow_rigid`（`--arm-elbow-task` 那条独立肘目标的路**不标记**，§8.15 的 A/B 继续逐字有效）；新增 `--arm-slew-pair-floor RATIO`（默认 `None` = 用 `SLEW_PAIR_FLOOR_RATIO` 0.6，**0 = 关护栏 = 历史行为**、现场 A/B 用），启动行打 `pair floor 0.60` / `0.00 (off)`，报告加 `arm_slew_pair_floor_ratio` |
+| `tests/test_arm_ik_multi_robot.py` | `ArmTargetSlewTests` 新增 `test_the_cap_makes_way_when_it_would_squash_a_rigid_elbow_pair`（5 个 subTest：照旧限速 / 护栏保持上一对 / 未标记不护栏 / 第一帧还没有可保持的一对 / 地板 0 = 旧行为）；`FieldArmDefaultsTests` 新增 `test_only_the_posture_recipe_is_marked_as_a_rigid_elbow_pair` |
 
-护栏的判据：限速后的 `[腕命令 - 肘命令] < 0.6 * [请求的 腕-肘]`（方向口径里右边恒等于该台自己的
-前臂长，所以这实际上是一条**绝对**地板：GR1-T2 151 mm、H1-2 137 mm、G1 111 mm）。
+护栏的判据：限速后的 `[腕命令 - 肘命令] < RATIO * [请求的 腕-肘]`，`RATIO` = 驱动器构造参数
+`slew_pair_floor_ratio`（默认 `SLEW_PAIR_FLOOR_RATIO` = 0.6；`--arm-slew-pair-floor 0` = 关）。
+方向口径里右边恒等于该台自己的前臂长，所以这实际上是一条**绝对**地板：GR1-T2 151 mm、
+H1-2 137 mm、G1 111 mm。
 
 #### 8.18.6 验收（命令 + 退出码 + 关键不变量）
 
@@ -2019,10 +2021,11 @@ E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --input-n
 |---|---|---|
 | 8.18.3 那两条 `--headless`（`--arm-slew-mm 40` / `0`，各带 `--arm-frame-dump`） | 0 / 0 | 40 档：命令 `[腕-肘]` 最小 151.1 mm（= 地板值）、压扁帧 0、前臂反向帧 3、`target_slew_pair_skips` 37；0 档：恒 250.6 mm、压扁帧 0、反向帧 2 |
 | 同上 + `--arm-elbow-follow operator`（`tmp_ik_frame/g_on_g4.json`） | 0 | 前臂反向帧 4（`off` 档 3）、前臂方向误差中位 49.41（`off` 档 50.27）—— 这一档在修好之后仍然不恶化 |
-| `E:\python3.11.7\python.exe -m pytest tests -q` | **0** | `371 passed, 3 skipped, 346 subtests passed`（上一轮基线 369 / 3 / 342；本轮新增 2 条用例 + 4 个 subTest；末尾 `nanobind: leaked ...` 是队友 `roboticstoolbox` 既有的引用计数提示，不是失败） |
+| `E:\python3.11.7\python.exe -m pytest tests -q` | **0** | `371 passed, 3 skipped, 347 subtests passed`（上一轮基线 369 / 3 / 342；本轮新增 2 条用例 + 5 个 subTest；末尾 `nanobind: leaked ...` 是队友 `roboticstoolbox` 既有的引用计数提示，不是失败） |
 | `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | **0** | `[OK]` |
 | `E:\python3.11.7\python.exe devtools\check_no_c_drive.py --strict` | **0** | `[OK]`（七项缓存都在 `E:\cache`） |
 | `powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -Base d8bca93` | **0** | `RESULT: [OK] all checks passed (2 warning(s))`；第 4 项 `809 teammate-owned files under baseline: 0 modified/deleted`；`unittest discover -> Ran 374 tests [OK (skipped=3)]` |
+| `--arm-slew-pair-floor 0` 与默认档各一条（`--frames 20 --headless --arm-map posture --arm-slew-mm 40`，各带 `--report`） | 0 / 0 | 0 档：启动行 `... \| pair floor 0.00 (off)`、报告 `arm_slew_pair_floor_ratio = 0.0`、`target_slew_pair_skips = 0`（= 老行为逐字）；默认档：`pair floor 0.60`、`ratio = 0.6`、`skips = 22`（20 帧 × 6 对里护栏接了 22 次） |
 
 #### 8.18.7 如实说（这一轮没解决什么）
 
@@ -2034,8 +2037,127 @@ E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --input-n
 - **系统性的 45-50 度中位前臂方向误差没动**：GR1-T2 左臂在**每一版**（V0-V4）里都是 42-59 度，
   现场旧长跑里也有 34-51 度 —— 这是另一件事。
 - **护栏的语义是「等一等」，不是「跳过」**：37/200 帧这一对保持不动，现场如果觉得「快动作时有点
-  跟不上」，可以把 `SLEW_PAIR_FLOOR_RATIO` 调小（0.4 会让护栏更少介入）或换 V3 那条路（症状更好
-  但要跳一步）—— 两条路的数据都在 8.18.4 的表里，换之前请重跑那一张表。
+  跟不上」，直接在命令行调 `--arm-slew-pair-floor`：`0.4` 让护栏更少介入、`0` 完全关掉（= 历史
+  行为，用来现场对照）；也可以换 V3 那条路（症状更好但要跳一步）—— 两条路的数据都在 8.18.4 的
+  表里，换之前请重跑那一张表。
 - **`--arm-lateral-guard-mm` 仍只动腕那一点**（默认 0，今天是关的）：一旦打开，这一对同样会被那个
   护栏压偏（`arm_realtime._apply_lateral_guard` 原地改的是腕目标），需要和本节同一套处理。留作下一轮。
 
+
+### 8.19 「GR1-T2 的手臂怎么拐就怎么拐」：方向口径搬的是**绝对方向**，而它加载姿势下前臂朝后下方（2026-10-15）
+
+#### 8.19.1 现场原话与要分开的两件事
+
+现场：**「GR1-T2 的手臂角度没有任何规律，怎么拐就怎么拐，达不到 H1-2 那样准。是机器人手臂的问题，
+还是算法的问题？」** 要在同一份录制上把两件事分开：① 是不是机器人跟不上（限位 / 重力 / 力矩不够）；
+② 还是**目标本身**就不对（映射层）。
+
+#### 8.19.2 先排除「机器人跟不上」（逐帧实测，`E:\python3.11.7\python.exe`，退出码都是 0）
+
+| 判据 | 怎么看 | 结果 |
+|---|---|---|
+| 报告里那对成对数 | `tmp_ik_frame/audit_reports.py` 读 `--arm-map posture --arm-direction-rate-deg-s 0 --arm-slew-mm 40` 的 200 帧报告 | 六个机位的 `elbow_task_mm`（实际到达）与 `solution_elbow_mm`（IK 自己解出来的）**逐位相同**：gr1_t2 左 197.5 / 197.5、右 137.6 / 137.6。物理**忠实执行**了解算结果 —— 差的不是机器人，是求解器自己 |
+| 关节级逐帧转储 | `tmp_ik_frame/trace_elbow_joint.py`（探针里钩住 `record_posture` 与 `apply`，抓 7 个关节的到达角/命令角/限位） | gr1_t2 左臂的 achieved 与 commanded **逐列相同**（肘 0.490..2.272 vs 0.491..2.279 rad）；肘关节**没有**翻到 URDF 允许的 ±2.27 反向区（0 次变号）—— 不是「肘反着折」 |
+| 两个目标点是否自洽 | `tmp_ik_frame/audit_radii.py`（命令半径 vs 本机自己的连杆长） | 命令半径 = 机器人自己那根骨头：gr1_t2 左 `|cmd_elbow - upper|` 中位 178.6 vs 实际 178.7 mm；h1_2 184.8 vs 185.0 —— 锚点口径没问题（§8.13 那条已经修好了） |
+| 病在哪个量 | 同上 | **上臂方向**误差中位 gr1_t2 左 **65.0** / 右 **42.9** 度，而 h1_2 18.3 / 14.5、g1 17.0 / 17.6 |
+
+#### 8.19.3 根因：绝对方向 + GR1-T2 的加载姿势 = 一个**常数**偏移
+
+`_posture_terms` 的原口径（`mapped`）：
+
+    u = axis_map(你的上臂方向)                     # gain = 1
+    elbow = 肩锚点 + L_u * u ;  wrist = elbow + L_f * v
+
+每帧报告里本来就带着这一对数：`operator_upper_deg`（**你**转了多少）与 `robot_upper_deg`（**要求机器人**
+转多少），模块注释写着「gain=1 时两个数应当几乎相等」。实测量的是**不相等**（同一条命令、200 帧中位）：
+
+| 机位 | 上臂 你 / 机器人 | 前臂 你 / 机器人 |
+|---|---|---|
+| h1_2 左 | 22.2 / 29.2 | 47.7 / 46.4 |
+| h1_2 右 | 20.1 / 23.3 | 77.3 / 52.7 |
+| **gr1_t2 左** | 22.2 / 30.2 | 47.7 / **96.7** |
+| **gr1_t2 右** | 20.1 / 25.6 | 77.3 / **109.4** |
+| g1 左 | 22.2 / 38.0 | 47.7 / 49.4 |
+| g1 右 | 20.1 / 36.1 | 77.3 / 54.8 |
+
+原因在启动时量到的锚点上就看得见：gr1_t2 **加载姿势下前臂方向是 `(-0.80, +0.09, -0.60)`**（基座系，
+朝**后**下方，肘弯 111.2 度），而 h1_2 / g1 是 `(+0.56, -0.18, -0.81)` / `(+0.57, -0.03, -0.82)`
+（朝前下方）。同一句「把手前臂指向前下方」，对 h1_2 / g1 是「本来就差不多」，对 gr1_t2 是「先拆开
+97 度」。它于是被顶到自己限位的一角（逐帧转储，200 帧）：肩 pitch -2.785 rad（限位 -2.79，9 帧贴死）、
+肩 roll -0.560（限位 -0.570，8 帧）、肘 2.272（限位 2.27，10 帧）。
+
+
+#### 8.19.4 三种口径的 A/B（同一份 200 帧、只差映射口径）
+
+探针 `tmp_ik_frame/probe_posture_frame.py`（**只在探针里**替换 `_posture_terms`，库不动；三条口径
+分别是：`mapped` = 搬你的绝对方向、`delta` = 把你的旋转套在本机自己的中性方向上、`align` = 把
+「你的中性 -> 本机中性」那个固定旋转套在你的绝对方向上）：
+
+| 机位 | 上臂方向误差 中位（mapped -> delta -> align） | 肘任务残差 中位 mm（mapped -> delta -> align） |
+|---|---|---|
+| gr1_t2 左 | 65.8 -> **8.2** -> 14.9 | 197.5 -> **25.6** -> 46.0 |
+| gr1_t2 右 | 45.3 -> **16.0** -> 42.1 | 137.6 -> **49.7** -> 128.5 |
+| h1_2 左 | 19.1 -> 21.2 -> 20.2 | 61.5 -> 68.4 -> 64.4 |
+| h1_2 右 | 9.9 -> 45.5 -> 43.8 | 31.9 -> 143.0 -> 136.5 |
+| g1 左 | 19.0 -> 19.7 -> 19.3 | 27.0 -> 28.3 -> 27.3 |
+| g1 右 | 18.8 -> 26.1 -> 23.8 | 26.9 -> 37.0 -> 33.9 |
+
+三条读得出的事：
+
+1. **换口径就把 gr1_t2 治好**（65.8 -> 8.2 度、197.5 -> 25.6 mm），所以这一层是**算法侧**的事，
+   不是「机器人手臂不行」。
+2. **但不能全局换**：h1_2 右 / g1 右在绝对档下本来就准（9.9 / 18.8 度），换过去退化到 26-46 度。
+3. `align` 的不变量最漂亮（`robot_upper_deg` 与 `operator_upper_deg` 逐字相等：22.2/22.2、47.7/47.7），
+   可是它对 gr1_t2 **右臂**几乎没改善（45.3 -> 42.1）；`delta` 在 gr1_t2 两侧都最好，所以落地取
+   `delta`。两条口径都**不是**把「你转多少我转多少」的**角度**逐字复制（同一次旋转作用在两条不同
+   方向的骨头上，转角可以不同，实测前臂 47.7 度 -> 31.8 / 66.4）。
+
+**结论：口径是每台机器人加载姿势的属性，不是一条全局开关。**
+
+#### 8.19.5 改动清单（按约定 14，全部落在既有文件里）
+
+| 文件 | 改了什么 |
+|---|---|
+| `arm_profiles.py` | 新增 `POSTURE_FRAMES = ("mapped", "delta")`；`ArmProfile.posture_frame`（默认 `mapped`）+ `__post_init__` 校验 + `describe()` 带上它；**gr1_t2 填 `delta`** |
+| `arm_realtime.py` | `posture_frame: str | None = None`（`None` = 逐台按 profile，给值 = 强制全部）；`posture_frame_of(profile)`；`_turned_direction()` 与模块级 `_rotation_between_directions()`（最小旋转，含平行/反向兜底）；`_posture_terms` 在 `delta` 档把 `u/v` 换成 `R @ rest`；每帧 `info["posture_frame"]`；`summary()` 加 `posture_frame` / `posture_frame_by_robot`；新增 `elbow_bend_neutral()` |
+| `realtime_teleop.py` | 新旗子 `--arm-posture-frame {auto,mapped,delta}`，**默认 `auto` = 逐台按 profile**；启动行打印 `posture frame = auto (h1_2:mapped, gr1_t2:delta, g1:mapped)`；报告加 `arm_posture_frame`；每帧按台算出 `elbow_bend_baseline` 交给司机 |
+| `arm_scene_driver.py` | `apply_each(..., elbow_bend_baseline=None)`：点名的那几台把零空间参考的基准换成**操作者的中性肘弯**（`delta` 档必须换基，否则零空间项与位置任务差一个常数 —— 就是 §8.17.4 那个老毛病） |
+| `arm_ik.py` | `posture_from_bend(side, bend_deg, neutral_bend=None)`：`None` = 历史基准（本机加载姿势下的夹角），给数 = 用那个基准 |
+| `devtools/run_realtime_arm_elbow_follow_windows.py` | docstring 说明这一档现在是**逐台口径**，不需要新开关 |
+| 测试 | `tests/test_arm_realtime_bridge.py` +2（逐台默认/旗子强制；`delta` 的两条不变量），并把既有「搬绝对方向」那条**显式钉 `mapped`**；`tests/test_arm_ik_multi_robot.py` +4（入口默认 `auto`、坏档被拒、换基两种写法等价、`apply_each` 只对点名的台换基） |
+| 文档 | 本节 + `RETARGETING_PIPELINE.md` 的实时入口小节 + 两处「最后更新」行 |
+
+
+
+#### 8.19.6 实测（命令 + 退出码 + 关键不变量）
+
+```powershell
+cd F:\simulation_platform_cs
+$env:PYTHONPATH = "$pwd\src"
+# 改前/改后的对照：同一份代码，只差 --arm-posture-frame 这一档
+E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --input-npz outputs\tmp_realtime\live_long_frames.npz --frames 200 --headless --arm-map posture --arm-elbow-follow operator --arm-direction-rate-deg-s 0 --arm-slew-mm 40 --report tmp_ik_frame\auto_on.json                       # 默认 auto
+E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --input-npz outputs\tmp_realtime\live_long_frames.npz --frames 200 --headless --arm-map posture --arm-posture-frame mapped --arm-elbow-follow operator --arm-direction-rate-deg-s 0 --arm-slew-mm 40 --report tmp_ik_frame\forced_mapped_on.json      # 强制旧档
+E:\python3.11.7\python.exe tmp_ik_frame\audit_reports.py
+```
+
+| 命令 | 退出码 | 关键不变量（200 帧中位） |
+|---|---|---|
+| 默认档（`auto`） | **0** | 启动行 `posture frame = auto (h1_2:mapped, gr1_t2:delta, g1:mapped)`；**gr1_t2 左**肘任务残差 196.4 -> **28.6** mm、上臂方向误差 65.0 -> **9.2** 度、前臂 49.4 -> **7.2** 度；**gr1_t2 右** 129.6 -> **47.6** mm、42.9 -> 15.4 度 |
+| 同上，`h1_2` / `g1` | **0** | 六个数与改前**逐位不变**：h1_2 58.5 / 46.5 mm、上臂 18.3 / 14.5 度；g1 24.2 / 25.1 mm、上臂 17.0 / 17.6 度 |
+| `--arm-posture-frame mapped` | **0** | 六个机位与**改前逐位相同**（gr1_t2 左 196.4 / 65.0 / 49.4）—— 这一档就是历史行为 |
+| `--arm-posture-frame delta`（强制全部） | **0** | h1_2 右退化（46.5 -> 78.4 mm、14.5 -> 24.4 度）、g1 右 25.1 -> 35.0 mm —— 这就是「不能全局默认 delta」的数字 |
+| `E:\python3.11.7\python.exe -m pytest tests -q` | **0** | `377 passed, 3 skipped, 376 subtests passed`（本轮基线 371 / 3 / 347，新增 6 条用例；末尾 `nanobind: leaked ...` 是队友 `roboticstoolbox` 既有的引用计数提示） |
+| `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | **0** | `[OK]` |
+| `E:\python3.11.7\python.exe devtools\run_realtime_arm_elbow_follow_windows.py --check` | **0** | `this build pins --arm-elbow-follow operator`；`interpreter : E:\python3.11.7\python.exe`；`modules present: cv2, mediapipe, pybullet`；`cameras readable: [0]` |
+
+#### 8.19.7 如实说（这一轮没解决什么）
+
+- **只有本机回放证据**：现场那一次要人站在镜头前，而且必须按 q/Esc 退出报告才会落盘（§8.17.10）。
+- **`delta` 的「转角幅度」不是逐字相等**（同一次旋转作用在方向不同的两条骨头上，转角可以不同，实测
+  前臂 47.7 度 -> 31.8 / 66.4）。要让**幅度**也逐字相等得走 `align`，但它对 gr1_t2 的右臂没修好。
+- **h1_2 右 / g1 右在绝对档下的 10-19 度是「恰好准」**：它们的前臂加载方向与操作者中性方向的偏移是
+  -22~-25 度（不是 0），换口径就退化。为什么它们在那个偏移下仍然准，这一层**没查** —— 所以这次只动
+  gr1_t2 的默认，另两台一个数都不动。
+- **`align` 这条路没删**：代码里没落地它（只在探针里试过），数字留在 8.19.4 的表里，将来若要
+  「绝对指向 + 幅度逐字相等」的语义，从那张表接着走。
+- **§8.18.7 剩下的那 3 帧「反」不在本轮范围**：它们与本节无关（同一份未修版本逐帧相同）。
