@@ -10,7 +10,7 @@
 ``solution_elbow_mm`` 与它**逐帧相等** —— 说明手臂就停在 IK 给的那个解上（电机目标 = 解，
 姿势在平衡点），所以不是「物理追不上」，是**解本身**就离目标那么远。
 
-那就要问两件事，这个探针分别量：
+那就要问三件事，这个探针分别量：
 
 1. **段是不是刚体**：配方拿加载时量到的 ``L1 = |肘 - 肩|``、``L2 = |腕 - 肘|`` 当常数，把肘
    目标放在「肩 + L1*上臂方向」。把每个臂关节单独拧开 ±60/±100 度再量同一对距离：如果两个
@@ -19,6 +19,12 @@
 2. **求解器能不能兑现一对「一定能到」的目标**：取这台机器人中性姿势自己的 FK 三点，按配方
    方式造一对目标（肩 + L1*u0，再加 L2*f0，u0/f0 取中性方向），从**拧开过的姿势**出发解一遍。
    这对目标由机器人自己的连杆长造出来，任何姿势下都应当可达；解不出来就是求解器/限位的问题。
+3. **IK 把哪个帧送到目标点上**（2026-10-14 新增，§8.13.8 的第①条未查项）：``solve`` 交进去的是
+   「连杆索引 + 世界点」，而 ``arm_points()`` 读 ``getLinkState()[4]``（URDF link frame = 关节
+   原点）。只要 ``calculateInverseKinematics2`` 驱动的是 ``[0]``（惯性/质心帧），两个位置任务就
+   带着一个**常量偏差**在解：腕那截小（残差 10-30 mm）、肘那截大（残差 70-234 mm），正是现场
+   报告的形状。量法见 ``ik_frame_test``（恒等测试 + 沿基座 +X 的驱动测试），顺带记限位余量。
+
 """
 
 from __future__ import annotations
@@ -255,6 +261,7 @@ def pose_tracking_test(adapter, side, p, cid, spreads=(5.0, 35.0),
                for index, _name in joints}
     saved_recovery = adapter.elbow_recovery_deg
     saved_lock = adapter.ik_lock_others
+    saved_iterations = adapter.ik_iterations
     adapter.elbow_recovery_deg = 0.0
     out = []
     try:
@@ -288,11 +295,169 @@ def pose_tracking_test(adapter, side, p, cid, spreads=(5.0, 35.0),
     finally:
         adapter.elbow_recovery_deg = saved_recovery
         adapter.ik_lock_others = saved_lock
-        adapter.ik_iterations = 60
+        adapter.ik_iterations = saved_iterations
         for index, _name in joints:
             p.resetJointState(adapter.body, index, float(neutral[index]),
                               physicsClientId=cid)
     return out
+
+
+#: IK 帧口径测试把目标沿基座 +X 平移多少（mm）：够大能盖过数值噪声，又小到不会撞限位。
+IK_FRAME_PROBE_MM = 20.0
+
+
+def link_frames(p, body, link_index, cid) -> dict:
+    """同一个连杆的**两个**官方帧（PyBullet 自己给的两个口径）。
+
+    ``com``   = ``getLinkState()[0]``：惯性帧（质心）；
+    ``frame`` = ``getLinkState()[4]``：URDF 的 link frame（= 关节原点）—— ``arm_points()`` /
+    ``_branch_cost`` 读的是它；``solve`` 交进 IK 的那个点按哪一帧解释，官方文档没写。
+    """
+    state = p.getLinkState(body, int(link_index), computeForwardKinematics=True,
+                           physicsClientId=cid)
+    return {"com": np.asarray(state[0], dtype=np.float64),
+            "frame": np.asarray(state[4], dtype=np.float64)}
+
+
+def ik_frame_test(adapter, side, p, cid, probe_mm=IK_FRAME_PROBE_MM):
+    """**IK 把哪个帧送到目标点上**：link frame（``arm_points`` 的口径）还是惯性帧？
+
+    为什么必须量（§8.13.8 / §8.15.6 留下的第①条）：「把肘也当一个位置目标」这条路一直在
+    「求解器没兑现」上打转 —— 迭代 60 提到 800 六侧全更差、锁住别的关节只把腕残差降下来，
+    肘残差仍有 22-234 mm。剩下的可能只有两个：**两个任务的口径不同**，或目标被限位挡住。
+    ``solve`` 交进去的是「连杆索引 + 世界点」，而 ``arm_points()`` 读 ``[4]``：只要 IK 驱动
+    的是 ``[0]``，两个位置任务就带着一个**常量偏差**在解 —— 腕那一截小（手部连杆质心离原点
+    近，残差 10-30 mm）、肘那一截大（前臂质心在前臂中间，残差 70-230 mm），正是现场报告里
+    那个形状。结论只有三选一：``link_frame`` / ``com_frame`` / 看不出来。
+
+    两条量法都不走物理（``solve`` 结束时手臂正停在解上）：
+
+    1. **恒等测试**：目标 = 当前 FK 点、从当前姿势再解一遍。关节角应当一动不动；两个帧各自
+       到目标的距离里，小的那个就是 IK 驱动的帧，另一个的差就是两个口径的常量偏差。
+    2. **驱动测试**：目标沿**基座 +X** 平移 ``probe_mm`` 再解一遍，量两个帧各动了多少；位移
+       与目标位移一致的那个帧就是 IK 驱动的帧 —— 这一条只看运动学，不受「解收敛没有」影响，
+       比第 1 条硬。
+
+    腕（``ee`` 连杆）与肘（``elbow_link``）各做一遍：现场报告里腕残差 10-30 mm、肘残差
+    70-234 mm，若这两个连杆的 ``com``/``frame`` 间距之比正好是这个比，结论就是它。
+    限位余量一并记下（第②条：这个合法姿势会不会被限位挡住）。
+    """
+    joints = list(adapter.arm[side])
+    angles0 = {int(index): float(p.getJointState(adapter.body, index,
+                                                 physicsClientId=cid)[0])
+               for index, _name in joints}
+    #: ``solve(..., posture=...)`` 吃的名字 -> 弧度，用来把 restPoses 换成「当前姿势」
+    current_angles = {str(name): float(angles0[int(index)]) for index, name in joints}
+    saved_recovery = adapter.elbow_recovery_deg
+    adapter.elbow_recovery_deg = 0.0            # 量的是求解器，不是支路恢复
+    adapter.elbow_recovery_wait[side] = 0
+
+    def reset_pose():
+        for index, _name in joints:
+            p.resetJointState(adapter.body, index, angles0[int(index)],
+                              physicsClientId=cid)
+
+    def solve_pair(wrist_target, elbow_target, rest_current=False):
+        """同一对目标解一遍；``rest_current`` 把零空间的 restPoses 换成当前姿势。
+
+        这就是「求解器为什么不在解上」的判别式：``solve`` 默认把 ``restPoses`` 交成
+        **加载时**的姿势（``_rest_poses(None)``），而现场入口（``apply_each``）从不传
+        ``posture``。若恒等测试的残差在这一档塌到 ~0，说明那个常量偏差点不是链路帧口径，
+        而是零空间项把解从位置任务上拉走了。
+        """
+        extra = {"posture": current_angles} if rest_current else {}
+        adapter.solve(side, tuple(wrist_target), source="world",
+                      elbow=tuple(elbow_target), elbow_pass="last", **extra)
+
+    try:
+        points = adapter.arm_points(side)
+        targets = {"wrist": np.asarray(points["wrist"], dtype=np.float64),
+                   "elbow": np.asarray(points["elbow"], dtype=np.float64)}
+        links = {"wrist": int(adapter.ee[side][0]),
+                 "elbow": int(adapter.elbow_link[side])}
+        before = {name: link_frames(p, adapter.body, index, cid)
+                  for name, index in links.items()}
+        out = {"probe_mm": round(float(probe_mm), 3),
+               "links": {name: link_name(p, adapter.body, index, cid)
+                         for name, index in links.items()},
+               "frame_offset_mm": {name: round(distance_mm(before[name]["com"],
+                                                           before[name]["frame"]), 2)
+                                   for name in links}}
+        # ① 恒等测试：目标 = 当前 FK 三点。解对了就一动不动。
+        def identity_once(rest_current):
+            reset_pose()
+            solve_pair(targets["wrist"], targets["elbow"], rest_current)
+            after = {name: link_frames(p, adapter.body, index, cid)
+                     for name, index in links.items()}
+            moved = max((abs(math.degrees(float(p.getJointState(
+                adapter.body, index, physicsClientId=cid)[0]) - angles0[int(index)]))
+                for index, _name in joints), default=0.0)
+            return {
+                "joint_max_delta_deg": round(float(moved), 3),
+                "distance_to_target_mm": {
+                    name: {"from_com": round(distance_mm(after[name]["com"],
+                                                        targets[name]), 2),
+                           "from_frame": round(distance_mm(after[name]["frame"],
+                                                           targets[name]), 2)}
+                    for name in links}}
+
+        out["identity"] = identity_once(False)
+        # ①b 同一件事，只把零空间的 restPoses 从「加载姿势」换成「当前姿势」：
+        # 残差塌下来 = 偏差来自零空间项，不是链路帧口径。
+        out["identity_current_rest"] = identity_once(True)
+        reset_pose()
+
+        # ② 驱动测试：目标沿基座 +X 平移 probe_mm，看两个帧各动了多少。
+        delta_base = np.array([float(probe_mm) / 1000.0, 0.0, 0.0], dtype=np.float64)
+
+        def drive_once(rest_current):
+            result = {}
+            for name in ("wrist", "elbow"):
+                reset_pose()
+                shifted = np.asarray(adapter.to_world(tuple(
+                    np.asarray(adapter.to_base(targets[name]), dtype=np.float64)
+                    + delta_base)), dtype=np.float64)
+                intended = shifted - targets[name]
+                wrist_target = shifted if name == "wrist" else targets["wrist"]
+                elbow_target = shifted if name == "elbow" else targets["elbow"]
+                solve_pair(wrist_target, elbow_target, rest_current)
+                after = link_frames(p, adapter.body, links[name], cid)
+                record = {"intended_mm": round(float(np.linalg.norm(intended)) * 1000.0, 2)}
+                for key in ("com", "frame"):
+                    moved = after[key] - before[name][key]
+                    record[key] = {
+                        "moved_mm": round(float(np.linalg.norm(moved)) * 1000.0, 2),
+                        "error_vs_intended_mm": round(float(np.linalg.norm(
+                            moved - intended)) * 1000.0, 2)}
+                record["drives"] = ("com" if record["com"]["error_vs_intended_mm"]
+                                    < record["frame"]["error_vs_intended_mm"] else "frame")
+                result[name] = record
+            reset_pose()
+            return result
+
+        drive = drive_once(False)
+        out["drive"] = drive
+        out["ik_drives"] = {name: ("com_frame" if drive[name]["drives"] == "com"
+                                   else "link_frame") for name in drive}
+        # ②b 同样的驱动测试，零空间换成「当前姿势」：跟随率是不是就上来了。
+        out["drive_current_rest"] = drive_once(True)
+
+        # 限位余量：哪几个臂关节贴着限位（第②条的判据）。
+        headroom = {}
+        for index, name in joints:
+            info = p.getJointInfo(adapter.body, index, physicsClientId=cid)
+            low, high = float(info[8]), float(info[9])
+            if high - low < 1e-9:
+                continue
+            headroom[str(name)] = round(min(math.degrees(angles0[int(index)] - low),
+                                            math.degrees(high - angles0[int(index)])), 2)
+        out["limit_headroom_deg"] = headroom
+        out["min_limit_headroom_deg"] = min(headroom.values()) if headroom else None
+        return out
+    finally:
+        adapter.elbow_recovery_deg = saved_recovery
+        adapter.elbow_recovery_wait[side] = 0
+        reset_pose()
 
 
 def main() -> int:
@@ -353,6 +518,36 @@ def main() -> int:
                                        f"{step['elbow_mm']:.1f} mm / wrist "
                                        f"{step['wrist_mm']:.1f} mm"
                                        for step in track["solves"]), flush=True)
+                entry["ik_frame"] = ik_frame_test(adapter, side, scene.p, scene.cid)
+                frame = entry["ik_frame"]
+                for name in ("wrist", "elbow"):
+                    step = frame["drive"][name]
+                    ident = frame["identity"]["distance_to_target_mm"][name]
+                    print(f"    IK end-effector frame ({name} link = "
+                          f"{frame['links'][name]}): drives {frame['ik_drives'][name]} "
+                          f"(for a {step['intended_mm']:.1f} mm target shift the link "
+                          f"frame moved {step['frame']['moved_mm']:.1f} mm / the COM "
+                          f"moved {step['com']['moved_mm']:.1f} mm) | COM-vs-frame gap "
+                          f"{frame['frame_offset_mm'][name]:.1f} mm | identity (target = "
+                          f"current FK) residual from frame "
+                          f"{ident['from_frame']:.1f} mm / from COM "
+                          f"{ident['from_com']:.1f} mm", flush=True)
+                print("    identity solve moved the arm "
+                      f"{frame['identity']['joint_max_delta_deg']:.2f} deg (restPoses = load "
+                      f"pose) / {frame['identity_current_rest']['joint_max_delta_deg']:.2f} deg "
+                      f"(restPoses = current pose) | tightest arm joint limit headroom "
+                      f"{frame['min_limit_headroom_deg']} deg", flush=True)
+                for name in ("wrist", "elbow"):
+                    load = frame["drive"][name]
+                    here = frame["drive_current_rest"][name]
+                    print(f"    restPoses A/B ({name}): target +{load['intended_mm']:.1f} mm -> "
+                          f"link frame moved {load['frame']['moved_mm']:.1f} mm with the load-pose "
+                          f"restPoses / {here['frame']['moved_mm']:.1f} mm with the current-pose "
+                          f"one (identity residual "
+                          f"{frame['identity']['distance_to_target_mm'][name]['from_frame']:.1f} -> "
+                          f"{frame['identity_current_rest']['distance_to_target_mm'][name]['from_frame']:.1f} "
+                          f"mm)", flush=True)
+
                 for name, delta in sorted(entry["joints"].items(),
                                           key=lambda item: -abs(item[1]["d_upper_mm"])):
                     if abs(delta["d_upper_mm"]) < 1.0 and abs(delta["d_fore_mm"]) < 1.0:
