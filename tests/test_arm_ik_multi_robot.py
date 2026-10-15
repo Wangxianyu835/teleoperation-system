@@ -615,6 +615,262 @@ class FieldArmDefaultsTests(unittest.TestCase):
         self.assertEqual(args.arm_elbow_recovery_margin_deg, 0.0)
         self.assertEqual(args.arm_elbow_recovery_frames, 0)
 
+    def test_rest_poses_live_is_reachable_from_the_field_entry(self):
+        """``--arm-rest-poses live``: 入口要能把零空间参考换成「手臂现在的位置」。
+
+        2026-10-14 的现场默认仍是 ``current``（加载姿势），因为它同时是历史行为的口径；
+        换口径要显式给旗子，报告里的 ``ik.rest_poses`` 会记下用的是哪一种。
+        """
+        from teleoperation.simulation.realtime_teleop import build_parser
+
+        self.assertEqual(build_parser().parse_args([]).arm_rest_poses, "current")
+        self.assertEqual(build_parser().parse_args(
+            ["--arm-rest-poses", "live"]).arm_rest_poses, "live")
+
+    def test_elbow_follow_is_off_by_default_and_reachable_from_the_field_entry(self):
+        """``--arm-elbow-follow operator``: 沿用「默认逐字不变，换口径显式给旗子」的约定。
+
+        上一轮量清了「肘不跟手」的机制（§8.16``restPoses`` 是代价项），这一档就是把参考换成
+        操作者自己的肘弯；但现场默认仍是 ``off``，A/B 靠这一条旗子，报告里
+        ``arm.robots[*].elbow_posture`` 会记下量到的肘关节与斜率。
+        """
+        from teleoperation.simulation.realtime_teleop import build_parser
+
+        self.assertEqual(build_parser().parse_args([]).arm_elbow_follow, "off")
+        self.assertEqual(build_parser().parse_args(
+            ["--arm-elbow-follow", "operator"]).arm_elbow_follow, "operator")
+
+
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
+class LiveRestPosesTests(unittest.TestCase):
+    """``rest_poses="live"``: 零空间项不许把解从「精确可达」的目标上拽走。
+
+    2026-10-14：现场「大臂抬不起来 / GR1-T2 前臂反」的根因就是这个 ``restPoses``。加载姿势
+    （直臂下垂）不只是起点，它还在代价函数里，于是每一帧都在把解往加载姿势拉。这里拿一对
+    **精确可达**的目标量它：腕 + 肘直接用机器人自己的 FK 点，解对了就该一动不动。
+
+    数字与 ``devtools/probe_arm_segment_rigidity.py`` 的 ``ik_frame_test`` 一致（六个机位
+    两侧）：``current`` 残差 6.6-140.1 mm、手臂被拽动 1.6-35.0 度；``live`` 残差 0.0 mm
+    （一个贴着限位的机位 0.4-0.5 mm）、拽动 0.00 度。现场报告里的同一签名是
+    ``elbow_task_mm`` 中位 28-234 mm 而腕残差只有 13-29 mm（命令的肘位根本没兑现）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+        from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+
+        cls.scene = ThreeRobotHandScene(sides=("right",), gui=False)
+        cls.driver = ArmSceneDriver(cls.scene, sides=("right",), robots=PAPER_ROBOTS)
+        cls.driver.step(5)
+
+    def seed_pose(self, adapter, side, elbow_deg=60.0):
+        """一个**离开加载姿势**的手臂姿势：加载角 + 肘关节折 60 度。
+
+        为什么必须先挪开：实验室里「加载姿势」和「当前姿势」恰好重合，而现场每一帧的当前
+        姿势都是跟着操作者跑出来的姿势 —— 这个 bug 只在实机才暴露，就是因为这个重合。
+        """
+        import math
+
+        angles = {int(index): float(adapter.hold[int(index)])
+                  for index in adapter.indices}
+        for index, name in adapter.arm[side]:
+            if "elbow" not in name.lower():
+                continue
+            position = adapter.position_of[int(index)]
+            low = float(adapter.limits["lower"][position]) + math.radians(5.0)
+            high = float(adapter.limits["upper"][position]) - math.radians(5.0)
+            # 别把种子放到限位上/外：IK 无法停在限位外，那样残差就不是参考项的锅了
+            # （g1 的肘行程最小，60 度这一下必须先夹进限位）。
+            angles[int(index)] = min(max(angles[int(index)] + math.radians(elbow_deg),
+                                         low), high)
+        return angles
+
+    def residual_mm(self, adapter, side, angles, rest_poses):
+        """站到 ``angles`` 这个姿势上，解一次「目标 = 自己 FK」，返回腕 / 肘残差（mm）。"""
+        import numpy as np
+
+        for index, angle in angles.items():
+            self.driver.p.resetJointState(adapter.body, index, float(angle),
+                                          physicsClientId=self.driver.cid)
+        adapter.rest_poses = rest_poses
+        points = adapter.arm_points(side)
+        wrist = np.asarray(points["wrist"], dtype=np.float64)
+        elbow = np.asarray(points["elbow"], dtype=np.float64)
+        adapter.solve(side, tuple(wrist), source="world", elbow=tuple(elbow),
+                      elbow_pass="last")
+        after = adapter.arm_points(side)
+        return {name: float(np.linalg.norm(
+            np.asarray(after[name], dtype=np.float64) - target)) * 1000.0
+            for name, target in (("wrist", wrist), ("elbow", elbow))}
+
+    def test_live_keeps_an_exactly_reachable_target_and_the_load_pose_does_not(self):
+        for robot in PAPER_ROBOTS:
+            adapter = self.driver.ik[robot]
+            seed = self.seed_pose(adapter, "right")
+            live = self.residual_mm(adapter, "right", seed, "live")
+            load = self.residual_mm(adapter, "right", seed, "current")
+            with self.subTest(robot=robot):
+                for name in ("wrist", "elbow"):
+                    # 现场那台贴着限位的机位实测 0.5 mm，所以判据留到 1 mm。
+                    self.assertLessEqual(live[name], 1.0, (robot, name, live))
+                # 同一对目标，换加载姿势当参考就被拉走（六个机位实测 6.6-140.1 mm）。
+                self.assertGreater(max(load.values()), max(live.values()) + 1.0,
+                                   (robot, load, live))
+
+    def test_live_is_accepted_and_a_typo_still_fails(self):
+        from teleoperation.simulation.arm_ik import PyBulletArmIK
+
+        adapter = self.driver.ik[PAPER_ROBOTS[0]]
+        adapter.rest_poses = "live"
+        self.assertEqual(adapter.describe()["rest_poses"], "live")
+        with self.assertRaises(ValueError):
+            PyBulletArmIK(adapter.body, self.driver.cid, adapter.robot_type,
+                          sides=("right",), rest_poses="lively")
+
+
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
+class ElbowPostureTests(unittest.TestCase):
+    """「肘跟手」（``--arm-elbow-follow operator``）：零空间参考跟着操作者的肘弯走。
+
+    2026-10-14 §8.16 已经把机制量清了：``restPoses`` 是**代价项**不是起点 —— 拿加载姿势当
+    参考，一对精确可达的腕 + 肘目标会被解偏 6.6-140.1 mm（现场报告里 ``elbow_task_mm`` 中位
+    28-234 mm 而腕残差只有 12-24 mm，正是「肘不跟手」）。这里把参考换成操作者**这一帧的肘弯**
+    （绝对角，180 = 伸直）：肘处的夹角对肘关节是 1:1 的，但三台的正方向不一样（gr1_t2 实测
+    **-0.9992**、g1 +0.998、h1_2 贴着伸直那一侧只有 0.711），而且加载姿势下各自的夹角也不同
+    （g1 172.9 / gr1_t2 111.2 / h1_2 155.2 度），所以关节名、斜率与基准都是加载时实测的。
+
+    本机实测（``tmp_ik_frame/micro_elbow.py``）：把参考推 -20 度时 g1 的夹角走 -20.02 度、
+    gr1_t2 **-20.00**、h1_2 -23.4（0.711 那段弦的非线性）；推 +1000 度一律封顶在「离伸直的
+    余量」上：g1 只拿到 +6.37（不封顶会越过 180 折返成 -26.2 度，那就变成跟位置任务对着干）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+        from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+
+        cls.scene = ThreeRobotHandScene(sides=SIDES, gui=False)
+        cls.driver = ArmSceneDriver(cls.scene, sides=SIDES)
+        cls.driver.step(5)
+
+    def reset_to_hold(self):
+        """所有测量都从加载姿势出发：与 ``_measure_elbow_posture`` 量斜率时同一个基准。"""
+        for adapter in self.driver.ik.values():
+            for index in adapter.indices:
+                self.scene.p.resetJointState(adapter.body, index,
+                                             float(adapter.hold[index]),
+                                             physicsClientId=self.driver.cid)
+
+    def bend_deg(self, adapter, side):
+        return float(adapter._bend_deg(side))
+
+    def bend_with(self, adapter, side, posture):
+        """站到 ``posture`` 上量一次夹角，量完把关节原样放回去。"""
+        restore = {}
+        for name, value in posture.items():
+            index = adapter.index_of[name]
+            restore[index] = float(self.scene.p.getJointState(
+                adapter.body, index, physicsClientId=self.driver.cid)[0])
+            self.scene.p.resetJointState(adapter.body, index, float(value),
+                                         physicsClientId=self.driver.cid)
+        after = self.bend_deg(adapter, side)
+        for index, value in restore.items():
+            self.scene.p.resetJointState(adapter.body, index, value,
+                                         physicsClientId=self.driver.cid)
+        return after
+
+    def test_every_side_names_its_own_elbow_joint_and_measures_the_slope(self):
+        for robot in PAPER_ROBOTS:
+            adapter = self.driver.ik[robot]
+            for side in SIDES:
+                name, slope, bend = adapter.elbow_posture[side]
+                with self.subTest(robot=robot, side=side):
+                    self.assertIn("elbow", name.lower())
+                    self.assertIn(name, [joint for _index, joint in adapter.arm[side]])
+                    # 三台正方向不一样（gr1_t2 实测 -0.9992），所以只断言「量到了」。
+                    self.assertGreaterEqual(abs(slope), 0.2)
+                    self.assertGreater(bend, 0.0)
+                    # 报告里要看得见：量到的是哪个关节、斜率多少。
+                    described = adapter.describe()["elbow_posture"][side]
+                    self.assertEqual(described["joint"], name)
+                    self.assertAlmostEqual(described["bend_slope"], round(slope, 3))
+
+    def test_the_load_bend_is_the_historical_reference_and_a_folded_bend_folds(self):
+        for robot in PAPER_ROBOTS:
+            adapter = self.driver.ik[robot]
+            for side in SIDES:
+                self.reset_to_hold()
+                name, _slope, bend_at_hold = adapter.elbow_posture[side]
+                hold = float(adapter.hold[adapter.index_of[name]])
+                flat = adapter.posture_from_bend(side, bend_at_hold)
+                with self.subTest(robot=robot, side=side, case="load bend"):
+                    self.assertEqual(list(flat), [name])
+                    self.assertAlmostEqual(flat[name], hold, places=9)
+                    self.assertAlmostEqual(self.bend_with(adapter, side, flat),
+                                           self.bend_deg(adapter, side), places=6)
+                with self.subTest(robot=robot, side=side, case="fold 20"):
+                    before = self.bend_deg(adapter, side)
+                    achieved = self.bend_with(
+                        adapter, side,
+                        adapter.posture_from_bend(side, bend_at_hold - 20.0)) - before
+                    # 方向必须对（现场那一件事就是方向）；幅度按实测给区间：g1 / gr1_t2 是
+                    # 1:1（-20.02 / -20.00，判据 3 度），h1_2 是 -23.4（那段 0.711 的弦）。
+                    self.assertLess(achieved, -10.0, (robot, side, achieved))
+                    self.assertGreater(achieved, -35.0, (robot, side, achieved))
+                    if robot != "h1_2":     # h1_2 的肘贴在伸直那一侧，斜率只有 0.711
+                        self.assertAlmostEqual(achieved, -20.0, delta=3.0,
+                                               msg=(robot, side, achieved))
+
+    def test_the_reference_never_asks_to_go_past_straight(self):
+        """夹角在伸直处会折返（acos）：参考不许把肘推过那一侧。
+
+        g1 加载姿势离伸直只有 7 度：不封顶时「把肘弯推到 1000 度」会给出 -26.2 度（越过 180
+        之后折返），那正是 §8.16「零空间项跟位置任务对着干」的老毛病。封顶后只在余量内变化。
+        """
+        for robot in PAPER_ROBOTS:
+            adapter = self.driver.ik[robot]
+            for side in SIDES:
+                self.reset_to_hold()
+                _name, _slope, bend = adapter.elbow_posture[side]
+                before = self.bend_deg(adapter, side)
+                achieved = self.bend_with(
+                    adapter, side, adapter.posture_from_bend(side, 1000.0)) - before
+                with self.subTest(robot=robot, side=side):
+                    self.assertLessEqual(achieved, max(0.0, 180.0 - bend) + 1.0,
+                                         (robot, side, achieved))
+                    # 负值只允许 h1_2 那种「封顶处刚好越过峰值 1 度」的量级。
+                    self.assertGreaterEqual(achieved, -2.0, (robot, side, achieved))
+
+    def test_apply_each_hands_the_reference_to_the_adapter_and_reports_it(self):
+        """接线：司机把这一帧的参考交给 ``solve``，报告里留着（不给这一项 = 历史行为）。
+
+        用的是**同一个**操作者数（现场那条录制里操作者的中性肘弯就在 138.9 度，§8.17），三台
+        各自换算成自己的关节角与参考角 —— 这正是把绝对角、而不是「相对你中性的增量」交给司机
+        的原因（各自加载姿势下的夹角不同，见各台的 ``elbow_posture``）。
+        """
+        self.reset_to_hold()
+        share = 138.9
+        targets = {robot: adapter.arm_points("right")["wrist"]
+                   for robot, adapter in self.driver.ik.items()}
+        report = self.driver.apply_each("right", targets, source="world",
+                                        elbow_bend_deg=share)
+        for robot, adapter in self.driver.ik.items():
+            name = adapter.elbow_posture["right"][0]
+            expected = adapter.posture_from_bend("right", share)[name]
+            with self.subTest(robot=robot):
+                self.assertEqual(list(report[robot]["posture"]), [name])
+                self.assertAlmostEqual(report[robot]["posture"][name], expected, places=5)
+                self.assertAlmostEqual(adapter.last_posture["right"][name], expected,
+                                       places=5)
+        off = self.driver.apply_each("right", targets, source="world")
+        for robot in self.driver.ik:
+            with self.subTest(robot=robot, case="off"):
+                self.assertEqual(off[robot]["posture"], {})
+                self.assertEqual(self.driver.ik[robot].last_posture["right"], {})
+
 
 @unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")

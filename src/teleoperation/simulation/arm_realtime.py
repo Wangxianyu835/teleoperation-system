@@ -1446,6 +1446,45 @@ class RealtimeArmBridge:
         return {side: (self._last_state.get(side) or {}).get("orientation")
                 for side in self.sides}
 
+    @staticmethod
+    def _bend_of(upper, fore):
+        """``(上臂向量, 前臂向量)`` -> 肘弯（度），口径与 ``elbow_bend_degrees`` 完全一致。
+
+        直接用那个函数而不是另写一个夹角：报告里的 ``elbow_bend_deg`` 就是它算的，
+        「你弯了多少」和「报告里写着你弯了多少」必须是同一个数（180 = 伸直，0 = 折起）。
+        造三个点喂进去即可：肩 = 原点、肘 = 上臂向量、腕 = 上臂向量 + 前臂向量。
+        """
+        u = _unit_direction(upper)
+        v = _unit_direction(fore)
+        if u is None or v is None:
+            return None
+        origin = np.zeros(3, dtype=np.float64)
+        return float(elbow_bend_degrees(origin, u, u + v))
+
+    def elbow_bend_target(self) -> dict:
+        """``{side: 这一帧的肘弯（度）or None}``：机器人无关的那一份「姿势」目标。
+
+        为什么要单独暴露（与 ``orientation_target`` 同一个理由）：这是**操作者层**的量 ——
+        同一份给三台，各自的肘关节名、正方向与「加载姿势下自己的夹角」由
+        ``PyBulletArmIK.posture_from_bend`` 自己量、自己换。调用方若从某台机器人的
+        ``ArmTarget`` 里挑，就会挑到 position-only 那台而把这一项静默丢掉（姿态口径踩过一次，
+        见 ``orientation_target``）。
+
+        口径同 ``elbow_bend_degrees``：180 = 完全伸直，0 = 完全折起。给的是**绝对**值而不是
+        相对中性的增量：位置任务命令的夹角就是这个绝对角，而每台机器人加载姿势下自己的夹角
+        各不相同（g1 172.9 / gr1_t2 111.2 / h1_2 155.2 度），只有把绝对角交给它、由它减掉自己
+        的那个数，参考才与命令同向（见 ``PyBulletArmIK.posture_from_bend``）。
+
+        这一帧没有 pose 手臂就给 ``None``：调用方如实退回历史行为。断流的那一帧沿用上一帧
+        （``_last_state``）——否则每丢一帧参考就弹回加载姿势，而「一断流肘就掉回去」正是现场
+        那一件事。
+        """
+        out = {}
+        for side in self.sides:
+            state = self._last_state.get(side) or {}
+            out[side] = self._bend_of(state.get("upper"), state.get("fore"))
+        return out
+
     def _gain(self, profile, side, state) -> float:
         """米/米。``profile.metric_scale`` 是本机调参，再按你标定时的臂长归一化。
 
@@ -1668,6 +1707,15 @@ class RealtimeArmBridge:
                                "samples": self.neutral[side]["samples"],
                                "complete": self.neutral[side]["complete"]}
                         for side in self.sides},
+            # 「肘跟手」（``--arm-elbow-follow operator``）用的两个操作者量：中性那一帧的
+            # 肘弯（标定口径）与这一帧的肘弯（真正喂给 IK 的那个绝对角）。180 = 伸直。缺数据的
+            # 侧面是 None —— 那一侧 IK 拿到的姿势参考就回到历史行为，报告里看得出来。
+            "elbow_bend_deg": {side: {
+                "neutral": _round_or_none(
+                    self._bend_of(self.neutral[side].get("upper"),
+                                  self.neutral[side].get("fore")), 2),
+                "current": _round_or_none(self.elbow_bend_target()[side], 2)}
+                for side in self.sides},
             "counts": {"frames": self.counts["frames"],
                        "valid": dict(self.counts["valid"]),
                        "held": dict(self.counts["held"]),

@@ -254,12 +254,21 @@ class ArmSceneDriver:
 
     def apply_each(self, side: str, targets, source: str = "base",
                    orientation=None, orientation_frame: str = "absolute",
-                   elbows=None) -> dict:
+                   elbows=None, elbow_bend_deg=None) -> dict:
         """One frame for one side with a target per robot: ``{robot_type: position}``.
 
         ``elbows`` = optional ``{robot_type: point}`` in the same space: the paper's
         elbow position task.  A robot missing from it gets no elbow target (wrist only),
         so an older caller keeps working unchanged.
+
+        ``elbow_bend_deg`` = the operator's elbow bend this frame, in degrees
+        (``arm_realtime``'s ``elbow_bend_target()``; 180 = straight).  It becomes each
+        adapter's null-space posture reference for this frame
+        (``PyBulletArmIK.posture_from_bend``) -- the paper's ``PostureTask``: the wrist
+        and elbow tasks still decide *where*, this decides how the elbow bends while
+        doing it, and each robot converts the same number through its own measured elbow
+        joint and bend slope.  ``None`` (default) leaves the reference exactly where it
+        was, so an older caller is byte-for-byte unchanged.
 
         Returns ``{robot_type: {"ee": link, "ik_mode": ..., "joints": {name: angle}}}``
         so a demo, a test or a report can state exactly which arm was driven.
@@ -291,16 +300,22 @@ class ArmSceneDriver:
                                   for axis, value in enumerate(elbow))
                 self.shoulder_shift_mm.setdefault(robot_type, {})[side] = round(
                     1000.0 * float(np.linalg.norm(np.asarray(shift, dtype=np.float64))), 2)
+            posture = (None if elbow_bend_deg is None
+                       else adapter.posture_from_bend(side, elbow_bend_deg))
             values = adapter.solve(side, wanted,
                                    orientation=orientation, source=source,
                                    orientation_frame=orientation_frame,
                                    elbow=elbow,
-                                   elbow_pass=self.elbow_pass)
+                                   elbow_pass=self.elbow_pass,
+                                   posture=posture)
             adapter.apply(side, values)
             reports[robot_type] = {"ee": adapter.ee[side][1],
                                    "ik_mode": adapter.ik_mode,
                                    "shoulder_shift_mm": self.shoulder_shift_mm.get(
                                        robot_type, {}).get(side, 0.0),
+                                   #: 这一帧交给零空间项的那个参考角（空的 = 历史行为）。
+                                   "posture": {str(name): round(float(value), 5)
+                                               for name, value in (posture or {}).items()},
                                    "joints": values}
         self.applied[side] += 1
         return reports
@@ -593,7 +608,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="space of the sweep: robot base frame, or operator metres")
     parser.add_argument("--ik-mode", choices=("pose", "position"), default=None,
                         help="override the profile's ik_mode (A/B comparison)")
-    parser.add_argument("--rest-poses", choices=("current", "zero"), default="current")
+    parser.add_argument("--rest-poses", choices=("current", "zero", "live"),
+                        default="current",
+                        help="IK null-space reference: 'current' = where the arm was at "
+                             "load time (a straight drooped arm -- it also *pulls* every "
+                             "solution back there), 'zero' = all joints at 0, 'live' = "
+                             "where the arm is right now (damps joint change instead of "
+                             "dictating the elbow/upper arm; see arm_ik._live_rest_poses)")
     parser.add_argument("--arm-force", type=float, default=ARM_FORCE)
     parser.add_argument("--settle", type=int, default=15,
                         help="extra frames after the sweep before measuring")

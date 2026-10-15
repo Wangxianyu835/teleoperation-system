@@ -3,7 +3,7 @@
 > 2026-10-11：本文保留原分支的运行与验收历史。合并后的入口、坐标数据差异及测试结果见 [main 集成记录](integration-2026-10-11.md)，本文的历史机器路径与测试数量不代表当前 main。
 
 > **适用版本**：`origin/current-state`（包 `src/teleoperation`，CLI `python -m teleoperation`）
-> **最后更新**：2026-10-14（基线仍是 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`；本轮两件事 —— ① "摄像头窗口那句话的判据修正"实测记录：`summarise_camera_window` 改按报告的 `window_rect` 判断，不再把按 q 正常退出误报成窗口没开；② **加手臂的实时入口 `devtools/run_realtime_arm_windows.py`**：默认口径由 `chain` 改为 `posture`（现场「大臂抬不起来 / 张不开怀抱」的直接修复，见 `multi-robot-arm.md` §8.15））· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
+> **最后更新**：2026-10-15（基线仍是 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`；本轮四件事 —— ① "摄像头窗口那句话的判据修正"实测记录：`summarise_camera_window` 改按报告的 `window_rect` 判断，不再把按 q 正常退出误报成窗口没开；② **加手臂的实时入口 `devtools/run_realtime_arm_windows.py`**：默认口径由 `chain` 改为 `posture`（现场「大臂抬不起来 / 张不开怀抱」的直接修复，见 `multi-robot-arm.md` §8.15）；③ 当晚复查：`realtime_teleop` 多了 `--arm-rest-poses {current,zero,live}`（默认 `current` = 行为不变），「肘 / 小臂不跟手」定位到 PyBullet `restPoses` 这个零空间代价项，见 `multi-robot-arm.md` §8.16）；④ **「肘 / 小臂不跟手」接上线**：`realtime_teleop` 多了 `--arm-elbow-follow {off,operator}`（**默认 `off`**，实测把 4 个源文件退回 `2170cfb` 逐字同路），`operator` 把操作者这一帧的肘弯（绝对角）交给每台机器人**自己实测的**肘关节当零空间参考（论文 `PostureTask` 的等价物）；同一份回放 200 帧的确定性 A/B 是肘任务中位 5/6 侧改善、腕任务 6/6 侧不恶化，见 `multi-robot-arm.md` §8.17；同节 §8.17.10 另给了一个**固化档入口** `devtools/run_realtime_arm_elbow_follow_windows.py`（= 上面那个入口 + 钉住 `operator`，加 `--off` 就是历史档，现场一键还原这一版）。**做 A/B 请注意**：现场口径的「关键点跳变护栏 / 速率斜坡」按**墙钟时间**换算，同一条命令两次跑可能差一帧判定、整场分叉（§8.17.4 实测），确定性做法是加 `--arm-direction-rate-deg-s 0 --arm-slew-mm 40`）· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
 > [`contracts.md`](contracts.md)（H5 / 命令契约，字段以它为准）· [`architecture.md`](architecture.md)（模块层次）·
 > 注意：`docs/archive/`（旧布局手册，只读参考）已随上游 `10ebd9f` 被整体删除，
 > 旧布局的对照表保留在 §5（本文档内，自足）。
@@ -192,7 +192,22 @@ $py='E:\python3.11.7\python.exe'
 - 历史口径 `chain` 仍在（显式 `--arm-map chain`）：它不给 IK 肘目标、肩的行程被夹在 40-150 mm，
   现场表现就是「大臂抬不起来 / 张不开怀抱」—— 默认改成 posture 的原因与 A/B 数字见
   `docs/multi-robot-arm.md` §8.10 / §8.15。
-- 参数、验收与已知未解决项（GR1-T2 的肘任务残差 175.8 mm）都在 `docs/multi-robot-arm.md` §8。
+- 参数、验收与已知未解决项都在 `docs/multi-robot-arm.md` §8：GR1-T2 的肘任务残差 175.8 mm 的机制已在
+  §8.16 结清（PyBullet `restPoses` 这个零空间代价项把解往加载姿势拽）；`realtime_teleop` 因此多了
+  `--arm-rest-poses {current,zero,live}`，**默认 `current` = 历史行为不变**，`live` 只是可复现的实验档
+  （现场那条录制上不划算，数字见 §8.16.4）。
+- **「肘 / 小臂不跟手」的那一半已经接上线**（2026-10-15，§8.17）：新旗子
+  `--arm-elbow-follow {off,operator}`，**默认 `off` = 历史行为逐字同路**（实测：把 4 个源文件退回
+  `2170cfb` 跑同一命令，1976 个共同叶子全等）。`operator` 把你这一帧的**肘弯**（绝对角）交给每台
+  机器人自己的肘关节当零空间参考（论文 `PostureTask` 的等价物：PyBullet 没有 posture task，只有
+  `restPoses` 这一个代价项）。同一份回放 200 帧的确定性 A/B：肘任务残差中位 **5/6 侧改善**、
+  腕任务 **6/6 侧不恶化**，代价是 h1_2 右与个别 jerk 峰值。启动行会打印
+  `elbow follow = off|operator`，报告里看 `/arm/robots/<robot>/elbow_posture` 与
+  `/bridge/elbow_bend_deg`。
+- **想一键跑这一档（2026-10-15 现场版）**：`devtools/run_realtime_arm_elbow_follow_windows.py`
+  —— 它就是上面那个入口的**固化档**（同一个 parser、同一套两个窗口、同一份报告、同一套退出码），
+  只把 `--arm-elbow-follow operator` 钉死；加 `--off` 就是历史行为对照档。PyCharm 里把 Script path
+  指到它、直接 Run 即可（细节见 `multi-robot-arm.md` §8.17.10）。
 
 - PyCharm 配置：Script path 指向该文件，Working directory = `F:\simulation_platform_cs`，
   Parameters 留空即可；**解释器选错也能起来** —— 它发现当前解释器缺

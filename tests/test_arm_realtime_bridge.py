@@ -11,7 +11,9 @@
 """
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -588,6 +590,56 @@ class HoldAndFallbackTests(unittest.TestCase):
                                            profile_for(name).realtime_neutral(side), atol=1e-9)
                 self.assertIsNone(entry.orientation)
 
+
+
+class ElbowBendTargetTests(unittest.TestCase):
+    """``elbow_bend_target``：``--arm-elbow-follow operator`` 的那一份「操作者姿势」输入。
+
+    口径与 ``elbow_bend_degrees`` 一致（180 = 完全伸直，0 = 完全折起），给的是**绝对**角：
+    位置任务命令的形状就是这个角，而每台机器人加载姿势下自己的夹角各不相同，所以由
+    ``PyBulletArmIK.posture_from_bend`` 拿绝对角减掉自己那个数（本项目现场录制：操作者的
+    中性肘弯 138.9 度，而 g1 / gr1_t2 / h1_2 加载姿势下自己是 172.9 / 111.2 / 155.2 度）。
+    """
+
+    def test_nothing_is_offered_before_a_neutral_exists(self):
+        bridge = RealtimeArmBridge(PROFILES, sides=SIDES)
+        self.assertEqual(bridge.elbow_bend_target(), {"left": None, "right": None})
+        bridge.update(arms_world={side: arm(side) for side in SIDES}, hands=None)
+        self.assertEqual(bridge.elbow_bend_target(), {"left": None, "right": None})
+
+    def test_a_straight_arm_reads_180(self):
+        bridge = calibrated()
+        for side in SIDES:
+            self.assertAlmostEqual(bridge.elbow_bend_target()[side], 180.0, places=1)
+
+    def test_a_bent_arm_reads_the_bend_it_has(self):
+        bridge = calibrated()
+        bridge.update(arms_world={side: bent_arm(side) for side in SIDES}, hands=None)
+        bends = bridge.elbow_bend_target()
+        for side in SIDES:
+            # bent_arm 的前臂偏 (0, 0.06, 0.10)：与上臂夹角 15.5 度，所以 180 -> 164.5
+            self.assertAlmostEqual(bends[side], 164.5, delta=0.5)
+
+    def test_a_frame_without_pose_arms_keeps_the_last_bend(self):
+        """断流那一帧沿用上一帧的姿势（与目标保持同口径）。
+
+        必须这样：否则每丢一帧参考就弹回加载姿势，而「一断流肘就掉回去」正是现场那一件事。
+        """
+        bridge = calibrated()
+        bridge.update(arms_world={side: bent_arm(side) for side in SIDES}, hands=None)
+        before = bridge.elbow_bend_target()
+        bridge.update(arms_world={"left": None, "right": None}, hands=None)
+        self.assertEqual(bridge.elbow_bend_target(), before)
+
+    def test_the_summary_reports_the_neutral_bend_and_this_frame_bend(self):
+        bridge = calibrated()
+        bridge.update(arms_world={side: bent_arm(side) for side in SIDES}, hands=None)
+        payload = json.loads(json.dumps(bridge.summary()))
+        for side in SIDES:
+            self.assertAlmostEqual(payload["elbow_bend_deg"][side]["neutral"], 180.0,
+                                   places=1)
+            self.assertAlmostEqual(payload["elbow_bend_deg"][side]["current"], 164.5,
+                                   delta=0.5)
 
 
 class ReportAndIoTests(unittest.TestCase):
@@ -1279,6 +1331,67 @@ class HelpTextTests(unittest.TestCase):
         self.assertIn("--arm-calibrate-mode {hold,track}", text)
         self.assertIn("--arm-calibrate-frames", text)
 
+
+DEVTOOLS = Path(__file__).resolve().parents[1] / "devtools"
+
+
+def load_elbow_launcher():
+    """按路径加载 ``devtools/run_realtime_arm_elbow_follow_windows.py``。
+
+    它不在安装包里，而且它 ``import run_realtime_arm_windows``（同目录），所以先把
+    ``devtools`` 放进 ``sys.path``；加载方式与 ``tests/test_arm_preview.py`` 里那套一致。
+    """
+    if str(DEVTOOLS) not in sys.path:
+        sys.path.insert(0, str(DEVTOOLS))
+    spec = importlib.util.spec_from_file_location(
+        "run_realtime_arm_elbow_follow_windows",
+        DEVTOOLS / "run_realtime_arm_elbow_follow_windows.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ElbowFollowLauncherTests(unittest.TestCase):
+    """固化档入口只干一件事：把这一版钉死（现场"下次一键跑出同样的东西"）。
+
+    ``--arm-elbow-follow`` 的语义在 ``arm_ik`` / ``arm_scene_driver`` 侧已由
+    ``ElbowPostureTests`` 覆盖；这里钉的是"到底把哪个参数交给了入口"。
+    """
+
+    def setUp(self):
+        self.launcher = load_elbow_launcher()
+
+    def test_default_run_is_this_build(self):
+        self.assertEqual(self.launcher.apply_pin([]),
+                         ["--arm-elbow-follow", "operator"])
+
+    def test_the_off_switch_is_the_historical_side(self):
+        pinned = self.launcher.apply_pin(["--off"])
+        self.assertEqual(pinned, ["--arm-elbow-follow", "off"])
+        self.assertNotIn("--off", pinned)     # 糖不能漏给入口的 parser
+
+    def test_other_flags_are_passed_through(self):
+        pinned = self.launcher.apply_pin(["--robot", "g1", "--side", "right"])
+        self.assertEqual(pinned[-2:], ["--arm-elbow-follow", "operator"])
+        self.assertIn("--robot", pinned)
+
+    def test_an_explicit_choice_is_not_overridden(self):
+        self.assertEqual(self.launcher.apply_pin(["--arm-elbow-follow", "off"]),
+                         ["--arm-elbow-follow", "off"])
+        self.assertEqual(self.launcher.apply_pin(["--arm-elbow-follow=off"]),
+                         ["--arm-elbow-follow=off"])
+
+    def test_the_printed_mode_follows_the_last_flag(self):
+        self.assertEqual(
+            self.launcher.pinned_value(
+                ["--arm-elbow-follow=off", "--arm-elbow-follow", "operator"]),
+            "operator")
+        self.assertEqual(self.launcher.pinned_value(["--arm-elbow-follow", "off"]),
+                         "off")
+
+    def test_the_pinned_choice_is_accepted_by_the_entry_parser(self):
+        args = build_parser().parse_args(self.launcher.apply_pin([]))
+        self.assertEqual(args.arm_elbow_follow, self.launcher.THIS_BUILD)
 
 
 if __name__ == "__main__":

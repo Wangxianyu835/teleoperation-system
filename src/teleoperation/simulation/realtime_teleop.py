@@ -345,6 +345,18 @@ def build_parser() -> argparse.ArgumentParser:
                              "235.5 deg -> 209.6 / 68.7 deg (the 3-point wrist frame flips its "
                              "elbow-plane normal: 4-7%% of frames command a >60 deg step, max "
                              "~178 deg). g1 / gr1_t2 are position-only either way")
+    parser.add_argument("--arm-elbow-follow", choices=("off", "operator"), default="off",
+                        help="null-space posture reference for the arm IK. 'off' (default) = the "
+                             "historical behaviour: the build-time neutral, or --arm-rest-poses. "
+                             "'operator' = hand the solver the operator's elbow bend, relative to "
+                             "the neutral calibration, on this robot's own elbow joint "
+                             "(PyBulletArmIK.posture_from_bend): PyBullet has no PostureTask, but "
+                             "its restPoses term is the same null-space knob, and that term is what "
+                             "pulls the elbow back to the load pose (measured 2026-10-14: an exactly "
+                             "reachable wrist+elbow target pair came out 6.6-140.1 mm off with the "
+                             "load pose as the reference). This reference moves with you and stays "
+                             "consistent with the wrist+elbow tasks, so it cannot fight them; a zero "
+                             "bend delta reproduces the historical behaviour exactly")
     parser.add_argument("--arm-axis-order", default=None, metavar="ZXY",
                         help="robot axes taken from operator axes (default from arm_realtime)")
     parser.add_argument("--arm-axis-signs", default=None, metavar="-1,1,-1")
@@ -416,6 +428,28 @@ def build_parser() -> argparse.ArgumentParser:
                              "fraction 0.0 on all six sides); the solver has 7 variables instead "
                              "of ~55 so it is not slower, but no speedup is claimed -- fps over "
                              "these runs varied 2.5-12.7 with machine load under both scopes")
+    parser.add_argument("--arm-rest-poses", choices=("current", "zero", "live"),
+                        default="current",
+                        help="IK null-space reference (arm_ik._rest_poses; default 'current'): "
+                             "'current' = the neutral the arm had at load time, i.e. the "
+                             "straight drooped arm -- PyBullet does not only start there, it "
+                             "also *pulls* every solution toward it. Measured 2026-10-14 with "
+                             "devtools/probe_arm_segment_rigidity.py (ik_frame_test, six sides): "
+                             "an exactly reachable wrist+elbow target pair (the robot's own FK) "
+                             "ends 6.6-140.1 mm short and the solve drags the arm 1.6-35.0 deg; "
+                             "the same run with 'live' ends 0.0 mm / 0.00 deg. Same signature in "
+                             "the field report: elbow_task_mm median 28-234 mm while the wrist "
+                             "residual stays 13-29 mm. 'live' = the arm's current angles, so "
+                             "that term only damps joint change instead of dictating where the "
+                             "elbow / upper arm sit; 'zero' reproduces the probe's original "
+                             "rest poses. 'live' is NOT a clear win on the noisy field "
+                             "recording (same 2026-10-14 run as above, 200 frames of "
+                             "outputs/tmp_realtime/live_long_frames.npz): the elbow task "
+                             "improves on only 3 of 6 sides (gr1_t2 left 175.8 -> 81.0 mm) "
+                             "and the wrist residual median goes 17.2 -> 40.5 mm (g1 upper-arm "
+                             "error 19 -> 73-78 deg), so the default stays 'current'; it is "
+                             "kept as a reproducible experiment -- see docs/multi-robot-arm.md "
+                             "8.16.4 for the table")
     parser.add_argument("--arm-anchor", choices=("upper", "shoulder"), default="upper",
                         help="which FK point counts as the upper arm's shoulder end, used both "
                              "by the direction recipe's elbow/wrist targets and by the "
@@ -806,6 +840,7 @@ def run(args) -> int:
             driver = ArmSceneDriver(scene, sides=sides, robots=robots,
                                     ik_iterations=args.arm_ik_iterations,
                                     residual_threshold=args.arm_ik_residual_threshold,
+                                    rest_poses=args.arm_rest_poses,
                                     slew_m=(0.0 if fixed_slew_m is None else fixed_slew_m),
                                     slew_m_per_s=slew_speed_m_per_s,
                                     elbow_pass=args.arm_elbow_pass,
@@ -859,6 +894,8 @@ def run(args) -> int:
                 print(f"arm map: {args.arm_map} | shoulder end = {args.arm_anchor} "
                       f"({'rigid: the elbow parent link' if args.arm_anchor == 'upper' else 'historical name-matched link'})"
                       f" | ik scope = {args.arm_ik_scope}"
+                      f" | rest poses = {args.arm_rest_poses}"
+                      f" | elbow follow = {args.arm_elbow_follow}"
                       f" | measured links (m) "
                       + " ".join(f"{name}:{side[0]}" +
                                  f" {robot_links[name][side]['upper']:.3f}"
@@ -984,6 +1021,11 @@ def run(args) -> int:
                 targets = bridge.update(arms_world=camera.arms(), hands=raw_frame,
                                         frame_dt=frame_dt)
                 orientation_by_side = bridge.orientation_target()
+                # 「肘跟手」（``--arm-elbow-follow operator``）：操作者这一帧的肘弯（绝对角）。
+                # 与姿态口径同一个理由单独取一份（这一项机器人无关），缺数据的那一侧是 None，
+                # 于是那一侧如实退回历史行为（不猜、不保持一个假姿势）。
+                bend_by_side = (bridge.elbow_bend_target()
+                                if args.arm_elbow_follow == "operator" else None)
                 # 斜坡：速率（mm/s）-> 这一帧最多走多少米。现场摄像头循环帧率不固定
                 # （8-12 fps），固定 mm/帧 会把跟随速度绑在帧率上，摆动被整段削掉（§8.9）。
                 # 第一帧拿不到间隔，用名义 1/30 s（= 旧口径 20 mm/帧），不是"关掉斜坡"。
@@ -1006,7 +1048,9 @@ def run(args) -> int:
                         driver.apply_each(side, positions, source="base",
                                           orientation=orientation,
                                           orientation_frame="neutral",
-                                          elbows=elbows)
+                                          elbows=elbows,
+                                          elbow_bend_deg=(None if bend_by_side is None
+                                                          else bend_by_side[side]))
                     except Exception as error:  # noqa: BLE001 - 一台坏不该拖垮整场
                         if side not in arm_failures:
                             arm_failures[side] = f"{type(error).__name__}: {error}"

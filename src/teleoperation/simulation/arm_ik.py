@@ -44,7 +44,7 @@ rotation, and each robot gets its own neutral -- measured 2026-10-12, see
 from __future__ import annotations
 
 from dataclasses import replace
-from math import acos, degrees, pi
+from math import acos, degrees, pi, radians
 
 import numpy as np
 
@@ -62,6 +62,17 @@ IK_RESIDUAL_THRESHOLD = 1e-5
 #: 手臂链里的定位关键字：肩（上臂起点）与肘。三台的命名都含这两个词（实测 2026-10-12）。
 SHOULDER_KEYWORD = "shoulder"
 ELBOW_KEYWORD = "elbow"
+#: 「肘跟手」（``posture_from_bend``）在加载时量肘关节正方向用的探针角（度）：把该关节拧
+#: +PROBE 一次，看「肩-肘-腕夹角」变多少。三台的肘关节正方向约定不一样（h1_2 与 gr1_t2 相反），
+#: 所以符号只能量，不能写死 —— 写死就会在某一台上把「跟你一样弯」做成「反着弯」。
+ELBOW_POSTURE_PROBE_DEG = 5.0
+#: ``|d(夹角)/d(关节角)|`` 低于它就认为这个关节不是肘的弯曲关节：量不到就如实退回历史行为
+#: （见 ``_measure_elbow_posture``），而不是把一个斜率为 0 的参考交给 IK。
+ELBOW_POSTURE_MIN_SLOPE = 0.2
+#: 「夹角」在完全伸直处的值（``elbow_bend_degrees`` 的口径）：零空间参考不许把肘推到
+#: 「比伸直还直」的那一侧。实测 g1 加载姿势只剩 7 度余量，往那边推 40 度会让夹角越过 180
+#: 折返（178 -> 147），参考就变成「跟位置任务对着干」——正是 ``restPoses`` 的老毛病（§8.16）。
+BEND_STRAIGHT_DEG = 180.0
 #: 姿态统计里两两点积/距离的取样上限：长会话按步长抽稀，避免 O(n^2) 爆内存。
 POSTURE_MAX_FRAMES = 600
 #: ``solve(orientation_frame=...)`` 的两种口径。
@@ -233,9 +244,9 @@ class PyBulletArmIK:
             profile = profile_for(robot_type)
         if ik_mode is not None:
             profile = replace(profile, ik_mode=ik_mode)
-        if rest_poses not in ("current", "zero"):
+        if rest_poses not in ("current", "zero", "live"):
             raise ValueError(
-                f"rest_poses must be 'current' or 'zero', got {rest_poses!r}")
+                f"rest_poses must be 'current', 'zero' or 'live', got {rest_poses!r}")
         self.p = p
         self.body = body
         self.cid = int(cid)
@@ -313,6 +324,12 @@ class PyBulletArmIK:
         self.last_target_world = {}
         self.last_orientation = {}
         self.last_posture = {}
+        #: 「肘跟手」用的肘关节：``{side: (关节名, d(肩-肘-腕夹角)/d(关节角))}``。
+        #: 关节名来自 ``elbow_link``（名字里含 elbow 的那个关节；PyBullet 里子连杆索引就是关节
+        #: 索引），斜率由 FK 实测（``_measure_elbow_posture``）。消费方是
+        #: ``posture_from_bend`` -> ``solve(posture=...)``，即论文 ``PostureTask`` 等价物。
+        self.elbow_posture = {side: self._measure_elbow_posture(side)
+                              for side in self.sides}
         #: 这一帧交给「肘位置任务」的世界坐标点（``None`` = 没给，走单目标那条路）。
         self.last_elbow_world = {}
         #: 肘支路恢复（``_recover_elbow_branch``）：阈值（度，0 = 关）与每侧救回来的次数。
@@ -340,7 +357,9 @@ class PyBulletArmIK:
         for continuous joints) gets a full turn instead -- same widening the
         validated probe uses.  ``rest_poses="current"`` starts the redundant 7 DoF
         chain from where it already is, which keeps the solution continuous from
-        frame to frame; ``"zero"`` reproduces the probe's original rest poses.
+        frame to frame; ``"zero"`` reproduces the probe's original rest poses;
+        ``"live"`` re-reads the angles on every ``solve`` instead of using this list
+        (``_live_rest_poses``) -- this list stays the fallback the other two use.
         """
         p = self.p
         lower, upper, ranges, rest = [], [], [], []
@@ -417,6 +436,76 @@ class PyBulletArmIK:
                 "upper": self.link_position(self.upper_link[side]),
                 "elbow": self.link_position(self.elbow_link[side]),
                 "wrist": self.link_position(self.ee[side][0])}
+
+    def _bend_deg(self, side: str) -> float:
+        """这一侧手臂在肘处的夹角（度）：**与 ``arm_realtime.elbow_bend_degrees`` 同一个口径**
+        （180 = 完全伸直，0 = 完全折起）。
+
+        为什么要跟它一个口径：``posture_from_bend`` 把操作者的肘弯变化量直接交给肘关节，
+        两个数必须能用同一把尺量，否则「你弯了 20 度」会被当成另一个东西。
+        """
+        points = self.arm_points(side)
+        upper = (np.asarray(points["elbow"], dtype=np.float64)
+                 - np.asarray(points["upper"], dtype=np.float64))
+        lower = (np.asarray(points["elbow"], dtype=np.float64)
+                 - np.asarray(points["wrist"], dtype=np.float64))
+        norms = (float(np.linalg.norm(upper)), float(np.linalg.norm(lower)))
+        if not all(np.isfinite(norms)) or min(norms) <= 0.0:
+            return float("nan")
+        cosine = float(np.dot(upper, lower)) / (norms[0] * norms[1])
+        return float(degrees(acos(max(-1.0, min(1.0, cosine)))))
+
+    def _measure_elbow_posture(self, side: str) -> tuple:
+        """``(肘关节名, 斜率)``：斜率 = d(肩-肘-腕夹角)/d(该关节角)。
+
+        为什么量而不是写死：三台机器人的肘关节正方向约定不一样（实测 2026-10-14：g1
+        ``left_elbow_joint`` +0.99、gr1_t2 ``left_elbow_pitch_joint`` **-1.00**、h1_2
+        ``left_elbow_pitch_joint`` 贴着伸直那一侧只有 0.6），写一张表就会在某一台上把
+        「肘跟你一样弯」做成「反着弯」——现场 2026-10-13「前臂弯曲方向相反」正是这种长相。
+
+        为什么两侧都拧一次、取较长的那段弦：夹角用的是 ``acos``（180 = 伸直），离伸直不到
+        一个探针角时角度会**折返**（实测 g1：关节 0 -> +7 度夹角 173 -> 178，再往后就掉回
+        166）。贴着折返点量出来的弦（h1_2 +5 度只有 0.6）既不代表折叠方向、也不代表伸直
+        方向，所以两侧各拧 ``ELBOW_POSTURE_PROBE_DEG``，取 |d夹角| 大的那一段当斜率。
+
+        量不到（没有含 elbow 的关节 / 关节是固定件 / |斜率| 小于 ``ELBOW_POSTURE_MIN_SLOPE``）
+        时返回 ``(None, 0.0, None)``：``posture_from_bend`` 于是给不出参考，这一侧如实退回
+        历史行为，而不是猜一个符号。探针只在加载时各侧做一次，做完原样恢复。
+        """
+        entries = dict(self.arm[side])
+        try:
+            index = int(self.elbow_link[side])
+        except (KeyError, TypeError):
+            return (None, 0.0, None)
+        name = entries.get(index)
+        if name is None:
+            return (None, 0.0, None)
+        info = self.p.getJointInfo(self.body, index, physicsClientId=self.cid)
+        if int(info[2]) == int(self.p.JOINT_FIXED):
+            return (None, 0.0, None)
+        base = float(self.p.getJointState(self.body, index,
+                                          physicsClientId=self.cid)[0])
+        before = self._bend_deg(side)
+        chord = 0.0
+        for direction in (1.0, -1.0):
+            self.p.resetJointState(
+                self.body, index,
+                base + direction * radians(ELBOW_POSTURE_PROBE_DEG),
+                physicsClientId=self.cid)
+            after = self._bend_deg(side)
+            if np.isfinite(before) and np.isfinite(after):
+                candidate = direction * (float(after) - float(before)) / \
+                    float(ELBOW_POSTURE_PROBE_DEG)
+                if abs(candidate) > abs(chord):
+                    chord = candidate
+        # 原样恢复：这一步发生在加载之后、任何一帧之前，位置控制的电机目标还没被写过，
+        # 所以恢复角度就等于恢复原状（``solve`` 里的 ``_teleport`` 也是这么切姿势的）。
+        self.p.resetJointState(self.body, index, base, physicsClientId=self.cid)
+        if not np.isfinite(before):
+            return (str(name), 0.0, None)
+        if abs(chord) < ELBOW_POSTURE_MIN_SLOPE:
+            return (str(name), 0.0, float(before))
+        return (str(name), chord, float(before))
 
     def record_posture(self, side: str) -> dict:
         """Sample this arm once: every arm joint angle plus the three FK points.
@@ -735,6 +824,21 @@ class PyBulletArmIK:
 
 
     # ------------------------------------------------------------------ #
+    def _live_rest_poses(self) -> list:
+        """``restPoses`` = 手臂**现在**的关节角（``rest_poses="live"``）。
+
+        加载姿势对 IK 不只是「起点」：代价里还有「离 ``restPoses`` 多远」，于是每帧都在把
+        解往**加载时的直臂下垂**拉。实测 2026-10-14（``devtools/probe_arm_segment_rigidity.py``
+        的 ``ik_frame_test``，六个机位两侧）：给一对**精确可达**的目标（机器人自己 FK 出来的
+        腕 + 肘），用加载姿势当参考时解完还差 6.6-140.1 mm、手臂被拽动 1.6-35.0 度；换成
+        「当前姿势」当参考，同一条命令的残差变成 0.0 mm、拽动 0.00 度。现场同一签名的读数是
+        ``elbow_task_mm`` 中位 28-234 mm（命令的肘位根本没兑现）而腕残差只有 13-29 mm。
+        用它当参考时，零空间项只抵抗关节**变化**（阻尼），不再指定肘/上臂该在哪。
+        """
+        return [float(self.p.getJointState(self.body, index,
+                                           physicsClientId=self.cid)[0])
+                for index in self.indices]
+
     def _rest_poses(self, posture=None) -> list:
         """Null-space reference for the IK call: the build-time neutral, or a posture.
 
@@ -745,13 +849,18 @@ class PyBulletArmIK:
         task: the wrist task still decides the position, the null-space term decides
         where the elbow / upper arm sit while doing it.
 
+        ``rest_poses="live"`` is the same term pointed at **where the arm already is**
+        (``_live_rest_poses``): it then damps joint change instead of dragging the
+        solution back to the load pose.  ``posture`` still wins over both.
+
         ``posture`` is ``{joint name: angle}`` and may be partial; every name has to be
         a movable joint of this body, so a typo fails here instead of silently leaving
         the elbow where it was.
         """
-        rest = list(self.limits["rest"])
         if not posture:
-            return rest
+            return (self._live_rest_poses() if self.rest_poses == "live"
+                    else list(self.limits["rest"]))
+        rest = list(self.limits["rest"])
         for name, value in dict(posture).items():
             index = self.index_of.get(str(name))
             if index is None:
@@ -760,6 +869,41 @@ class PyBulletArmIK:
                     f"of the loaded body")
             rest[self.position_of[index]] = float(value)
         return rest
+
+    def posture_from_bend(self, side: str, bend_deg) -> dict:
+        """操作者这一帧的肘弯 ``bend_deg`` -> 本机肘关节的零空间参考角（``{关节名: 弧度}``）。
+
+        ``bend_deg`` 是**度**，且与 ``arm_realtime.elbow_bend_degrees`` 同一个口径
+        （180 = 完全伸直，0 = 完全折起）；写进关节是弧度 —— 量纲在这里换，别在调用方换。
+
+        论文 ``PostureTask`` 的等价物：PyBullet 没有 posture task，只有 ``restPoses`` 这一个
+        零空间代价项（见 ``_rest_poses``）。参考角 = **加载姿势的肘角** + （你的肘弯 - 本机
+        加载姿势下的夹角）/ 斜率。
+
+        为什么减的是「**本机**自己加载姿势下的那个夹角」而不是「你中性姿势下的夹角」：位置任务
+        命令的形状（``arm_realtime._posture_target`` 的肘 + 腕两点，夹角 = 你的肘弯）与你的
+        肘弯是**同一个角**，而本机在加载姿势下自己的夹角是它自己的（实测 g1 172.9 度、
+        gr1_t2 111.2 度、h1_2 155.2 度，见 ``describe()["elbow_posture"]``）。拿本机那个当
+        基准，参考才与命令同向：你的中性是 138.9 度时 g1 的参考从 172.9 折到那一侧，而不是
+        继续往伸直拉；拿你的中性当基准，两台机器人的参考会各自差一个常数，那就又变成「零空间
+        项跟位置任务对着干」——2026-10-14 实测，正是这个常数把第一次 A/B 做成了喜忧参半。
+
+        往**折叠**方向不设上限（实测那一侧单调、1:1 上下），往伸直方向封顶在 180 度：夹角在
+        伸直处会折返（``acos``），越过它的参考等于让肘去姿势任务的反面。
+        """
+        name, slope, bend_at_hold = self.elbow_posture.get(side) or (None, 0.0, None)
+        if not name or not slope or bend_deg is None or bend_at_hold is None:
+            return {}
+        bend = float(bend_deg)
+        if not np.isfinite(bend):
+            return {}
+        change = min(bend, BEND_STRAIGHT_DEG) - float(bend_at_hold)
+        index = self.index_of[str(name)]
+        position = self.position_of[index]
+        value = float(self.hold[index]) + radians(change / float(slope))
+        low = float(self.limits["lower"][position])
+        high = float(self.limits["upper"][position])
+        return {str(name): min(max(value, low), high)}
 
 
     def _locked_arguments(self, side, arguments) -> dict:
@@ -942,7 +1086,9 @@ class PyBulletArmIK:
             return solution
         if self.elbow_recovery_cooldown > 0:
             self.elbow_recovery_wait[side] = self.elbow_recovery_cooldown
-        self._teleport(side, self._rest_poses(None))
+        # 起点固定用**加载姿势**（不是 ``_rest_poses(None)``）：这条路要的就是「从与当前姿势
+        # 无关的那一支重解」，``rest_poses="live"`` 会把那行换成当前姿势，等于原地重解。
+        self._teleport(side, list(self.limits["rest"]))
         candidate, _orientation = self._ik_sequence(side, world, elbow_world, orientation,
                                                     arguments, elbow_pass, warm_start)
         self._teleport(side, candidate)
@@ -998,7 +1144,10 @@ class PyBulletArmIK:
         this call only (see ``_rest_poses``).  That is what makes the elbow / upper arm
         follow the operator instead of whatever swivel the solver happened to keep, and
         it is the one thing the paper's ``PostureTask`` does that a plain position IK
-        does not.  It is recorded in ``last_posture[side]`` for the report.
+        does not.  It is recorded in ``last_posture[side]`` for the report.  Without a
+        posture the reference is ``self.rest_poses``: the load-time neutral (``"current"``)
+        or, with ``"live"``, the arm's current angles -- see ``_live_rest_poses`` and the
+        ``ik_frame_test`` numbers quoted there.
 
         ``elbow`` = an optional second position target (same frame as ``position``),
         resolved through the same ``source``.  Measured 2026-10-13: with only the wrist
@@ -1124,6 +1273,12 @@ class PyBulletArmIK:
                              for side, (index, link) in self.ee.items()},
             "arm_joints": {side: [name for _index, name in entries]
                            for side, entries in self.arm.items()},
+            #: 「肘跟手」量到的肘关节、斜率与加载姿势下的夹角（``posture_from_bend`` 用；
+            #: ``bend_slope=0`` = 量不到，那一侧如实退回历史行为）。
+            "elbow_posture": {side: {
+                "joint": name, "bend_slope": round(float(slope), 3),
+                "bend_at_hold_deg": None if bend is None else round(float(bend), 2)}
+                for side, (name, slope, bend) in self.elbow_posture.items()},
             "limits_from_urdf": True,
         }
 
