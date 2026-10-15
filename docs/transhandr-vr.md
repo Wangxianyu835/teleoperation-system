@@ -1,6 +1,6 @@
 # TransHandR 上游 Vision Pro 链路移植
 
-更新：2026-10-14。TransHandR 是本工程的上游和重要参考来源。
+更新：2026-10-15。TransHandR 是本工程的上游和重要参考来源。
 本页将原版数值链路、现有接口适配和额外的执行防护分开记录。
 
 ## 上游行为与对应实现
@@ -17,9 +17,11 @@
 默认保留原版的显式路由：**左侧传感器数据 -> 原版右侧 L21 模型/仿真手**。
 使用 `--source-hand` 指定输入侧，`--hand` 指定目标机器人侧；两者含义不同。
 右侧输入轴向来自原版相邻注释分支/离线转换，而完整数值对照验证的是原版默认左侧路线。
-切换目标侧只改变结果槽位，不会自动重训、镜像或修正权重。
+旧单手模式切换目标侧只改变结果槽位，不会自动重训、镜像或修正权重。
+新增同侧双手模式必须显式指定 `--hand both --hand-mapping same`，在输出边界适配左侧原生角度。
 
-这里不使用摄像头的 MediaPipe 21 点拓扑转换、三点掌面规范化或左右规范角度适配。
+VR 输入不使用摄像头的 MediaPipe 21 点拓扑转换或三点掌面规范化。
+双手输出边界复用 L21 关节符号适配，和摄像头输入处理无关。
 既有摄像头权重不是这条上游 VR 链路的匹配权重。
 
 ## 与当前工程兼容的接口
@@ -76,6 +78,101 @@ $vrCheckpoint = 'D:\2026\code\TransHandR\TransHandR\checkpoint\models\thumb3\lin
 默认 `--fps 30` 是拉取上限，并非对真实设备输出帧率的保证。
 加 `--headless --fps 0` 可以执行无窗口离线验收。
 
+## 同侧双手回放与实时输入
+
+双手模式的对应关系固定为 **VR 左手 -> L21 左手，VR 右手 -> L21 右手**。
+两侧使用一份严格加载的上游权重，分别推理；模型本身和 VR 数值预处理没有修改。
+单手默认仍为左侧输入 -> 右侧输出，旧 `TransHandRVRRetargeter` 的签名和结果含义保持兼容。
+
+```powershell
+Set-Location D:\2026\code\teleoperation-system-retargeting
+$env:PYTHONPATH = "$PWD\src"
+$py = 'D:\Anaconda\envs\teleoperation\python.exe'
+$vrCheckpoint = 'D:\2026\code\TransHandR\TransHandR\checkpoint\models\thumb3\linker\model_final.pth'
+$session = Get-Date -Format 'yyyyMMdd_HHmmss'
+
+# 弹出同一个 PyBullet 窗口，显示两只独立机械手；0 表示播放至文件结束。
+& $py -m teleoperation hand vr `
+    --input-h5 datasets/raw/visionpro_hand_arm_20261012_213812_live.h5 `
+    --checkpoint $vrCheckpoint --hand both --hand-mapping same `
+    --scene hands --device cpu --fps 30 --frames 0 `
+    --report "outputs/tmp_realtime/vr_both_same_$session.json"
+```
+
+双手模式 `--source-hand` 省略时自动取 `both`；也可显式传 `--source-hand both`。
+传入单侧来源或遗漏 `--hand-mapping same` 会在加载模型和创建窗口之前失败。
+实时连接时，将 `--input-h5 ...` 替换为 `--ip '<头显地址>'`；其余双手参数相同。
+
+### 边界适配（不属于上游算法）
+
+- 同一份观测同时携带左右侧，使用既有独立三帧队列。单侧缺失只重置该侧窗口，
+  对应机械手保持上一条已接受命令；恢复后需要三帧新数据，另一侧继续输出。
+- 上游 Linker 模型输出按右侧 L21 的原生关节顺序定义。核对实际上游 `hand_cfg`、
+  右手 URDF 的轴/原点与本仓库右侧 FK 后，双手模式在输出边界调用
+  `canonical_to_native_angles(raw, target_side)`：左手只翻转 1/4/7/10 四个 MCP roll 的符号，
+  右手保持原值。这不修改输入、权重、checkpoint 元数据或原始预测。
+- 分侧限位、滤波、速度限制与同手指间碰撞检查之后，写入两只手，再统一推进场景一次。
+  手掌基座固定，不使用腕部绝对位姿驱动基座，也不覆盖两手互撞。
+- 所有 H5 回放（包括旧单手模式）的执行层改用录制时间戳，要求有限且严格递增。
+  `--fps` 仅限制播放循环速度，`--fps 0` 不再因程序运行更快而改变滤波/限速结果。
+  旧单手模型原始角度不变，最终执行命令可能与过去使用墙钟的回放不同。
+  实时输出仍使用单调时钟。
+
+### 结果文件
+
+`--report run.json` 默认同时生成 `run.h5`；可用 `--output-h5 another.h5` 指定逐帧结果路径，
+也可单独使用 `--output-h5`。结果 H5 不覆盖已有文件，重复运行请使用新 session 名。
+输入、权重、报告和结果路径不能重合。
+
+结果采用独立诊断 schema `transhandr_vr_results_v1`，不是摄像头角度回放文件格式：
+
+| 数据集 | 形状 | 含义 |
+|---|---|---|
+| `frame_ids` / `timestamps` | `(T,)` | 回放行索引/时间戳，时间单位秒 |
+| `left/right_input_valid` | `(T,)` | 对应源侧本帧通过 VR 预处理有效性检查 |
+| `left/right_model_valid` | `(T,)` | 本帧窗口已就绪并产生有效预测 |
+| `left/right_raw_angles` | `(T,18)` | 原始上游模型输出，弧度 |
+| `left/right_native_angles` | `(T,18)` | 目标侧适配后的角度，弧度 |
+| `left/right_command_angles` | `(T,18)` | 最终仿真命令，弧度；缺手/预热保持上一姿态 |
+
+每个输入帧都保留一行。缺手/预热的 raw/native 写 `NaN`，通过 model_valid 判断有效性，
+不把保持姿态冒充新预测。结果按帧写入，不将完整录制累积在内存中；结束或异常时关闭资源。
+单手结果只包含所选目标侧的数据集。
+
+JSON 的 `routes` 为目标侧 -> 来源侧；`sides` 分侧统计输入有效、角度输出、缺手/预热帧数。
+顶层 `angle_frames` 是至少一侧输出的输入帧数，不能将左右计数相加作为它的含义。
+`hand_commands` 分侧记录限幅和碰撞受阻，`output_h5` 指向逐帧文件。
+
+### 本机验证（2026-10-15）
+
+- `devtools/verify_vr_both.py` 从实际上游 AST 提取左侧 worker；右侧仅激活相邻注释中的
+  `right_fingers` 和 x/y/z 赋值，明确区别于上游已运行的左侧分支。
+  从真机 H5 每侧抽取 5 个窗口、分别用 scale=1/1.7，合计每侧 10 组；
+  两侧模型输入与原始输出最大差均为 0。
+- 上游右手和本仓库右手的 FK 关节轴/原点逐项一致；左手输出符号适配后，
+  17 个活动关节在公共参考系下的轴方向点积最小为 `0.9991503838621145`。
+  参考系只用于验证，不进入 VR 输入处理。
+- `visionpro_hand_arm_20261012_213812_live.h5` 前 120 帧通过实际双手 DIRECT 场景，
+  左右各输出 118 帧；前两帧为窗口预热，结果与分侧统计成功保存。
+- 测试覆盖不同两侧输入、目标侧符号适配、单侧缺手和恢复、保持命令、输出文件保护、
+  时间戳失败时的资源关闭，以及 fps=0/30 下逐帧结果一致。
+- `python -m unittest tests.test_transhandr_vr tests.test_coordinate_contracts -v`：28 项通过。
+  `python -m unittest discover -s tests`：318 项，317 项通过、1 项跳过，含既有摄像头流程。
+  本机日志与真机回放报告位于 `outputs/tmp_hand_command_guard/vr_both_*`。
+
+数值一致性与 FK 检查不等同于已验证右侧输入的全部动作质量或头显现场效果。
+当前仍复用原版单手训练权重；应结合逐帧 raw/native/command 对照检查实际手势，
+不能以碰撞受阻后的静止姿态判断模型没有输出。
+
+复现上游对照：
+
+```powershell
+& $py devtools/verify_vr_both.py `
+    --input-h5 datasets/raw/visionpro_hand_arm_20261012_213812_live.h5 `
+    --checkpoint $vrCheckpoint `
+    --report outputs/tmp_hand_command_guard/vr_both_upstream_parity.json
+```
+
 ## 上游来源快照与验证
 
 本机参考根目录：`D:/2026/code/TransHandR/TransHandR`。
@@ -85,6 +182,14 @@ $vrCheckpoint = 'D:\2026\code\TransHandR\TransHandR\checkpoint\models\thumb3\lin
 | `main_visionpro_realtime.py` | `f6141c0aa57b88e98a641912edaa3791c81116dd49a61119b8c4b811c200ff8f` |
 | `model/model_poseformer.py` | `9c80ba61d4465e63c7444347dbb4bb7f94e86fb976b884dc2b24c3155d94e8a3` |
 | `dataset/data_collect/data_collect_visionpro.py` | `deb77448a16059a54e13d2a459c4d0805965614fefb263cf1235ffdbc80d8610` |
+| `dataset/robot/l21_right/linkerhand_l21_right.urdf` | `7387e62b5f0e126b2a4915fff6c2230ecfcfd00e93f2f499e963095a082cbf01` |
+
+本仓库目标 URDF 来源快照：
+
+| 文件 | SHA256 |
+|---|---|
+| `assets/robots/l21/right/linkerhand_l21_right.urdf` | `4c7d580b7518cb58277020ca9a1d4ff69dafce694a76617795be4fab64b66ba7` |
+| `assets/robots/l21/left/linkerhand_l21_left.urdf` | `cb265e5cad0e41bd02d9c60fe461c3b83645a7584cce175152328cc34bafc57a` |
 
 直接抽取原版 `vision_pro_data_process` 函数，以现有真机录制中的三帧替代 streamer，
 对照移植后的 `(1,3,25,3)` 输入，最大差为 0。

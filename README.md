@@ -624,4 +624,4 @@ python -m teleoperation tools show-robots
 python -m teleoperation tools show-all-hands --file $angles
 ```
 
-补充说明：[数据契约](docs/contracts.md)、[米制采集](docs/world-landmark-capture.md)、[架构](docs/architecture.md)、[阶段汇报材料](present/README.md)。生产代码在 `src/teleoperation/`，完整流程入口在 `applications/`。
+补充说明：[Vision Pro / VR 同侧双手回放](docs/transhandr-vr.md)、[数据契约](docs/contracts.md)、[米制采集](docs/world-landmark-capture.md)、[架构](docs/architecture.md)、[阶段汇报材料](present/README.md)。生产代码在 `src/teleoperation/`，完整流程入口在 `applications/`。
