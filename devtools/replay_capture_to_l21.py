@@ -47,6 +47,10 @@ MediaPipe 会连续检出 0 只手，实时链路就没有可重定向的输入�
         --angles-h5 datasets/raw/retarget_twohand_153542.h5 \
         --video replay_twohand_robots.mp4
 
+    # 摄像头 world 对齐 H5 先用 hand export 和匹配权重导出角度，再同窗口正面回放：
+    python devtools/replay_capture_to_l21.py --angles-h5 <angles.h5> \
+        --scene hands --hand both --view front --gui --fps 30 --render-every 0
+
 退出码：0 = 至少一侧产生了有效角度且（如启用）写出了图像；1 = 没有任何有效角度。
 """
 
@@ -189,7 +193,7 @@ def camera_lens(scene, distance: float):
     跨度约 5.2 m、相机距离 4 m 上下；沿用 L21 的 50 度视场 + farVal=3.0 会把最边上
     一台裁掉、并把机器人整段切掉。
     """
-    robots = hasattr(scene, "frame_scene")
+    robots = isinstance(scene, ThreeRobotHandScene)
     if not robots:
         return 50.0, 3.0
     return 60.0, max(3.0, float(distance) * 4.0 + 10.0)
@@ -277,8 +281,13 @@ def run(args) -> int:
                   f"distance={distance:.2f} m")
         else:
             scene = RealtimeL21Scene(sides, gui=args.gui)
+            scene.frame_scene(args.view)
+            if args.view == "front":
+                target = [0.0, 0.0, 0.43]
             print("scene=hands (LinkerHand L21 only)")
         views = list(args.views)
+        if args.scene == "hands" and args.view == "front" and views == DEFAULT_VIEWS:
+            views = ["front"]
         if args.scene == "robots" and views == DEFAULT_VIEWS:
             # side（yaw 90）是"沿着排看"，三台会前后遮挡；并排场景换成正面 + 斜视。
             views = list(ROBOT_VIEWS)
@@ -286,6 +295,9 @@ def run(args) -> int:
                   f"(pass --views to override)")
         started = time.perf_counter()
         for index in range(0, frames, args.stride):
+            if not scene.alive():
+                break
+            tick = time.perf_counter()
             timestamp = (float(capture["timestamps"][index])
                          if capture["timestamps"] is not None else float(index))
             if angle_input:
@@ -342,6 +354,8 @@ def run(args) -> int:
                     if render_png(scene, view, path, args.width, args.height, target,
                                   distance):
                         rendered.append(str(path))
+            if args.gui and args.fps > 0:
+                time.sleep(max(0.0, 1.0 / args.fps - (time.perf_counter() - tick)))
         elapsed = time.perf_counter() - started
         for side in sides:
             final[side] = scene.joint_values(side)
@@ -372,8 +386,9 @@ def run(args) -> int:
         "stride": int(args.stride),
         "processed": int(processed),
         "elapsed_seconds": round(float(elapsed), 3),
-        "backend": "geometric",
+        "backend": "exported_angles" if angle_input else "geometric",
         "scene": args.scene,
+        "view": args.view if args.scene == "hands" else "robot_default",
         "scene_summary": (scene.summary() if hasattr(scene, "summary") else None),
         "sides": {},
         "rendered_png": rendered,
@@ -419,7 +434,7 @@ def render_tiny(scene, writer, target, distance: float,
     """
     import cv2
 
-    yaw, pitch = VIEWS["iso"]
+    yaw, pitch = VIEWS["front" if isinstance(scene, RealtimeL21Scene) and scene.view == "front" else "iso"]
     fov, far = camera_lens(scene, distance)
     view_matrix = scene.p.computeViewMatrixFromYawPitchRoll(
         cameraTargetPosition=list(target), distance=distance, yaw=yaw, pitch=pitch,
@@ -453,6 +468,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "hands (default); hands: the LinkerHand L21 hands only")
     parser.add_argument("--sim-steps", type=int, default=8,
                         help="physics steps per frame for --scene robots (default 8)")
+    parser.add_argument("--view", choices=("full", "front"), default="full",
+                        help="L21 base/camera pose: front faces both palms toward the window")
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--max-frames", type=int, default=0, help="0 = all frames")
     parser.add_argument("--calibration-frames", type=int, default=15)
@@ -463,7 +480,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--views", nargs="+", choices=tuple(VIEWS), default=list(DEFAULT_VIEWS))
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--fps", type=int, default=30,
+                        help="GUI playback upper bound and video fps; 0 = unthrottled GUI")
     parser.add_argument("--distance", type=float, default=0.8)
     parser.add_argument("--target-z", type=float, default=0.28,
                         help="camera look-at height (L21 hands sit at z=0.3)")

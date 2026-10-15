@@ -168,6 +168,19 @@ python -m teleoperation replay l21-hand `
   --file $angles --hand both --render --speed 1.0
 ```
 
+要在**同一个窗口**中显示双手、掌面同向正对窗口，使用已导出的角度文件：
+
+```powershell
+python devtools/replay_capture_to_l21.py `
+  --angles-h5 $angles --scene hands --hand both --view front `
+  --gui --fps 30 --render-every 0 --hold-seconds 30
+```
+
+`--max-frames 900` 只播放前 900 帧，默认播放全部；`--fps` 限制窗口播放速度。
+这条路线直接显示模型导出的原生关节角，不经过 VR 入口的输出滤波和碰撞检查。
+`aligned_camera_*.h5` 是摄像头关键点文件，需先用匹配的摄像头 checkpoint 执行 `hand export`；
+不能将它替换到 `hand vr --input-h5` 中，也不能使用上游 VR 权重。
+
 再显示三种机器人的原装手，逐条执行，每次结束后再运行下一条：
 
 ```powershell
