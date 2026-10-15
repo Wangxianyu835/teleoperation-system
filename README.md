@@ -94,6 +94,7 @@ simulation_platform/
 │   ├── show_hands_all.py        # ★ 三机器人并排同步屈伸（答辩用）
 │   ├── check_native_hand_motion.py  # ★ 逐关节实测"到底动了没、动了多少"
 │   ├── render_hand_snapshots.py # ★ 离屏渲染三台机器人手部快照（无需显示器）
+│   ├── capture_task_envs.py    # ★ 30 个任务环境一次跑通 + 批量截图（--copy-to 可复制到别处）
 │   ├── replay_hand_on_robot.py  # 备用：把 l21 装到机器人腕部
 │   ├── replay_hand_angles.py    # l21 直接回放
 │   ├── replay_actions.py        # 契约 H 动作序列回放
@@ -195,6 +196,35 @@ python show_all.py                          # 并排展示三种机器人
 python show_hand.py                         # 展示 LinkerHand 灵巧手
 python test_camera.py                       # 测试摄像头
 ```
+
+### 30 个任务环境一键跑通 + 批量截图 ★
+
+一个命令把 Level 1~4 的**全部 30 个环境**逐个建起来、跑 480 步物理、离屏截图
+（`DIRECT` + `getCameraImage`，**无需显示器**，相机按场景真实包围盒自动取景）：
+
+```bash
+python scripts/capture_task_envs.py                     # 全部 30 个（960x720，每个 480 步）
+python scripts/capture_task_envs.py --levels 1 2         # 只跑 Level 1/2
+python scripts/capture_task_envs.py --tasks pushcube pickcube
+python scripts/capture_task_envs.py --robot gr1_t2       # 换机器人（h1_2 / gr1_t2 / g1）
+python scripts/capture_task_envs.py --gui                # 开窗口一个个看（不写 PNG）
+python scripts/capture_task_envs.py --copy-to "D:\图片"  # 额外把截图复制到指定目录
+```
+
+产物（`outputs/task_env_shots/`，已 `.gitignore`，不入库）：
+
+| 文件 | 内容 |
+|---|---|
+| `01_pushcube_L1.png` … `30_stacktoyblocks_L4.png` | 每个环境一张截图 |
+| `00_overview_all30.png` | 6x5 总览拼图（一眼看全 30 个环境） |
+| `report.json` / `report.txt` | 逐环境实测数据（物体数、终点位置、像素标准差 / 颜色数）+ 汇总表 |
+
+**实测（2026-10-14，H1-2，每个环境 480 步 @240 Hz）**：`成功 30 / 30；失败 0`，退出码 **0**；
+截图内容自检像素标准差最低 **47.74**、颜色数最低 **217**（排除「空图/纯色图当成功」）。
+
+> ⚠️ 能跑通 ≠ 能做对：脚本用的是 `main.py` 的演示正弦控制器（只动关节、不做任务）。
+> 环境本身已发现 3 类缺陷（抽屉/门是自由刚体易掉落、3 个任务的成功判据在初始状态就成立、
+> 30 个任务还没有能完成任务的控制器），逐条证据见 `docs/PROJECT_CONTEXT.md` §7.6。
 
 ### 离线 Vision 流水线（核心工作流）
 

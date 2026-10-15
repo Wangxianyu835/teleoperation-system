@@ -2,7 +2,7 @@
 
 > **用途**：新开一个 AI 对话时，先让它读本文件，它就能立刻了解项目全貌、环境陷阱和历史决策。
 > **文件位置**：`F:\simulation_platform\docs\PROJECT_CONTEXT.md`
-> **最后更新**：2026-10-14（§0.1 新增第 6 条「改动落点：优先在既有文件里增量修改」+ §8.1 追加本轮记录）
+> **最后更新**：2026-10-14（§0.1 新增第 6 条「改动落点：优先在既有文件里增量修改」+ §3.2(6) / §7.6 新增「30 个环境一次跑通 + 批量截图」实测 + §8.1 追加本轮记录）
 
 ---
 
@@ -196,6 +196,23 @@ F:\simulation_platform\
 > 「会动」= 整段回放中该关节实际转过 ≥ 0.05 rad。三台机器人**没有一根卡死的关节**。
 > GR1-T2 的原装手行程最宽，L21 数据完全不需要截断，贴合度反而比 H1-2 更好。
 > 工具：`scripts/check_native_hand_motion.py`（量化）+ `scripts/render_hand_snapshots.py`（离屏出图）。
+
+**（6）★ 30 个任务环境能一次全部跑通并离屏出图**（2026-10-14 实测）
+
+工具：`scripts/capture_task_envs.py`（一个命令把 Level 1~4 的 30 个环境逐个建起来、
+跑 480 步物理、离屏截图，并输出实测报告）。
+
+| 项 | 实测结果 |
+|---|---|
+| 建成并跑完的环境数 | **30 / 30**（`成功 30 / 30；失败 0`，退出码 0）|
+| 机器人 | H1-2（`--robot h1_2`，动作维度 38）|
+| 截图 | 30 张 + `00_overview_all30.png`（6x5 总览拼图），共 1.69 MiB |
+| 截图内容自检 | 像素标准差最低 **47.74**、颜色数最低 **217**（不是空图/纯色图）|
+| 产物目录 | `outputs/task_env_shots/`（含 `report.json` 逐环境数据，**不入库**）|
+
+> ⚠️ 能跑通 ≠ 能做对：这一轮用的是 `main.py` 的演示正弦控制器（只动关节、不做任务），
+> 所以 27/30 任务在 2 秒内未成功属预期；**暴露出的 3 类环境缺陷**（抽屉/门掉落、判据过松、
+> 缺任务控制器）见 §7.6，那才是「搭建 30 个环境」还没做完的部分。
 
 ### 3.3 ⚠️ PyCharm 中有一个失效的运行配置
 
@@ -481,6 +498,39 @@ GitHub 用 **DataDome** 保护 `/signup` 等接口。响应头特征：`x-datado
 | Git / GitHub 版本管理 | 论文是发布源码包，本项目用 Git 管理全过程 |
 | `linkerhand_sdk` 集成 | 引入 LinkerHand 灵巧手（论文用 Inspire / Fourier / Unitree 手）|
 
+### 7.6 30 个任务环境「搭建进度」盘点（2026-10-14 实测）
+
+> 命令：`E:\python3.11.7\python.exe scripts\capture_task_envs.py --robot h1_2 --steps 480`
+> 结果：**30 / 30 环境全部建成并出图**（`成功 30 / 30；失败 0`，退出码 0）。
+> 30 张截图 + 6x5 总览拼图 + 逐环境实测数据在 `outputs/task_env_shots/`（不入库）。
+
+**逐层数量与 §7.1 完全一致**：Level 1 = 5 / Level 2 = 11 / Level 3 = 9 / Level 4 = 5 = 30。
+
+**已经具备的（本次实测证据）**
+
+| 项 | 状态 |
+|---|---|
+| 30 个任务类都能被 `envs/SimulationEnv` 建起（机器人 + 桌面 + 任务物体） | ✅ 30/30 |
+| 每个环境能连续跑 480 步物理（240 Hz = 2 秒）无异常 | ✅ `steps=480` |
+| 离屏渲染出图（`DIRECT` + `getCameraImage`，无需显示器） | ✅ 30/30 |
+| 截图内容自检（像素标准差 / 颜色数，防「空图当成功」） | ✅ 最低 std 47.74、最少 217 色 |
+
+**还没做完的：3 类环境缺陷（同一份报告可复查，逐条附源码判据）**
+
+| # | 现象（实测终点） | 任务 | 源码层原因 |
+|---|---|---|---|
+| 1 | 抽屉 / 门是**自由刚体**，初始又嵌在固定体里，被物理挤开后掉到地面 | `closedrawer` drawer 落到 z=0.100（正好半高 = 躺地面）<br>`drawerbook` drawer 落到 (1.045, 0.3, 0.100)（掉出桌面）<br>`plateoven` oven_door 落到 (1.111, 0.300, 0.010)（掉出桌面 + 落地）| `drawer`（mass=0.15）/ `oven_door`（mass=0.2）是自由 box，`cabinet` / `oven` 是 `mass=0` 固定体；初始位置与固定体或桌面**穿模**，没有铰链/滑轨约束（PyBullet 里应加 `createConstraint` 或用关节做滑块） |
+| 2 | **判据过松：什么都不做，t=0 就判成功** | `openmicrowave`（门 x=0.6508，本体 0.5 -> 0.151 > 0.12 初始即成立）<br>`opendrawer`（抽屉 0.54 - 柜 0.4 = 0.14 > 0.12 初始即成立）<br>`liftmug`（盖 0.475 - 杯 0.42 = 0.055 > 0.05 初始即成立）| 判据只比「位移量阈值」，阈值小于初始位移量；另一侧 `closemicrowave`（要求门与本体 x 距离 < 0.02）与 `closedrawer`（< 0.17）在物理上**几乎不可达**，同样需要重写 |
+| 3 | 30 个环境**都还没有能完成任务的控制器** | 全部 30 个 | 本轮用的是 `main.py` 的演示正弦控制器（只让关节摆动，不做任务）；任务级评测需要每个任务的动作序列 / 策略，对应 §9 待办里的评测协议 |
+
+> **一处自我更正（留档）**：自动体检脚本一开始把 `panhearth` 的 `pan`/`lid` 判成「初始穿模」，
+> 逐行核对后确认是**误报** —— 盖子（z=0.445）正常落在锅（z=0.430）上，间距 1.5 cm，
+> 是锅盖稳定后的正常状态。同理 `cabinet` 的 z=0.300 是设计值（固定体），不是掉落。
+
+**结论**：「30 个仿真环境」的**可跑性**这一层已经打通（能建、能跑、能看图、有数据），
+剩下三件事按优先级是：① 修物体放置/约束（第 1 类）→ ② 改成功判据（第 2 类）→
+③ 给每个任务配控制器（第 3 类，工作量最大，属评测协议范畴）。
+
 ---
 
 ## 8. 历史会话要点（2026-09-12 首次会话）
@@ -524,7 +574,8 @@ GitHub 用 **DataDome** 保护 `/signup` 等接口。响应头特征：`x-datado
 | 33 | 【2026-10-10】**收尾时抓到一个"看着像回归"的口径 bug（已被本次自检抓到）**：跑 `preflight.ps1 -Full` 时流水线显示 `6/7 PASS`（本会话早先是 `7/7`），一度怀疑改坏了东西。逐行读源码 + 重跑定位：`run_retargeting_pipeline.py` 第 0 步（造原始数据）在 `tmp_motion/pipeline/raw_twohand.h5` 已存在时**按设计跳过**，但旧版**不把这一步记入汇总**（于是只在汇总里剩 6 行），而 `preflight.ps1` 又硬编码打印 `($pass/7 PASS)` —— 两处叠加就成了"7 项里像挂了一项"。① 修 `run_retargeting_pipeline.py`：跳过时记入 `skipped`，汇总新增 `[SKIP]` 行与 `统计：PASS=.. FAIL=.. SKIP=..`（共 N 项），docstring 写明**判据是 `FAIL=0`，不是"必须 7/7"**；② 修 `preflight.ps1`：不再写死 `/7`，改印 `(PASS=.. FAIL=0 SKIP=..; 6 or 7 steps ...)`；③ 两分支实测（均 `结论：全链路跑通`、退出码 0）：复用已有 raw → `PASS=6 FAIL=0 SKIP=1`；全新目录 `--work-dir tmp_motion/pipeline_fresh0` → `PASS=7 FAIL=0 SKIP=0`；④ 口径同步到 CONVENTIONS 约定 5（含新翻车记录 + 版本表第 2 版）、自检清单第 7 项、`.clinerules`、`RETARGETING_PIPELINE` §5/§9/§10 —— 免得下一个接手的人重踩 |
 
 | 34 | 【2026-10-14】**用户新增一条长期要求 -> 落成「约定 14」**：以后改代码**尽量在原有代码的基础上增加代码**，不要动不动新添一个文件 —— "不然你写的有时候总会这一块那一块，后面如果要改的话，会遗漏很多地方，容易出问题"。落地三处（约定 12 要求的同步）：① `docs/CONVENTIONS.md` 新增**约定 14**（6 条怎么守：先找落点 / 就地增量 / 不建 `xxx_fix.py` 这类平行文件 / 3 个新建例外 / 新建必须在同一次提交里登记进文档 / 测试加进既有测试文件；附"为什么"）；② `.clinerules`「工程习惯」同步同一段；③ 本节 §0.1 新增第 6 条（标为 ★★ 规范）。另：`F:\simulation_platform_cs` 侧的实时手臂入口本轮实测可用（`devtools\run_realtime_arm_windows.py` 两个窗口：摄像头预览 + PyBullet 三机器人；`--check` 退出码 0，摄像头窗口 `position=(20,60)` 置顶，`neutral mode track`）|
-| 35 | 【2026-10-14】**现场三症状定位到「默认口径」这一层，并改掉**：用户反馈「改代码前手臂向上平举三台机器人的大臂能抬起来、现在抬不起来 / 张开手臂时机器人张不开怀抱 / GR1-T2 的大臂与小臂夹角是反的」。逐层还原后真正的变量是**那一场跑在实时入口的历史默认 `--arm-map chain` 上**（该场日志里没有 `arm map:` 那一行，因为历史上只有 `segments/posture` 才打印；`outputs/tmp_realtime` 里 68 行启动日志全是 posture、一行 chain 都没有 —— 之前几场都是显式带 `--arm-map posture` 跑的），而 §8.10-§8.13 修好的肘位置目标 / 方向口径 / 刚性肩锚点（肘父连杆）/ IK 只动本侧手臂全在 posture 那一支。**同一份真实录制（`live_long_frames.npz`，200 帧）、同样代码与默认，只差 `--arm-map` 的 A/B**：肩行程（度）h1_2 50.11/44.48 -> 119.1/186.83、gr1_t2 78.65/88.51 -> 168.28/149.97、g1 37.24/25.56 -> **243.6**/164.38；肘跨距（mm）g1 123.0/85.1 -> 395.8/392.2、h1_2 右 250.4 -> 663.7；逐轴夹断帧数 370 / 460 -> **0 / 0**；前臂反向帧占比 chain 下**不可测**（chain 不要求肘，报告里没有"要的方向"）-> posture 0.000-0.028。改动（按约定 14，全部落在既有文件）：① `realtime_teleop.py` 的 `--arm-map` CLI 默认 `chain` -> `posture`（库 / 桥默认仍 `chain`，探针与老 A/B 逐字不变）+ chain 时也打印启动提示 + help 改写；② `devtools/report_table.py` 加「肩行程 / 上臂方向行程 / 肘跨距 / 夹断帧数」四列、缺字段打 `-`（改前读 chain 报告会 `TypeError` 崩，这也是这一层一直没被看见的原因）；③ `tests/test_arm_realtime_bridge.py` 新增「入口默认是 posture」1 条；④ `docs/multi-robot-arm.md` 新增 **§8.15**（原话 / 根因 / A/B 表 / 改动清单 / 验收 / 如实说）、`docs/RETARGETING_PIPELINE.md` 实时入口小节同步。验收：`preflight.ps1 -Full -Base d8bca93` 退出码 **0**（`RESULT: [OK]`；第 4 项 `809 teammate-owned files: 0 modified/deleted`；第 8 项 `Ran 353 tests [OK (skipped=3)]` + CLI 冒烟 0）、`check_gbk_safe.py --strict` 退出码 0、默认与 `--arm-map chain` 两条 5 帧冒烟 0/0（启动行分别为 `arm map: posture | shoulder end = upper ...` 与 `arm map: chain (no elbow task ...)`）。**如实说未解决**：GR1-T2 仍是六侧最差（前臂方向误差中位 43.0/35.6 度、肘任务残差中位 175.8 mm），`multi-robot-arm.md` §8.13.8 那两条（肘任务世界点与腕任务 link 帧点是否同一口径、关节限位）仍未查。落地提交：`F:\simulation_platform_cs` 分支 `cs/multi-robot-arm` 的 **`2170cfb`**（5 文件 / +213 -45，未 push）|
+| 35 | 【2026-10-14】**现场三症状定位到「默认口径」这一层，并改掉**：用户反馈「改代码前手臂向上平举三台机器人的大臂能抬起来、现在抬不起来 / 张开手臂时机器人张不开怀抱 / GR1-T2 的大臂与小臂夹角是反的」。逐层还原后真正的变量是**那一场跑在实时入口的历史默认 `--arm-map chain` 上**（该场日志里没有 `arm map:` 那一行，因为历史上只有 `segments/posture` 才打印；`outputs/tmp_realtime` 里 68 行启动日志全是 posture、一行 chain 都没有 —— 之前几场都是显式带 `--arm-map posture` 跑的），而 §8.10-§8.13 修好的肘位置目标 / 方向口径 / 刚性肩锚点（肘父连杆）/ IK 只动本侧手臂全在 posture 那一支。**同一份真实录制（`live_long_frames.npz`，200 帧）、同样代码与默认，只差 `--arm-map` 的 A/B**：肩行程（度）h1_2 50.11/44.48 -> 119.1/186.83、gr1_t2 78.65/88.51 -> 168.28/149.97、g1 37.24/25.56 -> **243.6**/164.38；肘跨距（mm）g1 123.0/85.1 -> 395.8/392.2、h1_2 右 250.4 -> 663.7；逐轴夹断帧数 370 / 460 -> **0 / 0**；前臂反向帧占比 chain 下**不可测**（chain 不要求肘，报告里没有\"要的方向\"）-> posture 0.000-0.028。改动（按约定 14，全部落在既有文件）：① `realtime_teleop.py` 的 `--arm-map` CLI 默认 `chain` -> `posture`（库 / 桥默认仍 `chain`，探针与老 A/B 逐字不变）+ chain 时也打印启动提示 + help 改写；② `devtools/report_table.py` 加「肩行程 / 上臂方向行程 / 肘跨距 / 夹断帧数」四列、缺字段打 `-`（改前读 chain 报告会 `TypeError` 崩，这也是这一层一直没被看见的原因）；③ `tests/test_arm_realtime_bridge.py` 新增「入口默认是 posture」1 条；④ `docs/multi-robot-arm.md` 新增 **§8.15**（原话 / 根因 / A/B 表 / 改动清单 / 验收 / 如实说）、`docs/RETARGETING_PIPELINE.md` 实时入口小节同步。验收：`preflight.ps1 -Full -Base d8bca93` 退出码 **0**（`RESULT: [OK]`；第 4 项 `809 teammate-owned files: 0 modified/deleted`；第 8 项 `Ran 353 tests [OK (skipped=3)]` + CLI 冒烟 0）、`check_gbk_safe.py --strict` 退出码 0、默认与 `--arm-map chain` 两条 5 帧冒烟 0/0（启动行分别为 `arm map: posture | shoulder end = upper ...` 与 `arm map: chain (no elbow task ...)`）。**如实说未解决**：GR1-T2 仍是六侧最差（前臂方向误差中位 43.0/35.6 度、肘任务残差中位 175.8 mm），`multi-robot-arm.md` §8.13.8 那两条（肘任务世界点与腕任务 link 帧点是否同一口径、关节限位）仍未查。落地提交：`F:\simulation_platform_cs` 分支 `cs/multi-robot-arm` 的 **`2170cfb`**（5 文件 / +213 -45，未 push）|
+| 36 | 【2026-10-14】**用户要求「把 30 个仿真环境都搭好、逐个跑出来、每个截图放到指定图片文件夹」-> 本轮先把「能跑 + 能看 + 有数据」这一层做实**：① 新增 `scripts/capture_task_envs.py`（按约定 14 的三个例外之②：现有文件里没有可挂靠的位置）。一个命令把 Level 1~4 的 30 个环境**逐个建起来 -> 跑 480 步物理 -> 离屏截图**（`DIRECT` + `getCameraImage`，无需显示器），相机按【场景真实包围盒 8 角点投影】自动取景（第一版球拟合取景太远，实测后改掉），并复用 `main.py` 的演示控制器（只把 `_ACTION_DIM` 换成环境真实维度）而不是另抄一份，避免两份正弦波。产物 = 30 张图 + 6x5 总览拼图 + `report.json`/`report.txt`（不入库），`--copy-to` 可复制到用户指定目录。② **实测**：`--robot h1_2 --steps 480` -> **30/30 建成并出图，`成功 30 / 30；失败 0`，退出码 0**；截图自检最低 std 约 47.7 / 最少 217 色（防「空图当成功」）；31 个文件（1.69 MiB）已复制到用户目录。③ **过程中修掉两个坑**：本机 PyBullet `ER_TINY_RENDERER` 的扁平缓冲**行序是自上而下**，照抄 `render_hand_snapshots.py` 的 `[::-1]` 会画出**上下颠倒**的图（第一张图桌子悬在机器人头顶）-> 默认不翻、留 `--vflip`；相机球拟合取景太远 -> 改 8 角点投影贴边。④ **如实报告 3 类环境缺陷**（新增 §7.6 盘点 + §3.2(6) 实测 + §9 待办细分）：`drawer`/`oven_door` 是自由刚体又初始穿模，480 步内掉到地面或掉出桌面（`closedrawer` z=0.100 / `drawerbook` x=1.045 / `plateoven` z=0.010 & x=1.111）；`openmicrowave`/`opendrawer`/`liftmug` 的成功判据在 t=0 就成立（源码判据阈值 < 初始位移量），`closemicrowave`/`closedrawer` 判据物理上几乎不可达；30 个任务都还没有能完成任务的控制器。**并留档一处自我更正**：体检脚本起初把 `panhearth` 的锅/盖判成"初始穿模"，逐行核对后确认是误报（盖子 1.5 cm 正常落在锅上）。⑤ **顺手修掉一个会坑死用户目录的坑**：OpenCV 在 Windows 上按 ANSI 代码页打开文件路径 —— 用户目录 `C:\Users\王宪雨\...` 含中文，`cv2.imwrite` 会**静默返回 False、什么都不写**（校验时也读不出来）；已改为 `cv2.imencode`/`imdecode` + Python 二进制读写（`save_cv_image` / `read_cv_image`），用 `--out "E:\cache\tmp\中文截图测试"` 实测退出码 0、图正常写出 |
 
 ### 8.2 已掌握的 Git 工作流
 
@@ -554,7 +605,10 @@ git branch -d feature/新功能名          # 11. 删本地分支
 
 - [ ] **⚠️ 备份 SSH 私钥** `E:\ssh\id_ed25519` 到 **U 盘 / 网盘（加密压缩）** ← 最紧急，目前全世界只有这一份
 - [ ] 确认 GitHub 仓库可见性是 **Private** 还是 Public（Settings → 最下方 Danger Zone）
-- [ ] 跑通 `main.py` 的 30 个任务（目前只实测了「机器人加载」和「展示脚本」）
+- [x] ~~跑通 `main.py` 的 30 个任务~~ → **2026-10-14 已跑通**：30/30 环境逐个建成 + 480 步物理 + 离屏截图（`scripts/capture_task_envs.py`，见 §3.2(6) / §7.6）。**但下面 3 条才是「搭建完 30 个环境」的真正剩余工作**：
+  - [ ] 修**自由刚体**物体放置/约束：`drawer` / `oven_door` 会掉到地面或掉出桌面（`closedrawer` `drawerbook` `plateoven`；应加 `createConstraint` 或用关节做真实抽屉/铰链门）← §7.6 第 1 类
+  - [ ] 改**成功判据**：`openmicrowave` / `opendrawer` / `liftmug` 在 t=0 就判成功；`closemicrowave` / `closedrawer` 的判据物理上几乎不可达 ← §7.6 第 2 类
+  - [ ] 给 30 个任务各配一个**能完成任务的控制器**（或示教动作序列），才能出「成功率 / 完成时间」← §7.6 第 3 类
 - [ ] 核实三种机器人挂载的灵巧手 DoF 是否与论文一致（H1-2=6 / GR1-T2=6 / G1=4）
 
 ### 🟠 中优先级
@@ -591,6 +645,13 @@ python main.py --task pushcube --no-render   # 无头模式
 python show_all.py                    # 三机器人并排展示
 python show_hand.py                   # LinkerHand 灵巧手展示
 python test_import.py                 # 模块导入自检
+
+# 30 个任务环境一次跑通 + 批量截图（离屏，无需显示器；产物在 outputs/task_env_shots/）
+python scripts/capture_task_envs.py                     # 全部 30 个（每个跑 480 步，960x720）
+python scripts/capture_task_envs.py --levels 1 2         # 只跑 Level 1/2
+python scripts/capture_task_envs.py --tasks pushcube pickcube
+python scripts/capture_task_envs.py --robot gr1_t2       # 换机器人
+python scripts/capture_task_envs.py --gui                # 开窗口一个个看（不写 PNG）
 ```
 
 ### Git
@@ -637,6 +698,7 @@ $env:PYTHONPATH = 'F:\simulation_platform\lib'   # 设置后重试
 | `F:\simulation_platform\scripts\replay_hand_native.py` | ★ 原装手回放（**演示入口**；`--view hands` 按手部 AABB 自动取景）|
 | `F:\simulation_platform\scripts\check_native_hand_motion.py` | 逐关节实测运动量（三台机器人是否真的会动 + 是否卡死）|
 | `F:\simulation_platform\scripts\render_hand_snapshots.py` | 离屏渲染三台机器人手部快照（`getCameraImage`，无需显示器）|
+| `F:\simulation_platform\scripts\capture_task_envs.py` | ★ **30 个任务环境一次跑通 + 批量截图**（含 `--copy-to` 复制到指定目录；实测数据见 §7.6）|
 | `F:\simulation_platform\scripts\show_hands_all.py` | 三台机器人并排 + 同一份数据同步屈伸（答辩用）|
 | `F:\simulation_platform\NOTICE` | 第三方开源声明（TeleOpBench Apache-2.0 / LinkerHand SDK）|
 | `F:\simulation_platform\.gitignore` | 已排除 1.8GB 依赖与资产（`lib/` `linkerhand_sdk/` `.venv/` `tmp_*/` 等，放行 `datasets/`）|
