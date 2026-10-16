@@ -1,18 +1,33 @@
-# 遥操作与重定向
+# Teleoperation and Retargeting
 
-摄像头识别人手关键点，重定向为 L21 关节角，再在 PyBullet 中回放或实时显示。日常使用按下面的顺序操作：
+This project detects human hand landmarks with a camera.
+It converts the landmarks to L21 joint angles.
+PyBullet shows the hand motion during replay or real-time operation.
 
-**录制动作 → 自动对齐 → 用已有模型导出角度 → L21 回放。** 已有匹配模型时，无需重新训练。
+For normal operation, use this sequence:
 
-- [1. 准备环境](#1-准备环境)
-- [2. 一键录制摄像头动作](#2-一键录制摄像头动作)
-- [3. 导出角度并在 L21 上回放](#3-导出角度并在-l21-上回放)
-- [4. 可选：训练与实时显示](#4-可选训练与实时显示)
-- [5. 其他功能与实现位置](#5-其他功能与实现位置)
+**Record hand motion → Align landmarks automatically → Export joint angles with an existing model → Replay L21 motion.**
 
-## 1. 准备环境
+If you have a compatible model, you do not need to train a new model.
 
-以下命令使用 **Windows PowerShell**。已有 `teleoperation` 环境可直接进入第 2 节；首次使用先安装：
+- [1. Prepare the environment](#1-prepare-the-environment)
+- [2. Record hand motion](#2-record-hand-motion)
+- [3. Export and replay joint angles](#3-export-and-replay-joint-angles)
+- [4. Train a model or use real-time operation](#4-train-a-model-or-use-real-time-operation)
+- [5. Find other functions and source files](#5-find-other-functions-and-source-files)
+
+## 1. Prepare the environment
+
+The commands in this document use **Windows PowerShell**.
+The examples use local paths on the development computer.
+
+If the `teleoperation` environment is already installed, go to Section 2.
+For the first installation, do these steps:
+
+1. Open the project directory.
+2. Create the Conda environment.
+3. Activate the environment.
+4. Install the project.
 
 ```powershell
 Set-Location D:\2026\code\teleoperation-system-retargeting
@@ -21,11 +36,28 @@ conda activate teleoperation
 python -m pip install -e . --no-deps --no-build-isolation
 ```
 
-摄像头检测模型放在 `datasets/hand_landmarker.task`。第 3 节还需要匹配 world 坐标的共享 `.pth` 权重；示例使用本机已有文件，程序不会自动下载模型。后面的 `$python` 指向本机 Conda 解释器，环境安装在其他位置时修改这一行。
+Put the MediaPipe model for hand detection at `datasets/hand_landmarker.task`.
+Section 3 also requires a shared model checkpoint in `.pth` format for `world` coordinates.
+A checkpoint contains the trained model weights.
+The program does not download these models automatically.
 
-## 2. 一键录制摄像头动作
+The `$python` variable below selects the local Conda interpreter.
+If your environment has a different installation path, change this variable.
 
-**复制下面整段执行即可开始录制。** 默认使用 0 号摄像头、录制双手，按 `q`、`Esc`、关闭预览窗口或 `Ctrl+C` 结束并保存。做张手、握拳、单指弯曲等动作时，保持手在画面内。
+## 2. Record hand motion
+
+1. Copy the complete command block below into PowerShell.
+2. Execute the command block.
+3. Keep your hands in the camera image.
+4. Open your hands.
+5. Close your hands.
+6. Bend individual fingers.
+7. To stop and save the data, use one of these actions:
+   - Press `q` or `Esc` in the preview window.
+   - Close the preview window.
+   - Press `Ctrl+C` in the terminal.
+
+The example records both hands with camera `0`.
 
 ```powershell
 Set-Location D:\2026\code\teleoperation-system-retargeting
@@ -49,28 +81,42 @@ if (-not (Test-Path $handAsset)) { throw "Missing MediaPipe model: $handAsset" }
 if ($LASTEXITCODE -ne 0) { throw 'Recording failed; check the output above.' }
 ```
 
-| 要调整什么 | 修改哪里 |
+To change the recording settings, use this table:
+
+| Task | Instruction |
 |---|---|
-| 摄像头 | `$camera = 0` 改成实际编号，如 `1` 或 `2` |
-| 只录一侧 | `--hand-side both` 改成 `left` 或 `right` |
-| 录满指定帧数自动停止 | `--frames 0` 改成 `900`；实际时长取决于采集帧率 |
-| 不显示摄像头预览 | 添加 `--no-preview`，用 `Ctrl+C` 停止 |
+| Select a different camera | Set `$camera` to the camera index, for example, `1` or `2`. |
+| Record one hand | Replace `--hand-side both` with `--hand-side left` or `--hand-side right`. |
+| Stop at a specified frame count | Replace `--frames 0` with `--frames 900`. The recording time depends on the actual capture rate. |
+| Record without a preview | Add `--no-preview`. To stop, press `Ctrl+C`. |
 
-录制保存的是**关键点与时间戳 H5，不是摄像头视频**。正常结束后自动对齐，不需要再执行 `hand align`。
+The H5 files contain **landmarks and timestamps**.
+They do not contain camera video.
+When recording stops normally, the program aligns the landmarks automatically.
+You do not need a separate `hand align` command.
 
-| 变量 | 文件内容 | 用途 |
+| Variable | File contents | Use |
 |---|---|---|
-| `$raw` | 同帧 normalized / world 原始 21 点 | 保留原始输入，供检查或重新对齐 |
-| `$aligned` | world 对齐后的 palm-local 25 点 | 输入训练或离线推理 |
-| `$angles`（下一节生成） | 左右 L21 18 维关节角及有效标志 | 输入仿真回放 |
+| `$raw` | 21 raw landmarks per hand in `normalized` and `world` coordinates, from the same frames | Inspect the input or align the landmarks again. |
+| `$aligned` | 25 landmarks per hand, aligned from `world` coordinates to a palm-local frame | Train a model or calculate joint angles offline. |
+| `$angles` (Section 3) | 18 L21 joint angles per hand, with validity flags for the left and right hands | Replay motion in the simulation. |
 
-文件名带录制时间，避免覆盖之前的数据。**第 3、4 节继续在同一个终端执行**；重新开终端时需恢复 `$python`、`PYTHONPATH` 和实际文件路径。
+A palm-local frame is a coordinate system relative to the palm.
+The filenames contain the recording time to prevent replacement of data from earlier sessions.
 
-## 3. 导出角度并在 L21 上回放
+**Use the same terminal for Sections 3 and 4.**
+If you open a new terminal, set `$python` and `PYTHONPATH` again.
+Also set the variables for the files and settings that the selected command uses.
 
-### 3.1 用已有模型导出角度
+## 3. Export and replay joint angles
 
-录制完成后执行下面整段。`$checkpoint` 使用本机已有的 world 共享权重；如果没有该文件，改为自己的匹配权重，或先按第 4 节训练。
+### 3.1 Export joint angles with an existing model
+
+The example checkpoint is a local shared model for `world` coordinates.
+If this file is not available, select your own compatible checkpoint.
+If you do not have a compatible checkpoint, first train a model as given in Section 4.1.
+
+After recording stops, execute this command block:
 
 ```powershell
 $checkpoint = 'outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/world_shared_20261014_000112/model_best.pth'
@@ -83,9 +129,15 @@ if (-not (Test-Path $checkpoint)) { throw "Missing checkpoint: $checkpoint" }
 if ($LASTEXITCODE -ne 0) { throw 'Angle export failed; check the output above.' }
 ```
 
-导出和后续回放不使用摄像头。world 数据必须配 world 权重，不能混用旧 normalized 或 Vision Pro / VR 权重，也不能修改文件元数据来冒充兼容。
+Export and replay do not use the camera.
 
-### 3.2 L21 双手在同一窗口正面回放
+**Use a checkpoint for `world` coordinates with `world` data.**
+Do not use an old checkpoint for `normalized` coordinates or a Vision Pro / VR checkpoint with this data.
+Do not change file metadata to make incompatible files appear compatible.
+
+### 3.2 Replay both L21 hands in one window
+
+To show both palms from the front, execute this command:
 
 ```powershell
 & $python devtools/replay_capture_to_l21.py `
@@ -93,38 +145,72 @@ if ($LASTEXITCODE -ne 0) { throw 'Angle export failed; check the output above.' 
   --gui --fps 30 --render-every 0 --hold-seconds 30
 ```
 
-只显示 L21 双手，双掌朝向窗口；播放完保持最后姿态 30 秒。`--hand right` 只显示右手，`--max-frames 900` 只播放前 900 帧。`--fps` 限制此入口的播放帧率；它直接显示已导出的原生角度，不经过实时入口的输出滤波和碰撞检查。
+The window shows only the two L21 hands.
+Both palms face the window.
+After replay stops, the window shows the final pose for 30 seconds.
 
-使用标准回放入口只看一只 L21 右手，并按时间戳调整播放速度：
+| Task | Instruction |
+|---|---|
+| Show only the right hand | Replace `--hand both` with `--hand right`. |
+| Replay only the first 900 frames | Add `--max-frames 900`. |
+| Set the maximum replay frame rate | Change the value of `--fps`. |
+
+This command shows the exported native joint angles directly.
+It does not apply the output filter or collision checks from the real-time application.
+
+To replay one right L21 hand with the standard command, execute this command:
 
 ```powershell
 & $python -m teleoperation replay l21-hand `
   --file $angles --hand right --render --speed 1.0
 ```
 
-`--hand both` 显示双手，`--speed 0.5` 为半速。两种入口都读取 **`$angles` 角度文件**，不能直接传 `$raw` 或 `$aligned`；需要再次回放时，将 `$angles` 设为已保存文件的实际路径即可。
+The standard command uses timestamps to control replay speed.
+To show both hands, replace `--hand right` with `--hand both`.
+To replay at half speed, replace `--speed 1.0` with `--speed 0.5`.
 
-### 3.3 可选：在一台机器人上展示
+**Both commands require the `$angles` file.**
+Do not supply `$raw` or `$aligned` directly.
+For a later replay, set `$angles` to the path of the saved joint-angle file.
 
-两种方式选一条运行。`native-hand` 使用机器人原装手，映射时会丢弃其无法表达的 L21 自由度；`mounted-hand` 将 L21 挂载到机器人上。
+### 3.3 Show hand motion on a robot (optional)
+
+Select one of these commands:
+
+- `native-hand` uses the robot's original hand.
+  The mapping omits L21 degrees of freedom that this hand cannot reproduce.
+- `mounted-hand` attaches an L21 hand to the robot model.
+
+To replay the original right hand of H1-2 continuously, execute this command:
 
 ```powershell
-# H1-2 原装右手特写，循环播放；其他关节保持中性姿态
 & $python -m teleoperation replay native-hand `
   --file $angles --robot h1_2 --hand right --view right-hand --render --loop 0
+```
 
-# 将 L21 右手挂到 H1-2 上回放
+The view shows a close-up of the right hand.
+The other joints stay in their neutral positions.
+
+To replay an L21 right hand attached to H1-2, execute this command:
+
+```powershell
 & $python -m teleoperation replay mounted-hand `
   --file $angles --robot h1_2 --hand right --render --speed 1.0
 ```
 
-`--robot` 还可选 `gr1_t2`、`g1`。以上均为 PyBullet 仿真，不连接实机。
+The `--robot` option also accepts `gr1_t2` and `g1`.
+All these replay commands use PyBullet simulation.
+They do not connect to a physical robot.
 
-## 4. 可选：训练与实时显示
+## 4. Train a model or use real-time operation
 
-### 4.1 没有匹配权重时，训练共享模型
+### 4.1 Train a shared model (optional)
 
-使用第 2 节生成的 `$aligned`。只录左手、只录右手或双手都可训练同一份共享模型，无需机器人角度标签。
+If you do not have compatible model weights, use `$aligned` from Section 2 to train a shared model.
+The same shared model can use data from the left hand, the right hand, or both hands.
+Training does not require robot joint-angle labels.
+
+To train the model, execute this command block:
 
 ```powershell
 $run = "world_$session"
@@ -139,11 +225,22 @@ if ($LASTEXITCODE -ne 0) { throw 'Training failed; check the output above.' }
 $checkpoint = "$checkpointRoot/models/twohand_h5/linker/$run/model_best.pth"
 ```
 
-训练成功后，用此 `$checkpoint` 执行 3.1 的 `hand export`，再执行 3.2 回放；无需重新赋值为示例旧实验路径。训练划分、损失和模型契约见[完整工作流参考](docs/workflow-reference.md)。
+After training completes successfully, use this sequence:
 
-### 4.2 不录文件，直接实时驱动 L21
+1. Keep `$checkpoint` set to the new model path.
+2. Set `$angles` to the required output path.
+3. Execute the `hand export` command from Section 3.1 with the new checkpoint.
+4. Execute a replay command from Section 3.2.
 
-使用已选好的 `$checkpoint`、`$camera` 和 `$handAsset`：
+Do not replace the new checkpoint path with the example checkpoint path from Section 3.1.
+The [workflow reference](docs/workflow-reference.md) gives the data split, loss functions, and model contract.
+
+### 4.2 Control L21 hands in real time (optional)
+
+This command uses the selected `$checkpoint`, `$camera`, and `$handAsset` values.
+It does not require a recording step.
+
+To start real-time operation, execute this command:
 
 ```powershell
 & $python -m teleoperation.applications.realtime_hand_sim `
@@ -152,22 +249,39 @@ $checkpoint = "$checkpointRoot/models/twohand_h5/linker/$run/model_best.pth"
   --scene hands --hand both --view front --frames 0
 ```
 
-按摄像头窗口的 `q/Esc`、关闭窗口或 `Ctrl+C` 退出。此入口不保存角度 H5；滤波、角速度限制和碰撞检查见[手部输出处理](docs/hand-command-safety.md)。
+To stop, use one of these actions:
 
-## 5. 其他功能与实现位置
+- Press `q` or `Esc` in the camera window.
+- Close the camera window.
+- Press `Ctrl+C` in the terminal.
 
-| 需要做什么 | 查看哪里 |
+This application does not save an H5 file of joint angles.
+The [hand output reference](docs/hand-command-safety.md) describes the filter, angular velocity limits, and collision checks.
+
+## 5. Find other functions and source files
+
+| Task or subject | Reference |
 |---|---|
-| 手动对齐、详细训练参数、几何后端、原装手与任务仿真 | [完整工作流参考](docs/workflow-reference.md) |
-| 同步采集手部与肩肘腕 | [米制采集说明](docs/world-landmark-capture.md) |
-| TRON2A 双臂标定、实时双臂双手、离线组合命令 | [完整工作流参考：身体与双臂](docs/workflow-reference.md#4-扩展身体采集双臂和任务仿真) |
-| Vision Pro 录制和离线数据 | [头显录制](docs/visionpro-offline-capture.md) |
-| Vision Pro / VR 推理与 L21 回放 | [TransHandR VR 链路](docs/transhandr-vr.md) |
-| H5 格式、坐标与权重兼容 | [数据契约](docs/contracts.md) |
-| 模块职责与依赖关系 | [架构](docs/architecture.md) |
-| 汇报材料 | [阶段汇报](present/README.md) |
+| Manual alignment, training parameters, geometry backend, original robot hands, and task simulation | [Workflow reference](docs/workflow-reference.md) |
+| Synchronized capture of hand, shoulder, elbow, and wrist landmarks in metric coordinates | [World landmark capture](docs/world-landmark-capture.md) |
+| TRON2A arm calibration, real-time control of both arms and hands, and combined offline commands | [Body and arm workflows](docs/workflow-reference.md#4-扩展身体采集双臂和任务仿真) |
+| Vision Pro recording and offline data | [Headset recording](docs/visionpro-offline-capture.md) |
+| Vision Pro / VR inference and L21 replay | [TransHandR VR workflow](docs/transhandr-vr.md) |
+| H5 formats, coordinates, and model compatibility | [Data contracts](docs/contracts.md) |
+| Module responsibilities and dependencies | [Architecture](docs/architecture.md) |
+| Progress presentations | [Presentation material](present/README.md) |
 
-临时调整使用命令行参数；长期默认值主要在 `src/teleoperation/retargeting/hand/config.py`（训练与模型）、`src/teleoperation/cli/schemas.py`（统一 CLI）、`src/teleoperation/paths.py`（资源路径）。完整参数可通过对应命令的 `--help` 查询，例如：
+For temporary changes, use command-line parameters.
+For permanent defaults, use these files:
+
+| Defaults | Source file |
+|---|---|
+| Training and models | [`config.py`](src/teleoperation/retargeting/hand/config.py) |
+| Unified command-line interface (CLI) | [`schemas.py`](src/teleoperation/cli/schemas.py) |
+| Resource paths | [`paths.py`](src/teleoperation/paths.py) |
+
+To see all parameters for a command, add `--help`.
+For example, execute one of these commands:
 
 ```powershell
 & $python -m teleoperation hand record --help
