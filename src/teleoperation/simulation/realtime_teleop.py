@@ -128,6 +128,51 @@ ARM_ENTRY = "realtime_teleop"
 SOURCE_SHORT = {"pose": "P", "hand": "H", "none": "-"}
 
 
+class ArmGainAction(argparse.Action):
+    """Parse a robot name and a finite positive gain before opening devices."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        name, value = values
+        if name not in loadable_robots():
+            raise argparse.ArgumentError(self, f"unknown robot {name!r}")
+        try:
+            gain = float(value)
+        except ValueError:
+            raise argparse.ArgumentError(self, "gain must be a finite positive number") from None
+        if not np.isfinite(gain) or gain <= 0:
+            raise argparse.ArgumentError(self, "gain must be a finite positive number")
+        pairs = list(getattr(namespace, self.dest, None) or [])
+        pairs.append((name, gain))
+        setattr(namespace, self.dest, pairs)
+
+
+class SimulationStepClock:
+    """Match live physics time to elapsed time; keep offline steps deterministic."""
+
+    def __init__(self, fixed_steps=8, realtime=True, clock=time.perf_counter):
+        if fixed_steps < 1:
+            raise ValueError("simulation steps must be positive")
+        self.fixed_steps, self.realtime, self.clock = int(fixed_steps), realtime, clock
+        self.previous = clock()
+        self.fraction = 0.0
+        self.total_steps = self.capped_frames = 0
+
+    def next_steps(self):
+        if self.realtime:
+            now = self.clock()
+            elapsed = max(0.0, now - self.previous)
+            self.previous = now
+            # Do not replay a long freeze as an abrupt burst of physics updates.
+            self.capped_frames += int(elapsed > 0.1)
+            ticks = min(elapsed, 0.1) * 240 + self.fraction
+            steps = max(1, int(ticks))
+            self.fraction = max(0.0, ticks - steps)
+        else:
+            steps = self.fixed_steps
+        self.total_steps += steps
+        return steps
+
+
 class CameraFrameSource:
     """一帧 = 手部三帧窗口 + pose 肩/肘/腕：把基线工作流丢掉的那一半补回来。
 
@@ -319,7 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--arm-axis-order", default=None, metavar="ZXY",
                         help="robot axes taken from operator axes (default from arm_realtime)")
     parser.add_argument("--arm-axis-signs", default=None, metavar="-1,1,-1")
-    parser.add_argument("--arm-gain", type=float, nargs=2, action="append", default=None,
+    parser.add_argument("--arm-gain", nargs=2, action=ArmGainAction, default=None,
                         metavar=("ROBOT", "GAIN"), help="override metric_scale for one robot")
     parser.add_argument("--arm-travel-mm", type=float, default=None,
                         help="override the per-axis travel clamp for every robot (mm)")
@@ -345,7 +390,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input-npz", type=Path, default=None,
                         help="replay a recorded session instead of the camera (no camera needed)")
     parser.add_argument("--sim-steps", type=int, default=8,
-                        help="physics steps per frame (default 8 = about one 30 Hz frame)")
+                        help="physics steps per offline frame or with --fixed-sim-steps (default 8)")
+    parser.add_argument("--fixed-sim-steps", action="store_true",
+                        help="use fixed physics steps for live capture too; default follows elapsed time")
     parser.add_argument("--view", choices=("full", "front"), default="full")
     parser.add_argument("--g1-color", type=float, nargs=3, default=(0.65, 0.80, 0.95),
                         metavar=("R", "G", "B"), help="G1 display RGB, each in [0, 1]")
@@ -573,6 +620,8 @@ def run(args) -> int:
                   f"for about {args.arm_calibrate_frames} frames per side; until then the arms hold "
                   "their working point.", flush=True)
         started = time.perf_counter()
+        simulation_clock = SimulationStepClock(args.sim_steps,
+            realtime=args.input_npz is None and not args.fixed_sim_steps)
 
         while True:
             if args.frames and processed >= args.frames:
@@ -617,7 +666,7 @@ def run(args) -> int:
                                  if target.position is not None}
                     if len(positions) != len(per_side):
                         continue        # 还有机器人没目标：这一侧整侧跳过（保持上一帧）
-                    orientation = per_side[sorted(per_side)[0]].orientation
+                    orientation = {name: target.orientation for name, target in per_side.items()}
                     try:
                         driver.apply_each(side, positions, source="base",
                                           orientation=orientation)
@@ -626,8 +675,10 @@ def run(args) -> int:
                             arm_failures[side] = f"{type(error).__name__}: {error}"
                             print(f"[WARN] {side}: arm IK failed, the arms keep their last "
                                   f"command: {arm_failures[side]}", flush=True)
+                scene.steps_per_frame = simulation_clock.next_steps()
                 driver.step(1)
             else:
+                scene.steps_per_frame = simulation_clock.next_steps()
                 scene.step()
             if args.dump_npz is not None:
                 _record_frame(dumped, raw_frame, camera.arms())
@@ -705,6 +756,12 @@ def run(args) -> int:
         "arms_enabled": bool(arms_wanted),
         "robots": list(robots),
         "arm_failures": arm_failures,
+        "simulation_timing": {
+            "mode": "elapsed" if simulation_clock.realtime else "fixed",
+            "physics_steps": simulation_clock.total_steps,
+            "simulated_seconds": simulation_clock.total_steps / 240,
+            "capped_frames": simulation_clock.capped_frames,
+        },
         "arm_targets_valid_frames": arm_valid_total,
         "arm_clamped_frames": arm_clamped_total,
         "arm": arm_summary,

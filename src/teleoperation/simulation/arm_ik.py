@@ -105,9 +105,9 @@ class PyBulletArmIK:
     base pose, solves IK and writes POSITION_CONTROL on that side's arm joints only.
     All other joints stay under the scene's own hold motors.
 
-    The one thing it does touch is the arm itself: ``solve`` snaps that arm onto its
-    first (position-only) solution with ``resetJointState`` so the second pass starts
-    warm -- a single cold pass stalls 3-10x further from the target (see ``solve``).
+    ``solve`` temporarily seeds the arm with its position solution for a warm
+    second pass, then restores every saved position and velocity. Only motors
+    and physics stepping may move the displayed arm.
     """
 
     def __init__(self, body, cid, robot_type=None, sides=SIDES, profile=None,
@@ -180,6 +180,7 @@ class PyBulletArmIK:
                             for position, index in enumerate(self.indices)}
         self.last_target_world = {}
         self.last_orientation = {}
+        self.last_solve = {}
 
 
     # ------------------------------------------------------------------ #
@@ -300,9 +301,8 @@ class PyBulletArmIK:
            with the orientation pass 1 already ended up in (self-consistent pose:
            the wrist keeps pointing where the position-driven arm points it).
 
-        ``position`` is resolved to world through ``source``.  Note that pass 1
-        leaves the arm joints at that solution (``resetJointState``); ``apply`` then
-        servos from there in the same frame, which is what the realtime loop wants.
+        ``position`` is resolved to world through ``source``. Temporary warm-start
+        joint states are restored, including velocities, even if pass 2 fails.
         ``warm_start=False`` reproduces the single cold pass, for A/B measurement.
         """
         if side not in self.arm:
@@ -318,24 +318,58 @@ class PyBulletArmIK:
             "residualThreshold": self.residual_threshold,
             "physicsClientId": self.cid,
         }
+        if self.rest_poses == "current":
+            arguments["restPoses"] = [
+                float(self.p.getJointState(self.body, index, physicsClientId=self.cid)[0])
+                for index in self.indices
+            ]
         solution = self._ik_call(side, world, None, arguments)
+        position_solution = solution
         target_orientation = None
-        if self.ik_mode == "pose":
-            if warm_start:
+        position_fallback = False
+        pose_residual_mm = position_residual_mm = None
+        saved = [(index, self.p.getJointState(self.body, index, physicsClientId=self.cid)[:2])
+                 for index in self.arm_ids[side]] if warm_start else []
+        try:
+            if self.ik_mode == "pose":
+                if warm_start:
+                    self._teleport(side, solution)
+                    if orientation is not None:
+                        position = self.measure(side)[0]
+                        position_residual_mm = 1000 * sum(
+                            (position[axis] - world[axis]) ** 2 for axis in range(3)) ** 0.5
+                    target_orientation = (self._orientation(side) if orientation is None
+                                          else tuple(float(v) for v in orientation))
+                else:
+                    target_orientation = (self.neutral_orientation[side]
+                                          if orientation is None
+                                          else tuple(float(v) for v in orientation))
+                solution = self._ik_call(side, world, target_orientation, arguments)
+                if warm_start and orientation is not None:
+                    self._teleport(side, solution)
+                    position = self.measure(side)[0]
+                    pose_residual_mm = 1000 * sum(
+                        (position[axis] - world[axis]) ** 2 for axis in range(3)) ** 0.5
+                    # An uncalibrated/unreachable wrist rotation must not pull
+                    # the arm away from its reachable position target.
+                    if (pose_residual_mm > self.profile.max_residual_mm
+                            and pose_residual_mm > position_residual_mm):
+                        solution = position_solution
+                        position_fallback = True
+            elif warm_start:
                 self._teleport(side, solution)
-                target_orientation = (self._orientation(side) if orientation is None
-                                      else tuple(float(v) for v in orientation))
-            else:
-                target_orientation = (self.neutral_orientation[side]
-                                      if orientation is None
-                                      else tuple(float(v) for v in orientation))
-            solution = self._ik_call(side, world, target_orientation, arguments)
-        elif warm_start:
-            # Position-only profiles still benefit: the second pass starts on target.
-            self._teleport(side, solution)
-            solution = self._ik_call(side, world, None, arguments)
+                solution = self._ik_call(side, world, None, arguments)
+        finally:
+            for index, (position_before, velocity_before) in saved:
+                self.p.resetJointState(self.body, index, position_before,
+                                       targetVelocity=velocity_before, physicsClientId=self.cid)
         self.last_target_world[side] = world
         self.last_orientation[side] = target_orientation
+        self.last_solve[side] = {
+            "position_fallback": position_fallback,
+            "position_candidate_residual_mm": position_residual_mm,
+            "pose_candidate_residual_mm": pose_residual_mm,
+        }
         return self._arm_values(side, solution)
 
     def apply(self, side: str, values) -> None:
@@ -407,6 +441,7 @@ class PyBulletArmIK:
             "arm_joints": {side: [name for _index, name in entries]
                            for side, entries in self.arm.items()},
             "limits_from_urdf": True,
+            "last_solve": dict(self.last_solve),
         }
 
 

@@ -32,6 +32,7 @@ baseline tree, so editing it would show up as a modified teammate file in
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import json
 import math
 import time
@@ -139,6 +140,9 @@ class ArmSceneDriver:
                    orientation=None) -> dict:
         """One frame for one side with a target per robot: ``{robot_type: position}``.
 
+        ``orientation`` accepts a shared quaternion or a mapping from robot name
+        to quaternion/None. A mapping must include every driven robot.
+
         Returns ``{robot_type: {"ee": link, "ik_mode": ..., "joints": {name: angle}}}``
         so a demo, a test or a report can state exactly which arm was driven.
         """
@@ -148,10 +152,15 @@ class ArmSceneDriver:
                          if robot_type not in targets)
         if missing:
             raise ValueError(f"no target given for {missing} (driven: {list(self.ik)})")
+        if isinstance(orientation, Mapping):
+            missing = sorted(name for name in self.ik if name not in orientation)
+            if missing:
+                raise ValueError(f"no orientation given for {missing}")
         reports = {}
         for robot_type, adapter in self.ik.items():
             values = adapter.solve(side, targets[robot_type],
-                                   orientation=orientation, source=source)
+                                   orientation=(orientation[robot_type] if isinstance(orientation, Mapping)
+                                                else orientation), source=source)
             adapter.apply(side, values)
             reports[robot_type] = {"ee": adapter.ee[side][1],
                                    "ik_mode": adapter.ik_mode,
