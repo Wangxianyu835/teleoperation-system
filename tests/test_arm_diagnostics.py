@@ -78,8 +78,10 @@ class DiagnosticLoopTests(unittest.TestCase):
         snapshots = []
         current = []
         ik_counts = [0, 0]
+        issued_commands = [[], []]
         run_id = [0]
         original_step, original_ik = ArmSceneDriver.step, PyBulletArmIK._ik_call
+        original_apply = PyBulletArmIK.apply
 
         def step(driver, *args, **kwargs):
             original_step(driver, *args, **kwargs)
@@ -90,6 +92,10 @@ class DiagnosticLoopTests(unittest.TestCase):
         def ik(adapter, *args, **kwargs):
             ik_counts[run_id[0]] += 1
             return original_ik(adapter, *args, **kwargs)
+
+        def apply(adapter, side, values):
+            issued_commands[run_id[0]].append((adapter.robot_type, side, dict(values)))
+            return original_apply(adapter, side, values)
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -104,13 +110,16 @@ class DiagnosticLoopTests(unittest.TestCase):
                 args = arguments(capture, report, *([] if not index else ["--diagnostic-trace", str(trace)]))
                 with patch.object(app, "_drain_in_background", side_effect=lambda action, label: action()), \
                         patch.object(ArmSceneDriver, "step", step), patch.object(PyBulletArmIK, "_ik_call", ik), \
+                        patch.object(PyBulletArmIK, "apply", apply), \
                         contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(app.run(args), 0)
                 snapshots.append(current)
                 reports.append(json.loads(report.read_text(encoding="utf-8")))
-            rows = list(csv.DictReader(trace.open(encoding="utf-8", newline="")))
+            with trace.open(encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
         self.assertEqual(snapshots[0], snapshots[1])
         self.assertEqual(ik_counts[0], ik_counts[1])
+        self.assertEqual(issued_commands[0], issued_commands[1])
         self.assertEqual(reports[0]["arm_last_targets"], reports[1]["arm_last_targets"])
         self.assertEqual(reports[0]["simulation_timing"], reports[1]["simulation_timing"])
         self.assertNotIn("diagnostics", reports[0])

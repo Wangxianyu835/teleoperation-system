@@ -6,18 +6,7 @@ import time
 import numpy as np
 
 from teleoperation.data.arm_trace import ArmTraceWriter
-
-
-def sample_seconds(timestamps, unit):
-    """Explicit units only: legacy arrays have no inferable time contract."""
-    if unit not in ("seconds", "milliseconds"):
-        raise ValueError("Specify timestamp unit: seconds or milliseconds")
-    values = np.asarray(timestamps, dtype=np.float64)
-    if values.ndim != 1 or not np.isfinite(values).all() or np.any(np.diff(values) <= 0):
-        raise ValueError("Timestamps must be finite and strictly increasing")
-    if not len(values):
-        return values.copy()
-    return (values - values[0]) / (1000 if unit == "milliseconds" else 1)
+from teleoperation.data.arm_validation import sample_seconds
 
 
 class ArmDiagnostics:
