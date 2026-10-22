@@ -269,6 +269,7 @@ The [hand output reference](docs/hand-command-safety.md) describes the filter, a
 | Vision Pro / VR inference and L21 replay | [TransHandR VR workflow](docs/transhandr-vr.md) |
 | H5 formats, coordinates, and model compatibility | [Data contracts](docs/contracts.md) |
 | Module responsibilities and dependencies | [Architecture](docs/architecture.md) |
+| Three-robot arm diagnostics, offline acceptance, and measured failures | [Arm diagnostics](docs/arm-diagnostics.md) |
 | Progress presentations | [Presentation material](present/README.md) |
 
 For temporary changes, use command-line parameters.
