@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
+from contextlib import nullcontext
 import json
 import math
 import time
@@ -61,8 +62,9 @@ class ArmSceneDriver:
 
     def __init__(self, scene, sides=("right",), robots=None, arm_force=ARM_FORCE,
                  ik_mode=None, rest_poses: str = "current",
-                 ik_iterations=None, residual_threshold=None):
+                 ik_iterations=None, residual_threshold=None, diagnostics=None):
         self.scene = scene
+        self.diagnostics = diagnostics
         self.p = scene.p
         self.cid = scene.cid
         self.sides = tuple(sides)
@@ -157,11 +159,16 @@ class ArmSceneDriver:
             if missing:
                 raise ValueError(f"no orientation given for {missing}")
         reports = {}
+        diagnostics = getattr(self, "diagnostics", None)
         for robot_type, adapter in self.ik.items():
-            values = adapter.solve(side, targets[robot_type],
-                                   orientation=(orientation[robot_type] if isinstance(orientation, Mapping)
-                                                else orientation), source=source)
-            adapter.apply(side, values)
+            with (nullcontext() if diagnostics is None else diagnostics.stage(f"ik.{robot_type}.{side}")):
+                values = adapter.solve(side, targets[robot_type],
+                                       orientation=(orientation[robot_type] if isinstance(orientation, Mapping)
+                                                    else orientation), source=source)
+            with (nullcontext() if diagnostics is None else diagnostics.stage(f"motor.{robot_type}.{side}")):
+                adapter.apply(side, values)
+            if diagnostics is not None:
+                diagnostics.command(robot_type, side, values)
             reports[robot_type] = {"ee": adapter.ee[side][1],
                                    "ik_mode": adapter.ik_mode,
                                    "joints": values}

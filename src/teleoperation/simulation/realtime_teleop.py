@@ -84,6 +84,7 @@ X 前、Y 左、Z 上。默认映射见 ``arm_realtime.AxisMap``（``(Z, X, Y)/(
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
 import sys
@@ -232,7 +233,9 @@ class CameraFrameSource:
         }
         if raw.world_hands is not None:
             frame.update({"world_" + side: raw.world_hands[side] for side in SIDES})
-        return self.pipeline.process_window(frame)
+        diagnostics = getattr(self, "diagnostics", None)
+        with (nullcontext() if diagnostics is None else diagnostics.stage("hand_preprocessing")):
+            return self.pipeline.process_window(frame)
 
     def arms(self):
         """同一帧的 pose 肩/肘/腕（``UpperBodyObservation``）；没有就是 ``None``。"""
@@ -314,7 +317,9 @@ class ReplayFrameSource:
             raw_frame["metadata"]["world_invalid_reasons"] = world_missing
         self.last_raw_frame = raw_frame
         self._arms = arms
-        return self.pipeline.process_window(raw_frame)
+        diagnostics = getattr(self, "diagnostics", None)
+        with (nullcontext() if diagnostics is None else diagnostics.stage("hand_preprocessing")):
+            return self.pipeline.process_window(raw_frame)
 
     def arms(self):
         """这一帧的 pose 手臂，包装成 ``UpperBodyObservation``（米制放在 ``world_arms``）。"""
@@ -341,6 +346,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Realtime camera -> hand angles + arm targets -> H1-2 / GR1-T2 / G1")
     parser.add_argument("--backend", choices=("auto", "geometric", "checkpoint"),
                         default="auto")
+    parser.add_argument("--diagnostics", action="store_true", help="read-only arm timings and state statistics")
+    parser.add_argument("--diagnostic-trace", type=Path, help="stream diagnostic CSV; implies --diagnostics; must be a new file")
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)
     parser.add_argument("--model-asset-path", type=Path, default=None)
@@ -536,6 +543,17 @@ def _save_dump(path, dumped) -> Path:
 def run(args) -> int:
     """采集 -> 手 + 臂 -> 仿真；0 = 至少一侧给出过输出，1 = 全程没有手也没有臂。"""
     sides = tuple(SIDES if args.side == "both" else (args.side,))
+    diagnostics_enabled = bool(getattr(args, "diagnostics", False) or getattr(args, "diagnostic_trace", None))
+    if diagnostics_enabled:
+        trace_path = getattr(args, "diagnostic_trace", None)
+        protected = [getattr(args, key, None) for key in
+                     ("input_npz", "checkpoint", "model_asset_path", "pose_model_asset_path", "neutral_json", "dump_npz", "save_neutral")]
+        destinations = [value for value in (trace_path, args.report) if value is not None]
+        if len({Path(path).resolve() for path in destinations}) != len(destinations):
+            raise ValueError("Diagnostic CSV and report paths must differ")
+        if any(Path(out).resolve() == Path(source).resolve() for out in destinations
+               for source in protected if source is not None):
+            raise ValueError("Diagnostic output must not overwrite an input or another output")
     asset = resolve_model_asset(args.model_asset_path) if args.input_npz is None else None
     pose_asset = (Path(args.pose_model_asset_path) if args.pose_model_asset_path
                   else DEFAULT_POSE_ASSET)
@@ -552,7 +570,7 @@ def run(args) -> int:
     retargeter, backend, note = build_retargeter(
         args.backend, checkpoint, args.device, args.calibration_frames,
         args.smoothing, args.landmark_space)
-    scene = camera = preview = driver = bridge = None
+    scene = camera = preview = driver = bridge = diagnostics = None
     arm_failures = {}
     processed = 0
     started = None
@@ -566,6 +584,9 @@ def run(args) -> int:
               "timestamps": []}
     targets = {}
     try:
+        if diagnostics_enabled:
+            from teleoperation.simulation.arm_diagnostics import ArmDiagnostics
+            diagnostics = ArmDiagnostics(getattr(args, "diagnostic_trace", None))
         args.scene = "robots"                      # 手臂只存在于机器人场景
         scene = build_scene(args, sides)
         commands = build_hand_commands(args, scene, sides)
@@ -577,7 +598,8 @@ def run(args) -> int:
         if arms_wanted:
             driver = ArmSceneDriver(scene, sides=sides, robots=robots,
                                     ik_iterations=args.arm_ik_iterations,
-                                    residual_threshold=args.arm_ik_residual_threshold)
+                                    residual_threshold=args.arm_ik_residual_threshold,
+                                    diagnostics=diagnostics)
             gains = {str(pair[0]): float(pair[1]) for pair in (args.arm_gain or [])}
             axis_map = AxisMap()
             if args.arm_axis_order and args.arm_axis_signs:
@@ -610,6 +632,7 @@ def run(args) -> int:
                                        pose_asset if arms_wanted else None,
                                        args.pose_min_visibility)
         preview = build_arm_preview(args, camera, sides)
+        camera.diagnostics = diagnostics
         if not args.headless:
             print(PREVIEW_HINT_ROBOTS, flush=True)
             print(f"camera window {ARM_PREVIEW_WINDOW!r}: raw frame + 21 hand points + both "
@@ -629,11 +652,18 @@ def run(args) -> int:
             if not scene.alive():
                 print("PyBullet window closed; stopping.", flush=True)
                 break
+            if diagnostics is not None:
+                diagnostics.begin_frame()
+                capture_started = time.perf_counter()
             window = camera.next_frame()
             if getattr(camera, "exhausted", False):
                 print("replay finished (all recorded frames were replayed).", flush=True)
                 break
             processed += 1
+            if diagnostics is not None:
+                capture_ms = (time.perf_counter() - capture_started) * 1000
+                diagnostics.record_ms("capture_detection", max(0., capture_ms - diagnostics.frame_timings.get("hand_preprocessing", 0.)))
+                hand_started = time.perf_counter()
             raw_frame = camera.last_raw_frame
             for side in sides:
                 if raw_frame is not None and raw_frame.get(side) is not None:
@@ -658,8 +688,11 @@ def run(args) -> int:
                 for side in sides:
                     commands.missing(side)
             targets = {}
+            if diagnostics is not None:
+                diagnostics.record_ms("hand_inference_output", (time.perf_counter() - hand_started) * 1000)
             if bridge is not None:
-                targets = bridge.update(arms_world=camera.arms(), hands=raw_frame)
+                with (nullcontext() if diagnostics is None else diagnostics.stage("arm_mapping")):
+                    targets = bridge.update(arms_world=camera.arms(), hands=raw_frame)
                 for side in sides:
                     per_side = {name: entry[side] for name, entry in targets.items()}
                     positions = {name: target.position for name, target in per_side.items()
@@ -676,22 +709,32 @@ def run(args) -> int:
                             print(f"[WARN] {side}: arm IK failed, the arms keep their last "
                                   f"command: {arm_failures[side]}", flush=True)
                 scene.steps_per_frame = simulation_clock.next_steps()
-                driver.step(1)
+                with (nullcontext() if diagnostics is None else diagnostics.stage("physics")):
+                    driver.step(1)
             else:
                 scene.steps_per_frame = simulation_clock.next_steps()
-                scene.step()
+                with (nullcontext() if diagnostics is None else diagnostics.stage("physics")):
+                    scene.step()
             if args.dump_npz is not None:
                 _record_frame(dumped, raw_frame, camera.arms())
             if preview is not None:
+                preview_started = time.perf_counter() if diagnostics is not None else None
                 body = camera.arms()
                 # 不在这里挑手臂点：arm_preview.update() 自己把形状不对 / 含 NaN 的一侧
                 # 当作"没有"（与桥的丢帧保持同口径），这里只负责把 None 原样传下去。
                 preview.update(raw_frame, latest, arm_hud(bridge, driver, targets),
                                arms=None if body is None else body.arms,
                                lines=arm_lines(bridge, sides))
-                if preview.quit_requested:
-                    print("camera window closed; stopping.", flush=True)
-                    break
+                if diagnostics is not None:
+                    diagnostics.record_ms("preview", (time.perf_counter() - preview_started) * 1000)
+            if diagnostics is not None:
+                diagnostics.capture(processed - 1, driver, bridge, targets, arms=camera.arms(),
+                    raw_timestamp=None if raw_frame is None else raw_frame.get("timestamp"),
+                    timestamp_unit="unix_milliseconds" if args.input_npz is None else "unspecified_legacy",
+                    sample_time_s=time.perf_counter() - started if args.input_npz is None else None)
+            if preview is not None and preview.quit_requested:
+                print("camera window closed; stopping.", flush=True)
+                break
             marks.append(time.perf_counter())
             if args.print_every and processed % args.print_every == 0:
                 counts = " ".join(f"{side}={len(samples[side])}" for side in sides)
@@ -709,12 +752,23 @@ def run(args) -> int:
         scene_summary = scene.summary() if hasattr(scene, "summary") else None
         elapsed = time.perf_counter() - started
     finally:
-        if preview is not None:
-            _drain_in_background(preview.close, "camera preview close")
-        if camera is not None:
-            _drain_in_background(camera.release, "camera release")
-        if scene is not None:
-            _drain_in_background(scene.close, "PyBullet disconnect")
+        failure = sys.exc_info()[1]
+        try:
+            if diagnostics is not None:
+                diagnostics.close()
+        finally:
+            if preview is not None:
+                _drain_in_background(preview.close, "camera preview close")
+            if camera is not None:
+                _drain_in_background(camera.release, "camera release")
+            if scene is not None:
+                _drain_in_background(scene.close, "PyBullet disconnect")
+        if failure is not None and diagnostics is not None and args.report:
+            path = Path(args.report)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"entry": ARM_ENTRY, "exit_reason": "error",
+                "error": f"{type(failure).__name__}: {failure}", "diagnostics": diagnostics.summary()},
+                indent=2, allow_nan=False), encoding="utf-8")
 
     fps = _loop_fps(marks)
     print(f"\nprocessed={processed} frames in {elapsed:.2f} s  fps={fps:.1f}  "
@@ -824,10 +878,14 @@ def run(args) -> int:
         print(f"raw frames dumped: {_save_dump(args.dump_npz, dumped)} "
               f"({len(dumped['timestamps'])} frames)", flush=True)
     if args.report:
+        if diagnostics is not None:
+            report["diagnostics"] = diagnostics.summary()
         path = Path(args.report)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"report written: {path}")
+    if diagnostics is not None:
+        print(f"diagnostics: {diagnostics.frames} frames, {diagnostics.rows} arm rows; host processing timings only", flush=True)
     if not any(samples[side] for side in sides) and arm_valid_total == 0:
         if any(raw_seen[side] for side in sides):
             print("[FAIL] MediaPipe detected a hand but produced no angles: put the whole hand "
