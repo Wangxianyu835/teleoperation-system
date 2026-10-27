@@ -6,7 +6,7 @@
 ## 实现索引
 
 - `devtools/dex_native_env.ps1`：进程级 D 盘缓存与独立解释器路径。
-- `devtools/bootstrap_dex_windows.py`：官方 wheel 的 Windows 依赖声明适配，不修改求解代码。
+- `devtools/bootstrap_dex_windows.py`：dex 与可选 Vision Pro SDK 的 Windows 依赖声明适配，不修改上游算法。
 - `devtools/dex_native_acceptance.py`：阶段验收和原生手资产清单。
 - `requirements-dex-native.lock.txt`：实验环境完整依赖锁定文件。
 - `docs/dex-native-assets.json`：依赖版本、六手关节清单、资产及官方算法哈希。
@@ -37,16 +37,49 @@
 仍复用既有相机窗口和双臂路线。摄像头 dex 模式使用单槽最新观测，不积累待处理队列。
 VR `hand vr --backend dex --dex-calibration <vr.json> --scene robots --hand both --hand-mapping same`
 使用同侧路由，录制回放传 `--input-h5`，实时传 `--ip`。dex 不加载 checkpoint，旧默认仍为 TransHandR。
-VR 只控制原生手，不推造肩肘。`avp_stream` 当前独立环境尚未安装，设备实测不能标为通过。
-SDK 默认依赖会额外安装 OpenCV 和其他仿真库；本次在下载阶段停止，避免覆盖既有 OpenCV。
-实时 SDK 的兼容安装与真实连接仍是设备验收前提，不能用离线回放代替。
+VR 只控制原生手，不推造肩肘。2026-10-28 已安装本地兼容版 `avp_stream==2.51+wincontrib`，
+SDK 导入、现有数值依赖导入及 `TrackingData` 到本项目输入接口的合成数据检查通过。
+真实连接、流关闭与设备实测仍待完成，不能用离线检查代替。
 阶段 7 完整回归 465 项通过（1 原有跳过）；VR 新入口完成 150 帧六手回放。
 双臂双手入口在合成混合输入下完成 35 帧，六手各执行 33 帧、手臂失败列表为空。
 首两帧保留原有三帧窗口预热。单槽最新相机源的积压丢弃、退出及错误配置测试通过。
 性能单测使用最终参数：100 帧预热 + 1000 帧，六手合计 P95 22.061 ms，均值 13.151 ms；
 全部 600 个可达姿态重新通过 5/10 mm 原门槛。检测/渲染不计入该求解性能数字。
-当前会话相机 0 实际探测 opened=False/read_frame=False；头显未连接，缺 SDK 和当前连接地址。
+此前相机 0 实际探测 opened=False/read_frame=False；头显尚未连接，待提供当前连接地址。
 两次 5 分钟设备动作清单均未完成。
+
+### 安装 Vision Pro 实时 SDK
+
+在已建立的独立 dex 环境中运行。不要使用系统 `pip`。官方 SDK 要求 `opencv-python`，
+现有环境使用 `opencv-contrib-python`；两者提供同名 `cv2`，不能在此环境直接并装。
+工具为官方 2.51 wheel 添加 `+wincontrib` 标记，将该依赖改为已有的
+`opencv-contrib-python==4.11.0.86`，并逐文件核对 SDK payload。SDK 源码、坐标处理和网络协议均不变。
+这是一份本地依赖适配包，不是官方发布版本。上游参考为
+[VisionProTeleop](https://github.com/Improbable-AI/VisionProTeleop)。
+
+```powershell
+. ./devtools/dex_native_env.ps1
+& $dexPython -m pip download --no-deps --only-binary=:all: `
+  --dest outputs/tmp_dex_native/wheels 'avp_stream==2.51'
+& $dexPython -B devtools/bootstrap_dex_windows.py `
+  --avp-wheel outputs/tmp_dex_native/wheels/avp_stream-2.51-py3-none-any.whl
+& $dexPython -m pip install --only-binary=:all: -c requirements-dex-native.lock.txt `
+  outputs/tmp_dex_native/wheels/avp_stream-2.51+wincontrib-py3-none-any.whl
+& $dexPython -m pip check
+& $dexPython -c "from avp_stream import VisionProStreamer; import cv2; print('SDK import OK', cv2.__version__)"
+```
+
+工具校验官方 wheel 的 SHA256：`03d19f56ca3d5a2013a0ae353ae68df8f898d1ae3c5567b49419b47421bc2412`。
+本地 wheel 的 SHA256 写入锁定文件；逐文件哈希写入同目录 `.provenance.json`。
+本次只新增 SDK 和 9 个依赖包，未升级原有依赖。MuJoCo 是 SDK 的安装依赖，本项目仍使用 PyBullet。
+安装前 checkpoint 为 `checkpoint-20261028-0019-visionpro-sdk`，对应 `e11a69f`。
+安装前后均运行 `python -m unittest discover -s tests`，各 465 项通过，保留 1 项原有跳过，退出码 0。
+安装后两套环境的 `pip check`、5 条 CLI 冒烟及两套 GBK 检查退出码均为 0。
+官方与安装后 SDK 的 31 个 payload 文件逐字节一致；重复构建本地 wheel 的哈希一致。
+快速 preflight 仍仅因原有 C 盘 pip/HuggingFace 缓存项退出 1，本次缓存和临时目录均在 D 盘。
+
+完成此步后，在头显 App Store 安装或更新 Tracking Streamer。先将电脑与头显连接同一局域网，
+在应用内启动跟踪，再使用显示的头显 IP。首次连接仍需确认双手数据、坐标、实际帧率与退出资源释放。
 
 阶段 6 最终已完整导出两份 VR 实录（4631/2886 帧），六手在适配有效帧上的求解有效率均为 100%。
 统计工具以 is_calibration 排除本文件校准片段，记录文件/评估索引哈希，分别计算原始解和执行命令的
@@ -193,7 +226,7 @@ wheel 来源、SHA256 与代码哈希记录在 `outputs/tmp_dex_native/wheels/*.
   七个进程变量均重定向 D 盘；没有清理用户缓存或修改用户级环境。
 - 两份 VR 实录全量导出和同帧比较完成，最终结果写入 `dex-native-results.json`；截图位于
   `outputs/tmp_dex_native/snapshots/`，是接受命令姿态的可视化，不能当作硬件实测。
-- 未完成项：合格相机校准与相机方法比较、兼容头显 SDK 安装、相机与头显各 5 分钟动作清单。
+- 未完成项：合格相机校准与相机方法比较、头显实际连接、相机与头显各 5 分钟动作清单。
   相机 0 未读到画面；用户已同意后续配合采集。因此本轮不能宣称全部八阶段验收完成。
 
 本轮代码提交：阶段 1 `53c03c7`、阶段 2 `8ee68c7`、阶段 3 `126f5e9`、阶段 4 `9470477`、

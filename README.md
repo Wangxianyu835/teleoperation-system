@@ -426,8 +426,9 @@ $cameraCal = "outputs/tmp_dex_native/camera_cal_$dexSession.json"
   --report "outputs/tmp_dex_native/vr_live_$dexSession.json"
 ```
 
-实时连接还需要兼容的 `avp_stream` SDK；当前独立环境只完成离线路线，未安装该 SDK。
-默认安装 SDK 会额外安装 OpenCV，安装前应按接入说明检查环境。旧 TransHandR VR 入口仍保留。
+独立环境已安装 `avp_stream==2.51+wincontrib` 本地兼容包，保留现有 OpenCV；SDK 导入检查通过。
+安装命令与依赖适配说明见 [Vision Pro SDK 安装](docs/dex-native.md#安装-vision-pro-实时-sdk)。
+头显实际连接与连续运行验收仍待完成。旧 TransHandR VR 入口仍保留。
 
 已通过的验收包括：600 个原生可达姿态、两份 VR 实录的数值稳定性、原生命令导出/回放和完整回归。
 六手求解单测 P95 为 22.1 ms，样本为预热后 1,000 帧，不含检测和渲染。

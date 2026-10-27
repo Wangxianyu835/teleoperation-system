@@ -1,8 +1,12 @@
 absl-py==2.5.0
+aioice==0.10.2
+aiortc==1.15.0
 ansitable==1.1.1
 anyio==4.15.1
 anytree==2.13.0
 av==17.1.0
+avp_stream @ file:///D:/2026/code/teleoperation-system-retargeting/outputs/tmp_dex_native/wheels/avp_stream-2.51%2Bwincontrib-py3-none-any.whl#sha256=6b309c49efc6f79914a2eb8987a27e63872bb566f8f3300c23ecb3e5c3960e0b
+beautifulsoup4==4.15.0
 blinker==1.9.0
 casadi==3.6.7
 catkin-pkg==1.1.1
@@ -14,6 +18,7 @@ click==8.5.0
 colorama==0.4.6
 colored==2.3.2
 contourpy==1.3.2
+cryptography==50.0.2
 cycler==0.12.1
 dex_retargeting @ file:///D:/2026/code/teleoperation-system-retargeting/outputs/tmp_dex_native/wheels/dex_retargeting-0.5.0%2Bwinconda-py3-none-any.whl#sha256=de5acaede67fcf0a0337c1478aa563f471cd57ad2bfe305e7617af680928c295
 distlib==0.4.3
@@ -24,15 +29,18 @@ einops==0.8.2
 etils==1.13.0
 exceptiongroup==1.3.1
 filelock==4.0.12
+Flask==3.1.3
 flatbuffers==25.12.19
 fonttools==4.65.0
 freetype-py==2.5.1
 fsspec==2026.9.0
+gdown==6.4.2
 gitdb==4.0.12
 GitPython==3.2.0
 glfw==2.10.2
 google-crc32c==1.9.0
 grpcio==1.84.0
+grpcio-tools==1.84.0
 h11==0.16.0
 h5py==3.16.0
 hf-xet==1.6.0
@@ -53,6 +61,7 @@ MarkupSafe==3.0.4
 matplotlib==3.10.9
 mediapipe==0.10.35
 mpmath==1.3.0
+mujoco==3.17.0
 networkx==3.4.2
 nlopt==2.9.1
 nodeenv==1.11.0
@@ -73,6 +82,7 @@ pyee==13.0.1
 pyglet==2.1.16
 pylibsrtp==1.0.0
 PyOpenGL==3.1.10
+pyOpenSSL==26.4.0
 pyparsing==3.3.3
 pyrealsense2==2.59.1.11053
 pyribbit==0.1.46

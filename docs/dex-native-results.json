@@ -1238,6 +1238,16 @@
   "pending": [
     "camera open-hand calibration and real camera method comparison",
     "camera five-minute six-hand test",
-    "compatible avp_stream SDK installation and live headset five-minute test"
-  ]
+    "live headset connection and five-minute test"
+  ],
+  "visionpro_sdk_setup": {
+    "date": "2026-10-28",
+    "version": "2.51+wincontrib",
+    "official_wheel_sha256": "03d19f56ca3d5a2013a0ae353ae68df8f898d1ae3c5567b49419b47421bc2412",
+    "local_wheel_sha256": "6b309c49efc6f79914a2eb8987a27e63872bb566f8f3300c23ecb3e5c3960e0b",
+    "adaptation": "Local version and opencv-contrib provider dependency only; all SDK payload bytes unchanged",
+    "imports": "passed",
+    "synthetic_trackingdata_boundary": "passed",
+    "live_connection": "pending"
+  }
 }
