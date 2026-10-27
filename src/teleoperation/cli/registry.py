@@ -1,6 +1,9 @@
 """Static command routing; importing this registry starts no workflows."""
 
 COMMANDS = (
+    ('hand', 'dex-calibrate', 'hand_dex_calibrate', 'teleoperation.applications.dex_native:calibrate'),
+    ('hand', 'dex-export', 'hand_dex_export', 'teleoperation.applications.dex_native:export'),
+    ('replay', 'dex-native', 'replay_dex_native', 'teleoperation.applications.dex_native:replay'),
     ('dual', 'camera', 'dual_camera', 'teleoperation.applications.mediapipe_tron2a:run_camera'),
     ('dual', 'calibrate-camera', 'dual_calibrate_camera', 'teleoperation.applications.mediapipe_tron2a:run'),
     ('hand', 'record-world', 'hand_record_world', 'teleoperation.applications.world_landmark_capture:run'),

@@ -6,6 +6,34 @@ from teleoperation.paths import *
 from teleoperation.retargeting.hand.config import L21, RUNTIME, ANGLE_LIMITS
 from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
 from .checkpoints import add_checkpoint_arguments
+
+
+def hand_dex_calibrate(parser):
+    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--source", choices=("camera", "visionpro"), required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--start", type=float, default=0., help="seconds after first recorded frame")
+    parser.add_argument("--duration", type=float, default=2.)
+    parser.set_defaults(_handler="teleoperation.applications.dex_native:calibrate")
+
+
+def hand_dex_export(parser):
+    from .hand_command_options import add_hand_command_arguments
+    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--source", choices=("camera", "visionpro"), required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--calibration", type=Path, required=True)
+    parser.add_argument("--report", type=Path)
+    add_hand_command_arguments(parser, native=True)
+    parser.set_defaults(_handler="teleoperation.applications.dex_native:export")
+
+
+def replay_dex_native(parser):
+    parser.add_argument("--file", type=Path, required=True)
+    parser.add_argument("--render", action="store_true")
+    parser.add_argument("--fps", type=float, default=30.)
+    parser.add_argument("--frames", type=int, default=0)
+    parser.set_defaults(_handler="teleoperation.applications.dex_native:replay")
 PALM_LOCAL_V2_CHECKPOINT = DEFAULT_REALTIME_CHECKPOINT
 ROOT = str(PROJECT_ROOT)
 

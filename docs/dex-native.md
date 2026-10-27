@@ -14,6 +14,8 @@
 - `robots/native_hand.py::NativeHandModel`：整机手部子树、固定指尖 frame、耦合限位与 FK 查询。
 - `tests/test_dex_native.py`：本功能的契约及边界测试。
 - `retargeting/hand/dex_native.py`：相机/VR 显式适配、固定掌长校准及原生 Vector 管线。
+- `applications/dex_native.py`：校准、原生 H5 导出/回放与实时应用组合。
+- `data/hand_recording.py::NativeHandResultWriter`：独立原生结果格式。
 
 ## 阶段记录
 
@@ -25,6 +27,24 @@
 | 2 原生运动学 | 53c03c7 | checkpoint-20261027-1205-dex-stage2 | 通过 |
 | 3 输入与校准 | 8ee68c7 | checkpoint-20261027-1210-dex-stage3 | 通过 |
 | 4 Vector 求解 | 126f5e9 | checkpoint-20261027-1215-dex-stage4 | 通过 |
+| 5 命令与回放 | 9470477 | checkpoint-20261027-1220-dex-stage5 | 通过 |
+
+`NativeHandCommandPipeline` 按独立驱动量滤波/限速，再展开所有耦合关节。
+角速度上限取 CLI 与 URDF（含从动关节反推）约束的较小值。丢手保持命令，恢复首步仍限速。
+`ThreeRobotHandScene.apply_native` 仅按关节名写入指定机器人和手侧，不经过 L21 降维映射。
+本轮没有新增原生手网格避碰；限位、限速与耦合一致不等于无碰撞保证。
+结果格式 `dex_native_results_v1`：根含秒制 timestamps、is_calibration；每个 `robot/side` 组保存
+joint_names/config_hash、raw_angles、command_angles、valid、solve_ms、error、target_vectors。
+无效原始解使用 NaN，执行命令保持上一帧有限值。回放检查名字、哈希、限位与耦合，不重复滤波。
+
+命令：`hand dex-calibrate --source camera|visionpro --input raw.h5 --start <相对秒> --output calibration.json`；
+`hand dex-export --source camera|visionpro --input raw.h5 --calibration calibration.json --output native.h5`；
+`replay dex-native --file native.h5 --render`。路径均相对仓库根目录，使用独立环境运行。
+`--start` 指向双手张开至少两秒的片段；校准与结果文件均不覆盖已有路径。
+真实相机录制未找到满足条件的同时双手张开片段，用户已确认后续配合新采集，不能使用合成尺度冒充实录校准。
+阶段 5：完整回归 462 项通过、1 项原有跳过；14 项 dex 契约/命令测试通过。
+合成 world 数据完成校准、70 帧六手导出和整机无头回放；0/13/30 fps 回放入口均通过，
+录制时间驱动的命令测试验证三种主机处理速率逐项相同，H5 导出/读取命令完全一致。
 
 `NativeHandResult` 与 `NativeHandRetargeter` 是新增的原生关节接口；L21 结果接口不变。
 Vector 使用官方 0.5.0 `VectorOptimizer`、`MimicJointKinematicAdaptor`、`SeqRetargeting`。

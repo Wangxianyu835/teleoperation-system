@@ -274,6 +274,31 @@ class ThreeRobotHandScene:
             self.clipped[side] += int(clipped)
         self.applied[side] += 1
 
+    def apply_native(self, result) -> None:
+        """Write one robot/side's named native command, without the L21 adapter."""
+        from teleoperation.contracts.hand import NativeHandResult
+        if not isinstance(result, NativeHandResult) or not result.valid:
+            raise ValueError("Scene requires a valid native command")
+        if result.side not in self.sides or not self.alive():
+            raise ValueError("Native command side is not active")
+        robot = next((r for r in self.robots if r["type"] == result.robot_type), None)
+        if robot is None:
+            raise ValueError("Native command robot is not loaded")
+        mapping, names = robot["plans"][result.side]
+        expected = {name for _dim, name, *_ in mapping}
+        if set(result.joint_names) != expected:
+            raise ValueError("Native command must name exactly this hand's movable joints")
+        values = result.named_values()
+        for _dim, name, _sign, low, high in mapping:
+            if not low - 1e-6 <= values[name] <= high + 1e-6:
+                raise ValueError(f"Native scene limit exceeded: {name}")
+        for name, value in values.items():
+            self.p.setJointMotorControl2(robot["body"], names[name], self.p.POSITION_CONTROL,
+                targetPosition=float(value), force=HAND_FORCE, physicsClientId=self.cid)
+        if not hasattr(self, "native_commands"):
+            self.native_commands = {}
+        self.native_commands[(result.robot_type, result.side)] = dict(values)
+
     def step(self) -> None:
         """锁住非手部关节，然后推进 ``steps_per_frame`` 步物理。"""
         if not self.alive():

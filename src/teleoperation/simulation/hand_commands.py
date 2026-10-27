@@ -269,3 +269,79 @@ def build_hand_commands(args, scene, sides):
     scope = "L21 inter-finger mesh checks" if guards else "no runtime mesh collision guard for this scene"
     print(f"hand commands: filter={args.joint_filter} speed<={args.joint_max_velocity} rad/s; {scope}", flush=True)
     return commands
+
+
+class NativeHandCommandPipeline:
+    """Filter independent drives; expand mimic joints only after rate limiting."""
+
+    def __init__(self, models, filter_mode="lowpass", alpha=.2, max_velocity=1.5,
+                 kalman_q=1., kalman_r=.01):
+        if filter_mode not in ("lowpass", "kalman", "none"):
+            raise ValueError("Unknown native joint filter")
+        if not np.isfinite([alpha, max_velocity, kalman_q, kalman_r]).all() or not 0 < alpha <= 1 or min(max_velocity, kalman_q, kalman_r) <= 0:
+            raise ValueError("Invalid native command parameters")
+        self.models, self.mode, self.alpha = models, filter_mode, alpha
+        self.previous, self.filtered, self.times, self.filters, self.stats = {}, {}, {}, {}, {}
+        self.speeds = {k: np.minimum(m.velocity_limits, max_velocity) for k, m in models.items()}
+        for key, model in models.items():
+            self.previous[key] = np.clip(np.zeros(len(model.independent_names)), *model.bounds.T)
+            self.filtered[key] = self.previous[key].copy()
+            self.times[key] = None
+            self.filters[key] = KalmanSmoother(process_noise=kalman_q, measurement_noise=kalman_r,
+                                               gate=0., max_velocity=max_velocity)
+            self.filters[key].step(self.previous[key])
+            self.stats[key] = {"commands": 0, "held_frames": 0, "rate_limited": 0}
+
+    def missing(self, key):
+        self.stats[key]["held_frames"] += 1
+        self.times[key] = None
+        self.filtered[key] = self.previous[key].copy()
+        self.filters[key].reset(len(self.previous[key]))
+        self.filters[key].step(self.previous[key])
+        return self.models[key].expand(self.previous[key])
+
+    def update(self, result, timestamp=None):
+        key = (result.robot_type, result.side)
+        model = self.models[key]
+        if result.config_hash != model.config_hash or set(result.joint_names) != set(model.joint_names):
+            raise ValueError("Native result does not match command model")
+        if not result.valid:
+            return self.missing(key)
+        named = result.named_values()
+        raw = np.array([named[n] for n in model.independent_names])
+        expanded = model.expand(raw)
+        if any(abs(expanded[n] - named[n]) > 1e-6 for n in model.joint_names):
+            raise ValueError("Native result violates mimic constraints")
+        now = time.monotonic() if timestamp is None else float(timestamp)
+        if not math.isfinite(now):
+            raise ValueError("Native command timestamps must be finite seconds")
+        previous_time = self.times[key]
+        if previous_time is not None and now <= previous_time:
+            return model.expand(self.previous[key])
+        elapsed = 1 / 30 if previous_time is None else now - previous_time
+        if elapsed > .25:
+            self.filtered[key] = self.previous[key].copy()
+            self.filters[key].reset(len(raw)); self.filters[key].step(self.previous[key])
+        dt = min(elapsed, .1)
+        self.times[key] = now
+        if self.mode == "lowpass":
+            self.filtered[key] += (1 - (1 - self.alpha) ** (dt * 30)) * (raw - self.filtered[key])
+            target = self.filtered[key]
+        elif self.mode == "kalman":
+            self.filters[key].dt = dt
+            target = self.filters[key].step(raw)
+        else:
+            target = raw
+        target = np.clip(target, *model.bounds.T)
+        delta = target - self.previous[key]
+        active = np.abs(delta) > 1e-14
+        fraction = min(1., float(np.min(self.speeds[key][active] * dt / np.abs(delta[active])))) if active.any() else 1.
+        self.previous[key] += fraction * delta
+        self.stats[key]["commands"] += 1
+        self.stats[key]["rate_limited"] += int(fraction < 1.)
+        return model.expand(self.previous[key])
+
+    def summary(self):
+        return {"filter": self.mode, "alpha_at_30hz": self.alpha,
+                "runtime_mesh_collision_guard": False, "joint_space": "independent native drives",
+                "sides": {"/".join(k): dict(v) for k, v in self.stats.items()}}
