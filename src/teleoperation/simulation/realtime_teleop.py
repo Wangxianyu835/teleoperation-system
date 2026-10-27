@@ -370,8 +370,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m teleoperation.simulation.realtime_teleop",
         description="Realtime camera -> hand angles + arm targets -> H1-2 / GR1-T2 / G1")
-    parser.add_argument("--backend", choices=("auto", "geometric", "checkpoint"),
+    parser.add_argument("--backend", choices=("auto", "geometric", "checkpoint", "dex"),
                         default="auto")
+    parser.add_argument("--dex-calibration", type=Path, help="fixed camera dex calibration JSON")
     parser.add_argument("--diagnostics", action="store_true", help="read-only arm timings and state statistics")
     parser.add_argument("--diagnostic-trace", type=Path, help="stream diagnostic CSV; implies --diagnostics; must be a new file")
     parser.add_argument("--checkpoint", type=Path, default=None)
@@ -915,9 +916,10 @@ def run(args) -> int:
         print(f"[WARN] pose model not found at {pose_asset}: the arms stay held and only the "
               f"hands move. Put pose_landmarker_lite.task into datasets/ or pass "
               f"--pose-model-asset-path (--no-arms silences this).", flush=True)
+    dex_options = ({"dex_calibration": args.dex_calibration, "native_sides": sides} if args.backend == "dex" else {})
     retargeter, backend, note = build_retargeter(
         args.backend, checkpoint, args.device, args.calibration_frames,
-        args.smoothing, args.landmark_space)
+        args.smoothing, args.landmark_space, **dex_options)
     scene = camera = preview = driver = bridge = diagnostics = None
     fixed_slew_m = None
     arm_failures = {}
@@ -938,7 +940,11 @@ def run(args) -> int:
             diagnostics = ArmDiagnostics(getattr(args, "diagnostic_trace", None))
         args.scene = "robots"                      # 手臂只存在于机器人场景
         scene = build_scene(args, sides)
-        commands = build_hand_commands(args, scene, sides)
+        if backend == "dex":
+            from teleoperation.applications.dex_native import command_pipeline, apply_native_window, native_sample_mapping
+            commands = command_pipeline(args, retargeter.models)
+        else:
+            commands = build_hand_commands(args, scene, sides)
         appearance = apply_appearance(
             scene, None if args.original_g1_color else args.g1_color,
             args.light_position, args.shadows)
@@ -1094,6 +1100,9 @@ def run(args) -> int:
                                        args.fps, args.landmark_space,
                                        pose_asset if arms_wanted else None,
                                        args.pose_min_visibility)
+            if backend == "dex":
+                from teleoperation.applications.dex_native import LatestCameraInput
+                camera._input = LatestCameraInput(camera._input)
         preview = build_arm_preview(args, camera, sides)
         camera.diagnostics = diagnostics
         if not args.headless:
@@ -1138,7 +1147,15 @@ def run(args) -> int:
                 if raw_frame is not None and raw_frame.get(side) is not None:
                     raw_seen[side] += 1
             latest = {side: None for side in sides}
-            if window is not None:
+            if backend == "dex":
+                command_timestamp = processed * args.sim_steps / 240 if args.input_npz is not None else None
+                latest = apply_native_window(window, retargeter, commands, scene, command_timestamp)
+                for side in sides:
+                    if latest[side] is None:
+                        invalid[side] += 1
+                    else:
+                        samples[side].append(latest[side])
+            elif window is not None:
                 result = retargeter.retarget(window)
                 for side in sides:
                     angles = getattr(result, side + "_angles")
@@ -1414,7 +1431,7 @@ def run(args) -> int:
                 "raw_detected_frames": raw_seen[side],
                 "valid_frames": len(samples[side]),
                 "invalid_frames": invalid[side],
-                "angles": _describe(samples[side]) if samples[side] else None,
+                "angles": _describe(samples[side], native_sample_mapping(retargeter, side) if backend == "dex" else None) if samples[side] else None,
                 "final_joint_values": final.get(side),
             }
             for side in sides

@@ -32,7 +32,9 @@ def vr_observation(points=None, timestamp=0.):
     hands = {}
     for side in ("left", "right"):
         value = np.tile(np.eye(4), (25, 1, 1))
-        value[:, :3, 3] = points[:, [2, 0, 1]] * ([1, 1, -1] if side == "left" else [-1, -1, 1])
+        # Both sensors encode anatomical geometry with proper rotations, not
+        # the upstream left-to-right reflection embedded in its model profile.
+        value[:, :3, 3] = points
         hands[side] = value
     return RawHandFrame(hands, timestamp, "visionpro", geometry_encoding={s: "transforms25" for s in hands})
 
@@ -206,3 +208,50 @@ class NativeCommandTests(unittest.TestCase):
         self.assertEqual(len(calls),len(model.joint_names))
         self.assertEqual({c.args[1] for c in calls},set(names.values()))
         self.assertEqual(scene.native_commands[key],named)
+
+
+class DexRealtimeTests(unittest.TestCase):
+    def test_latest_source_drops_backlog_and_closes(self):
+        import threading
+        from unittest.mock import Mock
+        from teleoperation.applications.dex_native import LatestCameraInput
+        source=Mock()
+        produced=threading.Event()
+        allow=threading.Event()
+        release=threading.Event()
+        count=[0]
+        def read(**kwargs):
+            count[0]+=1
+            if count[0]==2:
+                allow.wait(2.)
+            if count[0]==5:
+                produced.set()
+                release.wait(2.)
+            return count[0]
+        source.next_observation.side_effect=read
+        source.release.side_effect=lambda **kwargs:release.set()
+        source._cap.release.side_effect=lambda:release.set()
+        wrapper=LatestCameraInput(source)
+        first=wrapper.next_observation(include_world=True)
+        allow.set()
+        self.assertTrue(produced.wait(2.))
+        self.assertEqual(wrapper.next_observation(include_world=True),4)
+        self.assertEqual(first,1)
+        wrapper.close()
+        self.assertFalse(wrapper.thread.is_alive())
+
+    def test_dex_cli_and_factory_reject_wrong_profile_without_loading_devices(self):
+        from teleoperation.cli import build_parser
+        from teleoperation.applications.realtime_hand_sim import build_retargeter
+        args=build_parser().parse_args(["hand","vr","--backend","dex","--input-h5","unused.h5",
+            "--dex-calibration","unused.json","--scene","robots","--hand","both","--hand-mapping","same"])
+        self.assertIsNone(args.checkpoint)
+        with self.assertRaisesRegex(ValueError,"requires"):
+            build_retargeter("dex",Path("unused"),"cpu",15,0.,"normalized")
+
+    def test_existing_vr_route_requires_checkpoint_before_opening_devices(self):
+        from teleoperation.cli import build_parser
+        from teleoperation.applications.visionpro_hand import run
+        args=build_parser().parse_args(["hand","vr","--ip","unused"])
+        with self.assertRaisesRegex(ValueError,"requires --checkpoint"):
+            run(args)

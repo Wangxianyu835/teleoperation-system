@@ -297,7 +297,10 @@ class ThreeRobotHandScene:
                 targetPosition=float(value), force=HAND_FORCE, physicsClientId=self.cid)
         if not hasattr(self, "native_commands"):
             self.native_commands = {}
+            self.native_applied = {}
         self.native_commands[(result.robot_type, result.side)] = dict(values)
+        key = result.robot_type + "/" + result.side
+        self.native_applied[key] = self.native_applied.get(key, 0) + 1
 
     def step(self) -> None:
         """锁住非手部关节，然后推进 ``steps_per_frame`` 步物理。"""
@@ -365,6 +368,7 @@ class ThreeRobotHandScene:
             "physics_dt": PHYSICS_DT,
             "sim_frames": self.frames,
             "applied_frames": dict(self.applied),
+            "native_applied_frames": dict(getattr(self, "native_applied", {})),
             "clipped_dimensions": dict(self.clipped),
             "ground_lift": dict(self.ground_lift),
             "robots": [

@@ -22,6 +22,11 @@ def build_parser(parser=None):
 
 
 def run(args):
+    if getattr(args, "backend", "transhandr") == "dex":
+        from teleoperation.applications.dex_native import visionpro_run
+        return visionpro_run(args)
+    if args.checkpoint is None:
+        raise ValueError("TransHandR VR requires --checkpoint; native dex uses --backend dex --dex-calibration")
     if args.frames < 0 or not np.isfinite(args.fps) or args.fps < 0:
         raise ValueError("frames and fps must be nonnegative")
     mapping = getattr(args, "hand_mapping", None)

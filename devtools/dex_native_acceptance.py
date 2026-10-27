@@ -197,13 +197,14 @@ def recording_evaluation(path):
         frame_ms=sum(np.asarray(stream[f"{r}/{s}/solve_ms"]) for r in ROBOT_SPECS for s in ("left","right"))
         sample=frame_ms[100:]
         report["performance"]={"warmup_frames":100,"sample_frames":len(sample),
-            "six_hand_p95_ms":float(np.percentile(sample,95)),
+            "six_hand_p95_ms":float(np.percentile(sample,95)) if len(sample) else None,
             "p95_le_33ms":bool(len(sample)>=1000 and np.percentile(sample,95)<=33)}
         report["validity_passed"]=all(v["valid_fraction"] is not None and v["valid_fraction"]>=.99 for v in report["hands"].values())
+        report["passed"] = report["validity_passed"]
     return report
 
 
-def vr_checkpoint_comparison(input_path, calibration_path, checkpoint, output):
+def legacy_comparison(input_path, calibration_path, checkpoint, output, source="visionpro", method="checkpoint"):
     """Run the existing upstream VR model and legacy L21 native mapping as-is."""
     import numpy as np
     import torch
@@ -223,10 +224,16 @@ def vr_checkpoint_comparison(input_path, calibration_path, checkpoint, output):
     from teleoperation.simulation.hand_commands import HandCommandPipeline
     torch.set_num_threads(1)
     calibration=DexCalibration.load(calibration_path)
-    adapter=DexInputAdapter("visionpro")
-    pipeline=TransHandRVisionProPipeline()
-    model=load_transhandr_vr_model(checkpoint)
-    predictors={s:TransHandRVRRetargeter(model,source_side=s,target_side=s) for s in ("left","right")}
+    adapter=DexInputAdapter(source)
+    if source == "visionpro":
+        pipeline=TransHandRVisionProPipeline()
+        model=load_transhandr_vr_model(checkpoint)
+        predictors={s:TransHandRVRRetargeter(model,source_side=s,target_side=s) for s in ("left","right")}
+    else:
+        from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
+        from teleoperation.applications.realtime_hand_sim import build_retargeter
+        pipeline=MediaPipePalmLocalPipeline("world")
+        camera_retargeter,_,_=build_retargeter(method,checkpoint or Path("unused"),"cpu",15,0.,"world")
     models={(r,s):NativeHandModel(r,s) for r in ROBOT_SPECS for s in ("left","right")}
     limits={}
     for side in ("left","right"):
@@ -236,25 +243,33 @@ def vr_checkpoint_comparison(input_path, calibration_path, checkpoint, output):
     mappings={k:build_mapping(*k,m.limits) for k,m in models.items()}
     transforms={k:OPERATOR_TO_CANONICAL[k[1]].T@m.palm_reference()[0].T for k,m in models.items()}
     digest=file_hash(input_path)
-    metadata={"method":"upstream_transhandr_vr_legacy_L21_mapping", "input_sha256":digest,
-              "checkpoint_sha256":file_hash(checkpoint),"calibration":vars(calibration),
+    metadata={"method":f"{source}_{method}_legacy_L21_mapping", "input_sha256":digest,
+              "checkpoint_sha256":file_hash(checkpoint) if checkpoint else None,"calibration":vars(calibration),
               "coupling":"legacy independent mapped joints, not the dex mimic-constrained command path"}
     output.parent.mkdir(parents=True,exist_ok=True)
     with NativeHandResultWriter(output,models,metadata) as writer:
         writer.stream.attrs["schema"]="dex_native_comparison_v1"
-        for raw in iter_dex_observations(input_path,"visionpro"):
+        for raw in iter_dex_observations(input_path,source):
             frame=adapter.adapt(raw)
             window=pipeline.process_window(raw)
             angles,accepted,side_ms={},{},{}
+            if source == "camera":
+                start=time.perf_counter()
+                camera_output=None if window is None else camera_retargeter.retarget(window)
+                camera_ms=(time.perf_counter()-start)*1000
             for side in ("left","right"):
                 start=time.perf_counter()
-                result=None if window is None else getattr(predictors[side].retarget(window),side+"_angles")
-                side_ms[side]=(time.perf_counter()-start)*1000
+                if source == "visionpro":
+                    result=None if window is None else getattr(predictors[side].retarget(window),side+"_angles")
+                    side_ms[side]=(time.perf_counter()-start)*1000
+                else:
+                    result=None if camera_output is None else getattr(camera_output,side+"_angles")
+                    side_ms[side]=camera_ms/2
                 if result is None:
                     angles[side]=None; commands.missing(side)
                     accepted[side]=commands.previous[side].copy()
                 else:
-                    angles[side]=canonical_to_native_angles(result.values,side)
+                    angles[side]=canonical_to_native_angles(result.values,side) if source=="visionpro" else result.values
                     accepted[side]=commands.update(side,angles[side],timestamp=raw.timestamp)
             results,applied,targets={},{},{}
             for key,m in models.items():
@@ -311,23 +326,56 @@ def snapshots(path, directory):
     return report
 
 
+def performance(input_path, calibration_path):
+    import time
+    import numpy as np
+    import torch
+    from teleoperation.applications.dex_native import recording_frames
+    from teleoperation.retargeting.hand.dex_native import DexCalibration,DexNativeRetargeter
+    torch.set_num_threads(1)
+    calibration=DexCalibration.load(calibration_path)
+    source="visionpro" if "visionpro" in calibration.profile else "camera"
+    frames=recording_frames(input_path,source)
+    if len(frames)<1100:
+        raise ValueError("Performance requires at least 1100 recorded frames")
+    retargeter=DexNativeRetargeter(calibration)
+    times=[]
+    for frame in frames[:1100]:
+        start=time.perf_counter()
+        retargeter.retarget(frame)
+        times.append((time.perf_counter()-start)*1000)
+    sample=times[100:]
+    return {"warmup_frames":100,"sample_frames":len(sample),"six_hand_p95_ms":float(np.percentile(sample,95)),
+        "mean_ms":float(np.mean(sample)),"passed":bool(np.percentile(sample,95)<=33),
+        "scope":"six native solvers including wrapper, preprocessing/capture/render excluded",
+        "input_sha256":hashlib.sha256(input_path.read_bytes()).hexdigest(),"profile":calibration.profile}
+
+
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--stage", choices=("inventory", "kinematics", "solvers", "recording", "vr-comparison", "snapshots"), default="inventory")
+    parser.add_argument("--stage", choices=("inventory", "kinematics", "solvers", "recording", "vr-comparison", "camera-comparison", "snapshots", "performance"), default="inventory")
     parser.add_argument("--input", type=Path)
     parser.add_argument("--calibration", type=Path)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--result-h5", type=Path)
+    parser.add_argument("--method", choices=("geometric", "checkpoint"), default="checkpoint")
     args = parser.parse_args()
-    if args.stage == "snapshots":
+    if args.stage == "performance":
+        if args.input is None or args.calibration is None:
+            parser.error("performance requires input and calibration")
+        report=performance(args.input,args.calibration)
+    elif args.stage == "snapshots":
         if args.input is None:
             parser.error("snapshots requires native result input")
         report=snapshots(args.input,args.output.parent/"snapshots")
-    elif args.stage == "vr-comparison":
-        if any(v is None for v in (args.input,args.calibration,args.checkpoint,args.result_h5)):
-            parser.error("VR comparison requires input, calibration, checkpoint and result-h5")
-        report=vr_checkpoint_comparison(args.input,args.calibration,args.checkpoint,args.result_h5)
+    elif args.stage in ("vr-comparison", "camera-comparison"):
+        if any(v is None for v in (args.input,args.calibration,args.result_h5)) or (args.method=="checkpoint" and args.checkpoint is None):
+            parser.error("comparison requires input, calibration, result-h5 and checkpoint for a checkpoint method")
+        source="visionpro" if args.stage=="vr-comparison" else "camera"
+        if source=="visionpro" and args.method!="checkpoint":
+            parser.error("Existing VR baseline only supports the explicit upstream checkpoint route")
+        report=legacy_comparison(args.input,args.calibration,args.checkpoint,args.result_h5,source,args.method)
     elif args.stage == "recording":
         if args.input is None:
             parser.error("recording stage requires --input native-results.h5")

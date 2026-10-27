@@ -19,7 +19,11 @@ from teleoperation.retargeting.hand.coordinates import build_palm_basis, OPERATO
 from teleoperation.retargeting.hand.interface import NativeHandRetargeter
 
 SIDES = ("left", "right")
-PROFILES = {"camera": "dex_camera_world_v1", "visionpro": "dex_visionpro_palm_v1"}
+PROFILES = {"camera": "dex_camera_world_v1", "visionpro": "dex_visionpro_palm_v2"}
+VECTOR_PARAMETERS = {"upstream_version": "0.5.0", "type": "vector", "scaling": 1.,
+    "norm_delta": 0., "huber_delta": .02, "ftol_abs": 1e-6, "xtol_abs": 1e-6,
+    "maxeval": 100, "internal_lowpass": False, "native_limit_epsilon": 0.,
+    "recovery": "G1 deterministic multi-start with verified planar feasibility bound"}
 
 
 class DexInputAdapter:
@@ -57,6 +61,12 @@ class DexInputAdapter:
                     raise ValueError("VR dex requires explicit transforms25 encoding")
                 try:
                     relative = transhandr_vr_points(value, side)
+                    # Upstream's left-to-right L21 remap has determinant -1.
+                    # The native left URDF needs anatomical handedness restored
+                    # BEFORE fitting a proper palm rotation. This belongs only
+                    # to the new dex profile, never the upstream model route.
+                    if side == "left":
+                        relative = relative @ np.diag([-1., 1., 1.])
                     basis = build_palm_basis(relative, (0, 6, 11))
                     hands[side] = (relative @ basis @ OPERATOR_TO_CANONICAL[side]).astype(np.float32)
                     reasons[side] = None
@@ -152,7 +162,8 @@ class NativeVectorSolver:
         optimizer = VectorOptimizer(robot, list(model.independent_names),
             [model.root_link] * len(model.fingers), list(model.tip_frames),
             np.array([np.zeros(len(model.fingers), dtype=int), model.human_tip_indices]),
-            scaling=1., norm_delta=0., huber_delta=.02)
+            scaling=VECTOR_PARAMETERS["scaling"], norm_delta=VECTOR_PARAMETERS["norm_delta"],
+            huber_delta=VECTOR_PARAMETERS["huber_delta"])
         mimic_names = [n for n in model.joint_names if n not in model.independent_names]
         if mimic_names:
             optimizer.set_kinematic_adaptor(MimicJointKinematicAdaptor(
@@ -163,9 +174,22 @@ class NativeVectorSolver:
                 offsets=[model.relations[n][2] for n in mimic_names]))
         self.sequence = SeqRetargeting(optimizer, has_joint_limits=True, lp_filter=None)
         optimizer.set_joint_limit(model.bounds, epsilon=0.)
-        optimizer.opt.set_ftol_abs(1e-9)
-        optimizer.opt.set_xtol_abs(1e-8)
-        optimizer.opt.set_maxeval(100)
+        optimizer.opt.set_ftol_abs(VECTOR_PARAMETERS["ftol_abs"])
+        optimizer.opt.set_xtol_abs(VECTOR_PARAMETERS["xtol_abs"])
+        optimizer.opt.set_maxeval(VECTOR_PARAMETERS["maxeval"])
+        self.motion_plane_z = None
+        if model.robot_type == "g1":
+            import xml.etree.ElementTree as ET
+            root = ET.parse(model.urdf_path).getroot()
+            joints = {j.get("name"): j for j in root.findall("joint")}
+            plane_verified = True
+            for finger in ("index", "middle"):
+                for index in (0, 1):
+                    joint = joints[f"{model.side}_hand_{finger}_{index}_joint"]
+                    plane_verified &= np.allclose(np.fromstring(joint.find("axis").get("xyz"), sep=" "), [0,0,1])
+                    plane_verified &= np.allclose(np.fromstring(joint.find("origin").get("rpy", "0 0 0"), sep=" "), 0)
+            if plane_verified:
+                self.motion_plane_z = model.positions(np.clip(np.zeros(len(model.independent_names)), *model.bounds.T))[1:3, 2]
         self.reset()
 
     def reset(self):
@@ -200,7 +224,12 @@ class NativeVectorSolver:
             # A sudden target jump can put G1's thumb in a different local branch.
             # Retry deterministic initial guesses with the SAME upstream optimizer.
             jumped = self.previous_targets is None or np.max(np.linalg.norm(targets - self.previous_targets, axis=1)) > .02
-            if model.robot_type == "g1" and residual > .005 and jumped:
+            # A target outside G1's verified planar finger motion cannot reach
+            # the 5 mm recovery goal under ANY initialization. Avoid futile
+            # multi-starts there; the first upstream optimum is still returned.
+            plane_reachable = (self.motion_plane_z is None or
+                               np.max(np.abs(targets[1:3, 2] - self.motion_plane_z)) <= .005)
+            if model.robot_type == "g1" and residual > .005 and jumped and plane_reachable:
                 seeds = [np.clip(np.zeros(len(model.independent_names)), *model.bounds.T),
                          model.bounds.mean(1), model.bounds[:, 0], model.bounds[:, 1]]
                 for seed in seeds:

@@ -29,6 +29,22 @@
 | 4 Vector 求解 | 126f5e9 | checkpoint-20261027-1215-dex-stage4 | 通过 |
 | 5 命令与回放 | 9470477 | checkpoint-20261027-1220-dex-stage5 | 通过 |
 | 6 实录与比较 | 8a3bb97 | checkpoint-20261027-1500-dex-stage6 | VR 评估进行中；相机校准待新采集 |
+| 7 实时入口 | 9c64049 | checkpoint-20261027-1238-dex-stage7 | 代码/离线联调/性能通过；相机与头显设备项待完成 |
+
+相机两个实时入口增加 `--backend dex --dex-calibration <camera.json>`，要求 world/robots；
+仍复用既有相机窗口和双臂路线。摄像头 dex 模式使用单槽最新观测，不积累待处理队列。
+VR `hand vr --backend dex --dex-calibration <vr.json> --scene robots --hand both --hand-mapping same`
+使用同侧路由，录制回放传 `--input-h5`，实时传 `--ip`。dex 不加载 checkpoint，旧默认仍为 TransHandR。
+VR 只控制原生手，不推造肩肘。`avp_stream` 当前独立环境尚未安装，设备实测不能标为通过。
+SDK 默认依赖会额外安装 OpenCV 和其他仿真库；本次在下载阶段停止，避免覆盖既有 OpenCV。
+实时 SDK 的兼容安装与真实连接仍是设备验收前提，不能用离线回放代替。
+阶段 7 完整回归 465 项通过（1 原有跳过）；VR 新入口完成 150 帧六手回放。
+双臂双手入口在合成混合输入下完成 35 帧，六手各执行 33 帧、手臂失败列表为空。
+首两帧保留原有三帧窗口预热。单槽最新相机源的积压丢弃、退出及错误配置测试通过。
+性能单测使用最终参数：100 帧预热 + 1000 帧，六手合计 P95 22.061 ms，均值 13.151 ms；
+全部 600 个可达姿态重新通过 5/10 mm 原门槛。检测/渲染不计入该求解性能数字。
+当前会话相机 0 实际探测 opened=False/read_frame=False；头显未连接，缺 SDK 和当前连接地址。
+两次 5 分钟设备动作清单均未完成。
 
 阶段 6 已完整导出两份 VR 实录（4631/2886 帧），六手在适配有效帧上的求解有效率均为 100%。
 统计工具以 is_calibration 排除本文件校准片段，记录文件/评估索引哈希，分别计算原始解和执行命令的
@@ -59,16 +75,22 @@ joint_names/config_hash、raw_angles、command_angles、valid、solve_ms、error
 `NativeHandResult` 与 `NativeHandRetargeter` 是新增的原生关节接口；L21 结果接口不变。
 Vector 使用官方 0.5.0 `VectorOptimizer`、`MimicJointKinematicAdaptor`、`SeqRetargeting`。
 参数：scaling=1（尺度在固定校准边界处理），norm_delta=0、huber_delta=0.02、
-ftol_abs=1e-9、xtol_abs=1e-8、maxeval=100、内部低通关闭；优化器边界 epsilon=0。
+ftol_abs=1e-6（官方默认）、xtol_abs=1e-6、maxeval=100、内部低通关闭；优化器边界 epsilon=0。
 每只手独立初始化/重置。失败恢复该手上一次优化初值，返回无效状态，不将旧解伪装为新有效解。
 G1 的突变目标可能落入拇指局部极小值。若目标变化超过 20 mm（或首帧）且最大残差超过 5 mm，
 以零位、有效行程中点及上下界作有界确定性重试；各次仍调用相同官方优化器，保留最大指尖误差最小的解。
+G1 食指/中指的源 URDF 验证为 Z 轴平行的两关节平面机构：若目标离该运动平面已超过 5 mm，
+不执行无法达到 5 mm 恢复目标的多初值重试，仍返回首次官方优化解。此边界不缩放或更改输入目标。
+最终参数和恢复策略通过 `VECTOR_PARAMETERS` 写入结果元数据，未修改已安装官方算法代码。
 阶段 4：六手各 100 个可达目标全部满足平均误差 5 mm/最大单指误差 10 mm 门槛，
 没有求解失败，重置重放在 1e-5 rad 内一致；完整回归 459 项通过，1 项原有跳过。
 
 VR 源参考：`D:/2026/code/TransHandR/TransHandR/main_visionpro_realtime.py:1136`，
 SHA256 `f6141c0aa57b88e98a641912edaa3791c81116dd49a61119b8c4b811c200ff8f`。
-新增 `dex_visionpro_palm_v1` 在保留上游提取/轴变换/腕部相对化后，显式增加 dex 掌部局部坐标转换。
+新增 `dex_visionpro_palm_v2` 在保留上游提取/轴变换/腕部相对化后，显式恢复左手手性，再增加 dex 掌部局部坐标转换。
+上游左侧轴变换行列式为 -1（历史用途为左手输入驱动右 L21），dex 的原生左手路线在拟合掌部旋转前
+增加 X 轴反射以恢复源手性；右侧轴变换行列式为 +1，无此额外操作。
+修正前 v1 校准被拒绝，两份实录必须使用 v2 重新校准、求解和评估；v1 数值不能作为最终结果。
 这属于新后端的输入适配，不改 `transhandr_axis_wrist_three_frame_v1` 或原模型权重。
 相机使用 `dex_camera_world_v1`；normalized 输入不支持此后端。
 校准至少两秒、每侧至少十个有效张开手样本；掌长取腕到 middle MCP 的中位数，求解时固定。

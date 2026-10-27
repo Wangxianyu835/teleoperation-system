@@ -8,7 +8,9 @@ def configure(parser):
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--ip", help="Vision Pro Tracking Streamer IP or room code")
     source.add_argument("--input-h5", type=Path, help="existing raw Vision Pro transform recording")
-    parser.add_argument("--checkpoint", type=Path, required=True, help="original TransHandR VR model_pos checkpoint")
+    parser.add_argument("--backend", choices=("transhandr", "dex"), default="transhandr")
+    parser.add_argument("--dex-calibration", type=Path, help="fixed dex Vision Pro calibration JSON")
+    parser.add_argument("--checkpoint", type=Path, help="required for the original TransHandR VR backend")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--source-hand", choices=("left", "right", "both"),
                         help="sensor side (default: left for single-hand, both for dual-hand)")

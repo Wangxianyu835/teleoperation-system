@@ -138,7 +138,7 @@ def resolve_model_asset(path: Path | None) -> Path:
 
 
 def build_retargeter(backend: str, checkpoint: Path, device: str, calibration_frames: int,
-                     smoothing: float, landmark_space="normalized"):
+                     smoothing: float, landmark_space="normalized", dex_calibration=None, native_sides=SIDES):
     """Return ``(retargeter, backend_name, note)`` for the requested backend.
 
     ``auto`` prefers the trained checkpoint and falls back to the geometric
@@ -147,6 +147,14 @@ def build_retargeter(backend: str, checkpoint: Path, device: str, calibration_fr
     """
     from teleoperation.retargeting.hand.geometric import GeometricHandRetargeter
 
+    if backend == "dex":
+        if landmark_space != "world" or dex_calibration is None:
+            raise ValueError("--backend dex requires --landmark-space world and --dex-calibration")
+        from teleoperation.retargeting.hand.dex_native import DexCalibration, DexNativeRetargeter
+        calibration = DexCalibration.load(dex_calibration)
+        if calibration.profile != "dex_camera_world_v1":
+            raise ValueError("Camera dex requires a camera calibration profile")
+        return DexNativeRetargeter(calibration, sides=native_sides), "dex", "native Vector, fixed camera calibration"
     checkpoint = Path(checkpoint)
     if backend == "checkpoint":
         if not checkpoint.is_file():
@@ -478,7 +486,7 @@ class CameraPreview:
             self._text(canvas, side, (int(pixels[0][0]) + 8, int(pixels[0][1]) - 8),
                        self._colors[side], 0.6)
             if angles.get(side) is not None:
-                self._text(canvas, f"{side} angles: 18 dims", (10, height - 10 - 20 * index),
+                self._text(canvas, f"{side} angles: {len(angles[side])} dims", (10, height - 10 - 20 * index),
                            self._colors[side], 0.5)
         if all((raw_frame or {}).get(side) is None for side in self.sides):
             self._text(canvas, "no hand detected (keep the hand in frame, well lit)",
@@ -608,14 +616,15 @@ def preview_hud(processed, marks, sides, samples, invalid, retargeter, raw_seen,
             f"source={landmark_space} units={'m' if landmark_space == 'world' else 'normalized'}")
 
 
-def _describe(vectors) -> dict:
+def _describe(vectors, mapping=None) -> dict:
     """Frame count plus per-dimension observed range for one side."""
-    array = np.asarray(vectors, dtype=np.float64).reshape(-1, HAND_ANGLE_DIM)
+    mapping = mapping if mapping is not None else [MAPPING_18[dim] or "placeholder" for dim in range(HAND_ANGLE_DIM)]
+    array = np.asarray(vectors, dtype=np.float64).reshape(-1, len(mapping))
     return {
         "frames": int(array.shape[0]),
         "min": [float(value) for value in array.min(axis=0)],
         "max": [float(value) for value in array.max(axis=0)],
-        "mapping": [MAPPING_18[dim] or "placeholder" for dim in range(HAND_ANGLE_DIM)],
+        "mapping": list(mapping),
     }
 
 
@@ -638,12 +647,16 @@ def run(args) -> int:
     """Capture the camera until ``--frames`` or quit, retarget, and show the sim."""
     from teleoperation.applications.hand_realtime import MediaPipeCameraWorkflow
 
+    if args.backend == "dex" and args.scene != "robots":
+        raise ValueError("Native dex requires --scene robots")
     asset = resolve_model_asset(args.model_asset_path)
     checkpoint = args.checkpoint or realtime_checkpoint(args.landmark_space)
     sides = SIDES if args.hand == "both" else (args.hand,)
+    dex_options = ({"dex_calibration": args.dex_calibration, "native_sides": sides} if args.backend == "dex" else {})
     retargeter, backend, note = build_retargeter(
         args.backend, Path(checkpoint), args.device,
         args.calibration_frames, args.smoothing, landmark_space=args.landmark_space,
+        **dex_options,
     )
     print(f"backend={backend} ({note})", flush=True)
     print(f"model_asset={asset}", flush=True)
@@ -663,7 +676,11 @@ def run(args) -> int:
     elapsed, final = 0.0, {}
     try:
         scene = build_scene(args, sides)
-        commands = build_hand_commands(args, scene, sides)
+        if backend == "dex":
+            from teleoperation.applications.dex_native import command_pipeline, apply_native_window, native_sample_mapping
+            commands = command_pipeline(args, retargeter.models)
+        else:
+            commands = build_hand_commands(args, scene, sides)
         if args.scene == "robots":
             print(f"scene=three_robots: H1-2 / GR1-T2 / G1 side by side, native hands, "
                   f"{args.sim_steps} physics steps per frame.", flush=True)
@@ -679,6 +696,9 @@ def run(args) -> int:
         # landmarker.close() 上（实测 42 s，见模块 docstring 的"退出行为"）。
         camera = MediaPipeCameraWorkflow(asset, args.camera_index,
                                         args.width, args.height, args.fps, landmark_space=args.landmark_space)
+        if backend == "dex":
+            from teleoperation.applications.dex_native import LatestCameraInput
+            camera._input = LatestCameraInput(camera._input)
         preview = build_preview(args, camera, sides)
         if not args.headless:
             print(PREVIEW_HINT_ROBOTS if args.scene == "robots" else PREVIEW_HINT_HANDS,
@@ -696,7 +716,14 @@ def run(args) -> int:
             for side in sides:
                 if raw_frame is not None and raw_frame.get(side) is not None:
                     raw_seen[side] += 1
-            if window is None:
+            if backend == "dex":
+                latest = apply_native_window(window, retargeter, commands, scene)
+                for side in sides:
+                    if latest[side] is None:
+                        invalid[side] += 1
+                    else:
+                        samples[side].append(latest[side])
+            elif window is None:
                 # 三帧窗口还没攒够（或刚丢手）：预览里不留上一帧的角度，避免误会。
                 latest = {side: None for side in sides}
                 for side in sides:
@@ -787,7 +814,7 @@ def run(args) -> int:
                 "raw_detected_frames": raw_seen[side],
                 "valid_frames": len(samples[side]),
                 "invalid_frames": invalid[side],
-                "angles": _describe(samples[side]) if samples[side] else None,
+                "angles": _describe(samples[side], native_sample_mapping(retargeter, side) if backend == "dex" else None) if samples[side] else None,
                 "final_joint_values": final.get(side),
             }
             for side in sides
@@ -879,7 +906,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--backend", choices=("auto", "geometric", "checkpoint"), default="auto")
+    parser.add_argument("--backend", choices=("auto", "geometric", "checkpoint", "dex"), default="auto")
+    parser.add_argument("--dex-calibration", type=Path, help="fixed camera dex calibration JSON")
     parser.add_argument("--landmark-space", choices=("world", "normalized"), default="world")
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)
