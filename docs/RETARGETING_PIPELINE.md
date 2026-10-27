@@ -3,7 +3,7 @@
 > 2026-10-11：本文保留原分支的运行与验收历史。合并后的入口、坐标数据差异及测试结果见 [main 集成记录](integration-2026-10-11.md)，本文的历史机器路径与测试数量不代表当前 main。
 
 > **适用版本**：`origin/current-state`（包 `src/teleoperation`，CLI `python -m teleoperation`）
-> **最后更新**：2026-10-10（基线 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`，本文路径与数字已同步）· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
+> **最后更新**：2026-10-15（§8.19 **方向口径落成每台的属性**：原来搬的是操作者的绝对方向，gr1_t2 加载姿势下前臂朝后下方，于是"你没动"也要它先拆开 97 度、被顶进限位一角（肘任务残差中位 197.5 mm）；换成相对档后 25.6 mm，h1_2/g1 换过去反而退化所以仍是绝对档 —— 新旗子 `--arm-posture-frame {auto,mapped,delta}` 默认 `auto`。基线仍是 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`；本轮四件事 —— ① "摄像头窗口那句话的判据修正"实测记录：`summarise_camera_window` 改按报告的 `window_rect` 判断，不再把按 q 正常退出误报成窗口没开；② **加手臂的实时入口 `devtools/run_realtime_arm_windows.py`**：默认口径由 `chain` 改为 `posture`（现场「大臂抬不起来 / 张不开怀抱」的直接修复，见 `multi-robot-arm.md` §8.15）；③ 当晚复查：`realtime_teleop` 多了 `--arm-rest-poses {current,zero,live}`（默认 `current` = 行为不变），「肘 / 小臂不跟手」定位到 PyBullet `restPoses` 这个零空间代价项，见 `multi-robot-arm.md` §8.16）；④ **「肘 / 小臂不跟手」接上线**：`realtime_teleop` 多了 `--arm-elbow-follow {off,operator}`（**默认 `off`**，实测把 4 个源文件退回 `2170cfb` 逐字同路），`operator` 把操作者这一帧的肘弯（绝对角）交给每台机器人**自己实测的**肘关节当零空间参考（论文 `PostureTask` 的等价物）；同一份回放 200 帧的确定性 A/B 是肘任务中位 5/6 侧改善、腕任务 6/6 侧不恶化，见 `multi-robot-arm.md` §8.17；同节 §8.17.10 另给了一个**固化档入口** `devtools/run_realtime_arm_elbow_follow_windows.py`（= 上面那个入口 + 钉住 `operator`，加 `--off` 就是历史档，现场一键还原这一版）。**做 A/B 请注意**：现场口径的「关键点跳变护栏 / 速率斜坡」按**墙钟时间**换算，同一条命令两次跑可能差一帧判定、整场分叉（§8.17.4 实测），确定性做法是加 `--arm-direction-rate-deg-s 0 --arm-slew-mm 40`）· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
 > [`contracts.md`](contracts.md)（H5 / 命令契约，字段以它为准）· [`architecture.md`](architecture.md)（模块层次）·
 > 注意：`docs/archive/`（旧布局手册，只读参考）已随上游 `10ebd9f` 被整体删除，
 > 旧布局的对照表保留在 §5（本文档内，自足）。
@@ -177,6 +177,60 @@ $py='E:\python3.11.7\python.exe'
 & $py devtools\run_realtime_windows.py --check            # 只体检（解释器/依赖/模型/相机），不开窗口
 ```
 
+**手 + 手臂一起动（`devtools/run_realtime_arm_windows.py`）**：上面那个入口只驱动手指，手臂被
+场景每帧锁在中性姿态（`docs/multi-robot-arm.md` §8）。要连手臂一起驱动就换这个入口，前置条件
+一样，只多要一个 pose 模型（`datasets/pose_landmarker_lite.task`）：
+
+```powershell
+$py='E:\python3.11.7\python.exe'
+& $py devtools\run_realtime_arm_windows.py           # 手 18 维 + 手臂（默认方向口径 posture）
+& $py devtools\run_realtime_arm_windows.py --check   # 只体检
+```
+
+- 启动行 `arm map: posture | ...` 是**默认**（2026-10-14 起）：方向口径把你的上臂 / 前臂方向
+  1:1 搬到三台机器人自己的连杆上，逐轴行程夹子不再参与。
+- 历史口径 `chain` 仍在（显式 `--arm-map chain`）：它不给 IK 肘目标、肩的行程被夹在 40-150 mm，
+  现场表现就是「大臂抬不起来 / 张不开怀抱」—— 默认改成 posture 的原因与 A/B 数字见
+  `docs/multi-robot-arm.md` §8.10 / §8.15。
+- 参数、验收与已知未解决项都在 `docs/multi-robot-arm.md` §8：GR1-T2 的肘任务残差 175.8 mm 的机制已在
+  §8.16 结清（PyBullet `restPoses` 这个零空间代价项把解往加载姿势拽）；`realtime_teleop` 因此多了
+  `--arm-rest-poses {current,zero,live}`，**默认 `current` = 历史行为不变**，`live` 只是可复现的实验档
+  （现场那条录制上不划算，数字见 §8.16.4）。
+- **「肘 / 小臂不跟手」的那一半已经接上线**（2026-10-15，§8.17）：新旗子
+  `--arm-elbow-follow {off,operator}`，**默认 `off` = 历史行为逐字同路**（实测：把 4 个源文件退回
+  `2170cfb` 跑同一命令，1976 个共同叶子全等）。`operator` 把你这一帧的**肘弯**（绝对角）交给每台
+  机器人自己的肘关节当零空间参考（论文 `PostureTask` 的等价物：PyBullet 没有 posture task，只有
+  `restPoses` 这一个代价项）。同一份回放 200 帧的确定性 A/B：肘任务残差中位 **5/6 侧改善**、
+  腕任务 **6/6 侧不恶化**，代价是 h1_2 右与个别 jerk 峰值。启动行会打印
+  `elbow follow = off|operator`，报告里看 `/arm/robots/<robot>/elbow_posture` 与
+  `/bridge/elbow_bend_deg`。
+- **想一键跑这一档（2026-10-15 现场版）**：`devtools/run_realtime_arm_elbow_follow_windows.py`
+  —— 它就是上面那个入口的**固化档**（同一个 parser、同一套两个窗口、同一份报告、同一套退出码），
+  只把 `--arm-elbow-follow operator` 钉死；加 `--off` 就是历史行为对照档。PyCharm 里把 Script path
+  指到它、直接 Run 即可（细节见 `multi-robot-arm.md` §8.17.10）。
+- **「跑一会 GR1-T2 的大臂与小臂夹角反过来」已定位并修掉**（2026-10-15，§8.18）：不是 §8.17 那一档
+  的锅（同一条确定性命令上 `off` / `operator` 两档的逐帧命令点只差 0.2-1.2 度），而是它下面两层的
+  斜坡 —— `--arm-map posture` 的命令点是刚性的一对（腕 = 肘 + L_f*v），而
+  `ArmSceneDriver._slew_target` 只限速**腕**那一点：快速动作时肘目标一步走 145.9 mm、腕每帧最多
+  40 mm，这一对从 250.6 mm 缩到 51.1 mm，那条方向成了噪声、IK 只能把前臂折到反方向。修法是
+  `apply_each(..., elbow_rigid=...)`（入口 `rigid_elbow_robots()` 只标记方向口径那几台）在**会压扁
+  这一对的帧**上改为保持上一帧下发的那一对。同一份 200 帧回放：前臂反向帧 7 -> 3、压扁帧 11 -> 0，
+  前臂抽动与腕残差不动。**现场不用加开关**，默认路径就带着它；要现场对照/调可以把护栏地板
+  写成 `--arm-slew-pair-floor 0.4`（更少介入）或 `0`（关掉 = 历史行为），报告里看
+  `arm_slew_pair_floor_ratio` 与 `arm.target_slew_pair_skips`（复现/对照命令见 §8.18.3，
+  四个候选修法的对比表见 §8.18.4）。
+
+- **「GR1-T2 的手臂怎么拐就怎么拐、达不到 H1-2 那样准」是**方向口径的口径问题**，不是机器人手臂的问题**
+  （2026-10-15，§8.19）：逐帧证据先把「机器人跟不上」排除掉 —— 六个机位的 `elbow_task_mm`（实际到达）
+  与 `solution_elbow_mm`（IK 自己解出来的）**逐位相同**（gr1_t2 左 197.5 / 197.5），两个目标点的半径
+  也逐帧等于机器人自己的连杆长（`|cmd_elbow-upper|` 178.6 vs 178.7 mm），关节到达角与命令角逐列相同。
+  真正的问题在映射层：原口径搬的是**你的绝对方向**（`u = axis_map(你的上臂方向)`），而 gr1_t2 加载
+  姿势下前臂朝**后**下方（基座系 `(-0.80,+0.09,-0.60)`，肘弯 111.2 度）—— 同一句「指向前下方」对它
+  等于「先拆开 97 度」，它于是被顶进自己限位的一角（肩 pitch -2.785 / 限位 -2.79，肘 2.272 / 2.27）。
+  新增 `--arm-posture-frame {auto,mapped,delta}`（**默认 `auto` = 逐台按 `ArmProfile.posture_frame`**）：
+  gr1_t2 用 `delta`（把你的旋转套在本机自己的中性方向上），h1_2 / g1 仍是 `mapped`。同一份 200 帧回放：
+  gr1_t2 左肘任务残差中位 196.4 -> **28.6** mm、上臂方向误差 65.0 -> **9.2** 度；右 129.6 -> **47.6** mm；
+  **h1_2 / g1 六个读数逐位不变**，`--arm-posture-frame mapped` 与改前逐位相同。见 §8.19.6 的对照表。
 - PyCharm 配置：Script path 指向该文件，Working directory = `F:\simulation_platform_cs`，
   Parameters 留空即可；**解释器选错也能起来** —— 它发现当前解释器缺
   `cv2`/`mediapipe`/`pybullet` 时会打印 `[WARN] current interpreter ... lacks: ...`，然后用
@@ -194,8 +248,14 @@ $py='E:\python3.11.7\python.exe'
   同时打印它的**实际屏幕矩形**：`camera window placed at 28,91 (640x480) [always on top],
   screen ... title='camera: MediaPipe 21-landmark input (q/Esc quits)'`；矩形落在可见桌面之外会再打
   一行 `WARNING: the camera window is outside the visible desktop`。`--preview-no-topmost` 关掉置顶。
-  跑完启动器还会读报告回一句 `[OK] camera window stayed open at [x, y, w, h]` 或
-  `[WARN] the camera window did NOT stay open: <原因>` —— 下次"只看见机器人窗口"，先看这两行。
+  跑完启动器还会读报告回三选一的一句：`[OK] camera window stayed open at [x, y, w, h]`（还在显示）/
+  `[OK] camera window was open at [x, y, w, h] ... it is closed now because the run ended`（开过、
+  随本次运行结束关闭）/ `[WARN] the camera window did NOT stay open: <原因>` + 一行重试命令
+  —— 下次"只看见机器人窗口"，先看这几行。判据是报告里的 `window_rect`（只有成功的 `_place()`
+  才写），**不是** `preview.window`：后者读的是写报告那一刻的 `CameraPreview.show`，而入口收尾用
+  后台线程调 `preview.close()` 把它置 `False`（`realtime_teleop.py:1045` ->
+  `realtime_hand_sim.py:535`），两者是竞态 —— 2026-10-14 之前这里会把"按 q 正常退出"误报成
+  "窗口没开"（修正记录见本节下一条）。
 - 实测 2026-10-10（`E:\python3.11.7\python.exe`）：`--check` 退出码 `0`（`modules present`、
   `model asset .../outputs/hand_landmarker.task (7819105 bytes)`、`cameras readable: [0]`）；
   工作目录被故意设成 `devtools` 时打印 `working directory ... -> F:\simulation_platform_cs`
@@ -269,6 +329,18 @@ $py='E:\python3.11.7\python.exe'
     [28, 91, 640, 480] (mirrored=True)`。`--frames 25 --preview-window-pos 300,200
     --preview-no-topmost` -> 退出码 `1`，`placed at 308,231 (640x480)`（= 请求的 300,200 加窗口边框
     8,31）、且**没有** `[always on top]` 标记 —— 两个开关都确实生效。
+  - 摄像头窗口那句话的判据修正（2026-10-14，仍在既有文件 `devtools/run_realtime_windows.py` 里改
+    `summarise_camera_window`，未新增模块）：三机器人长跑按 q 退出后末尾报的是
+    `[WARN] the camera window did NOT stay open: unknown reason`，而同一份日志里有
+    `camera window: on (mirrored), title='camera: hands + arms (q/Esc quits)', position=(20, 60)`、
+    报告里有 `window_rect=[28, 91, 640, 480]` —— 假警报，根因是 `preview.window` 与收尾 `close()`
+    的竞态（同一天两次正常退出：长跑报 `False`、`--frames 40` 短跑报 `True`，两次窗口都开着）。
+    改成按 `window_rect` 三段判断后，"开过但已随退出关闭"必须报 `[OK] ... was open at [...]`，
+    该场景由既有 `tests/test_arm_preview.py::CameraWindowSummaryTests`（4 条：还在显示 / 关过但开过 /
+    从没开成带 note 与重试命令 / 没要求窗口时保持安静）锁定。验收：`preflight.ps1 -Base d8bca93
+    -Full` 退出码 `0`、unittest `Ran 352 tests [OK (skipped=3)]`；`check_gbk_safe.py --strict`
+    退出码 `0`。同一次 `--frames 40` 实跑里报告为 `window_rect=[28, 91, 640, 480]`、
+    `arm_failures={}`、`fps=7.9`，窗口确实开在屏幕左上角。
   - 预览分支的无显示器验证：`--headless --frames 30 --preview-dump-dir outputs\tmp_preview_probe
     --preview-dump-frames 3`：退出码 `1`，`camera preview: window=off ... dumped_png=3`，写出 3 张
     约 280 KB 的带骨架 PNG —— 证明 `_PreviewCapture` 代理、`annotate`/HUD、dump 三者在 `--headless`

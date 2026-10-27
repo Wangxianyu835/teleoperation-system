@@ -13,8 +13,9 @@ PyBullet 在回放或实时运行时显示机械手动作。
 如果已有兼容模型，则无需重新训练。
 
 项目还支持 Vision Pro / VR 输入和双臂仿真，入口见第 5 节。
-双臂完整合成场景验收尚未全部通过：H1-2 右臂在大幅运动触发行程夹取后仍有位置误差。
-最近的双臂修复尚未完成真人摄像头复测。
+合并后的腕部位移路线在 30 Hz 和 13 Hz 合成验收中各通过 89 项检查。
+新增默认方向路线已完成六条手臂的离线回放与诊断检查。
+真人摄像头效果尚待复测。
 具体结果见[双臂诊断与验收](docs/arm-diagnostics.md)。
 
 - [1. 准备环境](#1-准备环境)
@@ -309,6 +310,62 @@ $checkpoint = "$checkpointRoot/models/twohand_h5/linker/$run/model_best.pth"
 
 此程序不保存关节角 H5 文件。
 [手部输出说明](docs/hand-command-safety.md)介绍了滤波、角速度限制和碰撞检查。
+
+### 4.3 实时驱动三机器人的双臂与双手（可选）
+
+此入口已整合 `cs/multi-robot-arm` 的方向映射和肘部跟随。
+默认同时驱动 H1-2、GR1-T2 和 G1。
+手指继续使用第 3 节中坐标声明匹配的 checkpoint。
+手臂使用 MediaPipe Pose world 米制肩、肘、腕关键点。
+
+先将 Pose 模型放到 `datasets/pose_landmarker_lite.task`。
+然后在前文设置的终端中执行以下命令：
+
+```powershell
+$armSession = Get-Date -Format 'yyyyMMdd_HHmmss'
+$poseAsset = 'datasets/pose_landmarker_lite.task'
+if (-not (Test-Path $poseAsset)) { throw "缺少 Pose 模型：$poseAsset" }
+
+& $python -m teleoperation.simulation.realtime_teleop `
+  --backend checkpoint --checkpoint $checkpoint --landmark-space world --device cpu `
+  --camera-index $camera --model-asset-path $handAsset --pose-model-asset-path $poseAsset `
+  --side both --no-arm-fallback --arm-map posture --arm-elbow-follow operator `
+  --diagnostics --diagnostic-trace "outputs/tmp_realtime/arm_trace_$armSession.csv" `
+  --report "outputs/tmp_realtime/arm_report_$armSession.json" `
+  --dump-npz "outputs/tmp_realtime/arm_raw_$armSession.npz"
+```
+
+1. 保持双臂中性姿态约 30 个有效帧，让标定值收敛。
+2. 分别小幅移动左右上臂。
+3. 分别弯曲左右肘部。
+4. 检查机械臂方向和手指动作。
+5. 在摄像头窗口中按 `q` 或 `Esc` 停止。
+
+默认 `track` 模式从第一帧有效观测开始跟随，同时收集中性姿态。
+若需在标定完成前保持不动，添加 `--arm-calibrate-mode hold`。
+命令中的 `--no-arm-fallback` 让 Pose 丢失时保持上一目标。
+
+| 任务 | 参数或说明 |
+|---|---|
+| 只显示并驱动一台机器人 | 添加 `--robot g1`、`--robot h1_2` 或 `--robot gr1_t2`。 |
+| 按人体上臂和前臂方向跟随 | `--arm-map posture`，这是当前实时入口的默认模式。 |
+| 使用旧的腕部相对位移映射 | 改为 `--arm-map chain`。 |
+| 使用分段位移并加入肘部位置目标 | 改为 `--arm-map segments --arm-elbow-task`。 |
+| 关闭肘角参考跟随 | 将 `--arm-elbow-follow operator` 改为 `--arm-elbow-follow off`。标准入口默认是 `off`。 |
+| 选择方向参考系 | 默认 `--arm-posture-frame auto`：GR1-T2 使用相对中性旋转 `delta`，H1-2 和 G1 使用 `mapped`。 |
+| 选择 IK 关节参考 | 默认 `--arm-rest-poses current` 读取本帧关节角；`live` 是别名，`loaded` 使用加载时姿态，`zero` 使用零角度。 |
+| 使用人体腕姿态约束 | 默认 `--arm-orientation off`；选择 `auto` 时按机器人 profile 启用。 |
+
+`posture` 按机器人骨段长度构造方向目标，不使用旧位移模式的逐轴行程夹取。
+实际运动仍受 URDF 关节限位和 IK 收敛情况限制。
+方向跳变保护、目标变化速率限制和解分支恢复会影响最终跟随。
+请结合报告检查效果，不要将源分支的历史现场指标当作本次实测结果。
+
+CSV 保留原有请求目标字段，并增加 `ik_target_base`、`ik_target_world` 和 `ik_position_error_mm`。
+新增字段表示经过目标限速和肩部跟随后实际交给 IK 的目标及其误差。
+旧 NPZ 回放继续使用固定物理步数；新增方向保护和限速也使用该固定时间间隔。
+真人摄像头效果需在本机复测。
+整合细节见[分支整合记录](docs/branch-integration-2026-10-27.md)。
 
 ## 5. 查找其他功能与源文件
 

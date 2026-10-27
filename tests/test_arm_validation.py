@@ -17,6 +17,17 @@ from tests.test_arm_ik_multi_robot import ASSETS_AVAILABLE, PYBULLET_AVAILABLE
 
 
 class ValidationInputTests(unittest.TestCase):
+    def test_pose_fallback_rotates_the_elbow_plane_without_moving_the_wrist(self):
+        from teleoperation.simulation.arm_realtime import wrist_orientation_frame, relative_wrist_rotation
+        data = synthetic_recording(13, scenarios=(("neutral", 1.), ("pose_fallback", 1.)))
+        for side in ("left", "right"):
+            neutral, rotated = data[side + "_arm"][0], data[side + "_arm"][-1]
+            np.testing.assert_array_equal(neutral[[0, 2]], rotated[[0, 2]])
+            rotation = relative_wrist_rotation(rotated, wrist_orientation_frame(neutral))
+            self.assertIsNotNone(rotation)
+            self.assertAlmostEqual(float(np.trace(rotation)), -1., places=6)
+        self.assertEqual(json.loads(str(data["metadata_json"]))["scenario_revision"], 2)
+
     def test_fixed_seed_preserves_scenarios_and_declares_synthetic_time(self):
         first, second = synthetic_recording(13), synthetic_recording(13)
         for key in first:

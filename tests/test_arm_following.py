@@ -148,6 +148,62 @@ class ArmSolveStateTests(unittest.TestCase):
                     np.testing.assert_array_equal(self.states(adapter), before)
                     self.assertEqual(adapter.last_target_world.get(side), target)
 
+    def test_elbow_solution_and_recovery_preserve_all_joint_states(self):
+        for name, adapter in self.driver.ik.items():
+            for side in ("left", "right"):
+                with self.subTest(robot=name, side=side):
+                    before = self.states(adapter)
+                    points = adapter.arm_points(side)
+                    world_wrist, world_elbow = points["wrist"], points["elbow"]
+                    index = adapter.arm_ids[side][0]
+                    adapter.p.resetJointState(adapter.body, index, before[adapter.position_of[index], 0],
+                                             targetVelocity=0.17, physicsClientId=adapter.cid)
+                    before = self.states(adapter)
+                    try:
+                        values = adapter.solve(side, world_wrist, source="world",
+                                               elbow=world_elbow, elbow_pass="last")
+                        self.assertEqual(len(values), 7)
+                        np.testing.assert_array_equal(self.states(adapter), before)
+                        target = adapter.last_target_world[side]
+
+                        def fail_recovery(*args, **kwargs):
+                            adapter._teleport(side, adapter.limits["rest"])
+                            raise RuntimeError("elbow recovery failed")
+
+                        with patch.object(adapter, "_recover_elbow_branch", side_effect=fail_recovery):
+                            with self.assertRaisesRegex(RuntimeError, "elbow recovery failed"):
+                                adapter.solve(side, world_wrist, source="world",
+                                              elbow=world_elbow, elbow_pass="last")
+                        np.testing.assert_array_equal(self.states(adapter), before)
+                        self.assertEqual(adapter.last_target_world[side], target)
+                    finally:
+                        for joint, (angle, velocity) in zip(adapter.indices, before):
+                            adapter.p.resetJointState(adapter.body, joint, angle,
+                                                     targetVelocity=0., physicsClientId=adapter.cid)
+
+    def test_current_and_live_read_current_angles_while_loaded_keeps_initial_reference(self):
+        for name, adapter in self.driver.ik.items():
+            with self.subTest(robot=name):
+                index = adapter.arm_ids["right"][0]
+                q, velocity = adapter.p.getJointState(adapter.body, index,
+                                                      physicsClientId=adapter.cid)[:2]
+                previous_mode = adapter.rest_poses
+                try:
+                    adapter.p.resetJointState(adapter.body, index, q + 0.08,
+                                             physicsClientId=adapter.cid)
+                    expected = self.states(adapter)[:, 0]
+                    for mode in ("current", "live"):
+                        adapter.rest_poses = mode
+                        np.testing.assert_array_equal(adapter._rest_poses(), expected)
+                    adapter.rest_poses = "loaded"
+                    np.testing.assert_array_equal(adapter._rest_poses(), adapter.limits["rest"])
+                    self.assertNotEqual(adapter._rest_poses()[adapter.position_of[index]],
+                                        expected[adapter.position_of[index]])
+                finally:
+                    adapter.rest_poses = previous_mode
+                    adapter.p.resetJointState(adapter.body, index, q, targetVelocity=velocity,
+                                             physicsClientId=adapter.cid)
+
     def test_unreachable_wrist_orientation_does_not_sacrifice_position(self):
         adapter = self.driver.ik["h1_2"]
         for side in ("left", "right"):
@@ -187,12 +243,14 @@ class ArmRealtimeLoopTests(unittest.TestCase):
             for side in ("left", "right"):
                 data[side + "_hand"] = np.stack([hand] * 4)
                 data["world_" + side + "_hand"] = np.stack([(hand - hand[0]) * 0.19] * 4)
-                data[side + "_arm"] = np.stack([arm(side)] * 4)
+                # A relative wrist orientation requires a non-collinear elbow plane.
+                data[side + "_arm"] = np.stack([arm(side, wrist_offset=(0., 0., .12))] * 4)
             np.savez(capture, **data)
             args = build_parser().parse_args([
                 "--input-npz", str(capture), "--report", str(report),
                 "--backend", "geometric", "--headless", "--no-preview",
-                "--no-collision-guard", "--arm-calibrate-frames", "1", "--print-every", "0"])
+                "--no-collision-guard", "--arm-calibrate-frames", "1", "--print-every", "0",
+                "--arm-orientation", "auto"])
             with patch.object(app, "_drain_in_background", side_effect=lambda action, label: action()), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(app.run(args), 0)

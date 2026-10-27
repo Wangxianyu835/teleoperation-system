@@ -9,6 +9,7 @@ TRACE_FIELDS = (
     "valid", "held", "source", "clamped", "position_fallback", "command_accepted",
     "target_base", "target_world", "actual_world", "position_error_mm",
     "command_q", "actual_q", "operator_wrist_relative", "timings_ms",
+    "ik_target_base", "ik_target_world", "ik_position_error_mm",
 )
 
 

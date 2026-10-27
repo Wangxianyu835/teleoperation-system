@@ -30,6 +30,12 @@ def read_trace(path):
             row[key] = row[key] == "True"
         for key in ("target_base", "target_world", "actual_world", "command_q", "actual_q", "operator_wrist_relative", "timings_ms"):
             row[key] = json.loads(row[key])
+        for key in ("ik_target_base", "ik_target_world"):
+            if key in row:
+                row[key] = json.loads(row[key])
+        if "ik_position_error_mm" in row:
+            row["ik_position_error_mm"] = (None if row["ik_position_error_mm"] == ""
+                                            else float(row["ik_position_error_mm"]))
     return rows
 
 

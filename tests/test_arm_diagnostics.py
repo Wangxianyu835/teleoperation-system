@@ -109,6 +109,7 @@ class DiagnosticLoopTests(unittest.TestCase):
                 report = root / f"run{index}.json"
                 args = arguments(capture, report, *([] if not index else ["--diagnostic-trace", str(trace)]))
                 with patch.object(app, "_drain_in_background", side_effect=lambda action, label: action()), \
+                        patch.object(app, "_median_interval", return_value=.001 if not index else .25), \
                         patch.object(ArmSceneDriver, "step", step), patch.object(PyBulletArmIK, "_ik_call", ik), \
                         patch.object(PyBulletArmIK, "apply", apply), \
                         contextlib.redirect_stdout(io.StringIO()):
@@ -131,6 +132,11 @@ class DiagnosticLoopTests(unittest.TestCase):
         self.assertTrue(all(row["sample_time_s"] == "" and row["timestamp_unit"] == "unspecified_legacy" for row in rows))
         self.assertIn("ik.h1_2.left", reports[1]["diagnostics"]["timings_ms"])
         self.assertIn("diagnostic_overhead", reports[1]["diagnostics"]["timings_ms"])
+        for row in rows:
+            sent = snapshots[1][int(row["frame_id"])][row["robot"]][row["side"]]["target"]
+            self.assertEqual(json.loads(row["ik_target_world"]), list(sent))
+            error = np.linalg.norm(np.asarray(json.loads(row["actual_world"])) - sent) * 1000
+            self.assertAlmostEqual(float(row["ik_position_error_mm"]), error, places=9)
 
     def test_error_closes_trace_and_saves_partial_report(self):
         original = app.ReplayFrameSource.next_frame

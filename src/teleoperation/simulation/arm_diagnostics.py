@@ -68,6 +68,13 @@ class ArmDiagnostics:
                 target_world = None if target.position is None else adapter.to_world(target.position)
                 error = (None if target_world is None else
                          float(np.linalg.norm(np.asarray(actual) - target_world) * 1000))
+                # Keep requested-target fields compatible; expose the actual IK
+                # target separately after slew limiting and shoulder following.
+                ik_target_world = adapter.last_target_world.get(side)
+                ik_target_base = (None if ik_target_world is None else
+                                  adapter.to_base(ik_target_world))
+                ik_error = (None if ik_target_world is None else float(np.linalg.norm(
+                    np.asarray(actual) - ik_target_world) * 1000))
                 neutral = bridge.neutral[side]
                 accepted = (robot, side) in self.accepted
                 details = adapter.last_solve.get(side, {}) if accepted else {}
@@ -86,6 +93,8 @@ class ArmDiagnostics:
                     "command_accepted": accepted,
                     "target_base": target.position, "target_world": target_world,
                     "actual_world": actual, "position_error_mm": error,
+                    "ik_target_base": ik_target_base, "ik_target_world": ik_target_world,
+                    "ik_position_error_mm": ik_error,
                     "command_q": command, "actual_q": actual_q,
                     "operator_wrist_relative": (points[2] - points[0]).tolist() if input_valid else None,
                     "timings_ms": timings,
@@ -99,7 +108,7 @@ class ArmDiagnostics:
                     counter[name] += int(row[name])
                 if self.trace is not None:
                     for key in ("target_base", "target_world", "actual_world", "command_q",
-                                "actual_q", "operator_wrist_relative"):
+                                "actual_q", "operator_wrist_relative", "ik_target_base", "ik_target_world"):
                         row[key] = json.dumps(row[key], allow_nan=False, sort_keys=True)
                     self.trace.write(row)
                 self.rows += 1

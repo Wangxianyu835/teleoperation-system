@@ -53,6 +53,12 @@ def synthetic_recording(rate=30, seed=20261022, scenarios=SCENARIOS):
                         points[2] += [.015, -.01, .01]
                 elif name == "clamp":
                     points[2] += [.8, .8, -.8]
+                elif name == "pose_fallback":
+                    # The merged bridge uses a neutral-relative elbow plane for
+                    # wrist orientation. Rotate that plane by 180 degrees while
+                    # retaining the same wrist position, rather than changing a
+                    # hand-palm frame that no longer drives arm orientation.
+                    points[1] = shoulder + [0, .26, -.04]
                 if name == "drop_both" or name == "drop_left" and side == "left":
                     points[:] = np.nan
                 data[side + "_arm"].append(points)
@@ -64,6 +70,7 @@ def synthetic_recording(rate=30, seed=20261022, scenarios=SCENARIOS):
     result.update(timestamps=np.arange(len(labels), dtype=float) / rate,
                   scenario=np.asarray(labels), metadata_json=np.asarray(json.dumps({
                       "schema": "synthetic_arm_validation_v1", "source": "synthetic", "seed": seed,
+                      "scenario_revision": 2,
                       "sample_rate_hz": rate, "timestamp_unit": "seconds", "length_unit": "m",
                       "point_order": ["shoulder", "elbow", "wrist"], "intervals": intervals,
                   })))

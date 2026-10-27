@@ -93,6 +93,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-travel-gap-mm", type=float, default=10.0)
     parser.add_argument("--max-hold-drift-rad", type=float, default=0.02)
     parser.add_argument("--arm-orientation", choices=("off", "auto", "on"), default="auto")
+    parser.add_argument("--neutral-json", type=Path, default=None,
+                        help="reuse a saved neutral pose (skips the live calibration; "
+                             "needed for a fair A/B on a replay whose opening frames "
+                             "are not a still pose)")
+    parser.add_argument("--arm-orientation-frame", choices=("absolute", "neutral"),
+                        default="neutral",
+                        help="how the bridge's orientation target is read: 'neutral' = "
+                             "relative to the robot's build-time wrist pose (the default "
+                             "and what the realtime app uses), 'absolute' = the raw "
+                             "convention (only meaningful with --arm-orientation on)")
     parser.add_argument("--arm-ik-iterations", type=int, default=None,
                         help="forward to PyBulletArmIK (default 200); 60 is ~2x faster")
     parser.add_argument("--arm-ik-residual-threshold", type=float, default=None)
@@ -170,7 +180,7 @@ def drive(args) -> tuple:
     """建场景 + 桥，逐帧驱动，跑完判据；返回 ``(report, failures)``。"""
     from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
     from teleoperation.simulation.arm_profiles import loadable_robots, profile_for
-    from teleoperation.simulation.arm_realtime import RealtimeArmBridge
+    from teleoperation.simulation.arm_realtime import RealtimeArmBridge, load_neutral
     from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
 
     sides = tuple(SIDES if args.side == "both" else (args.side,))
@@ -187,7 +197,9 @@ def drive(args) -> tuple:
                                 residual_threshold=args.arm_ik_residual_threshold)
         bridge = RealtimeArmBridge([profiles[name] for name in robots], sides=sides,
                                    calibration_frames=args.calibrate_frames,
-                                   orientation=args.arm_orientation, fallback_hand=True)
+                                   orientation=args.arm_orientation, fallback_hand=True,
+                                   neutral=(load_neutral(args.neutral_json)
+                                            if args.neutral_json else None))
         stream, source = frame_stream(args, sides, args.frames)
         report["source"] = source
         residuals = {name: {side: [] for side in sides} for name in robots}
@@ -200,6 +212,7 @@ def drive(args) -> tuple:
         processed = 0
         for arms, hands in stream:
             targets = bridge.update(arms_world=arms, hands=hands)
+            orientation_by_side = bridge.orientation_target()
             for side in sides:
                 per_side = {name: entry[side] for name, entry in targets.items()}
                 positions = {name: target.position for name, target in per_side.items()
@@ -207,7 +220,8 @@ def drive(args) -> tuple:
                 if len(positions) != len(per_side):
                     continue
                 driver.apply_each(side, positions, source="base",
-                                  orientation=per_side[sorted(per_side)[0]].orientation)
+                                  orientation=orientation_by_side[side],
+                                  orientation_frame=args.arm_orientation_frame)
                 for name in robots:
                     target = per_side[name]
                     if target.position is None:
@@ -266,6 +280,10 @@ def drive(args) -> tuple:
                     "commanded_beyond_limit": bool(target_travel > 2.0 * limit + 1.0),
                 }
         report["hold_drift"] = driver.hold_drift()
+        # 姿势与双臂间隙：判断「肩不动 / 前臂叠中线」有没有改善就用这两段（只是报告，
+        # 不作为判据 —— 论文自己也没有防交叉模块，这里先量清楚）。
+        report["posture"] = driver.posture_summary()
+        report["forearm_gap_mm"] = driver.forearm_gap_summary()
     finally:
         scene.close()
     _check(report, profiles, args, failures)
@@ -339,6 +357,22 @@ def _check(report, profiles, args, failures) -> None:
             log("OK", f"{name}: held joints drifted at most {entry['max_drift_rad']} rad "
                       f"({entry['held_joints']} joints; unmapped hand joints up to "
                       f"{entry['hand_drift_rad']} rad, informational)")
+    # 只是报告，不是判据：肩/肘动没动、上臂扫过多宽、两条前臂离多近。A/B 两版之间的
+    # 差别就看这几行（论文没有防交叉模块，这里先把量摆出来）。
+    for name, per_side in sorted((report.get("posture") or {}).items()):
+        for side, entry in sorted(per_side.items()):
+            if entry.get("frames", 0) < 2:
+                continue
+            bend = entry["elbow_bend_deg"]
+            log("INFO", f"{name}/{side}: shoulder travel {entry['shoulder_travel_deg']} deg, "
+                        f"upper arm swept {entry['upper_arm_dir_travel_deg']} deg, elbow moved "
+                        f"{entry['elbow_span_mm']} mm, elbow bend {bend['min']}-{bend['max']} deg")
+    gap = report.get("forearm_gap_mm") or {}
+    if gap.get("min_mm"):
+        text = " ".join(f"{robot}={value:.0f}"
+                        for robot, value in sorted(gap["min_mm"].items()))
+        log("INFO", f"forearm gap (worst per robot): {text} mm "
+                    f"[worst {gap.get('worst_mm')} mm]")
 
 
 
