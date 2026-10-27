@@ -7,6 +7,7 @@ import numpy as np
 
 from teleoperation.robots.native_hand import NativeHandModel
 from teleoperation.contracts.observations import RawHandFrame
+from teleoperation.contracts.hand import NativeHandResult
 from teleoperation.retargeting.hand.dex_native import DexCalibration, DexInputAdapter
 from teleoperation.retargeting.hand.topology import expand_hand21_to25
 
@@ -37,6 +38,13 @@ def vr_observation(points=None, timestamp=0.):
 
 
 class DexInputTests(unittest.TestCase):
+    def test_native_result_requires_named_finite_coordinates(self):
+        valid = NativeHandResult("g1", "left", ("a", "b"), np.zeros(2), 0., "hash")
+        self.assertEqual(valid.named_values(), {"a": 0., "b": 0.})
+        with self.assertRaises(ValueError):
+            NativeHandResult("g1", "left", ("a", "b"), np.zeros(18), 0., "hash")
+        with self.assertRaises(ValueError):
+            NativeHandResult("g1", "left", ("a", "a"), np.zeros(2), 0., "hash")
     def test_camera_and_explicit_vr_profiles_produce_equivalent_geometry(self):
         camera = DexInputAdapter("camera").adapt(camera_observation())
         vr = DexInputAdapter("visionpro").adapt(vr_observation())

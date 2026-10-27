@@ -24,6 +24,17 @@
 | 1 环境与基线 | fe9302e | checkpoint-20261027-1600-dex-stage1 | 通过 |
 | 2 原生运动学 | 53c03c7 | checkpoint-20261027-1205-dex-stage2 | 通过 |
 | 3 输入与校准 | 8ee68c7 | checkpoint-20261027-1210-dex-stage3 | 通过 |
+| 4 Vector 求解 | 126f5e9 | checkpoint-20261027-1215-dex-stage4 | 通过 |
+
+`NativeHandResult` 与 `NativeHandRetargeter` 是新增的原生关节接口；L21 结果接口不变。
+Vector 使用官方 0.5.0 `VectorOptimizer`、`MimicJointKinematicAdaptor`、`SeqRetargeting`。
+参数：scaling=1（尺度在固定校准边界处理），norm_delta=0、huber_delta=0.02、
+ftol_abs=1e-9、xtol_abs=1e-8、maxeval=100、内部低通关闭；优化器边界 epsilon=0。
+每只手独立初始化/重置。失败恢复该手上一次优化初值，返回无效状态，不将旧解伪装为新有效解。
+G1 的突变目标可能落入拇指局部极小值。若目标变化超过 20 mm（或首帧）且最大残差超过 5 mm，
+以零位、有效行程中点及上下界作有界确定性重试；各次仍调用相同官方优化器，保留最大指尖误差最小的解。
+阶段 4：六手各 100 个可达目标全部满足平均误差 5 mm/最大单指误差 10 mm 门槛，
+没有求解失败，重置重放在 1e-5 rad 内一致；完整回归 459 项通过，1 项原有跳过。
 
 VR 源参考：`D:/2026/code/TransHandR/TransHandR/main_visionpro_realtime.py:1136`，
 SHA256 `f6141c0aa57b88e98a641912edaa3791c81116dd49a61119b8c4b811c200ff8f`。

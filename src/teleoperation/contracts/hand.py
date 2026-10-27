@@ -100,3 +100,31 @@ class AngleFrame:
     right: np.ndarray
     left_valid: bool
     right_valid: bool
+
+
+@dataclass(frozen=True)
+class NativeHandResult:
+    """Robot-specific named joint coordinates; never an L21 angle vector."""
+    robot_type: str
+    side: str
+    joint_names: tuple[str, ...]
+    values: np.ndarray | None
+    timestamp: float
+    config_hash: str
+    valid: bool = True
+    error: str | None = None
+    solve_ms: float = 0.
+
+    def __post_init__(self):
+        if self.side not in ("left", "right") or len(set(self.joint_names)) != len(self.joint_names):
+            raise ValueError("Invalid native result side or joint names")
+        if not np.isfinite(self.timestamp):
+            raise ValueError("Native result timestamp must be finite seconds")
+        if self.valid and self.values is None:
+            raise ValueError("Valid native result requires joint values")
+        if self.values is not None and (np.shape(self.values) != (len(self.joint_names),)
+                                       or not np.isfinite(self.values).all()):
+            raise ValueError("Native result must have finite named joint values")
+
+    def named_values(self):
+        return {} if self.values is None else dict(zip(self.joint_names, self.values))

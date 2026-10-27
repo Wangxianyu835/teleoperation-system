@@ -99,12 +99,57 @@ def kinematics():
     return report
 
 
+def solvers():
+    import numpy as np
+    import torch
+    from teleoperation.robots.native_hand import NativeHandModel
+    from teleoperation.retargeting.hand.dex_native import NativeVectorSolver
+    torch.set_num_threads(1)
+    report = {"stage": 4, "hands": {}, "passed": True}
+    keys = [("g1", "right")] + [(r, s) for r in ROBOT_SPECS for s in ("left", "right")
+                                   if (r, s) != ("g1", "right")]
+    for key in keys:
+        model = NativeHandModel(*key)
+        solver = NativeVectorSolver(model)
+        rng = np.random.default_rng(0)
+        poses = rng.uniform(model.bounds[:, 0], model.bounds[:, 1], (98, len(model.independent_names)))
+        poses = np.vstack((poses, model.bounds.T))
+        means, maxima, timings, failures = [], [], [], []
+        for index, pose in enumerate(poses):
+            target = model.positions(pose)
+            result = solver.solve(target, index / 30)
+            timings.append(result.solve_ms)
+            if not result.valid:
+                failures.append({"frame": index, "error": result.error})
+                means.append(float("inf")); maxima.append(float("inf"))
+                continue
+            named = result.named_values()
+            actual = model.positions([named[n] for n in model.independent_names])
+            errors = np.linalg.norm(target - actual, axis=1)
+            means.append(float(errors.mean())); maxima.append(float(errors.max()))
+        target = model.positions(poses[0])
+        solver.reset(); first = solver.solve(target, 10.)
+        solver.reset(); second = solver.solve(target, 10.)
+        repeatable = first.valid and second.valid and np.max(np.abs(first.values - second.values)) <= 1e-5
+        previous = solver.sequence.last_qpos.copy()
+        invalid = solver.solve(np.full_like(target, np.nan), 11.)
+        assert not invalid.valid and np.array_equal(previous, solver.sequence.last_qpos)
+        good_fraction = float(np.mean(np.asarray(means) <= .005))
+        passed = not failures and good_fraction >= .95 and max(maxima) <= .01 and repeatable
+        report["hands"]["/".join(key)] = {"poses": 100, "fraction_mean_error_le_5mm": good_fraction,
+            "maximum_finger_error_mm": max(maxima) * 1000, "mean_error_mm": float(np.mean(means)) * 1000,
+            "solve_p95_ms": float(np.percentile(timings, 95)), "failures": failures,
+            "repeatable": bool(repeatable), "passed": bool(passed)}
+        report["passed"] &= bool(passed)
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--stage", choices=("inventory", "kinematics"), default="inventory")
+    parser.add_argument("--stage", choices=("inventory", "kinematics", "solvers"), default="inventory")
     args = parser.parse_args()
-    report = inventory() if args.stage == "inventory" else kinematics()
+    report = {"inventory": inventory, "kinematics": kinematics, "solvers": solvers}[args.stage]()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"stage={args.stage} passed={report.get('passed', True)}")

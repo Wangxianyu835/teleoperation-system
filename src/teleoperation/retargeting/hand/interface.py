@@ -29,6 +29,18 @@ class HandRetargeter(ABC):
         """Convert one canonical hand window into an L21 model result."""
 
 
+class NativeHandRetargeter(ABC):
+    """Separate native joint result interface, without L21 dimension assumptions."""
+
+    @abstractmethod
+    def reset(self) -> None:
+        """Reset independent robot/side solver states."""
+
+    @abstractmethod
+    def retarget(self, frame):
+        """Return {(robot_type, side): NativeHandResult} for a canonical frame."""
+
+
 class PoseTransformerRetargeter(HandRetargeter):
     """Adapt the existing :class:`TwoHandRetargeter` to ``HandRetargeter``.
 
