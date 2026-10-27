@@ -6,6 +6,80 @@ from pathlib import Path
 import numpy as np
 
 from teleoperation.robots.native_hand import NativeHandModel
+from teleoperation.contracts.observations import RawHandFrame
+from teleoperation.retargeting.hand.dex_native import DexCalibration, DexInputAdapter
+from teleoperation.retargeting.hand.topology import expand_hand21_to25
+
+
+def open_points():
+    points = np.zeros((21, 3), dtype=np.float32)
+    points[1:5] = [[-.025, .025, 0], [-.04, .04, 0], [-.05, .055, 0], [-.06, .07, 0]]
+    for start, x, y in ((5, -.025, .065), (9, 0, .075), (13, .02, .07), (17, .04, .055)):
+        points[start:start + 4] = [[x, y + i * .02, .001 * i] for i in range(4)]
+    return points
+
+
+def camera_observation(points=None, timestamp=0.):
+    points = open_points() if points is None else points
+    return RawHandFrame({"left": points, "right": points}, timestamp, "mediapipe", {
+        "world_landmark_space": "mediapipe_world_meters", "world_length_unit": "m"},
+        world_hands={"left": points, "right": points})
+
+
+def vr_observation(points=None, timestamp=0.):
+    points = expand_hand21_to25(open_points() if points is None else points)
+    hands = {}
+    for side in ("left", "right"):
+        value = np.tile(np.eye(4), (25, 1, 1))
+        value[:, :3, 3] = points[:, [2, 0, 1]] * ([1, 1, -1] if side == "left" else [-1, -1, 1])
+        hands[side] = value
+    return RawHandFrame(hands, timestamp, "visionpro", geometry_encoding={s: "transforms25" for s in hands})
+
+
+class DexInputTests(unittest.TestCase):
+    def test_camera_and_explicit_vr_profiles_produce_equivalent_geometry(self):
+        camera = DexInputAdapter("camera").adapt(camera_observation())
+        vr = DexInputAdapter("visionpro").adapt(vr_observation())
+        for side in ("left", "right"):
+            np.testing.assert_allclose(camera.hands[side], vr.hands[side], atol=1e-5)
+        self.assertNotEqual(camera.metadata["dex_input_profile"], vr.metadata["dex_input_profile"])
+
+    def test_translation_and_rotation_do_not_change_local_hand_geometry(self):
+        rotation = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
+        for source, make in (("camera", camera_observation), ("visionpro", vr_observation)):
+            adapter = DexInputAdapter(source)
+            first = adapter.adapt(make())
+            second = adapter.adapt(make(open_points() @ rotation.T + [2, -3, 5]))
+            for side in ("left", "right"):
+                np.testing.assert_allclose(first.hands[side], second.hands[side], atol=1e-5)
+
+    def test_normalized_wrong_units_and_repeated_alignment_are_rejected(self):
+        raw = camera_observation()
+        for metadata in ({}, {"world_landmark_space": "mediapipe_world_meters", "world_length_unit": "mm"},
+                         {**raw.metadata, "coordinate_alignment": "already-aligned"}):
+            with self.assertRaises(ValueError):
+                DexInputAdapter("camera").adapt(RawHandFrame(raw.hands, 0., "mediapipe", metadata, world_hands=raw.world_hands))
+
+    def test_invalid_vr_side_does_not_contaminate_other_side(self):
+        raw = vr_observation()
+        for bad in (np.zeros((25, 4, 4)), np.full((25, 4, 4), np.nan)):
+            result = DexInputAdapter("visionpro").adapt(RawHandFrame(
+                {"left": bad, "right": raw.hands["right"]}, 0., "visionpro", geometry_encoding=raw.geometry_encoding))
+            self.assertIsNone(result.hands["left"])
+            self.assertIsNotNone(result.hands["right"])
+
+    def test_calibration_is_fixed_persisted_and_never_overwrites(self):
+        adapter = DexInputAdapter("camera")
+        frames = [adapter.adapt(camera_observation(timestamp=i / 30)) for i in range(61)]
+        calibration = DexCalibration.fit(frames, 0.)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "calibration.json"
+            calibration.save(path)
+            self.assertEqual(DexCalibration.load(path), calibration)
+            with self.assertRaises(FileExistsError):
+                calibration.save(path)
+        with self.assertRaises(ValueError):
+            DexCalibration.fit(frames[:5], 0.)
 
 
 class NativeHandModelTests(unittest.TestCase):

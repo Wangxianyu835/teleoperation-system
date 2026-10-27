@@ -13,6 +13,7 @@
 - `docs/dex-native-runtime-lock.json`：Windows 编译运行时的官方 Conda 包 URL 和 SHA256。
 - `robots/native_hand.py::NativeHandModel`：整机手部子树、固定指尖 frame、耦合限位与 FK 查询。
 - `tests/test_dex_native.py`：本功能的契约及边界测试。
+- `retargeting/hand/dex_native.py`：相机/VR 显式适配、固定掌长校准及原生 Vector 管线。
 
 ## 阶段记录
 
@@ -22,6 +23,15 @@
 |---|---|---|---|
 | 1 环境与基线 | fe9302e | checkpoint-20261027-1600-dex-stage1 | 通过 |
 | 2 原生运动学 | 53c03c7 | checkpoint-20261027-1205-dex-stage2 | 通过 |
+| 3 输入与校准 | 8ee68c7 | checkpoint-20261027-1210-dex-stage3 | 通过 |
+
+VR 源参考：`D:/2026/code/TransHandR/TransHandR/main_visionpro_realtime.py:1136`，
+SHA256 `f6141c0aa57b88e98a641912edaa3791c81116dd49a61119b8c4b811c200ff8f`。
+新增 `dex_visionpro_palm_v1` 在保留上游提取/轴变换/腕部相对化后，显式增加 dex 掌部局部坐标转换。
+这属于新后端的输入适配，不改 `transhandr_axis_wrist_three_frame_v1` 或原模型权重。
+相机使用 `dex_camera_world_v1`；normalized 输入不支持此后端。
+校准至少两秒、每侧至少十个有效张开手样本；掌长取腕到 middle MCP 的中位数，求解时固定。
+阶段 3：14 项契约/上游 VR 预处理测试通过，包含两源等价、刚体变换不变性、错误输入拒绝、单侧异常与校准持久化。
 
 H1/G1 的固定指尖偏移取自本仓库 Inspire/Dex3 独立手 URDF；GR1 使用整机已有 tip frame。
 H1 左手独立模型的食指 intermediate 原点与整机存在约 0.19 mm 差异：保留整机原点，仅移植末端固定偏移。
