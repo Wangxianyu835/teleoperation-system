@@ -1238,7 +1238,7 @@
   "pending": [
     "camera open-hand calibration and real camera method comparison",
     "camera five-minute six-hand test",
-    "live headset connection and five-minute test"
+    "live headset continuous five-minute duration (operator checklist completed)"
   ],
   "visionpro_sdk_setup": {
     "date": "2026-10-28",
@@ -1248,6 +1248,285 @@
     "adaptation": "Local version and opencv-contrib provider dependency only; all SDK payload bytes unchanged",
     "imports": "passed",
     "synthetic_trackingdata_boundary": "passed",
-    "live_connection": "pending"
+    "live_connection": "passed local IP, 2026-10-28"
+  },
+  "visionpro_device_trial": {
+    "date": "2026-10-28",
+    "code_commit": "3f5a8b4a79d18ea3bd06e80026215f874d07b2ec",
+    "connection": "local IP gRPC, Teleoperation session",
+    "calibration": {
+      "raw_file": "outputs/tmp_dex_native/vr_live_calibration_20261028_004209.h5",
+      "raw_sha256": "7d142275d53f43c1033f1bfa0c8511513d7dbdd165a14ff9e8731c0e4db2c59d",
+      "json_file": "outputs/tmp_dex_native/vr_live_calibration_20261028_004209.json",
+      "recorded_samples": 216,
+      "all_samples_valid_both_sides": true,
+      "sample_time_span_seconds": 9.962,
+      "parameters": {
+        "schema": "dex_native_calibration_v1",
+        "units": "m",
+        "profile": "dex_visionpro_palm_v2",
+        "palm_lengths": {
+          "left": 0.08644531667232513,
+          "right": 0.08717180788516998
+        },
+        "segment": [
+          1.0,
+          3.0
+        ],
+        "source_sha256": "7d142275d53f43c1033f1bfa0c8511513d7dbdd165a14ff9e8731c0e4db2c59d"
+      }
+    },
+    "short_trial": {
+      "report": "outputs/tmp_dex_native/vr_live_first_20261028_004209.json",
+      "native_h5": "outputs/tmp_dex_native/vr_live_first_20261028_004209.h5",
+      "native_h5_sha256": "29aa080ace076b9c1a3feb7871801c53cfed7ac51b84f6e9cfb5e79fca6af773",
+      "command_rows": 600,
+      "command_time_span_seconds": 29.743078231811523,
+      "all_commands_named_bounded_coupled": true,
+      "report_data": {
+        "backend": "dex",
+        "source": "visionpro",
+        "profile": "dex_visionpro_palm_v2",
+        "frames": 600,
+        "elapsed_seconds": 35.21899999999732,
+        "stopped": "finished",
+        "hands": {
+          "h1_2/left": {
+            "input_valid": 43,
+            "solved": 43
+          },
+          "h1_2/right": {
+            "input_valid": 577,
+            "solved": 577
+          },
+          "gr1_t2/left": {
+            "input_valid": 43,
+            "solved": 43
+          },
+          "gr1_t2/right": {
+            "input_valid": 577,
+            "solved": 577
+          },
+          "g1/left": {
+            "input_valid": 43,
+            "solved": 43
+          },
+          "g1/right": {
+            "input_valid": 577,
+            "solved": 577
+          }
+        },
+        "commands": {
+          "filter": "lowpass",
+          "alpha_at_30hz": 0.2,
+          "runtime_mesh_collision_guard": false,
+          "joint_space": "independent native drives",
+          "sides": {
+            "h1_2/left": {
+              "commands": 43,
+              "held_frames": 557,
+              "rate_limited": 33
+            },
+            "h1_2/right": {
+              "commands": 577,
+              "held_frames": 23,
+              "rate_limited": 334
+            },
+            "gr1_t2/left": {
+              "commands": 43,
+              "held_frames": 557,
+              "rate_limited": 31
+            },
+            "gr1_t2/right": {
+              "commands": 577,
+              "held_frames": 23,
+              "rate_limited": 293
+            },
+            "g1/left": {
+              "commands": 43,
+              "held_frames": 557,
+              "rate_limited": 20
+            },
+            "g1/right": {
+              "commands": 577,
+              "held_frames": 23,
+              "rate_limited": 235
+            }
+          }
+        },
+        "source_queue": "get_latest, no accumulated frame queue",
+        "timings_ms": {
+          "capture": {
+            "mean": 0.02666666667209938,
+            "p95": 0.0
+          },
+          "preprocessing": {
+            "mean": 0.1300000000022313,
+            "p95": 0.0
+          },
+          "solve": {
+            "mean": 10.334999999916667,
+            "p95": 31.000000002677552
+          },
+          "command": {
+            "mean": 6.050000000032014,
+            "p95": 16.00000000325963
+          },
+          "render": {
+            "mean": 24.09499999989445,
+            "p95": 47.7500000055436
+          }
+        },
+        "resources_closed": true,
+        "live_device_acceptance": "requires operator five-minute checklist"
+      },
+      "operator_feedback": "three robot types visible and hands followed; complete checklist confirmed later in the longer trial"
+    },
+    "continuous_trial": {
+      "status": "partial: operator actions confirmed; continuous five-minute duration not reached",
+      "report": "outputs/tmp_dex_native/vr_live_acceptance_20261028_005538.json",
+      "native_h5": "outputs/tmp_dex_native/vr_live_acceptance_20261028_005538.h5",
+      "native_h5_sha256": "ec2ed3151152b30011cb41f47391c1405d5a79a655ec49875996405df028343a",
+      "report_data": {
+        "backend": "dex",
+        "source": "visionpro",
+        "profile": "dex_visionpro_palm_v2",
+        "frames": 2409,
+        "elapsed_seconds": 172.1559999999954,
+        "stopped": "interrupted",
+        "hands": {
+          "h1_2/left": {
+            "input_valid": 2409,
+            "solved": 2409
+          },
+          "h1_2/right": {
+            "input_valid": 2385,
+            "solved": 2385
+          },
+          "gr1_t2/left": {
+            "input_valid": 2409,
+            "solved": 2409
+          },
+          "gr1_t2/right": {
+            "input_valid": 2385,
+            "solved": 2385
+          },
+          "g1/left": {
+            "input_valid": 2409,
+            "solved": 2409
+          },
+          "g1/right": {
+            "input_valid": 2385,
+            "solved": 2385
+          }
+        },
+        "commands": {
+          "filter": "lowpass",
+          "alpha_at_30hz": 0.2,
+          "runtime_mesh_collision_guard": false,
+          "joint_space": "independent native drives",
+          "sides": {
+            "h1_2/left": {
+              "commands": 2409,
+              "held_frames": 0,
+              "rate_limited": 863
+            },
+            "h1_2/right": {
+              "commands": 2385,
+              "held_frames": 24,
+              "rate_limited": 1185
+            },
+            "gr1_t2/left": {
+              "commands": 2409,
+              "held_frames": 0,
+              "rate_limited": 649
+            },
+            "gr1_t2/right": {
+              "commands": 2385,
+              "held_frames": 24,
+              "rate_limited": 897
+            },
+            "g1/left": {
+              "commands": 2409,
+              "held_frames": 0,
+              "rate_limited": 528
+            },
+            "g1/right": {
+              "commands": 2385,
+              "held_frames": 24,
+              "rate_limited": 632
+            }
+          }
+        },
+        "source_queue": "get_latest, no accumulated frame queue",
+        "timings_ms": {
+          "capture": {
+            "mean": 0.1045643153589043,
+            "p95": 0.0
+          },
+          "preprocessing": {
+            "mean": 0.6327800829730603,
+            "p95": 0.0
+          },
+          "solve": {
+            "mean": 20.64508094655517,
+            "p95": 46.999999998661224
+          },
+          "command": {
+            "mean": 6.481527604812835,
+            "p95": 16.00000000325963
+          },
+          "render": {
+            "mean": 40.14777916136921,
+            "p95": 78.00000000133878
+          }
+        },
+        "resources_closed": true,
+        "live_device_acceptance": "requires operator five-minute checklist",
+        "device_transport_diagnostics": {
+          "received_updates": 24703,
+          "first_received": 54846.9334655,
+          "last_received": 54994.504444,
+          "stop_reason": "transport_stalled_over_20_seconds",
+          "received_duration_seconds": 147.5709784999999,
+          "received_callback_rate_hz": 167.39063636418197,
+          "measurement": "SDK receive callbacks; wrapper delegates unchanged; separate from CLI polling rate"
+        },
+        "operator_checklist": {
+          "status": "passed_by_user_report",
+          "actions": [
+            "open",
+            "close",
+            "individual_finger_bend",
+            "thumb_opposition",
+            "left_out_of_view_and_recovery",
+            "right_out_of_view_and_recovery"
+          ],
+          "feedback": "左右对应正常、无串扰，恢复无明显跳变"
+        },
+        "post_run_command_validation": {
+          "rows": 2409,
+          "timestamp_span_seconds": 167.57414484024048,
+          "names_config_finiteness_limits_coupling": "passed",
+          "maximum_joint_step_rad": 0.15000000000000013
+        },
+        "five_minute_duration_acceptance": {
+          "passed": false,
+          "required_seconds": 300,
+          "observed_receive_span_seconds": 147.5709784999999
+        }
+      },
+      "post_exit_process_and_port_8888_released": true,
+      "counts_may_include_cached_get_latest_observations": true
+    },
+    "previous_interrupted_attempt": {
+      "reason": "headset gRPC service stopped before any packet; user temporarily ended then resumed",
+      "not_counted_as_continuous_test": true
+    },
+    "notes": [
+      "Short trial valid-input solve rate is 100 percent; low left input availability is reported separately.",
+      "get_latest polling and SDK receive callback counts are different measurements.",
+      "Local Network and Remote are connection information panels, not mandatory mode toggle buttons."
+    ]
   }
 }
