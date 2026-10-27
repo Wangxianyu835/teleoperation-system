@@ -1,0 +1,748 @@
+{
+  "python": "3.10.20 | packaged by Anaconda, Inc. | (main, Jun 11 2026, 15:13:20) [MSC v.1942 64 bit (AMD64)]",
+  "packages": {
+    "dex-retargeting": "0.5.0+winconda",
+    "nlopt": "2.9.1",
+    "numpy": "2.2.6",
+    "pybullet": "3.2.7",
+    "mediapipe": "0.10.35",
+    "torch": "2.14.1+cu130",
+    "pinocchio": "3.3.1"
+  },
+  "robots": {
+    "h1_2": {
+      "left": [
+        {
+          "name": "L_thumb_proximal_yaw_joint",
+          "limit": {
+            "lower": "-0.1",
+            "upper": "1.3",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": null
+        },
+        {
+          "name": "L_thumb_proximal_pitch_joint",
+          "limit": {
+            "lower": "-0.1",
+            "upper": "0.6",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": null
+        },
+        {
+          "name": "L_thumb_intermediate_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "0.8",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": {
+            "joint": "L_thumb_proximal_pitch_joint",
+            "multiplier": "1.6",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "L_thumb_distal_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.2",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": {
+            "joint": "L_thumb_proximal_pitch_joint",
+            "multiplier": "2.4",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "L_index_proximal_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": null
+        },
+        {
+          "name": "L_index_intermediate_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": {
+            "joint": "L_index_proximal_joint",
+            "multiplier": "1",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "L_middle_proximal_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": null
+        },
+        {
+          "name": "L_middle_intermediate_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": {
+            "joint": "L_middle_proximal_joint",
+            "multiplier": "1",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "L_ring_proximal_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": null
+        },
+        {
+          "name": "L_ring_intermediate_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": {
+            "joint": "L_ring_proximal_joint",
+            "multiplier": "1",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "L_pinky_proximal_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": null
+        },
+        {
+          "name": "L_pinky_intermediate_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": {
+            "joint": "L_pinky_proximal_joint",
+            "multiplier": "1",
+            "offset": "0"
+          }
+        }
+      ],
+      "right": [
+        {
+          "name": "R_thumb_proximal_yaw_joint",
+          "limit": {
+            "lower": "-0.1",
+            "upper": "1.3",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": null
+        },
+        {
+          "name": "R_thumb_proximal_pitch_joint",
+          "limit": {
+            "lower": "-0.1",
+            "upper": "0.6",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": null
+        },
+        {
+          "name": "R_thumb_intermediate_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "0.8",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": {
+            "joint": "R_thumb_proximal_pitch_joint",
+            "multiplier": "1.6",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "R_thumb_distal_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.2",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": {
+            "joint": "R_thumb_proximal_pitch_joint",
+            "multiplier": "2.4",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "R_index_proximal_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": null
+        },
+        {
+          "name": "R_index_intermediate_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": {
+            "joint": "R_index_proximal_joint",
+            "multiplier": "1",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "R_middle_proximal_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": null
+        },
+        {
+          "name": "R_middle_intermediate_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": {
+            "joint": "R_middle_proximal_joint",
+            "multiplier": "1",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "R_ring_proximal_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": null
+        },
+        {
+          "name": "R_ring_intermediate_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": {
+            "joint": "R_ring_proximal_joint",
+            "multiplier": "1",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "R_pinky_proximal_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": null
+        },
+        {
+          "name": "R_pinky_intermediate_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.7",
+            "effort": "1",
+            "velocity": "0.5"
+          },
+          "mimic": {
+            "joint": "R_pinky_proximal_joint",
+            "multiplier": "1",
+            "offset": "0"
+          }
+        }
+      ]
+    },
+    "gr1_t2": {
+      "left": [
+        {
+          "name": "L_thumb_proximal_yaw_joint",
+          "limit": {
+            "lower": "-1.74",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": null
+        },
+        {
+          "name": "L_thumb_proximal_pitch_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.22",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": null
+        },
+        {
+          "name": "L_thumb_distal_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.04",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": {
+            "joint": "L_thumb_proximal_pitch_joint",
+            "multiplier": "0.974",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "L_index_proximal_joint",
+          "limit": {
+            "lower": "-1.57",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": null
+        },
+        {
+          "name": "L_index_intermediate_joint",
+          "limit": {
+            "lower": "-1.74",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": {
+            "joint": "L_index_proximal_joint",
+            "multiplier": "1.128",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "L_middle_proximal_joint",
+          "limit": {
+            "lower": "-1.57",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": null
+        },
+        {
+          "name": "L_middle_intermediate_joint",
+          "limit": {
+            "lower": "-1.74",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": {
+            "joint": "L_middle_proximal_joint",
+            "multiplier": "1.131",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "L_ring_proximal_joint",
+          "limit": {
+            "lower": "-1.57",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": null
+        },
+        {
+          "name": "L_ring_intermediate_joint",
+          "limit": {
+            "lower": "-1.74",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": {
+            "joint": "L_ring_proximal_joint",
+            "multiplier": "1.143",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "L_pinky_proximal_joint",
+          "limit": {
+            "lower": "-1.57",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": null
+        },
+        {
+          "name": "L_pinky_intermediate_joint",
+          "limit": {
+            "lower": "-1.74",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": {
+            "joint": "L_pinky_proximal_joint",
+            "multiplier": "1.129",
+            "offset": "0"
+          }
+        }
+      ],
+      "right": [
+        {
+          "name": "R_thumb_proximal_yaw_joint",
+          "limit": {
+            "lower": "-1.74",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": null
+        },
+        {
+          "name": "R_thumb_proximal_pitch_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.22",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": null
+        },
+        {
+          "name": "R_thumb_distal_joint",
+          "limit": {
+            "lower": "0",
+            "upper": "1.04",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": {
+            "joint": "R_thumb_proximal_pitch_joint",
+            "multiplier": "0.974",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "R_index_proximal_joint",
+          "limit": {
+            "lower": "-1.57",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": null
+        },
+        {
+          "name": "R_index_intermediate_joint",
+          "limit": {
+            "lower": "-1.74",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": {
+            "joint": "R_index_proximal_joint",
+            "multiplier": "1.128",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "R_middle_proximal_joint",
+          "limit": {
+            "lower": "-1.57",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": null
+        },
+        {
+          "name": "R_middle_intermediate_joint",
+          "limit": {
+            "lower": "-1.74",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": {
+            "joint": "R_middle_proximal_joint",
+            "multiplier": "1.131",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "R_ring_proximal_joint",
+          "limit": {
+            "lower": "-1.57",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": null
+        },
+        {
+          "name": "R_ring_intermediate_joint",
+          "limit": {
+            "lower": "-1.74",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": {
+            "joint": "R_ring_proximal_joint",
+            "multiplier": "1.143",
+            "offset": "0"
+          }
+        },
+        {
+          "name": "R_pinky_proximal_joint",
+          "limit": {
+            "lower": "-1.57",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": null
+        },
+        {
+          "name": "R_pinky_intermediate_joint",
+          "limit": {
+            "lower": "-1.74",
+            "upper": "0",
+            "effort": "10",
+            "velocity": "0.8"
+          },
+          "mimic": {
+            "joint": "R_pinky_proximal_joint",
+            "multiplier": "1.129",
+            "offset": "0"
+          }
+        }
+      ]
+    },
+    "g1": {
+      "left": [
+        {
+          "name": "left_hand_thumb_0_joint",
+          "limit": {
+            "effort": "2.45",
+            "velocity": "6.857",
+            "lower": "-1.04719755",
+            "upper": "1.04719755"
+          },
+          "mimic": null
+        },
+        {
+          "name": "left_hand_thumb_1_joint",
+          "limit": {
+            "effort": "1.4",
+            "velocity": "12",
+            "lower": "-0.72431163",
+            "upper": "1.04719755"
+          },
+          "mimic": null
+        },
+        {
+          "name": "left_hand_thumb_2_joint",
+          "limit": {
+            "effort": "1.4",
+            "velocity": "12",
+            "lower": "0",
+            "upper": "1.74532925"
+          },
+          "mimic": null
+        },
+        {
+          "name": "left_hand_middle_0_joint",
+          "limit": {
+            "effort": "1.4",
+            "velocity": "12",
+            "lower": "-1.57079632",
+            "upper": "0"
+          },
+          "mimic": null
+        },
+        {
+          "name": "left_hand_middle_1_joint",
+          "limit": {
+            "effort": "1.4",
+            "velocity": "12",
+            "lower": "-1.74532925",
+            "upper": "0"
+          },
+          "mimic": null
+        },
+        {
+          "name": "left_hand_index_0_joint",
+          "limit": {
+            "effort": "1.4",
+            "velocity": "12",
+            "lower": "-1.57079632",
+            "upper": "0"
+          },
+          "mimic": null
+        },
+        {
+          "name": "left_hand_index_1_joint",
+          "limit": {
+            "effort": "1.4",
+            "velocity": "12",
+            "lower": "-1.74532925",
+            "upper": "0"
+          },
+          "mimic": null
+        }
+      ],
+      "right": [
+        {
+          "name": "right_hand_thumb_0_joint",
+          "limit": {
+            "effort": "2.45",
+            "velocity": "6.857",
+            "lower": "-1.04719755",
+            "upper": "1.04719755"
+          },
+          "mimic": null
+        },
+        {
+          "name": "right_hand_thumb_1_joint",
+          "limit": {
+            "effort": "1.4",
+            "velocity": "12",
+            "lower": "-1.04719755",
+            "upper": "0.72431163"
+          },
+          "mimic": null
+        },
+        {
+          "name": "right_hand_thumb_2_joint",
+          "limit": {
+            "effort": "1.4",
+            "velocity": "12",
+            "lower": "-1.74532925",
+            "upper": "0"
+          },
+          "mimic": null
+        },
+        {
+          "name": "right_hand_middle_0_joint",
+          "limit": {
+            "effort": "1.4",
+            "velocity": "12",
+            "lower": "0",
+            "upper": "1.57079632"
+          },
+          "mimic": null
+        },
+        {
+          "name": "right_hand_middle_1_joint",
+          "limit": {
+            "effort": "1.4",
+            "velocity": "12",
+            "lower": "0",
+            "upper": "1.74532925"
+          },
+          "mimic": null
+        },
+        {
+          "name": "right_hand_index_0_joint",
+          "limit": {
+            "effort": "1.4",
+            "velocity": "12",
+            "lower": "0",
+            "upper": "1.57079632"
+          },
+          "mimic": null
+        },
+        {
+          "name": "right_hand_index_1_joint",
+          "limit": {
+            "effort": "1.4",
+            "velocity": "12",
+            "lower": "0",
+            "upper": "1.74532925"
+          },
+          "mimic": null
+        }
+      ]
+    }
+  },
+  "assets": {
+    "assets/robots/from_teleopbench/h1_2/h1_2.urdf": "d34774add49f07acf584a1fff3d637a5a907499bbc6be812acc553a38f2eb66c",
+    "assets/robots/from_teleopbench/gr1/urdf/robot.urdf": "5686e0189a9277c5fa01e67e5b0048581e1c7719fb37063f13e53e5a1d123ae0",
+    "assets/robots/from_teleopbench/g1/g1_29dof_with_hand_lock_waist.urdf": "b5b528ac8fdd9f760db5ffb3fa70ba4a87eee7beab16b7507901c90b2f8599f2",
+    "assets/robots/from_teleopbench/inspire_hand/inspire_hand_left.urdf": "29ed0ba326083938b3b7a04d72256f974a376d2e29805c3f710cd9208c16db83",
+    "assets/robots/from_teleopbench/inspire_hand/inspire_hand_left_glb.urdf": "29ed0ba326083938b3b7a04d72256f974a376d2e29805c3f710cd9208c16db83",
+    "assets/robots/from_teleopbench/inspire_hand/inspire_hand_right.urdf": "acb98c8efc0f98a338cbc45af1e59bb793995e0d2165bc8058072a34c2923804",
+    "assets/robots/from_teleopbench/inspire_hand/inspire_hand_right_glb.urdf": "acb98c8efc0f98a338cbc45af1e59bb793995e0d2165bc8058072a34c2923804",
+    "assets/robots/from_teleopbench/unitree_hand/unitree_dex3_left.urdf": "569e4d8ca55b1b76e51cd41df3cd6f655c5475a3e02e908f673f999759c51bd0",
+    "assets/robots/from_teleopbench/unitree_hand/unitree_dex3_right.urdf": "4e36e939466d386524d38079f8e2ff84d9dd4d3a7f8db6319374067970ad7075"
+  },
+  "dex_provenance": {
+    "official_wheel_sha256": "347ce785181e7c7dff2c2ca1a55955f6b33b711d33a7171cb4ef89dc19bd66d3",
+    "local_wheel_sha256": "7d5e9ae73299df9a0a068d58e889f29abdf42f64580c5a4ffa0b110cc1dad420",
+    "adaptation": "Version local label + conditional Windows pin dependency only; package code unchanged",
+    "runtime": "D:\\2026\\code\\teleoperation-system-retargeting\\.venv\\dex-pin-bundle",
+    "code_sha256": {
+      "dex_retargeting/__init__.py": "29538624e6f4ed838382021b0ab034ee0e32045321125a8be82761d1422321bf",
+      "dex_retargeting/constants.py": "677d409b3e8aa6d149c8cb4b8782508707fd4f817cdf79a08ecb07eeda527c9d",
+      "dex_retargeting/kinematics_adaptor.py": "c0fc49bc228fb693ef38b4743b5912743e3246ed5de13fa41a94db080c07e27c",
+      "dex_retargeting/optimizer.py": "6b816d65c81f2e959ea6b76876bb03c2b768be95064a1b4b9e1563d36262cdf8",
+      "dex_retargeting/optimizer_utils.py": "a86f76f0154ea8a13569186a668ea81a088608195994485b06a0f5bce2fe26fb",
+      "dex_retargeting/retargeting_config.py": "498427e26c34ec68127ee3986a0c650e428151b28f7c60dfbac69a502a49e526",
+      "dex_retargeting/robot_wrapper.py": "2e73d2a8353145b3c5385a5acd4a145c3be1c0281a163960ca804a4ffba2e93a",
+      "dex_retargeting/seq_retarget.py": "72cc74f1a0ff91fafc9421d3d6766a7dd2279b0964e0b376718ec385fbb94482",
+      "dex_retargeting/yourdfpy.py": "7765ba92e620768bac2c56f9919a682e6bcaa113a2c785acbfb33362c3f83d15"
+    }
+  }
+}
