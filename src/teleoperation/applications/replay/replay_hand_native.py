@@ -61,7 +61,7 @@ from teleoperation.retargeting.hand.postprocessing import detect_bad_frames, det
 from teleoperation.tools.hand_reports import print_identity_swap_report
 
 # 映射表与工具统一放在 robots/native_hand.py（正式接口，可被其它代码复用）
-from teleoperation.robots.native_hand import DIM_NAMES, N_MOVABLE, build_mapping, coverage, dropped_dims
+from teleoperation.robots.native_hand import DIM_NAMES, N_MOVABLE, build_mapping, coverage, dropped_dims, link_extent
 from teleoperation.applications.replay.hand_support import map_frame
 from teleoperation.simulation.robot_loader import read_joint_ranges
 
@@ -126,13 +126,20 @@ def setup_camera(p, view, robot_id, cid, hand_pose=None, hand_links=None):
 
     if view in ('hands', 'left-hand', 'right-hand'):
         if hand_links:
-            center, hand_size = hand_extent(p, robot_id, cid, hand_links)
+            center, hand_size = link_extent(robot_id, hand_links, cid)
+            if center is None:
+                center = ctr
+                hand_size = np.array([0.2, 0.2, 0.2])
             tgt = center.tolist()
-            distance = max(0.26, hand_size * 1.7)
+            distance = max(0.26, float(np.linalg.norm(hand_size)) * 1.2)
         else:
             tgt = list(hand_pose) if hand_pose is not None else [ctr[0], ctr[1], top * 0.85]
             distance = 1.1
-        p.resetDebugVisualizerCamera(cameraDistance=distance, cameraYaw=135,
+        ux, uy = tgt[0] - ctr[0], tgt[1] - ctr[1]
+        if np.hypot(ux, uy) < 0.08:
+            ux, uy = 0.0, (-1.0 if tgt[1] < ctr[1] else 1.0)
+        yaw = float(np.degrees(np.arctan2(uy, ux)))
+        p.resetDebugVisualizerCamera(cameraDistance=distance, cameraYaw=yaw,
                                      cameraPitch=-12,
                                      cameraTargetPosition=tgt,
                                      physicsClientId=cid)

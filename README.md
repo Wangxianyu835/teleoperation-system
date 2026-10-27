@@ -117,6 +117,36 @@ H5 文件保存**关键点和时间戳**，不保存摄像头视频。
 如果打开新终端，请重新设置 `$python` 和 `PYTHONPATH`。
 同时设置所选命令需要的文件路径和参数变量。
 
+### 2.1 使用 hand_capture 归一化录制工具（可选）
+
+`hand_capture` 分支的独立工具位于 `MediaPipe/`。
+在第 2 节设置的终端中，选择一条命令执行：
+
+```powershell
+# 录制双手的 21 点归一化坐标。
+& $python 'MediaPipe/hand capture media.py'
+
+# 同步录制双手和肩、肘、腕等 14 个身体关键点。
+& $python 'MediaPipe/body capture media.py'
+```
+
+在摄像头窗口中按 `q` 停止录制。
+手部文件保存在 `outputs/hand_capture/visual_hand_dataset/`。
+身体与手部文件保存在 `outputs/hand_capture/body_hand_arm_dataset/`。
+模型统一存放在 `datasets/`；这些独立工具在模型缺失时尝试下载。
+
+执行以下命令，回放对应目录中最近保存的录制：
+
+```powershell
+& $python 'MediaPipe/read_hand_xyz.py'
+& $python 'MediaPipe/body picture.py'
+```
+
+这些工具保留上游的 `normalized` 坐标，不输出米制手臂坐标。
+训练前，先用 `hand align` 对齐，再选择坐标声明匹配的模型。
+不要将这些数据直接传给要求 Pose world 米制输入的双臂程序。
+需要同步录制米制关键点时，请使用[世界坐标关键点采集](docs/world-landmark-capture.md)。
+
 ## 3. 导出与回放关节角
 
 ### 3.1 使用已有模型导出关节角
@@ -211,6 +241,19 @@ if ($LASTEXITCODE -ne 0) { throw '关节角导出失败，请检查上方输出�
 `--robot` 也支持 `gr1_t2` 和 `g1`。
 以上回放命令均使用 PyBullet 仿真，不连接实体机器人。
 
+### 3.4 检查原装手运动或导出快照（可选）
+
+以下工具已从 `hand_capture` 迁入 `devtools/`，使用当前原装手映射接口：
+
+```powershell
+& $python devtools/check_native_hand_motion.py --file $angles
+& $python devtools/render_hand_snapshots.py --file $angles --out outputs/hand_snapshots
+```
+
+第一条命令在无窗口仿真中测量关节运动范围和跟踪误差。
+第二条命令生成三台机器人原装手的姿态快照。
+它们接收关节角文件，不接收原始关键点录制。
+
 ## 4. 训练模型或实时运行
 
 ### 4.1 训练共享模型（可选）
@@ -279,6 +322,7 @@ $checkpoint = "$checkpointRoot/models/twohand_h5/linker/$run/model_best.pth"
 | H5 格式、坐标和模型兼容性 | [数据契约](docs/contracts.md) |
 | 模块职责和依赖关系 | [架构说明](docs/architecture.md) |
 | 三机器人双臂诊断、离线验收和已测得的失败项 | [双臂诊断与验收](docs/arm-diagnostics.md) |
+| hand_capture 与双臂分支的迁移位置、兼容处理和验证记录 | [分支整合记录](docs/branch-integration-2026-10-27.md) |
 | 项目进展演示 | [演示材料](present/README.md) |
 
 临时调整设置时，使用命令行参数。
