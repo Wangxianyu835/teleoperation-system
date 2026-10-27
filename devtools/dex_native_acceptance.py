@@ -144,12 +144,196 @@ def solvers():
     return report
 
 
+def recording_evaluation(path):
+    """Evaluate executed vs raw fingertip vectors, excluding calibration rows."""
+    import h5py
+    import numpy as np
+    from teleoperation.robots.native_hand import NativeHandModel
+    report = {"file": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+              "metric_scope": "human target fitting in native palm frame, not hardware accuracy", "hands": {}}
+    with h5py.File(path, "r") as stream:
+        excluded = np.asarray(stream["is_calibration"], dtype=bool)
+        report["frames"] = len(excluded)
+        report["calibration_frames_excluded"] = int(excluded.sum())
+        report["evaluation_indices_sha256"] = hashlib.sha256(np.flatnonzero(~excluded).astype("<i8").tobytes()).hexdigest()
+        for r in ROBOT_SPECS:
+            for side in ("left", "right"):
+                model = NativeHandModel(r, side)
+                group = stream[f"{r}/{side}"]
+                assert group.attrs["config_hash"] == model.config_hash
+                names = json.loads(group.attrs["joint_names"])
+                targets = np.asarray(group["target_vectors"])
+                input_valid = np.isfinite(targets).all(axis=(1,2)) & ~excluded
+                valid = np.asarray(group["valid"], dtype=bool) & input_valid
+                row = {"input_valid": int(input_valid.sum()), "solved": int(valid.sum()),
+                       "valid_fraction": float(valid.sum()/input_valid.sum()) if input_valid.any() else None}
+                robot = model.kinematics
+                order = [names.index(n) for n in robot.dof_joint_names]
+                link_ids = [robot.get_link_index(n) for n in model.tip_frames]
+                for field in ("raw_angles", "command_angles"):
+                    angles = np.asarray(group[field])
+                    means, distances, pinch = [], [], []
+                    for index in np.flatnonzero(valid):
+                        robot.compute_forward_kinematics(angles[index, order])
+                        positions = np.array([robot.get_link_pose(i)[:3,3] for i in link_ids])
+                        error = np.linalg.norm(positions-targets[index],axis=1)*1000
+                        means.append(error.mean()); distances.extend(error)
+                        pinch.append(np.abs(np.linalg.norm(positions[1:3]-positions[0],axis=1)-
+                            np.linalg.norm(targets[index,1:3]-targets[index,0],axis=1))*1000)
+                    delta = np.abs(np.diff(angles,axis=0))
+                    finite_delta=delta[np.isfinite(delta)]
+                    hits = sum(np.count_nonzero(np.isclose(angles[valid,i], model.limits[n][0],atol=1e-5) |
+                                                 np.isclose(angles[valid,i], model.limits[n][1],atol=1e-5)) for i,n in enumerate(names))
+                    row[field] = {"mean_tip_error_mm": float(np.mean(means)) if means else None,
+                        "p95_tip_error_mm": float(np.percentile(distances,95)) if distances else None,
+                        "thumb_index_middle_distance_error_mm": np.mean(pinch,axis=0).tolist() if pinch else None,
+                        "limit_joint_fraction": float(hits/(valid.sum()*len(names))) if valid.any() else None,
+                        "mean_joint_delta_rad": float(finite_delta.mean()) if len(finite_delta) else None,
+                        "max_joint_delta_rad": float(finite_delta.max()) if len(finite_delta) else None}
+                times=np.asarray(group["solve_ms"])[valid]
+                row["solve_mean_ms"] = float(times.mean()) if len(times) else None
+                row["solve_p95_ms"] = float(np.percentile(times,95)) if len(times) else None
+                report["hands"][f"{r}/{side}"] = row
+        frame_ms=sum(np.asarray(stream[f"{r}/{s}/solve_ms"]) for r in ROBOT_SPECS for s in ("left","right"))
+        sample=frame_ms[100:]
+        report["performance"]={"warmup_frames":100,"sample_frames":len(sample),
+            "six_hand_p95_ms":float(np.percentile(sample,95)),
+            "p95_le_33ms":bool(len(sample)>=1000 and np.percentile(sample,95)<=33)}
+        report["validity_passed"]=all(v["valid_fraction"] is not None and v["valid_fraction"]>=.99 for v in report["hands"].values())
+    return report
+
+
+def vr_checkpoint_comparison(input_path, calibration_path, checkpoint, output):
+    """Run the existing upstream VR model and legacy L21 native mapping as-is."""
+    import numpy as np
+    import torch
+    import time
+    from teleoperation.applications.dex_native import file_hash, command_result
+    from teleoperation.applications.visionpro_processing import TransHandRVisionProPipeline
+    from teleoperation.contracts.hand import NativeHandResult, L21HandAngles
+    from teleoperation.data.hand_recording import iter_dex_observations, NativeHandResultWriter
+    from teleoperation.data.urdf import parse_joint_limits
+    from teleoperation.paths import L21_ROOT
+    from teleoperation.robots.l21 import MAPPING_18
+    from teleoperation.robots.native_hand import NativeHandModel, build_mapping, map_dofs
+    from teleoperation.retargeting.hand.angles import canonical_to_native_angles
+    from teleoperation.retargeting.hand.coordinates import OPERATOR_TO_CANONICAL
+    from teleoperation.retargeting.hand.dex_native import DexInputAdapter, DexCalibration
+    from teleoperation.retargeting.hand.transhandr_vr import load_transhandr_vr_model, TransHandRVRRetargeter
+    from teleoperation.simulation.hand_commands import HandCommandPipeline
+    torch.set_num_threads(1)
+    calibration=DexCalibration.load(calibration_path)
+    adapter=DexInputAdapter("visionpro")
+    pipeline=TransHandRVisionProPipeline()
+    model=load_transhandr_vr_model(checkpoint)
+    predictors={s:TransHandRVRRetargeter(model,source_side=s,target_side=s) for s in ("left","right")}
+    models={(r,s):NativeHandModel(r,s) for r in ROBOT_SPECS for s in ("left","right")}
+    limits={}
+    for side in ("left","right"):
+        bounds=parse_joint_limits(L21_ROOT/side/f"linkerhand_l21_{side}.urdf")
+        limits[side]=np.array([(0.,0.) if n is None else bounds[n] for n in MAPPING_18])
+    commands=HandCommandPipeline(("left","right"),limits)
+    mappings={k:build_mapping(*k,m.limits) for k,m in models.items()}
+    transforms={k:OPERATOR_TO_CANONICAL[k[1]].T@m.palm_reference()[0].T for k,m in models.items()}
+    digest=file_hash(input_path)
+    metadata={"method":"upstream_transhandr_vr_legacy_L21_mapping", "input_sha256":digest,
+              "checkpoint_sha256":file_hash(checkpoint),"calibration":vars(calibration),
+              "coupling":"legacy independent mapped joints, not the dex mimic-constrained command path"}
+    output.parent.mkdir(parents=True,exist_ok=True)
+    with NativeHandResultWriter(output,models,metadata) as writer:
+        writer.stream.attrs["schema"]="dex_native_comparison_v1"
+        for raw in iter_dex_observations(input_path,"visionpro"):
+            frame=adapter.adapt(raw)
+            window=pipeline.process_window(raw)
+            angles,accepted,side_ms={},{},{}
+            for side in ("left","right"):
+                start=time.perf_counter()
+                result=None if window is None else getattr(predictors[side].retarget(window),side+"_angles")
+                side_ms[side]=(time.perf_counter()-start)*1000
+                if result is None:
+                    angles[side]=None; commands.missing(side)
+                    accepted[side]=commands.previous[side].copy()
+                else:
+                    angles[side]=canonical_to_native_angles(result.values,side)
+                    accepted[side]=commands.update(side,angles[side],timestamp=raw.timestamp)
+            results,applied,targets={},{},{}
+            for key,m in models.items():
+                side=key[1]
+                values=None
+                if angles[side] is not None:
+                    named,_=map_dofs(L21HandAngles(angles[side]).native_mapping_dofs().values,mappings[key])
+                    values=np.array([named[n] for n in m.joint_names])
+                results[key]=NativeHandResult(*key,m.joint_names,values,raw.timestamp,m.config_hash,
+                    values is not None,"missing/warmup" if values is None else None,side_ms[side]/3)
+                applied[key]=map_dofs(L21HandAngles(accepted[side]).native_mapping_dofs().values,mappings[key])[0]
+                targets[key]=(None if frame.hands[side] is None else
+                    frame.hands[side][m.human_tip_indices]@transforms[key]*calibration.scale_for(m))
+            writer.append(raw.timestamp,results,applied,targets,
+                digest==calibration.source_sha256 and calibration.segment[0]<=raw.timestamp<=calibration.segment[1])
+    return recording_evaluation(output)
+
+
+def snapshots(path, directory):
+    import h5py
+    import numpy as np
+    import pybullet as p
+    from PIL import Image
+    from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+    from teleoperation.robots.native_hand import link_extent
+    scene=ThreeRobotHandScene(gui=False)
+    directory.mkdir(parents=True,exist_ok=True)
+    report={"source":str(path),"frame":100,"images":[],"mode":"accepted-command pose for visual review"}
+    try:
+        with h5py.File(path) as stream:
+            for robot in scene.robots:
+                ids=[]
+                for side in ("left","right"):
+                    group=stream[f"{robot['type']}/{side}"]
+                    names=json.loads(group.attrs["joint_names"])
+                    index=min(100,len(group["command_angles"])-1)
+                    values=group["command_angles"][index]
+                    lookup=robot["plans"][side][1]
+                    for name,value in zip(names,values):
+                        p.resetJointState(robot["body"],lookup[name],float(value),physicsClientId=scene.cid)
+                        ids.append(lookup[name])
+                center,size=link_extent(robot["body"],ids,scene.cid)
+                base=p.getBasePositionAndOrientation(robot["body"],physicsClientId=scene.cid)[0]
+                direction=center[:2]-np.asarray(base[:2])
+                yaw=float(np.degrees(np.arctan2(direction[1],direction[0])))
+                view=p.computeViewMatrixFromYawPitchRoll(center,max(.4,float(np.linalg.norm(size))*1.4),yaw,-18,0,2)
+                projection=p.computeProjectionMatrixFOV(50,1.5,.01,10)
+                rgba=p.getCameraImage(900,600,view,projection,renderer=p.ER_TINY_RENDERER,physicsClientId=scene.cid)[2]
+                output=directory/f"{robot['type']}_native.png"
+                Image.fromarray(np.asarray(rgba,dtype=np.uint8).reshape(600,900,4)).convert("RGB").save(output)
+                report["images"].append(str(output))
+    finally:
+        scene.close()
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--stage", choices=("inventory", "kinematics", "solvers"), default="inventory")
+    parser.add_argument("--stage", choices=("inventory", "kinematics", "solvers", "recording", "vr-comparison", "snapshots"), default="inventory")
+    parser.add_argument("--input", type=Path)
+    parser.add_argument("--calibration", type=Path)
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--result-h5", type=Path)
     args = parser.parse_args()
-    report = {"inventory": inventory, "kinematics": kinematics, "solvers": solvers}[args.stage]()
+    if args.stage == "snapshots":
+        if args.input is None:
+            parser.error("snapshots requires native result input")
+        report=snapshots(args.input,args.output.parent/"snapshots")
+    elif args.stage == "vr-comparison":
+        if any(v is None for v in (args.input,args.calibration,args.checkpoint,args.result_h5)):
+            parser.error("VR comparison requires input, calibration, checkpoint and result-h5")
+        report=vr_checkpoint_comparison(args.input,args.calibration,args.checkpoint,args.result_h5)
+    elif args.stage == "recording":
+        if args.input is None:
+            parser.error("recording stage requires --input native-results.h5")
+        report = recording_evaluation(args.input)
+    else:
+        report = {"inventory": inventory, "kinematics": kinematics, "solvers": solvers}[args.stage]()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"stage={args.stage} passed={report.get('passed', True)}")
