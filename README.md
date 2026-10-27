@@ -2,6 +2,7 @@
 
 本项目使用摄像头检测人手关键点。
 程序将关键点转换为 L21 机械手的关节角。
+也可选择 dex-retargeting，直接计算三种机器人原装手的关节角，见 4.4 节。
 PyBullet 在回放或实时运行时显示机械手动作。
 
 本文沿用 ASD-STE100 的简明技术写作原则编写中文说明：使用短句，统一术语，每个步骤只说明一个操作。
@@ -366,6 +367,72 @@ CSV 保留原有请求目标字段，并增加 `ik_target_base`、`ik_target_wor
 旧 NPZ 回放继续使用固定物理步数；新增方向保护和限速也使用该固定时间间隔。
 真人摄像头效果需在本机复测。
 整合细节见[分支整合记录](docs/branch-integration-2026-10-27.md)。
+
+### 4.4 使用 dex-retargeting 直接驱动原装手（可选）
+
+新增 `dex` 后端直接优化 H1-2、GR1-T2、G1 的原装手。它使用 Vector 优化，不需要手部网络权重，
+也不经过 L21 降维映射。H1、GR1 每手各优化 6 个独立驱动量，再展开 URDF 耦合关节；G1 每手优化 7 个关节。
+
+先按 [dex 环境与验收说明](docs/dex-native.md)建立独立环境，然后加载终端配置：
+
+```powershell
+Set-Location D:\2026\code\teleoperation-system-retargeting
+. ./devtools/dex_native_env.ps1
+& $dexPython -m pip check
+```
+
+使用已有 Vision Pro 实录校准、导出并回放六只原装手：
+
+```powershell
+$dexSession = Get-Date -Format 'yyyyMMdd_HHmmss'
+$vrRaw = 'datasets/raw/visionpro_hand_arm_20261012_215137_live.h5'
+$vrCal = "outputs/tmp_dex_native/vr_cal_$dexSession.json"
+$vrNative = "outputs/tmp_dex_native/vr_native_$dexSession.h5"
+
+& $dexPython -m teleoperation hand dex-calibrate --source visionpro `
+  --input $vrRaw --start 3 --duration 2 --output $vrCal
+& $dexPython -m teleoperation hand dex-export --source visionpro `
+  --input $vrRaw --calibration $vrCal --output $vrNative
+& $dexPython -m teleoperation replay dex-native --file $vrNative --render
+```
+
+此处 `--start 3` 仅适用于上面这份实录。其他录制应选双手张开至少两秒的片段。
+校准与结果文件不覆盖已有路径。原生结果使用独立的 `dex_native_results_v1` 格式，不能作为 L21 角度文件读取。
+
+相机输入只接受 world 米制数据。先录制一段双手张开、保持 2–3 秒的数据，再执行校准：
+
+```powershell
+$cameraRaw = "outputs/tmp_dex_native/camera_open_$dexSession.h5"
+$cameraCal = "outputs/tmp_dex_native/camera_cal_$dexSession.json"
+& $dexPython -m teleoperation hand record --landmark-space world --hand-side both `
+  --camera-index $camera --output $cameraRaw
+& $dexPython -m teleoperation hand dex-calibrate --source camera `
+  --input $cameraRaw --start 0 --duration 2 --output $cameraCal
+& $dexPython -m teleoperation.applications.realtime_hand_sim `
+  --backend dex --dex-calibration $cameraCal --landmark-space world `
+  --scene robots --hand both --camera-index $camera
+```
+
+如果开始录制时双手尚未张开，将 `--start 0` 改为张开片段的相对秒数。
+双臂双手入口也支持 `--backend dex --dex-calibration $cameraCal`，其余手臂参数沿用 4.3 节。
+相机与 VR 使用不同的校准配置。VR 新路线为 `dex_visionpro_palm_v2`，不能使用修正前的 v1 校准。
+
+连接头显时，在支持 Tracking Streamer 的环境中使用：
+
+```powershell
+& $dexPython -m teleoperation hand vr --backend dex `
+  --ip '<头显地址>' --dex-calibration $vrCal `
+  --scene robots --hand both --hand-mapping same `
+  --report "outputs/tmp_dex_native/vr_live_$dexSession.json"
+```
+
+实时连接还需要兼容的 `avp_stream` SDK；当前独立环境只完成离线路线，未安装该 SDK。
+默认安装 SDK 会额外安装 OpenCV，安装前应按接入说明检查环境。旧 TransHandR VR 入口仍保留。
+
+已通过的验收包括：600 个原生可达姿态、两份 VR 实录的数值稳定性、原生命令导出/回放和完整回归。
+六手求解单测 P95 为 22.1 ms，样本为预热后 1,000 帧，不含检测和渲染。
+真实人体目标拟合误差仍为厘米量级，不能据此宣称达到抓取或硬件控制精度。
+相机新校准、相机和头显各 5 分钟现场测试仍待完成；原生手本轮没有新增网格避碰。
 
 ## 5. 查找其他功能与源文件
 

@@ -11,6 +11,7 @@
 - `requirements-dex-native.lock.txt`：实验环境完整依赖锁定文件。
 - `docs/dex-native-assets.json`：依赖版本、六手关节清单、资产及官方算法哈希。
 - `docs/dex-native-runtime-lock.json`：Windows 编译运行时的官方 Conda 包 URL 和 SHA256。
+- `docs/dex-native-results.json`：最终参数、运动学、600 姿态、性能及两份 VR 同帧比较结果。
 - `robots/native_hand.py::NativeHandModel`：整机手部子树、固定指尖 frame、耦合限位与 FK 查询。
 - `tests/test_dex_native.py`：本功能的契约及边界测试。
 - `retargeting/hand/dex_native.py`：相机/VR 显式适配、固定掌长校准及原生 Vector 管线。
@@ -28,8 +29,9 @@
 | 3 输入与校准 | 8ee68c7 | checkpoint-20261027-1210-dex-stage3 | 通过 |
 | 4 Vector 求解 | 126f5e9 | checkpoint-20261027-1215-dex-stage4 | 通过 |
 | 5 命令与回放 | 9470477 | checkpoint-20261027-1220-dex-stage5 | 通过 |
-| 6 实录与比较 | 8a3bb97 | checkpoint-20261027-1500-dex-stage6 | VR 评估进行中；相机校准待新采集 |
+| 6 实录与比较 | 8a3bb97 | checkpoint-20261027-1500-dex-stage6 | 两份 VR 完整评估通过；相机校准及相机比较待新采集 |
 | 7 实时入口 | 9c64049 | checkpoint-20261027-1238-dex-stage7 | 代码/离线联调/性能通过；相机与头显设备项待完成 |
+| 8 文档与回归 | 130154d | checkpoint-20261027-1302-dex-stage8 | 文档、回归和 CLI 通过；全 preflight 仅有原有 C 盘缓存项失败 |
 
 相机两个实时入口增加 `--backend dex --dex-calibration <camera.json>`，要求 world/robots；
 仍复用既有相机窗口和双臂路线。摄像头 dex 模式使用单槽最新观测，不积累待处理队列。
@@ -46,14 +48,50 @@ SDK 默认依赖会额外安装 OpenCV 和其他仿真库；本次在下载阶�
 当前会话相机 0 实际探测 opened=False/read_frame=False；头显未连接，缺 SDK 和当前连接地址。
 两次 5 分钟设备动作清单均未完成。
 
-阶段 6 已完整导出两份 VR 实录（4631/2886 帧），六手在适配有效帧上的求解有效率均为 100%。
+阶段 6 最终已完整导出两份 VR 实录（4631/2886 帧），六手在适配有效帧上的求解有效率均为 100%。
 统计工具以 is_calibration 排除本文件校准片段，记录文件/评估索引哈希，分别计算原始解和执行命令的
 指尖误差、拇食/拇中距离误差、限位命中、关节变化及耗时。指标是目标拟合误差，不是真机精度。
 原 TransHandR 比较沿用上游 VR 预处理、实际权重与 L21 原生映射；旧映射不强加新的 mimic 约束，
 比较结果格式为 `dex_native_comparison_v1`，不能作为新原生命令回放。
 几何后端没有现有 VR 正式路线，不将相机预处理套用 VR；相机的几何/权重比较等待合格相机校准。
-第一份并行评估中的六手 P95 为 37.3 ms，第二份为 26.5 ms；性能仍需独占负载重测。
+早期 v1 并行评估、v2 严格容差及默认容差但未加入平面可达性边界的性能记录均不是最终结果；
+最终使用阶段 7 的 22.061 ms 独立求解测试。未降低 33 ms 门槛。
 阶段 6 相机及阶段 7 真设备项未通过。用户同意后续配合相机采集，先继续不依赖该采集的 VR 与入口工作。
+
+### 同帧比较：平均原始指尖目标拟合误差
+
+单位 mm。A 为 `visionpro_hand_arm_20261012_213812_live.h5`，B 为 `visionpro_hand_arm_20261012_215137_live.h5`。
+仅比较两法共同有效、且排除校准片段后的帧。JSON 另含执行命令、捏合距离、限位、关节变化和耗时。
+
+| 原生手 | A dex | A 原 TransHandR + L21 映射 | B dex | B 原 TransHandR + L21 映射 |
+|---|---:|---:|---:|---:|
+| H1 左 | 51.9 | 69.2 | 56.0 | 73.2 |
+| H1 右 | 51.0 | 67.9 | 58.3 | 74.0 |
+| GR1 左 | 24.2 | 38.5 | 26.7 | 40.9 |
+| GR1 右 | 23.7 | 37.3 | 27.8 | 40.7 |
+| G1 左 | 37.0 | 69.2 | 38.0 | 71.0 |
+| G1 右 | 36.8 | 69.3 | 38.1 | 71.5 |
+
+这两份录制中，dex 对相同向量目标的拟合误差较小；不能推广成所有动作或抓取任务均优于原方法。
+当前误差仍是厘米量级。固定掌长缩放后，人体指长比例和原生手低自由度/运动平面限制使部分目标不可达。
+数值解有效不表示目标误差小，报告分别给出这两项，不能互相替代。
+
+### 复现实录评估
+
+先使用 README 4.4 节的校准/导出命令，再执行：
+
+```powershell
+& $dexPython -B devtools/dex_native_acceptance.py --stage recording `
+  --input $vrNative --output "outputs/tmp_dex_native/metrics_$dexSession.json"
+& $dexPython -B devtools/dex_native_acceptance.py --stage performance `
+  --input $vrRaw --calibration $vrCal --output "outputs/tmp_dex_native/performance_$dexSession.json"
+```
+
+运动学和可达目标验收分别用 `--stage kinematics`、`--stage solvers`，均要求指定新 `--output` 路径。
+旧方法比较使用 `--stage vr-comparison` 或 `--stage camera-comparison --method geometric|checkpoint`，
+并传入 raw `--input`、固定 `--calibration`、诊断 `--result-h5`、JSON `--output`；checkpoint 方法还需真实 `--checkpoint`。
+用 `--stage recording --common-with <另一方法结果.h5>` 可限定双方共同有效帧。
+原始源文件、校准源 SHA256、排除片段、评估索引及配置哈希均保留在 JSON/H5 中。
 
 `NativeHandCommandPipeline` 按独立驱动量滤波/限速，再展开所有耦合关节。
 角速度上限取 CLI 与 URDF（含从动关节反推）约束的较小值。丢手保持命令，恢复首步仍限速。
@@ -117,6 +155,8 @@ wheel 来源、SHA256 与代码哈希记录在 `outputs/tmp_dex_native/wheels/*.
 先在仓库根目录加载 `devtools/dex_native_env.ps1`。创建 `.venv/dex-native`，
 从正式环境复制独立 site-packages，或按完整 pip 锁定文件安装基础包。
 本地 dex wheel 必须先按下列步骤构建，再使用完整锁定文件，不能从 PyPI 查找本地版本。
+已验证的是本机正式环境的独立包副本、锁定 Conda 编译运行时的重建和导入；
+未单独执行无本机环境依赖的全新网络安装。CUDA 版 Torch 的来源需与锁定版本相匹配。
 
 ```powershell
 . ./devtools/dex_native_env.ps1
@@ -142,3 +182,20 @@ wheel 来源、SHA256 与代码哈希记录在 `outputs/tmp_dex_native/wheels/*.
 安装后所有包内 Python 源码哈希与官方 wheel 逐一核对一致。
 沙箱内首次测试遇到文件原子替换权限错误；允许该操作后原测试通过，不修改代码或测试来规避。
 快速 preflight 仍报告用户原有 C 盘 pip/HuggingFace 缓存；本任务的七个进程缓存变量已重定向 D 盘，不删除用户缓存。
+
+## 最终回归与交付状态
+
+- 独立 dex 环境：完整 `unittest discover -s tests -v`，465 项，0 失败、0 错误、1 原有跳过。
+- 原正式环境：相同完整套件 465 项、1 原有跳过，85.165 秒，四条 CLI 冒烟均 exit 0。
+- 不安装 dex 时，旧 CLI/工作流继续运行；显式选择 dex 会返回包含环境文档路径的依赖错误。
+- 两个 GBK 扫描、架构边界、`git diff --check` 通过；README 18 段 PowerShell 语法和 24 个链接通过检查。
+- 完整 preflight exit 1，仅 C 盘原有 pip 缓存约 5183 MB/HuggingFace 残留导致一类失败。
+  七个进程变量均重定向 D 盘；没有清理用户缓存或修改用户级环境。
+- 两份 VR 实录全量导出和同帧比较完成，最终结果写入 `dex-native-results.json`；截图位于
+  `outputs/tmp_dex_native/snapshots/`，是接受命令姿态的可视化，不能当作硬件实测。
+- 未完成项：合格相机校准与相机方法比较、兼容头显 SDK 安装、相机与头显各 5 分钟动作清单。
+  相机 0 未读到画面；用户已同意后续配合采集。因此本轮不能宣称全部八阶段验收完成。
+
+本轮代码提交：阶段 1 `53c03c7`、阶段 2 `8ee68c7`、阶段 3 `126f5e9`、阶段 4 `9470477`、
+阶段 5 `8a3bb97`、阶段 6 评估工具 `9c64049`、阶段 7 集成/修正 `130154d`。
+本轮未推送 GitHub。阶段 8 提交包含 README、最终结果清单和上述待验收事项。

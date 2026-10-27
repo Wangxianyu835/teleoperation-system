@@ -144,7 +144,7 @@ def solvers():
     return report
 
 
-def recording_evaluation(path):
+def recording_evaluation(path, common_with=None):
     """Evaluate executed vs raw fingertip vectors, excluding calibration rows."""
     import h5py
     import numpy as np
@@ -167,6 +167,13 @@ def recording_evaluation(path):
                 valid = np.asarray(group["valid"], dtype=bool) & input_valid
                 row = {"input_valid": int(input_valid.sum()), "solved": int(valid.sum()),
                        "valid_fraction": float(valid.sum()/input_valid.sum()) if input_valid.any() else None}
+                if common_with is not None:
+                    with h5py.File(common_with,"r") as common:
+                        if not np.array_equal(stream["timestamps"][:],common["timestamps"][:]):
+                            raise ValueError("Comparison recordings have different timebases")
+                        valid &= np.asarray(common[f"{r}/{side}/valid"],dtype=bool)
+                        valid &= ~np.asarray(common["is_calibration"],dtype=bool)
+                    row["comparison_common_frames"] = int(valid.sum())
                 robot = model.kinematics
                 order = [names.index(n) for n in robot.dof_joint_names]
                 link_ids = [robot.get_link_index(n) for n in model.tip_frames]
@@ -360,6 +367,7 @@ def main():
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--result-h5", type=Path)
     parser.add_argument("--method", choices=("geometric", "checkpoint"), default="checkpoint")
+    parser.add_argument("--common-with", type=Path, help="restrict metrics to paired valid evaluation frames")
     args = parser.parse_args()
     if args.stage == "performance":
         if args.input is None or args.calibration is None:
@@ -379,7 +387,7 @@ def main():
     elif args.stage == "recording":
         if args.input is None:
             parser.error("recording stage requires --input native-results.h5")
-        report = recording_evaluation(args.input)
+        report = recording_evaluation(args.input,args.common_with)
     else:
         report = {"inventory": inventory, "kinematics": kinematics, "solvers": solvers}[args.stage]()
     args.output.parent.mkdir(parents=True, exist_ok=True)
