@@ -62,15 +62,54 @@ def inventory():
     return report
 
 
+def kinematics():
+    import numpy as np
+    import pybullet as p
+    from teleoperation.robots.native_hand import NativeHandModel
+    from teleoperation.simulation.urdf_loader import load_urdf
+    report = {"stage": 2, "hands": {}, "passed": True}
+    client = p.connect(p.DIRECT)
+    try:
+        for robot, spec in ROBOT_SPECS.items():
+            body = load_urdf(str(Path(ROBOTS_ROOT) / spec["urdf"]), useFixedBase=True, physicsClientId=client)
+            movable = [i for i in range(p.getNumJoints(body, physicsClientId=client))
+                       if p.getJointInfo(body, i, physicsClientId=client)[2] != p.JOINT_FIXED]
+            for side in ("left", "right"):
+                model = NativeHandModel(robot, side)
+                rng = np.random.default_rng(0)
+                poses = rng.uniform(model.bounds[:, 0], model.bounds[:, 1], (98, len(model.independent_names)))
+                poses = np.vstack((poses, model.bounds.T))
+                maximum = 0.
+                for values in poses:
+                    before = np.array(p.getJointStates(body, movable, physicsClientId=client), dtype=object)
+                    expected = model.positions(values)
+                    actual = model.bullet_positions(p, body, client, values)
+                    maximum = max(maximum, float(np.max(np.linalg.norm(expected - actual, axis=1))))
+                    after = np.array(p.getJointStates(body, movable, physicsClientId=client), dtype=object)
+                    assert np.array_equal(before[:, :2], after[:, :2]), "FK query changed physical state"
+                passed = maximum <= 0.0001
+                report["hands"][f"{robot}/{side}"] = {"poses": len(poses), "max_position_error_m": maximum,
+                    "config_hash": model.config_hash, "independent": list(model.independent_names),
+                    "effective_limits": model.bounds.tolist(), "effective_velocities": model.velocity_limits.tolist(),
+                    "passed": passed}
+                report["passed"] &= passed
+            p.removeBody(body, physicsClientId=client)
+    finally:
+        p.disconnect(client)
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--stage", choices=("inventory", "kinematics"), default="inventory")
     args = parser.parse_args()
-    report = inventory()
+    report = inventory() if args.stage == "inventory" else kinematics()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print("[OK] six native hands: H1 6/12, GR1 6/11, G1 7/7")
+    print(f"stage={args.stage} passed={report.get('passed', True)}")
+    return 0 if report.get("passed", True) else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

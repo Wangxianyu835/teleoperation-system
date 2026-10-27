@@ -11,6 +11,8 @@
 - `requirements-dex-native.lock.txt`：实验环境完整依赖锁定文件。
 - `docs/dex-native-assets.json`：依赖版本、六手关节清单、资产及官方算法哈希。
 - `docs/dex-native-runtime-lock.json`：Windows 编译运行时的官方 Conda 包 URL 和 SHA256。
+- `robots/native_hand.py::NativeHandModel`：整机手部子树、固定指尖 frame、耦合限位与 FK 查询。
+- `tests/test_dex_native.py`：本功能的契约及边界测试。
 
 ## 阶段记录
 
@@ -19,6 +21,13 @@
 | 阶段 | 修改前提交 | 检查点 | 状态 |
 |---|---|---|---|
 | 1 环境与基线 | fe9302e | checkpoint-20261027-1600-dex-stage1 | 通过 |
+| 2 原生运动学 | 53c03c7 | checkpoint-20261027-1205-dex-stage2 | 通过 |
+
+H1/G1 的固定指尖偏移取自本仓库 Inspire/Dex3 独立手 URDF；GR1 使用整机已有 tip frame。
+H1 左手独立模型的食指 intermediate 原点与整机存在约 0.19 mm 差异：保留整机原点，仅移植末端固定偏移。
+优化模型删除 visual/collision 资源引用，关节轴、原点及 mimic 保持整机定义；显示仍使用原整机模型。
+阶段 2：六手各 100 个姿态（含耦合有效上下界）FK 位置误差均小于 0.1 mm，
+全部查询恢复原整机位置和速度。新模型契约测试 5 项通过；原生回放和手部命令测试通过。
 
 独立环境路径：`.venv/dex-native`。以现有正式环境的独立包副本为起点，再安装 dex 依赖；不修改正式环境。
 原生手 URDF 的 mimic 从动关节不是独立优化变量：H1 为 6/12，GR1 为 6/11，G1 为 7/7。
