@@ -51,48 +51,6 @@ class HandWindow(_HandMetadataView):
 
 
 @dataclass(frozen=True)
-class L21HandAngles:
-    values: np.ndarray
-
-    def __post_init__(self):
-        if not isinstance(self.values, np.ndarray) or self.values.shape != (18,):
-            raise ValueError("L21HandAngles must have shape (18,)")
-
-    def native_mapping_dofs(self):
-        """Remove only the placeholder; retain float64 replay precision."""
-        return L21HandDOFs(self.values[1:].copy())
-
-
-@dataclass(frozen=True)
-class L21HandDOFs:
-    values: np.ndarray
-
-    def __post_init__(self):
-        if not isinstance(self.values, np.ndarray) or self.values.shape != (17,):
-            raise ValueError("L21HandDOFs must have shape (17,)")
-        if not np.isfinite(self.values).all():
-            raise ValueError("L21HandDOFs must be finite")
-
-
-@dataclass(frozen=True)
-class HandRetargetResult:
-    left_angles: L21HandAngles | None = None
-    right_angles: L21HandAngles | None = None
-    left_valid: bool = False
-    right_valid: bool = False
-    timestamp: float | None = None
-
-
-    def __post_init__(self):
-        for side in ("left", "right"):
-            angles = getattr(self, side + "_angles")
-            if angles is not None and not isinstance(angles, L21HandAngles):
-                raise TypeError(f"{side} model result must be L21HandAngles")
-            if getattr(self, side + "_valid") and angles is None:
-                raise ValueError(f"{side} valid result requires angles")
-
-
-@dataclass(frozen=True)
 class AngleFrame:
     frame_id: int
     timestamp: float
@@ -100,31 +58,3 @@ class AngleFrame:
     right: np.ndarray
     left_valid: bool
     right_valid: bool
-
-
-@dataclass(frozen=True)
-class NativeHandResult:
-    """Robot-specific named joint coordinates; never an L21 angle vector."""
-    robot_type: str
-    side: str
-    joint_names: tuple[str, ...]
-    values: np.ndarray | None
-    timestamp: float
-    config_hash: str
-    valid: bool = True
-    error: str | None = None
-    solve_ms: float = 0.
-
-    def __post_init__(self):
-        if self.side not in ("left", "right") or len(set(self.joint_names)) != len(self.joint_names):
-            raise ValueError("Invalid native result side or joint names")
-        if not np.isfinite(self.timestamp):
-            raise ValueError("Native result timestamp must be finite seconds")
-        if self.valid and self.values is None:
-            raise ValueError("Valid native result requires joint values")
-        if self.values is not None and (np.shape(self.values) != (len(self.joint_names),)
-                                       or not np.isfinite(self.values).all()):
-            raise ValueError("Native result must have finite named joint values")
-
-    def named_values(self):
-        return {} if self.values is None else dict(zip(self.joint_names, self.values))

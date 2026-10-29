@@ -1,6 +1,9 @@
 """Static command routing; importing this registry starts no workflows."""
 
 COMMANDS = (
+    ('hand', 'control', 'hand_control', 'teleoperation.applications.hand_control:run'),
+    ('hand', 'list-models', 'hand_list_models', 'teleoperation.applications.hand_control:list_models'),
+    ('replay', 'hand-joints', 'replay_hand_joints', 'teleoperation.applications.hand_control:replay'),
     ('hand', 'dex-calibrate', 'hand_dex_calibrate', 'teleoperation.applications.dex_native:calibrate'),
     ('hand', 'dex-export', 'hand_dex_export', 'teleoperation.applications.dex_native:export'),
     ('replay', 'dex-native', 'replay_dex_native', 'teleoperation.applications.dex_native:replay'),

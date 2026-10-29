@@ -12,7 +12,7 @@ import time
 
 import numpy as np
 
-from teleoperation.contracts.hand import L21HandAngles
+from teleoperation.retargeting.hand.angles import legacy_l21_dofs
 from teleoperation.data.urdf import parse_joint_limits
 from teleoperation.paths import L21_ROOT
 from teleoperation.robots.l21 import MAPPING_18
@@ -69,7 +69,7 @@ recorded 0.1 mm tolerance. New/deeper inter-finger contacts remain forbidden.
         return min((float(point[8]) for point in points), default=None)
 
     def _set_pose(self, angles):
-        targets = self.scene.adapters[self.side].map(L21HandAngles(angles).native_mapping_dofs())
+        targets = self.scene.adapters[self.side].map(legacy_l21_dofs(angles))
         previous = getattr(self, "_query_targets", None)
         for name, value in targets.items():
             if previous is not None and previous.get(name) == value:
@@ -154,194 +154,34 @@ recorded 0.1 mm tolerance. New/deeper inter-finger contacts remain forbidden.
                 "last_contact": self.last_contact, "baseline_contacts": self.baseline_contacts}
 
 
-class HandCommandPipeline:
-    """Independent per-side output states seeded from the current hand position."""
-
-    def __init__(self, sides, limits, initial=None, guards=None, filter_mode="lowpass",
-                 alpha=0.2, max_velocity=1.5, kalman_q=1., kalman_r=0.01, clock=time.monotonic):
-        if filter_mode not in ("lowpass", "kalman", "none"):
-            raise ValueError("Unknown joint filter")
-        if not math.isfinite(alpha) or not 0 < alpha <= 1:
-            raise ValueError("filter alpha must be in (0, 1]")
-        if not math.isfinite(max_velocity) or max_velocity <= 0:
-            raise ValueError("joint max velocity must be finite and positive")
-        if not math.isfinite(kalman_q) or kalman_q <= 0 or not math.isfinite(kalman_r) or kalman_r <= 0:
-            raise ValueError("Kalman noise parameters must be finite and positive")
-        self.sides, self.mode, self.alpha = tuple(sides), filter_mode, float(alpha)
-        self.max_velocity, self.q, self.r = float(max_velocity), float(kalman_q), float(kalman_r)
-        self.clock, self.limits, self.guards = clock, limits, guards or {}
-        self.previous, self.filtered, self.times, self.kalman, self.stats = {}, {}, {}, {}, {}
-        for side in self.sides:
-            self.previous[side] = np.clip(np.asarray((initial or {}).get(side, np.zeros(18)), dtype=float),
-                                          limits[side][:, 0], limits[side][:, 1])
-            self.times[side] = None
-            self.stats[side] = {"commands": 0, "held_frames": 0, "rate_limited": 0,
-                                "limit_clipped": 0, "max_raw_delta_rad": 0., "max_command_delta_rad": 0.}
-            self._seed(side)
-
-    def _seed(self, side):
-        self.filtered[side] = self.previous[side].copy()
-        kf = KalmanSmoother(process_noise=self.q, measurement_noise=self.r, gate=0.,
-                            max_velocity=self.max_velocity)
-        kf.step(self.previous[side])
-        self.kalman[side] = kf
-
-    def missing(self, side):
-        # Never extrapolate a missing hand or reset its next command to zero.
-        self.stats[side]["held_frames"] += 1
-        self.times[side] = None
-        self._seed(side)
-
-    def update(self, side, raw, timestamp=None):
-        raw = np.asarray(raw, dtype=float)
-        if raw.shape != (18,) or not np.isfinite(raw).all():
-            raise ValueError("Robot hand command must be a finite 18-vector")
-        now = self.clock() if timestamp is None else float(timestamp)
-        if not math.isfinite(now):
-            raise ValueError("Command timestamp must be finite")
-        before = self.previous[side]
-        last_time = self.times[side]
-        if last_time is not None and now <= last_time:
-            return before.copy()
-        elapsed = 1 / 30 if last_time is None else now - last_time
-        if elapsed > 0.25:
-            self._seed(side)
-        # Long gaps must not permit a large reacquisition jump.
-        dt = min(elapsed, 0.1)
-        self.times[side] = now
-        bounds = self.limits[side]
-        target = np.clip(raw, bounds[:, 0], bounds[:, 1])
-        stats = self.stats[side]
-        stats["commands"] += 1
-        stats["limit_clipped"] += int(not np.allclose(raw, target))
-        stats["max_raw_delta_rad"] = max(stats["max_raw_delta_rad"], float(np.max(np.abs(target - before))))
-        if self.mode == "lowpass":
-            weight = 1 - (1 - self.alpha) ** (dt * 30)
-            self.filtered[side] += weight * (target - self.filtered[side])
-            filtered = self.filtered[side]
-        elif self.mode == "kalman":
-            self.kalman[side].dt = dt
-            filtered = self.kalman[side].step(target)
-        else:
-            filtered = target
-        filtered = np.clip(filtered, bounds[:, 0], bounds[:, 1])
-        delta = filtered - before
-        stats["rate_limited"] += int(np.any(np.abs(delta) > self.max_velocity * dt))
-        # A common fraction preserves the direction of the joint-space segment.
-        fraction = min(1., self.max_velocity * dt / max(float(np.max(np.abs(delta))), 1e-12))
-        command = before + fraction * delta
-        guard = self.guards.get(side)
-        if guard is not None:
-            projected = guard.project(before, command)
-            if not np.allclose(projected, command, atol=1e-9):
-                command = projected
-                self.previous[side] = command.copy()
-                self._seed(side)  # No accumulating filter error behind a blocked motion.
-            else:
-                command = projected
-        self.previous[side] = command.copy()
-        stats["max_command_delta_rad"] = max(stats["max_command_delta_rad"],
-                                              float(np.max(np.abs(command - before))))
-        return command.copy()
-
-    def summary(self):
-        return {"filter": self.mode, "alpha_at_30hz": self.alpha,
-                "max_velocity_rad_s": self.max_velocity, "max_update_dt_s": 0.1,
-                "kalman_q": self.q, "kalman_r": self.r,
-                "sides": {side: dict(stats) for side, stats in self.stats.items()},
-                "collision_guard": {side: guard.summary() for side, guard in self.guards.items()}}
-
-
 def build_hand_commands(args, scene, sides):
-    limits, initial, guards = {}, {}, {}
+    from teleoperation.robots.hand_spec import load_hand_spec
+    from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
+    specs = {('l21',side):load_hand_spec('l21',side) for side in sides}
+    initial, guards = {}, {}
     l21 = hasattr(scene, "bodies") and hasattr(scene, "adapters")
     for side in sides:
-        bounds = parse_joint_limits(L21_ROOT / side / f"linkerhand_l21_{side}.urdf")
-        limits[side] = np.asarray([(0., 0.) if name is None else bounds.get(name, (0., 0.))
-                                   for name in MAPPING_18], dtype=float)
+        key = ('l21',side)
         if l21:
             joints = scene.joint_values(side)
-            initial[side] = np.asarray([joints.get(name, 0.) for name in MAPPING_18], dtype=float)
+            initial[key] = np.asarray([joints.get(name, 0.) for name in specs[key].independent_joint_names], dtype=float)
             if not args.no_collision_guard:
-                guards[side] = L21CollisionGuard(scene, side, args.collision_margin_mm / 1000)
-    commands = HandCommandPipeline(sides, limits, initial, guards, args.joint_filter,
-                                   args.filter_alpha, args.joint_max_velocity, args.kalman_q, args.kalman_r)
+                guards[key] = L21CollisionGuard(scene, side, args.collision_margin_mm / 1000)
+    commands = JointCommandPipeline(specs,filter_mode=args.joint_filter,alpha=args.filter_alpha,
+                                    max_velocity=args.joint_max_velocity,kalman_q=args.kalman_q,
+                                    kalman_r=args.kalman_r,initial=initial,guards=guards)
     scope = "L21 inter-finger mesh checks" if guards else "no runtime mesh collision guard for this scene"
     print(f"hand commands: filter={args.joint_filter} speed<={args.joint_max_velocity} rad/s; {scope}", flush=True)
     return commands
 
 
-class NativeHandCommandPipeline:
-    """Filter independent drives; expand mimic joints only after rate limiting."""
-
-    def __init__(self, models, filter_mode="lowpass", alpha=.2, max_velocity=1.5,
-                 kalman_q=1., kalman_r=.01):
-        if filter_mode not in ("lowpass", "kalman", "none"):
-            raise ValueError("Unknown native joint filter")
-        if not np.isfinite([alpha, max_velocity, kalman_q, kalman_r]).all() or not 0 < alpha <= 1 or min(max_velocity, kalman_q, kalman_r) <= 0:
-            raise ValueError("Invalid native command parameters")
-        self.models, self.mode, self.alpha = models, filter_mode, alpha
-        self.previous, self.filtered, self.times, self.filters, self.stats = {}, {}, {}, {}, {}
-        self.speeds = {k: np.minimum(m.velocity_limits, max_velocity) for k, m in models.items()}
-        for key, model in models.items():
-            self.previous[key] = np.clip(np.zeros(len(model.independent_names)), *model.bounds.T)
-            self.filtered[key] = self.previous[key].copy()
-            self.times[key] = None
-            self.filters[key] = KalmanSmoother(process_noise=kalman_q, measurement_noise=kalman_r,
-                                               gate=0., max_velocity=max_velocity)
-            self.filters[key].step(self.previous[key])
-            self.stats[key] = {"commands": 0, "held_frames": 0, "rate_limited": 0}
-
-    def missing(self, key):
-        self.stats[key]["held_frames"] += 1
-        self.times[key] = None
-        self.filtered[key] = self.previous[key].copy()
-        self.filters[key].reset(len(self.previous[key]))
-        self.filters[key].step(self.previous[key])
-        return self.models[key].expand(self.previous[key])
-
-    def update(self, result, timestamp=None):
-        key = (result.robot_type, result.side)
-        model = self.models[key]
-        if result.config_hash != model.config_hash or set(result.joint_names) != set(model.joint_names):
-            raise ValueError("Native result does not match command model")
-        if not result.valid:
-            return self.missing(key)
-        named = result.named_values()
-        raw = np.array([named[n] for n in model.independent_names])
-        expanded = model.expand(raw)
-        if any(abs(expanded[n] - named[n]) > 1e-6 for n in model.joint_names):
-            raise ValueError("Native result violates mimic constraints")
-        now = time.monotonic() if timestamp is None else float(timestamp)
-        if not math.isfinite(now):
-            raise ValueError("Native command timestamps must be finite seconds")
-        previous_time = self.times[key]
-        if previous_time is not None and now <= previous_time:
-            return model.expand(self.previous[key])
-        elapsed = 1 / 30 if previous_time is None else now - previous_time
-        if elapsed > .25:
-            self.filtered[key] = self.previous[key].copy()
-            self.filters[key].reset(len(raw)); self.filters[key].step(self.previous[key])
-        dt = min(elapsed, .1)
-        self.times[key] = now
-        if self.mode == "lowpass":
-            self.filtered[key] += (1 - (1 - self.alpha) ** (dt * 30)) * (raw - self.filtered[key])
-            target = self.filtered[key]
-        elif self.mode == "kalman":
-            self.filters[key].dt = dt
-            target = self.filters[key].step(raw)
-        else:
-            target = raw
-        target = np.clip(target, *model.bounds.T)
-        delta = target - self.previous[key]
-        active = np.abs(delta) > 1e-14
-        fraction = min(1., float(np.min(self.speeds[key][active] * dt / np.abs(delta[active])))) if active.any() else 1.
-        self.previous[key] += fraction * delta
-        self.stats[key]["commands"] += 1
-        self.stats[key]["rate_limited"] += int(fraction < 1.)
-        return model.expand(self.previous[key])
-
-    def summary(self):
-        return {"filter": self.mode, "alpha_at_30hz": self.alpha,
-                "runtime_mesh_collision_guard": False, "joint_space": "independent native drives",
-                "sides": {"/".join(k): dict(v) for k, v in self.stats.items()}}
+def apply_legacy_l21_mapping(scene, command):
+    """Explicit historical L21-to-other-hand display boundary (lossy mapping)."""
+    from teleoperation.contracts.hand_control import HandJointCommand
+    if not isinstance(command,HandJointCommand) or command.hand_model != 'l21':
+        raise ValueError('Legacy L21 scene mapping requires an accepted L21 command')
+    if hasattr(scene,'bodies') and hasattr(scene,'adapters'):
+        scene.apply_native(command)
+    else:
+        # Old multi-robot display is retained as a diagnostic mapping only.
+        scene.apply(command.side,np.r_[0.,command.positions])

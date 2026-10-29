@@ -476,14 +476,14 @@ class ArmControlSafetyTests(unittest.TestCase):
     def test_original_dual_keeps_hand_pipeline_and_call_order(self):
         from teleoperation.applications.dual import DualTeleoperator
         from teleoperation.applications.hand_processing import hand_coordinate_alignment
-        from teleoperation.contracts.hand import L21HandAngles, HandRetargetResult
+        from teleoperation.retargeting.hand.angles import l21_joint_result
         events = []
         hand = Mock(coordinate_alignment=hand_coordinate_alignment("legacy"))
         pipeline = Mock()
         pipeline.process_frame.side_effect = lambda raw: (events.append("hands_preprocess") or object(), None)
         adapter = Mock()
-        adapter.retarget.side_effect = lambda window: events.append("hands_model") or HandRetargetResult(
-            L21HandAngles(np.zeros(18)), L21HandAngles(np.zeros(18)), True, True)
+        adapter.retarget.side_effect = lambda window: events.append("hands_model") or {
+            ("l21", side): l21_joint_result(side, np.zeros(18), .1) for side in ("left", "right")}
         with patch("teleoperation.applications.hand_processing.DualHandPipeline", return_value=pipeline), patch("teleoperation.retargeting.hand.interface.PoseTransformerRetargeter", return_value=adapter):
             dual = DualTeleoperator(hand, "cpu", self.calibration, DEFAULT_TRON2A_URDF)
         def arm_update(body, side, time):
@@ -991,12 +991,12 @@ class CameraDualTeleoperatorTests(unittest.TestCase):
                 self.assertEqual(diag["valid_streak"], pipeline.valid_streak[side])
                 if canonical.hands[side] is not None:
                     np.testing.assert_allclose(self.dual.hand_pipeline.current_hands[side], canonical.hands[side], atol=1e-6, rtol=0)
-                expected = None if reference is None else getattr(reference, side + "_angles")
+                expected = None if reference is None or not reference[("l21", side)].valid else reference[("l21", side)]
                 self.assertEqual(getattr(command, side + "_hand_valid"), expected is not None)
                 self.assertEqual(diag["window_ready"], window is not None and window.hands[side] is not None)
                 if expected is not None:
                     np.testing.assert_allclose(infer.call_args.args[0].hands[side], window.hands[side], atol=1e-6, rtol=0)
-                    np.testing.assert_allclose(getattr(command, side + "_hand"), angle18_to_dofs(expected.values), atol=1e-6, rtol=0)
+                    np.testing.assert_allclose(getattr(command, side + "_hand"), expected.positions, atol=1e-6, rtol=0)
 
 
 class CameraFullRuntimeTests(unittest.TestCase):

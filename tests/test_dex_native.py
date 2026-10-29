@@ -7,7 +7,8 @@ import numpy as np
 
 from teleoperation.robots.native_hand import NativeHandModel
 from teleoperation.contracts.observations import RawHandFrame
-from teleoperation.contracts.hand import NativeHandResult
+from teleoperation.contracts.hand_control import HandJointResult, HandJointCommand
+from teleoperation.robots.hand_spec import load_hand_spec
 from teleoperation.retargeting.hand.dex_native import DexCalibration, DexInputAdapter
 from teleoperation.retargeting.hand.topology import expand_hand21_to25
 
@@ -41,12 +42,12 @@ def vr_observation(points=None, timestamp=0.):
 
 class DexInputTests(unittest.TestCase):
     def test_native_result_requires_named_finite_coordinates(self):
-        valid = NativeHandResult("g1", "left", ("a", "b"), np.zeros(2), 0., "hash")
-        self.assertEqual(valid.named_values(), {"a": 0., "b": 0.})
+        valid = HandJointResult("g1", "left", "a"*64, ("a", "b"), np.zeros(2), 0.)
+        self.assertEqual(valid.named_positions(), {"a": 0., "b": 0.})
         with self.assertRaises(ValueError):
-            NativeHandResult("g1", "left", ("a", "b"), np.zeros(18), 0., "hash")
+            HandJointResult("g1", "left", "a"*64, ("a", "b"), np.zeros(18), 0.)
         with self.assertRaises(ValueError):
-            NativeHandResult("g1", "left", ("a", "a"), np.zeros(2), 0., "hash")
+            HandJointResult("g1", "left", "a"*64, ("a", "a"), np.zeros(2), 0.)
     def test_camera_and_explicit_vr_profiles_produce_equivalent_geometry(self):
         camera = DexInputAdapter("camera").adapt(camera_observation())
         vr = DexInputAdapter("visionpro").adapt(vr_observation())
@@ -143,22 +144,23 @@ class NativeCommandTests(unittest.TestCase):
     setUp = NativeHandModelTests.setUp
     model = NativeHandModelTests.model
     def test_rate_limit_mimic_missing_recovery_and_clock_independence(self):
-        from teleoperation.simulation.hand_commands import NativeHandCommandPipeline
+        from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
         model = self.model()
         key = (model.robot_type, model.side)
         models = {key: model}
         expanded = model.expand(model.bounds[:, 1])
-        result = NativeHandResult(*key, model.joint_names, np.array([expanded[n] for n in model.joint_names]), 0., model.config_hash)
+        spec = load_hand_spec(*key)
+        result = HandJointResult(*key, spec.spec_hash, spec.independent_joint_names, model.bounds[:, 1], 0.)
         runs = []
         for host_interval in (0., 1/13, 1/30):
-            pipeline = NativeHandCommandPipeline(models, filter_mode="lowpass")
+            pipeline = JointCommandPipeline({key: spec}, filter_mode="lowpass")
             commands = []
             for index in range(10):
                 # Host clock has no role when recording timestamps are passed.
                 from unittest.mock import patch
                 with patch("teleoperation.simulation.hand_commands.time.monotonic", return_value=index*host_interval):
                     before = pipeline.previous[key].copy()
-                    named = pipeline.update(result, timestamp=index/30)
+                    named = pipeline.update(result, timestamp=index/30).named_positions()
                 after = pipeline.previous[key]
                 self.assertTrue(np.all(np.abs(after-before) <= model.velocity_limits/30 + 1e-10))
                 for n,v in model.expand(after).items():
@@ -166,7 +168,7 @@ class NativeCommandTests(unittest.TestCase):
                 commands.append(after.copy())
             held = pipeline.missing(key)
             before = pipeline.previous[key].copy()
-            self.assertEqual(held, model.expand(before))
+            self.assertEqual(held.named_positions(), model.expand(before))
             pipeline.update(result, timestamp=100.)
             self.assertTrue(np.all(np.abs(pipeline.previous[key]-before) <= model.velocity_limits/30+1e-10))
             runs.append(commands)
@@ -174,22 +176,24 @@ class NativeCommandTests(unittest.TestCase):
 
     def test_native_h5_round_trip_and_config_rejection(self):
         import h5py
-        from teleoperation.data.hand_recording import NativeHandResultWriter, iter_native_result_commands
+        from teleoperation.data.hand_recording import LegacyNativeResultWriter, iter_legacy_native_commands
         model = self.model()
         key = (model.robot_type, model.side)
         named = model.expand(model.bounds.mean(1))
-        result = NativeHandResult(*key, model.joint_names, np.array([named[n] for n in model.joint_names]), 0., model.config_hash)
+        spec = load_hand_spec(*key)
+        result = HandJointResult(*key, spec.spec_hash, spec.independent_joint_names, model.bounds.mean(1), 0.)
         path = Path(self.directory.name) / "native.h5"
-        with NativeHandResultWriter(path, {key:model}, {}) as writer:
-            writer.append(0., {key:result}, {key:named}, {key:np.zeros((5,3))})
+        with LegacyNativeResultWriter(path, {key:model}, {}, specs={key:spec}) as writer:
+            command = HandJointCommand(*key, spec.spec_hash, spec.joint_names, np.array([named[n] for n in spec.joint_names]), 0.)
+            writer.append(0., {key:result}, {key:command}, {key:np.zeros((5,3))})
             with self.assertRaises(ValueError):
                 writer.append(0., {key:result}, {key:named}, {key:None})
-        rows = list(iter_native_result_commands(path, {key:model}))
-        np.testing.assert_array_equal(rows[0][1][key].values,result.values)
+        rows = list(iter_legacy_native_commands(path, {key:model}, specs={key:spec}))
+        np.testing.assert_array_equal(rows[0][1][key].positions, command.positions)
         with h5py.File(path,"r+") as stream:
             stream["/".join(key)].attrs["config_hash"]="bad"
         with self.assertRaises(ValueError):
-            list(iter_native_result_commands(path,{key:model}))
+            list(iter_legacy_native_commands(path,{key:model},specs={key:spec}))
 
     def test_scene_writes_only_selected_named_hand_and_rejects_bad_commands(self):
         from unittest.mock import Mock
@@ -202,7 +206,8 @@ class NativeCommandTests(unittest.TestCase):
         scene.p=Mock(); scene.cid=1; scene.sides=("right",); scene.alive=lambda:True
         scene.robots=[{"type":"h1_2","body":42,"plans":{"right":(build_mapping("h1_2","right",model.limits),names)}}]
         named=model.expand(model.bounds.mean(1))
-        result=NativeHandResult(*key, model.joint_names,np.array([named[n] for n in model.joint_names]),0.,model.config_hash)
+        spec = load_hand_spec(*key)
+        result=HandJointCommand(*key, spec.spec_hash, model.joint_names,np.array([named[n] for n in model.joint_names]),0.)
         scene.apply_native(result)
         calls=scene.p.setJointMotorControl2.call_args_list
         self.assertEqual(len(calls),len(model.joint_names))

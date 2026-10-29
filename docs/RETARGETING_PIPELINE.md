@@ -1,5 +1,7 @@
 # 手部重定向链路怎么跑、怎么复核（current-state 布局）
 
+> 手部训练/控制/导出接口已更新，当前可执行命令见 [统一手部流程](hand-retargeting-unified.md)。本页原有共享18D训练及输出段落是历史记录，不能用于新版模型；采集仍保存米制人体数据。
+
 > 2026-10-11：本文保留原分支的运行与验收历史。合并后的入口、坐标数据差异及测试结果见 [main 集成记录](integration-2026-10-11.md)，本文的历史机器路径与测试数量不代表当前 main。
 
 > **适用版本**：`origin/current-state`（包 `src/teleoperation`，CLI `python -m teleoperation`）

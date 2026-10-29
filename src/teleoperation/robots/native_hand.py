@@ -209,9 +209,6 @@ def coverage(robot_type, side, mapping):
     del side
     return len(mapping) / float(N_MOVABLE)
 
-from teleoperation.contracts.hand import L21HandDOFs
-
-
 class NativeHandAdapter:
     def __init__(self, robot_type, side, joint_ranges, limit_mode="clamp"):
         if robot_type not in NATIVE_MAP or side not in ("left", "right"): raise ValueError("Unknown robot or hand side")
@@ -219,9 +216,8 @@ class NativeHandAdapter:
         self.mapping = build_mapping(robot_type, side, joint_ranges)
         self.limit_mode = limit_mode
 
-    def map(self, dofs: L21HandDOFs):
-        if not isinstance(dofs, L21HandDOFs): raise TypeError("NativeHandAdapter requires L21HandDOFs[17]")
-        return map_dofs(dofs.values, self.mapping, self.limit_mode)
+    def map(self, dofs):
+        return map_dofs(dofs, self.mapping, self.limit_mode)
 
 
 class NativeHandModel:

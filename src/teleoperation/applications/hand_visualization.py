@@ -29,7 +29,7 @@ from teleoperation.applications.hand_realtime import (
     load_palm_local_retargeter,
 )
 from teleoperation.applications.hand_checkpoints import checkpoint_options, checkpoint_description
-from teleoperation.retargeting.hand.angles import angle18_to_nodes
+from teleoperation.contracts.hand_control import valid_joint_result
 from teleoperation.tools.plotting import (
     COLORS, ROBOT_EDGES, ROBOT_TIPS, SOURCE_EDGES, draw_skeleton, project, text,
 )
@@ -92,7 +92,7 @@ def run(args):
                 window = camera.next_window()
                 payload = None if window is None else window.to_payload()
                 result = None if window is None else retargeter.retarget(window)
-                predictions = {side: None if result is None or getattr(result, side + "_angles") is None else getattr(result, side + "_angles").values for side in SIDES}
+                predictions = {side: None if valid_joint_result(result, "l21", side) is None else result[("l21", side)].positions for side in SIDES}
                 positions = {side: None for side in SIDES}
                 completed += 1
                 for side in SIDES:
@@ -100,7 +100,8 @@ def run(args):
                         resets[side] += 1
                         print(f"frame={completed} {side}: RESET", flush=True)
                     if predictions[side] is not None:
-                        positions[side] = fk_positions(fk[side], predictions[side])
+                        # The historical diagnostic FK has a fixed-root node.
+                        positions[side] = fk_positions(fk[side], np.r_[0., predictions[side]])
                         if side in display_matrices:
                             positions[side] = (positions[side] - positions[side][0:1]) @ display_matrices[side]
                         outputs[side] += 1

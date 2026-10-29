@@ -1,4 +1,4 @@
-"""解析式（零权重）手部重定向：手掌局部 25 点 -> L21 18 维角度。
+"""解析式（零权重）手部重定向：手掌局部 25 点 -> 公共 L21 17D 独立关节结果（内部保留历史18D公式）。
 
 为什么有这个文件
 ----------------
@@ -7,11 +7,9 @@
 "摄像头 -> 重定向 -> 仿真"的实时闭环需要第二个可选后端先跑起来。
 
 本模块提供的就是这个**可替换后端**：纯几何、零权重、无训练，接口与
-``HandRetargeter`` 完全一致（``retarget(HandWindow) -> HandRetargetResult``）。
-**注意：它目前还没有接进任何 CLI** —— ``hand realtime`` 只加载检查点模型；
-本文件当前的使用者是 ``devtools/verify_geometric_hand.py`` 那条往返实测。
-要把"摄像头 -> 重定向 -> 仿真"跑起来，需要新增一个实时入口（见 README 的
-待办），入口内以 ``--backend geometric`` 选择本后端、检查点缺失时自动回落。
+``HandRetargeter`` 完全一致：窗口输入，返回按目标手标识组织的 HandJointResult。
+实时场景通过 ``--backend geometric`` 选择本后端；原有 auto 路线在缺少权重时
+可回退本算法。该几何算法当前只声明支持 L21。
 
 与论文的关系（必须如实声明）
 ----------------------------
@@ -106,7 +104,8 @@ from collections import deque
 
 import numpy as np
 
-from teleoperation.contracts.hand import HandRetargetResult, HandWindow, L21HandAngles
+from teleoperation.contracts.hand import HandWindow
+from .angles import l21_joint_result
 from teleoperation.retargeting.hand.config import ANGLE_LIMITS, HAND_ANGLE_DIM, L21
 from teleoperation.retargeting.hand.interface import HandRetargeter
 
@@ -410,7 +409,7 @@ class GeometricHandRetargeter(HandRetargeter):
         return self._axes[side], self._lean[side], self._nodes[side]
 
     # ------------------------------------------------------------------ #
-    def retarget(self, hand_window: HandWindow) -> HandRetargetResult:
+    def retarget(self, hand_window: HandWindow):
         if not isinstance(hand_window, HandWindow):
             raise TypeError("hand_window must be a HandWindow")
         angles = {"left": None, "right": None}
@@ -428,13 +427,7 @@ class GeometricHandRetargeter(HandRetargeter):
             if values is None:
                 continue
             angles[side] = values if self.smoothing == 0.0 else self._smooth(side, values)
-        return HandRetargetResult(
-            left_angles=None if angles["left"] is None else L21HandAngles(angles["left"]),
-            right_angles=None if angles["right"] is None else L21HandAngles(angles["right"]),
-            left_valid=angles["left"] is not None,
-            right_valid=angles["right"] is not None,
-            timestamp=hand_window.timestamp,
-        )
+        return {("l21", side): l21_joint_result(side, angles[side], hand_window.timestamp) for side in SIDES}
 
     # ------------------------------------------------------------------ #
     def _side_angles(self, side: str, points: np.ndarray) -> np.ndarray | None:

@@ -24,12 +24,11 @@ from teleoperation.retargeting.hand.kinematics import create_hand_kinematics
 from teleoperation.learning.losses import CollisionLoss, hand_loss
 from teleoperation.retargeting.hand.config import ANGLE_LIMITS, EXCLUDED_COLLISION_PAIRS, L21, ROBOT_JOINTS, SOURCE_JOINTS
 from teleoperation.learning.dataset import TwoHandH5Dataset
-from teleoperation.retargeting.hand.exporting import _valid_angle_rows
+from teleoperation.retargeting.hand.diagnostics import valid_legacy_angle_rows
 from teleoperation.retargeting.hand.predictor import create_twohand_retargeter
-from teleoperation.learning.trainer import LOSS_NAMES
+from .legacy_hand_training import LOSS_NAMES, create_legacy_hand_fks
 from teleoperation.contracts.checkpoints import validate_checkpoint_selection
 from teleoperation.applications.hand_checkpoints import checkpoint_options, checkpoint_metadata
-from teleoperation.applications.training import _create_hand_fks
 from teleoperation.retargeting.hand.angles import canonical_to_native_angles
 
 
@@ -57,7 +56,7 @@ def verify(input_path: Path, checkpoint_path: Path | None = None, sample_count: 
         expected_coordinate_alignment=dataset.coordinate_alignment,
     ).eval()
     with contextlib.redirect_stdout(io.StringIO()):
-        canonical_fk = _create_hand_fks("cpu", ("right",), canonical=True)["right"] if dataset.is_canonical else None
+        canonical_fk = create_legacy_hand_fks("cpu", ("right",), canonical=True)["right"] if dataset.is_canonical else None
     report = {
         **checkpoint_metadata({"checkpoint_path": None if checkpoint_path is None else str(checkpoint_path),
                                "left_checkpoint": None if left_checkpoint is None else str(left_checkpoint),
@@ -87,7 +86,7 @@ def verify(input_path: Path, checkpoint_path: Path | None = None, sample_count: 
         if prediction.shape != (len(selected), 18):
             raise RuntimeError(f"Unexpected {side} prediction shape: {prediction.shape}")
         values = prediction.detach().numpy()
-        if not _valid_angle_rows(values, np.asarray(ANGLE_LIMITS)).all():
+        if not valid_legacy_angle_rows(values, np.asarray(ANGLE_LIMITS)).all():
             raise RuntimeError(f"Non-finite or out-of-limit {side} angles")
         with contextlib.redirect_stdout(io.StringIO()):
             fk = create_hand_kinematics(

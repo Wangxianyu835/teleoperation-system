@@ -284,7 +284,7 @@ def replay_loop(p, args, data, mounts, robot_id, cid, rha):
             if not val[i]:
                 continue
             adapter = L21HandAdapter(rha.MAPPING_18, limits, default_limits=(-9.0, 9.0))
-            targets = adapter.map(L21HandAngles(arr[i]).native_mapping_dofs())
+            targets = adapter.map(legacy_l21_dofs(arr[i]))
             for d, j in dim2j.items():
                 v = targets[rha.MAPPING_18[d]]
                 p.setJointMotorControl2(hid, j, p.POSITION_CONTROL,
@@ -316,4 +316,4 @@ from teleoperation.data.hand_h5 import read_native_angles as load_data
 from teleoperation.simulation.hand_mount import _collect_link_positions, _euler_from_matrix_xyz, _finger_tips, _link_name_of_joint, _mat_to_euler_xyz, _match_side, _thumb_tip, _vec_angle, compute_auto_mount_rpy, compute_hand_frame, find_hand_base_link, measure_hand_frame, p_getJointInfo, p_getNumJoints, robot_hand_link_indices
 
 from teleoperation.robots.l21 import L21HandAdapter
-from teleoperation.contracts.hand import L21HandAngles
+from teleoperation.retargeting.hand.angles import legacy_l21_dofs

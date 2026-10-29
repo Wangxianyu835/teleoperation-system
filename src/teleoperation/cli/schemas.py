@@ -70,10 +70,15 @@ def hand_align(parser: argparse.ArgumentParser) -> None:
 def hand_train(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--run-name", required=True)
-    parser.add_argument("--hand-side", choices=("left", "right", "shared"), default="shared",
-                        help="canonical world data requires shared; left/right selects dedicated models for old native-root data")
-    parser.add_argument("--checkpoint-root", type=Path, default=DEFAULT_CHECKPOINT_ROOT)
-    parser.add_argument("--init-checkpoint", type=Path, default=DEFAULT_WARMSTART_CHECKPOINT)
+    from teleoperation.paths import DEFAULT_HAND_MODEL_ROOT
+    from teleoperation.contracts.hand_models import HAND_MODELS
+    parser.add_argument("--hand-model", choices=HAND_MODELS, nargs='+', required=True)
+    parser.add_argument("--hand-side", choices=("left", "right", "both"), default="right")
+    parser.add_argument("--checkpoint-root", type=Path, default=DEFAULT_HAND_MODEL_ROOT)
+    from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
+    parser.add_argument('--input-profile',choices=(PALM_LENGTH_PROFILE,),default=PALM_LENGTH_PROFILE)
+    parser.add_argument("--resume", type=Path, help="explicit model_last.pth from this target/run")
+    parser.add_argument('--init-checkpoint',type=Path,help='strictly compatible new target weights; does not resume training state')
     parser.add_argument("--epochs", type=int, default=L21.training.epochs)
     parser.add_argument("--batch-size", type=int, default=L21.training.batch_size)
     parser.add_argument("--learning-rate", type=float, default=L21.training.learning_rate)
@@ -85,46 +90,39 @@ def hand_train(parser: argparse.ArgumentParser) -> None:
 
 
 def hand_export(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--input",
-        type=Path,
-        default=DEFAULT_INPUT_H5,
-    )
-    add_checkpoint_arguments(parser)
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=DEFAULT_OUTPUT_H5,
-    )
-    parser.add_argument("--batch-size", type=int, default=RUNTIME.export_batch_size)
-    parser.add_argument(
-        "--scale-factor",
-        type=float,
-        default=L21.training.source_scale,
-    )
-    parser.add_argument(
-        "--disable-identity-tracking",
-        action="store_true",
-        help="trust recorded left/right labels without temporal reassignment",
-    )
-    parser.add_argument(
-        "--max-center-displacement",
-        type=float,
-        default=DEFAULT_MAX_CENTER_DISPLACEMENT,
-        help="maximum normalized palm-center displacement between frames",
-    )
-    parser.add_argument(
-        "--max-shape-rmse",
-        type=float,
-        default=DEFAULT_MAX_SHAPE_RMSE,
-        help="maximum wrist-relative landmark RMSE between frames",
-    )
-    parser.add_argument(
-        "--device",
-        choices=("auto", "cpu", "cuda"),
-        default=RUNTIME.device,
-    )
-    parser.set_defaults(_handler="teleoperation.applications.hand:export")
+    from .hand_joint_options import add_target_arguments
+    from .hand_command_options import add_hand_command_arguments
+    add_target_arguments(parser)
+    add_hand_command_arguments(parser)
+    parser.add_argument('--input', type=Path, required=True, help='canonical world metre human H5')
+    parser.add_argument('--output', type=Path, required=True)
+    parser.set_defaults(_handler='teleoperation.applications.hand_control:export')
+
+
+def hand_control(parser):
+    from .hand_joint_options import add_target_arguments
+    from .hand_command_options import add_hand_command_arguments
+    add_target_arguments(parser)
+    add_hand_command_arguments(parser)
+    parser.add_argument('--model-asset-path',type=Path)
+    parser.add_argument('--camera-index',type=int,default=0)
+    parser.add_argument('--frames',type=int,default=0,help='0 runs until interruption/window close')
+    parser.add_argument('--headless',action='store_true')
+    parser.add_argument('--record-results',type=Path)
+    parser.set_defaults(_handler='teleoperation.applications.hand_control:run')
+
+
+def hand_list_models(parser):
+    parser.set_defaults(_handler='teleoperation.applications.hand_control:list_models')
+
+
+def replay_hand_joints(parser):
+    from teleoperation.contracts.hand_models import HAND_MODELS
+    parser.add_argument('--input',type=Path,required=True)
+    parser.add_argument('--hand-model',choices=HAND_MODELS,required=True)
+    parser.add_argument('--hand',choices=('left','right','both'),default='right')
+    parser.add_argument('--headless',action='store_true')
+    parser.set_defaults(_handler='teleoperation.applications.hand_control:replay')
 
 
 def hand_inspect(parser: argparse.ArgumentParser) -> None:

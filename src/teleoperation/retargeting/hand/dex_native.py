@@ -1,4 +1,4 @@
-"""Native dex Vector pipeline, separate from the L21 model-result interface.
+"""Vector optimization through the shared target-native result interface.
 
 Camera and VR profiles are explicit. The VR extraction follows the local
 TransHandR reference; its existing model pipeline is never modified here.
@@ -13,10 +13,12 @@ from pathlib import Path
 import numpy as np
 
 from teleoperation.contracts.hand import CanonicalHandFrame
-from teleoperation.contracts.hand import NativeHandResult
+from teleoperation.contracts.hand import HandWindow
+from teleoperation.contracts.hand_control import HandJointResult
 from teleoperation.contracts.observations import RawHandFrame
 from teleoperation.retargeting.hand.coordinates import build_palm_basis, OPERATOR_TO_CANONICAL
-from teleoperation.retargeting.hand.interface import NativeHandRetargeter
+from teleoperation.retargeting.hand.interface import HandRetargeter
+from teleoperation.robots.hand_spec import load_hand_spec
 
 SIDES = ("left", "right")
 PROFILES = {"camera": "dex_camera_world_v1", "visionpro": "dex_visionpro_palm_v2"}
@@ -147,7 +149,8 @@ class DexCalibration:
 class NativeVectorSolver:
     """Unmodified upstream VectorOptimizer/SeqRetargeting with native constraints."""
 
-    def __init__(self, model):
+    def __init__(self, model, *, palm_length_m=None):
+        self.spec = load_hand_spec(model.robot_type, model.side)
         try:
             from dex_retargeting.optimizer import VectorOptimizer
             from dex_retargeting.seq_retarget import SeqRetargeting
@@ -163,7 +166,7 @@ class NativeVectorSolver:
             [model.root_link] * len(model.fingers), list(model.tip_frames),
             np.array([np.zeros(len(model.fingers), dtype=int), model.human_tip_indices]),
             scaling=VECTOR_PARAMETERS["scaling"], norm_delta=VECTOR_PARAMETERS["norm_delta"],
-            huber_delta=VECTOR_PARAMETERS["huber_delta"])
+            huber_delta=VECTOR_PARAMETERS["huber_delta"] * (1. if palm_length_m is None else palm_length_m))
         mimic_names = [n for n in model.joint_names if n not in model.independent_names]
         if mimic_names:
             optimizer.set_kinematic_adaptor(MimicJointKinematicAdaptor(
@@ -174,7 +177,9 @@ class NativeVectorSolver:
                 offsets=[model.relations[n][2] for n in mimic_names]))
         self.sequence = SeqRetargeting(optimizer, has_joint_limits=True, lp_filter=None)
         optimizer.set_joint_limit(model.bounds, epsilon=0.)
-        optimizer.opt.set_ftol_abs(VECTOR_PARAMETERS["ftol_abs"])
+        # SmoothL1(L*x; beta=L*b) = L*SmoothL1(x; beta=b).
+        # Keep the absolute objective stopping tolerance equivalent as well.
+        optimizer.opt.set_ftol_abs(VECTOR_PARAMETERS["ftol_abs"] * (1. if palm_length_m is None else palm_length_m))
         optimizer.opt.set_xtol_abs(VECTOR_PARAMETERS["xtol_abs"])
         optimizer.opt.set_maxeval(VECTOR_PARAMETERS["maxeval"])
         self.motion_plane_z = None
@@ -252,12 +257,13 @@ class NativeVectorSolver:
         except (ValueError, RuntimeError, ArithmeticError) as failure:
             self.sequence.last_qpos = previous
             error = f"{type(failure).__name__}: {failure}"
-        return NativeHandResult(model.robot_type, model.side, model.joint_names, values,
-                                float(timestamp), model.config_hash, values is not None, error,
-                                (time.perf_counter() - started) * 1000)
+        return HandJointResult(model.robot_type, model.side, self.spec.spec_hash,
+                               self.spec.independent_joint_names, None if values is None else independent,
+                               float(timestamp), values is not None, error,
+                               (time.perf_counter() - started) * 1000)
 
 
-class DexNativeRetargeter(NativeHandRetargeter):
+class DexNativeRetargeter(HandRetargeter):
     def __init__(self, calibration, robots=("h1_2", "gr1_t2", "g1"), sides=SIDES):
         from teleoperation.robots.native_hand import NativeHandModel
         if not isinstance(calibration, DexCalibration):
@@ -265,6 +271,7 @@ class DexNativeRetargeter(NativeHandRetargeter):
         self.calibration = calibration
         self.models = {(r, s): NativeHandModel(r, s) for r in robots for s in sides}
         self.solvers = {key: NativeVectorSolver(model) for key, model in self.models.items()}
+        self.specs = {key: solver.spec for key, solver in self.solvers.items()}
         self.transforms, self.scales = {}, {}
         for key, model in self.models.items():
             basis, _ = model.palm_reference()
@@ -279,11 +286,13 @@ class DexNativeRetargeter(NativeHandRetargeter):
         points = frame.hands[key[1]]
         if points is None:
             return None
+        if points.ndim == 3:
+            points = points[-1]
         return points[self.models[key].human_tip_indices] @ self.transforms[key] * self.scales[key]
 
     def retarget(self, frame):
-        if not isinstance(frame, CanonicalHandFrame):
-            raise TypeError("Native dex retargeting requires a canonical frame")
+        if not isinstance(frame, HandWindow):
+            raise TypeError("Native dex retargeting requires a declared HandWindow")
         if frame.metadata.get("dex_input_profile") != self.calibration.profile or frame.units != "m":
             raise ValueError("Input and calibration profiles or units differ")
         result = {}
@@ -292,8 +301,65 @@ class DexNativeRetargeter(NativeHandRetargeter):
             if targets is None:
                 solver.reset()
                 model = solver.model
-                result[key] = NativeHandResult(*key, model.joint_names, None, frame.timestamp,
-                                              model.config_hash, False, "missing/invalid input")
+                spec = self.specs[key]
+                result[key] = HandJointResult(*key, spec.spec_hash, spec.independent_joint_names, None,
+                                              frame.timestamp, False, "missing/invalid input")
             else:
                 result[key] = solver.solve(targets, frame.timestamp)
         return result
+
+
+class _SpecVectorModel:
+    """Private bridge from generic HandSpec to the upstream vector solver."""
+
+    def __init__(self, spec):
+        from dex_retargeting.robot_wrapper import RobotWrapper
+        self.spec = spec
+        self.robot_type, self.side = spec.key
+        self.urdf_path, self.root_link = spec.urdf_path, spec.root_link
+        self.joint_names, self.independent_names = spec.joint_names, spec.independent_joint_names
+        self.bounds, self.tip_frames = spec.bounds, spec.tip_frames
+        self.human_tip_indices = np.asarray(spec.human_tip_indices)
+        self.fingers = spec.tip_frames
+        self.relations = dict(zip(spec.joint_names,spec._relations))
+        self.kinematics = RobotWrapper(str(spec.urdf_path))
+
+    def expand(self, values):
+        return self.spec.expand(values)
+
+    def positions(self, values):
+        robot = self.kinematics
+        named = self.expand(values)
+        robot.compute_forward_kinematics(np.array([named[n] for n in robot.dof_joint_names]))
+        root = robot.get_link_pose(robot.get_link_index(self.root_link))
+        points = np.array([robot.get_link_pose(robot.get_link_index(n))[:3,3] for n in self.tip_frames])
+        return (points-root[:3,3]) @ root[:3,:3]
+
+
+class NormalizedDexRetargeter(HandRetargeter):
+    """Camera palm-length profile; no per-operator calibration or internal filter."""
+
+    def __init__(self, hand_models=("l21",), sides=SIDES):
+        self.specs = {(name,side):load_hand_spec(name,side) for name in hand_models for side in sides}
+        if not self.specs:
+            raise ValueError("Select at least one target hand")
+        self.solvers = {key:NativeVectorSolver(_SpecVectorModel(spec),palm_length_m=spec.reference_palm_length_m)
+                        for key,spec in self.specs.items()}
+
+    def reset(self):
+        for solver in self.solvers.values():
+            solver.reset()
+
+    def retarget(self, window):
+        from .hand_model import build_hand_targets
+        results = {}
+        for key,spec in self.specs.items():
+            targets = build_hand_targets(window,spec)
+            solver = self.solvers[key]
+            if targets.positions_native_m is None:
+                solver.reset()
+                results[key] = HandJointResult(*key,spec.spec_hash,spec.independent_joint_names,None,
+                                              window.timestamp,False,"missing/invalid input")
+            else:
+                results[key] = solver.solve(targets.positions_native_m, window.timestamp)
+        return results

@@ -132,14 +132,14 @@ class VRInterfaceTests(unittest.TestCase):
         model = RecordingModel()
         retargeter = TransHandRVRRetargeter(model)
         result = retargeter.retarget(window)
-        self.assertFalse(result.left_valid)
-        self.assertTrue(result.right_valid)
-        self.assertEqual(result.right_angles.values.shape, (18,))
+        self.assertFalse(result[("l21", "left")].valid)
+        self.assertTrue(result[("l21", "right")].valid)
+        self.assertEqual(result[("l21", "right")].positions.shape, (17,))
         np.testing.assert_array_equal(model.last_input.numpy()[0], window.hands["left"])
         self.assertEqual(tuple(model.last_input.shape), (1, 3, 25, 3))
-        self.assertEqual(result.timestamp, window.timestamp)
+        self.assertEqual(result[("l21", "right")].timestamp, window.timestamp)
         missing = pipeline.process_window(observation(3, left=False))
-        self.assertFalse(retargeter.retarget(missing).right_valid)
+        self.assertFalse(retargeter.retarget(missing)[("l21", "right")].valid)
 
     def test_strict_upstream_loader_rejects_camera_contract_and_missing_weights(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -153,6 +153,20 @@ class VRInterfaceTests(unittest.TestCase):
                 torch.save({"model_pos": {}, "coordinate_alignment": "mediapipe_world_wrist_index_middle_canonical_right_v1"}, path)
                 with self.assertRaisesRegex(ValueError, "alignment mismatch"):
                     load_transhandr_vr_model(path)
+
+    def test_single_left_target_converts_native_angles_and_keeps_raw_diagnostic(self):
+        from teleoperation.retargeting.hand.angles import canonical_to_native_angles
+        pipeline=TransHandRVisionProPipeline()
+        for i in range(3): window=pipeline.process_window(observation(i))
+        retargeter=TransHandRVRRetargeter(DistinctHandModel(),target_side='left')
+        results=retargeter.retarget(window)
+        self.assertTrue(results[('l21','left')].valid)
+        self.assertFalse(results[('l21','right')].valid)
+        raw=retargeter.last_raw_angles.copy()
+        self.assertNotEqual(raw[1],0.)
+        np.testing.assert_array_equal(results[('l21','left')].positions,canonical_to_native_angles(raw,'left')[1:])
+        retargeter.reset()
+        self.assertIsNone(retargeter.last_raw_angles)
 
     def test_recording_replay_preserves_raw_transforms_validity_and_closes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -194,7 +208,7 @@ class VRInterfaceTests(unittest.TestCase):
             self.assertEqual(result["angle_frames"], 2)
             self.assertEqual(result["source_hand"], "left")
             self.assertEqual(result["target_hand"], "right")
-            self.assertIn("right", result["hand_commands"]["collision_guard"])
+        self.assertIn("l21/right", result["hand_commands"]["collision_guard"])
 
 
 class VRSameSideTests(unittest.TestCase):
@@ -232,7 +246,7 @@ class VRSameSideTests(unittest.TestCase):
             self.assertEqual(info["angle_frames"], 6)  # Frames with at least one output, not hand count.
             self.assertEqual(info["sides"]["left"]["angle_frames"], 3)
             self.assertEqual(info["sides"]["right"]["angle_frames"], 6)
-            self.assertEqual(set(info["hand_commands"]["collision_guard"]), {"left", "right"})
+            self.assertEqual(set(info["hand_commands"]["collision_guard"]), {"l21/left", "l21/right"})
             with h5py.File(report.with_suffix(".h5"), "r+") as result:
                 np.testing.assert_array_equal(result["left_model_valid"][:],
                                               [False, False, True, False, False, False, True, True])
@@ -255,10 +269,10 @@ class VRSameSideTests(unittest.TestCase):
                         window = pipeline.process_window(replay.next_observation())
                         if window is not None:
                             for side in ("left", "right"):
-                                expected = getattr(TransHandRVRRetargeter(
-                                    DistinctHandModel(), source_side=side, target_side=side).retarget(window), side + "_angles")
-                                if expected is not None:
-                                    np.testing.assert_array_equal(result[side + "_raw_angles"][index], expected.values)
+                                adapter = TransHandRVRRetargeter(DistinctHandModel(), source_side=side, target_side=side)
+                                expected = adapter.retarget(window)[("l21", side)]
+                                if expected.valid:
+                                    np.testing.assert_array_equal(result[side + "_raw_angles"][index], adapter.last_raw_angles)
                 finally:
                     replay.close()
                 self.assertFalse(np.array_equal(result["left_raw_angles"][2], result["right_raw_angles"][2]))

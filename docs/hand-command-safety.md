@@ -1,6 +1,6 @@
 # 实时手部输出：滤波、角速度限制与 L21 指间碰撞检查
 
-更新：2026-10-14。
+更新：统一接口版本。当前命令见 [统一手部流程](hand-retargeting-unified.md)，本页旧实时命令只用于历史权重。
 
 原版 TransHandR 的核对结果见 [TransHandR 参考与差异](transhandr-safety-reference.md)。
 当前模型已经沿用其三帧 Transformer、角度限位和 FK 点距离碰撞损失。
@@ -12,7 +12,7 @@
 -> L21 指间网格路径检查 -> 仿真命令`。
 
 模型输入、权重与左右手角度契约没有改写。该层接在两个实时仿真入口的 `scene.apply`
-之前，checkpoint 和 geometric 后端都经过它。离线导出与训练结果不经过该层。
+之前，checkpoint 和 geometric 后端都经过它。新版离线导出同样保存公共命令管线处理后的命令及原始解；训练损失不经过命令滤波。
 
 默认采用与 dex-retargeting 的 `LPFilter` 相同的一阶低通递推：
 `filtered += alpha * (target - filtered)`。为处理实际帧率变化，本项目将参数解释为
@@ -37,7 +37,7 @@ $checkpoint = 'outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/worl
 
 低通、角速度限制和 L21 指间检查默认开启；以上参数只是显式列出默认值。
 `--filter-alpha` 越小越平滑，也会增加跟随延迟。`--joint-max-velocity` 单位是 rad/s，
-1.5 rad/s 在 30 Hz 下每帧最多约 0.05 rad。速度限制也覆盖第一帧、丢手恢复和长时间间隔。
+实际速度取 CLI 与 URDF 有效速度的较小值；L21 上限 1.0 rad/s，在 30 Hz 下每帧最多约 0.0333 rad。速度限制也覆盖第一帧、丢手恢复和长时间间隔。
 丢手时保持已接受的关节命令，不让卡尔曼滤波外推缺失的手。
 
 选择已有常速度卡尔曼滤波器：
@@ -76,6 +76,6 @@ PyBullet 检查的是 URDF 加载后的碰撞形状（STL 通常被转换成凸�
 原始和已接受命令的最大变化。`collision_guard` 分侧记录受阻次数、最后接触 link 对、
 距离与初始掌骨容差。受阻动作可能无法完整跟随，需修正模型或输入，而不是将滤波当作避碰。
 
-代码：`src/teleoperation/simulation/hand_commands.py`。
+代码：`retargeting/hand/joint_commands.py` 为公共管线，`simulation/hand_commands.py` 保留 L21 网格检查与历史场景边界。
 测试：`tests/test_hand_commands.py`，涵盖变帧率、尖峰、丢手恢复、关节限位、
 真实网格碰撞投影、查询状态恢复和中间路径碰撞。

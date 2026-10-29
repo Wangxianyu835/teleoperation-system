@@ -1,5 +1,7 @@
 # dex 原生手接入与阶段验收
 
+> 当前相机免标定 NN/dex、统一结果与命令见 [统一手部流程](hand-retargeting-unified.md)。本页其余实验记录描述历史固定掌长校准路线；VR dex 仍使用该明确校准，相机新路线不需要。
+
 范围：H1、GR1、G1 原生双手，Vector 优化，相机 world 与 Vision Pro 独立输入，PyBullet 仿真。
 不连接实体机器人。DexPilot 留待下一轮。
 
@@ -16,7 +18,7 @@
 - `tests/test_dex_native.py`：本功能的契约及边界测试。
 - `retargeting/hand/dex_native.py`：相机/VR 显式适配、固定掌长校准及原生 Vector 管线。
 - `applications/dex_native.py`：校准、原生 H5 导出/回放与实时应用组合。
-- `data/hand_recording.py::NativeHandResultWriter`：独立原生结果格式。
+- `data/hand_recording.py::LegacyNativeResultWriter`：历史原生结果文件；新版共用 `HandJointResultWriter`。
 
 ## 阶段记录
 
@@ -179,7 +181,7 @@ $dexLiveSession = Get-Date -Format 'yyyyMMdd_HHmmss'
 用 `--stage recording --common-with <另一方法结果.h5>` 可限定双方共同有效帧。
 原始源文件、校准源 SHA256、排除片段、评估索引及配置哈希均保留在 JSON/H5 中。
 
-`NativeHandCommandPipeline` 按独立驱动量滤波/限速，再展开所有耦合关节。
+`JointCommandPipeline` 按独立驱动量滤波/限速，再展开所有耦合关节。
 角速度上限取 CLI 与 URDF（含从动关节反推）约束的较小值。丢手保持命令，恢复首步仍限速。
 `ThreeRobotHandScene.apply_native` 仅按关节名写入指定机器人和手侧，不经过 L21 降维映射。
 本轮没有新增原生手网格避碰；限位、限速与耦合一致不等于无碰撞保证。
@@ -196,7 +198,7 @@ joint_names/config_hash、raw_angles、command_angles、valid、solve_ms、error
 合成 world 数据完成校准、70 帧六手导出和整机无头回放；0/13/30 fps 回放入口均通过，
 录制时间驱动的命令测试验证三种主机处理速率逐项相同，H5 导出/读取命令完全一致。
 
-`NativeHandResult` 与 `NativeHandRetargeter` 是新增的原生关节接口；L21 结果接口不变。
+当前只有 `HandRetargeter` / `HandJointResult` 公共结果接口，L21 与原生 dex 均已迁入；旧双接口已删除。
 Vector 使用官方 0.5.0 `VectorOptimizer`、`MimicJointKinematicAdaptor`、`SeqRetargeting`。
 参数：scaling=1（尺度在固定校准边界处理），norm_delta=0、huber_delta=0.02、
 ftol_abs=1e-6（官方默认）、xtol_abs=1e-6、maxeval=100、内部低通关闭；优化器边界 epsilon=0。

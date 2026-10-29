@@ -123,14 +123,14 @@ def solvers():
                 failures.append({"frame": index, "error": result.error})
                 means.append(float("inf")); maxima.append(float("inf"))
                 continue
-            named = result.named_values()
+            named = result.named_positions()
             actual = model.positions([named[n] for n in model.independent_names])
             errors = np.linalg.norm(target - actual, axis=1)
             means.append(float(errors.mean())); maxima.append(float(errors.max()))
         target = model.positions(poses[0])
         solver.reset(); first = solver.solve(target, 10.)
         solver.reset(); second = solver.solve(target, 10.)
-        repeatable = first.valid and second.valid and np.max(np.abs(first.values - second.values)) <= 1e-5
+        repeatable = first.valid and second.valid and np.max(np.abs(first.positions - second.positions)) <= 1e-5
         previous = solver.sequence.last_qpos.copy()
         invalid = solver.solve(np.full_like(target, np.nan), 11.)
         assert not invalid.valid and np.array_equal(previous, solver.sequence.last_qpos)
@@ -216,10 +216,11 @@ def legacy_comparison(input_path, calibration_path, checkpoint, output, source="
     import numpy as np
     import torch
     import time
-    from teleoperation.applications.dex_native import file_hash, command_result
+    from teleoperation.applications.dex_native import file_hash
     from teleoperation.applications.visionpro_processing import TransHandRVisionProPipeline
-    from teleoperation.contracts.hand import NativeHandResult, L21HandAngles
-    from teleoperation.data.hand_recording import iter_dex_observations, NativeHandResultWriter
+    from teleoperation.contracts.hand_control import valid_joint_result
+    from teleoperation.retargeting.hand.angles import l21_legacy_values, legacy_l21_dofs
+    from teleoperation.data.hand_recording import iter_dex_observations, LegacyComparisonWriter
     from teleoperation.data.urdf import parse_joint_limits
     from teleoperation.paths import L21_ROOT
     from teleoperation.robots.l21 import MAPPING_18
@@ -228,7 +229,8 @@ def legacy_comparison(input_path, calibration_path, checkpoint, output, source="
     from teleoperation.retargeting.hand.coordinates import OPERATOR_TO_CANONICAL
     from teleoperation.retargeting.hand.dex_native import DexInputAdapter, DexCalibration
     from teleoperation.retargeting.hand.transhandr_vr import load_transhandr_vr_model, TransHandRVRRetargeter
-    from teleoperation.simulation.hand_commands import HandCommandPipeline
+    from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
+    from teleoperation.robots.hand_spec import load_hand_spec
     torch.set_num_threads(1)
     calibration=DexCalibration.load(calibration_path)
     adapter=DexInputAdapter(source)
@@ -242,11 +244,8 @@ def legacy_comparison(input_path, calibration_path, checkpoint, output, source="
         pipeline=MediaPipePalmLocalPipeline("world")
         camera_retargeter,_,_=build_retargeter(method,checkpoint or Path("unused"),"cpu",15,0.,"world")
     models={(r,s):NativeHandModel(r,s) for r in ROBOT_SPECS for s in ("left","right")}
-    limits={}
-    for side in ("left","right"):
-        bounds=parse_joint_limits(L21_ROOT/side/f"linkerhand_l21_{side}.urdf")
-        limits[side]=np.array([(0.,0.) if n is None else bounds[n] for n in MAPPING_18])
-    commands=HandCommandPipeline(("left","right"),limits)
+    specs={('l21',side):load_hand_spec('l21',side) for side in ('left','right')}
+    commands=JointCommandPipeline(specs)
     mappings={k:build_mapping(*k,m.limits) for k,m in models.items()}
     transforms={k:OPERATOR_TO_CANONICAL[k[1]].T@m.palm_reference()[0].T for k,m in models.items()}
     digest=file_hash(input_path)
@@ -254,8 +253,7 @@ def legacy_comparison(input_path, calibration_path, checkpoint, output, source="
               "checkpoint_sha256":file_hash(checkpoint) if checkpoint else None,"calibration":vars(calibration),
               "coupling":"legacy independent mapped joints, not the dex mimic-constrained command path"}
     output.parent.mkdir(parents=True,exist_ok=True)
-    with NativeHandResultWriter(output,models,metadata) as writer:
-        writer.stream.attrs["schema"]="dex_native_comparison_v1"
+    with LegacyComparisonWriter(output,models,metadata) as writer:
         for raw in iter_dex_observations(input_path,source):
             frame=adapter.adapt(raw)
             window=pipeline.process_window(raw)
@@ -267,27 +265,27 @@ def legacy_comparison(input_path, calibration_path, checkpoint, output, source="
             for side in ("left","right"):
                 start=time.perf_counter()
                 if source == "visionpro":
-                    result=None if window is None else getattr(predictors[side].retarget(window),side+"_angles")
+                    result=None if window is None else valid_joint_result(predictors[side].retarget(window),"l21",side)
                     side_ms[side]=(time.perf_counter()-start)*1000
                 else:
-                    result=None if camera_output is None else getattr(camera_output,side+"_angles")
+                    result=valid_joint_result(camera_output,"l21",side)
                     side_ms[side]=camera_ms/2
                 if result is None:
-                    angles[side]=None; commands.missing(side)
-                    accepted[side]=commands.previous[side].copy()
+                    angles[side]=None
+                    accepted[side]=np.r_[0.,commands.missing(('l21',side),timestamp=raw.timestamp).positions]
                 else:
-                    angles[side]=canonical_to_native_angles(result.values,side) if source=="visionpro" else result.values
-                    accepted[side]=commands.update(side,angles[side],timestamp=raw.timestamp)
+                    angles[side]=l21_legacy_values(result)
+                    accepted[side]=np.r_[0.,commands.update(result,timestamp=raw.timestamp).positions]
             results,applied,targets={},{},{}
             for key,m in models.items():
                 side=key[1]
                 values=None
                 if angles[side] is not None:
-                    named,_=map_dofs(L21HandAngles(angles[side]).native_mapping_dofs().values,mappings[key])
+                    named,_=map_dofs(legacy_l21_dofs(angles[side]),mappings[key])
                     values=np.array([named[n] for n in m.joint_names])
-                results[key]=NativeHandResult(*key,m.joint_names,values,raw.timestamp,m.config_hash,
-                    values is not None,"missing/warmup" if values is None else None,side_ms[side]/3)
-                applied[key]=map_dofs(L21HandAngles(accepted[side]).native_mapping_dofs().values,mappings[key])[0]
+                results[key]={"raw_angles": np.full(len(m.joint_names),np.nan) if values is None else values,
+                    "valid": values is not None,"error":"missing/warmup" if values is None else "", "solve_ms":side_ms[side]/3}
+                applied[key]=map_dofs(legacy_l21_dofs(accepted[side]),mappings[key])[0]
                 targets[key]=(None if frame.hands[side] is None else
                     frame.hands[side][m.human_tip_indices]@transforms[key]*calibration.scale_for(m))
             writer.append(raw.timestamp,results,applied,targets,
@@ -349,7 +347,8 @@ def performance(input_path, calibration_path):
     times=[]
     for frame in frames[:1100]:
         start=time.perf_counter()
-        retargeter.retarget(frame)
+        from teleoperation.applications.dex_native import canonical_window
+        retargeter.retarget(canonical_window(frame))
         times.append((time.perf_counter()-start)*1000)
     sample=times[100:]
     return {"warmup_frames":100,"sample_frames":len(sample),"six_hand_p95_ms":float(np.percentile(sample,95)),

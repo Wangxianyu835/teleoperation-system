@@ -115,8 +115,9 @@ def verify(args):
                     np.testing.assert_array_equal(actual, expected)
                     with torch.no_grad():
                         raw = reference(torch.from_numpy(expected)).numpy()[0]
-                    result = TransHandRVRRetargeter(model, source_side=side, target_side=side).retarget(window)
-                    ported = getattr(result, side + "_angles").values
+                    adapter = TransHandRVRRetargeter(model, source_side=side, target_side=side)
+                    adapter.retarget(window)
+                    ported = adapter.last_raw_angles
                     np.testing.assert_array_equal(ported, raw)
                     input_error = max(input_error, float(np.max(np.abs(actual - expected))))
                     output_error = max(output_error, float(np.max(np.abs(ported - raw))))

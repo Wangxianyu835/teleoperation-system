@@ -30,33 +30,28 @@ flowchart LR
 
 ## 手部链路
 
+当前训练、控制与导出的操作说明见 [统一手部重定向](hand-retargeting-unified.md)。
+
 ```text
-MediaPipe / VisionPro / Replay
-    → RawHandFrame
-    → CanonicalHandProcessor.process_frame
-    → CanonicalHandFrame
-    → TemporalBuffer.append
-    → HandWindow
-    → PoseTransformerRetargeter.retarget
-    → HandRetargetResult / L21HandAngles[18]
-    → 显式去掉 placeholder
-    → L21HandDOFs[17]
-    → NativeHandAdapter
-    → 原生机器人手部目标
+MediaPipe / aligned world H5
+    -> CanonicalHandFrame (metres, canonical right)
+    -> TemporalBuffer (3 frames, per-side reset)
+    -> normalize_hand_window (3-frame median palm length, dimensionless)
+    -> HandWindow
+    -> JointNNRetargeter / NormalizedDexRetargeter
+    -> dict[(hand_model,side), HandJointResult] (native independent q[D])
+    -> JointCommandPipeline (filter, effective limits, speed, optional L21 guard)
+    -> HandJointCommand (expanded named joints)
+    -> HandExecutor -> scene.apply_native -> PyBullet
 ```
 
-`apps/hand_processing.py` 清楚展示采集、单帧处理与缓冲之间的连接。`CanonicalHandProcessor` 只持有 identity tracking 等单帧状态；`TemporalBuffer` 只持有已规范化帧。处理器与缓冲器分别重置。
+`HandSpec` 定义目标资产身份、独立/从动关节、参考姿态、固定机器人掌长和根坐标变换。新 NN 与 dex 共用 `build_hand_targets`；NN 用可微 FK 训练。`learning/trainer.py` 只训练目标手原生 D 维模型，人体米制 H5 不带机器人角度标签。多手型顺序训练，数据和划分相同，权重按手型/目标侧独立保存。
 
-MediaPipe palm-local 使用独立的 `MediaPipePalmLocalProcessor`：逐帧对齐，不启用 identity tracking，单侧失效立即清空该侧历史。hand 与 dual 复用 `apps/hand_processing.py` 的 `MediaPipePalmLocalPipeline`。原始 Unix 毫秒保留在 input；relative seconds 仍由 hand 摄像头应用用原先的 `round(time.time() - start, 3)` 计算。
+公共 profile 是 `camera_palm_length_window3_v1`，新窗口 units=1；H5 原始人体点仍为米。每侧三帧使用该窗口腕点到中指 MCP 掌长中位数，不使用未来/全局统计。缺手或退化后仅清空该侧历史。Dataset 和实时调用同一归一化函数。应用层组装流程，data 层只序列化。
 
-hand 录制、实时与三机器人展示默认选择 world 米制模式；共用处理器的低层默认仍为 normalized，保持 dual 适配的既有行为。
-world 和 normalized 的来源选择在处理器中明确完成，离线与实时调用同一个 `retargeting/hand/coordinates.align_mediapipe_hand()`。掌部基只用腕点/食指/中指；world 先归零和规范化，再纯拓扑扩展到 25 点。
-world 对齐文件使用 `mediapipe_world_wrist_index_middle_canonical_right_v1`，坐标框架 `hand_canonical_right`；Dataset 直接缓冲这些米制点，关闭身份重分配和额外缩放。训练池化任意侧有效样本，共用一个模型，仅对右侧 FK 计算损失。左右实时及导出共用 `predict_side()`，左侧四个 MCP roll 经 `canonical_to_native_angles()` 反号。
-模型加载与推理在 `contracts/coordinates.py` 的共同规则下验证来源、单位和尺度。原始 H5 的双空间存储在 `data/hand_recording.py`，来源声明与 world 字段读写在 `data/hand_h5.py`；应用层仅选择来源并组装流程。
+历史 L21 NN、几何和 VR 也返回公共 HandJointResult，旧 18D 占位只存在于实际权重、历史 H5 和明确诊断边界。旧 NN 不输入新版归一化数据；其输入必须匹配权重真实声明。VR 保留独立上游轴变换与三帧数值链路，左手目标在输出边界转换为原生侧角度，保留原始输出诊断。
 
-NPY 保留关闭跟踪、缩放和缺失清空行为；H5 Dataset 保留跟踪配置、frame gap 重置、timeline 和 mask；Vision Pro 输入返回原始矩阵，坐标提取发生在 retargeting/topology，没有新样本时不更新缓冲。dual realtime 显式选择 legacy 或 palm-local；输入声明与预处理、checkpoint 必须精确匹配，未知空间拒绝处理。
-
-`retargeting/hand/angles.py` 保留原有 float32 的 18→17 转换。原生回放先保留 float64 修复与平滑，再通过 `L21HandAngles.native_mapping_dofs()` 仅切掉占位维。原生映射仍依据原 18D 索引，取 17DOF 时显式使用索引减一。
+TRON2A/双臂既有相机流程保持其显式旧输入规范。旧 L21 到 H1/GR1/G1 的降维显示属于历史有损映射，新 `hand control --hand-model ...` 直接使用目标手原生结果，不经过该映射。
 
 ## 双臂链路
 

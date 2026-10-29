@@ -107,15 +107,17 @@ class AngleCollector:
         window = self.buffer.append(self.processor.process_frame(
             RawHandFrame(hands, elapsed_seconds, "mediapipe_approx", {"frame_index": frame_id})))
         result = None if window is None else self.retargeter.retarget(window)
+        from teleoperation.contracts.hand_control import valid_joint_result
+        from teleoperation.retargeting.hand.angles import l21_legacy_values
         for side in HAND_SIDES:
-            values = None if result is None else getattr(result, side + "_angles")
+            values = valid_joint_result(result, "l21", side)
             if values is None:
                 # No window yet (fewer than 3 frames) or calibration unfinished:
                 # write zeros and mark the frame invalid instead of guessing.
                 self.angles[side].append(np.zeros(HAND_ANGLE_DIM, dtype=np.float32))
                 self.valid[side].append(False)
                 continue
-            array = np.asarray(values.values, dtype=np.float32)
+            array = np.asarray(l21_legacy_values(values), dtype=np.float32)
             if array.shape != (HAND_ANGLE_DIM,) or not np.isfinite(array).all():
                 raise ValueError(f"invalid {side} angles: shape={array.shape}")
             self.angles[side].append(array)

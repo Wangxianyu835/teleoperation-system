@@ -35,3 +35,11 @@ def summarize_angles(path, arrays, attrs) -> dict[str, object]:
             "out_of_limits": int((finite & ~in_limits).sum()),
         }
     return summary
+
+
+def valid_legacy_angle_rows(angles, limits, tolerance=1e-4):
+    """Historical L21 audit guard, independent of new export/command interfaces."""
+    finite = np.isfinite(angles).all(axis=1)
+    within_lower = (angles >= limits[:,0]-tolerance).all(axis=1)
+    within_upper = (angles <= limits[:,1]+tolerance).all(axis=1)
+    return finite & within_lower & within_upper

@@ -17,6 +17,7 @@ from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, D
 from teleoperation.contracts.coordinates import (
     COORDINATE_FRAME, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
     coordinate_frame_for_alignment, is_world_alignment,
+    PALM_LENGTH_PROFILE, PALM_LENGTH_ALIGNMENT,
 )
 
 
@@ -47,8 +48,12 @@ class TwoHandH5Dataset:
         track_identity: bool = True,
         max_center_displacement: float = DEFAULT_MAX_CENTER_DISPLACEMENT,
         max_shape_rmse: float = DEFAULT_MAX_SHAPE_RMSE,
+        input_profile: str | None = None,
     ):
         self.path = Path(path)
+        if input_profile not in (None, PALM_LENGTH_PROFILE):
+            raise ValueError("Unknown training input profile")
+        self.input_profile = input_profile
         self.receptive_field = int(receptive_field)
         self.scale_factor = float(scale_factor)
         self.frame_start = int(frame_start)
@@ -62,6 +67,10 @@ class TwoHandH5Dataset:
         self.coordinate_alignment = read_coordinate_alignment(self.path)
         self.is_world = is_world_alignment(self.coordinate_alignment)
         self.is_canonical = self.coordinate_alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
+        if input_profile == PALM_LENGTH_PROFILE and not self.is_canonical:
+            raise ValueError("Palm-length training requires canonical world metre H5")
+        self.source_coordinate_alignment = self.coordinate_alignment
+        self.units = "1" if input_profile == PALM_LENGTH_PROFILE else ("m" if self.is_world else "unknown")
         if self.is_world:
             if self.scale_factor != 1.0:
                 raise ValueError("World Dataset requires scale_factor=1.0; preserve human metre dimensions")
@@ -94,6 +103,8 @@ class TwoHandH5Dataset:
         self.frame_end = requested_end
 
         self.samples = self._build_samples()
+        if input_profile == PALM_LENGTH_PROFILE:
+            self.coordinate_alignment = PALM_LENGTH_ALIGNMENT
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -141,9 +152,21 @@ class TwoHandH5Dataset:
                 canonical = CanonicalHandFrame(hands, timestamp, "h5", self.coordinate_metadata)
             else:
                 canonical = processor.process_frame(RawHandFrame(raw_hands, timestamp, "h5", {"frame_index": frame_index}))
+            if self.input_profile == PALM_LENGTH_PROFILE:
+                from teleoperation.retargeting.hand.normalization import validate_metric_hand_frame
+                canonical = validate_metric_hand_frame(canonical)
             window = buffer.append(canonical)
+            if window is not None and self.input_profile == PALM_LENGTH_PROFILE:
+                from teleoperation.retargeting.hand.normalization import normalize_hand_window
+                ready = {side:window.hands[side] is not None for side in HAND_SIDES}
+                window = normalize_hand_window(window)
+                for side in HAND_SIDES:
+                    if ready[side] and window.hands[side] is None:
+                        buffer.reset_side(side)
             payload = None if window is None else window.to_payload()
             current = {side: points for side, points in canonical.hands.items() if points is not None}
+            if self.input_profile == PALM_LENGTH_PROFILE:
+                current = {} if window is None else {side: points[-1] for side, points in window.hands.items() if points is not None}
             for side, hand in current.items():
                 if not np.isfinite(hand).all():
                     raise ValueError(
@@ -167,6 +190,7 @@ class TwoHandH5Dataset:
                 "frame_index": frame_index,
                 "frame_id": frame_id if frame_id is not None else frame_index,
                 "timestamp": _scalar_or_none(self.timestamps[frame_index]),
+                "window_metadata": {} if window is None else dict(window.metadata),
             }
             for side in HAND_SIDES:
                 if valid_sides[side]:

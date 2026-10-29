@@ -172,13 +172,14 @@ def iter_dex_observations(path, source):
                 world_hands=hands if source == "camera" else None)
 
 
-class NativeHandResultWriter:
+class LegacyNativeResultWriter:
     """Exclusive native result H5; raw solutions and accepted commands stay separate."""
 
-    def __init__(self, path, models, metadata):
+    def __init__(self, path, models, metadata, *, specs):
         import json
         self.stream = h5py.File(path, "x")
         self.models, self.count, self.datasets, self.last_time = models, 0, [], None
+        self.specs = specs
         try:
             self.stream.attrs.update({"schema": "dex_native_results_v1", "timestamp_unit": "seconds",
                 "angle_unit": "rad", "runtime_mesh_collision_guard": False, "metadata_json": json.dumps(metadata)})
@@ -213,14 +214,22 @@ class NativeHandResultWriter:
         rows = {}
         for key, model in self.models.items():
             result = results[key]
-            if result.joint_names != model.joint_names or result.config_hash != model.config_hash:
+            spec = self.specs[key]
+            if result.joint_names != spec.independent_joint_names or result.spec_hash != spec.spec_hash:
                 raise ValueError("Native result config differs from H5 header")
-            command = np.asarray([commands[key][name] for name in model.joint_names])
+            accepted = commands[key]
+            if accepted.key != key or accepted.spec_hash != spec.spec_hash or accepted.joint_names != spec.joint_names:
+                raise ValueError("Native command config differs from H5 header")
+            command = accepted.positions
             if not np.isfinite(command).all():
                 raise ValueError("Native commands must remain finite on missing frames")
-            rows[key] = {"raw_angles": result.values if result.valid else np.full(len(model.joint_names), np.nan),
+            raw = None if not result.valid else model.expand(result.positions)
+            rows[key] = {"raw_angles": np.array([raw[n] for n in model.joint_names]) if raw is not None else np.full(len(model.joint_names), np.nan),
                 "command_angles": command, "valid": result.valid, "solve_ms": result.solve_ms,
                 "error": result.error or "", "target_vectors": targets[key] if targets[key] is not None else np.full((len(model.fingers), 3), np.nan)}
+        self._store(timestamp, rows, is_calibration)
+
+    def _store(self, timestamp, rows, is_calibration):
         for dataset in self.datasets:
             dataset.resize(self.count + 1, axis=0)
         self.stream["timestamps"][self.count] = timestamp
@@ -246,9 +255,33 @@ class NativeHandResultWriter:
         self.close()
 
 
-def iter_native_result_commands(path, models):
+class LegacyComparisonWriter(LegacyNativeResultWriter):
+    """Lossy historical mapping arrays, explicitly not replayable commands."""
+    def __init__(self, path, models, metadata):
+        super().__init__(path, models, metadata, specs={})
+        self.stream.attrs["schema"] = "dex_native_comparison_v1"
+
+    def append(self, timestamp, diagnostics, commands, targets, is_calibration=False):
+        if not np.isfinite(timestamp) or (self.last_time is not None and timestamp <= self.last_time):
+            raise ValueError("Comparison timestamps must increase")
+        if set(diagnostics) != set(self.models) or set(commands) != set(self.models):
+            raise ValueError("Comparison rows must cover the recorded robot hands")
+        rows = {}
+        for key, model in self.models.items():
+            row = diagnostics[key]
+            count = len(model.joint_names)
+            raw = np.asarray(row["raw_angles"], dtype=float)
+            command = np.array([commands[key][n] for n in model.joint_names], dtype=float)
+            if raw.shape != (count,) or not np.isfinite(command).all() or (row["valid"] and not np.isfinite(raw).all()):
+                raise ValueError("Malformed legacy comparison arrays")
+            rows[key] = {**row, "command_angles":command,
+                         "target_vectors": targets[key] if targets[key] is not None else np.full((len(model.fingers),3), np.nan)}
+        self._store(timestamp, rows, is_calibration)
+
+
+def iter_legacy_native_commands(path, models, *, specs):
     import json
-    from teleoperation.contracts.hand import NativeHandResult
+    from teleoperation.contracts.hand_control import HandJointCommand
     with h5py.File(path, "r") as stream:
         if stream.attrs.get("schema") != "dex_native_results_v1" or stream.attrs.get("timestamp_unit") != "seconds":
             raise ValueError("Not a native result recording")
@@ -269,5 +302,6 @@ def iter_native_result_commands(path, models):
                 expanded = model.expand([named[n] for n in model.independent_names])
                 if any(abs(expanded[n] - named[n]) > 1e-6 for n in model.joint_names):
                     raise ValueError("Replay commands violate native coupling")
-                results[key] = NativeHandResult(*key, model.joint_names, values, float(timestamp), model.config_hash)
+                spec = specs[key]
+                results[key] = HandJointCommand(*key, spec.spec_hash, model.joint_names, values, float(timestamp))
             yield float(timestamp), results

@@ -1,4 +1,4 @@
-"""实时遥操作入口：摄像头 -> 手（18 维）+ 手臂（相对重定向）-> H1-2 / GR1-T2 / G1。
+"""实时遥操作入口：摄像头 -> 手部公共关节结果 + 手臂（相对重定向）-> H1-2 / GR1-T2 / G1。
 
 它和 ``applications/realtime_hand_sim.py`` 的关系
 ------------------------------------------------
@@ -9,12 +9,12 @@
 
     MediaPipeCameraInput.next_teleop_observation()   # 同一帧：手 21 点 + pose 肩/肘/腕
       -> 手：MediaPipePalmLocalPipeline（三帧窗口 + 掌面局部对齐）
-             -> GeometricHandRetargeter / 训练检查点 -> 18 维 -> scene.apply(side)
+             -> GeometricHandRetargeter / 训练检查点 -> HandJointResult -> JointCommandPipeline -> 历史 L21 映射显示
       -> 臂：RealtimeArmBridge（相对重定向：以中性姿势为原点）
              -> ArmSceneDriver.apply_each(source="base") -> PyBulletArmIK 两遍热启动 -> 7 关节
 
-**零改动**：``applications/**``、``inputs/**``、``retargeting/**`` 一行都没改，这里只是
-import 它们的公开接口并复用基线入口里那几个纯工具函数；手臂侧三个模块
+手部复用公共结果/命令接口；本入口保留旧 L21 权重和三机器人降维映射。
+新版目标手 NN/dex 使用 hand control；手臂侧三个模块
 （``simulation/arm_profiles.py`` / ``arm_ik.py`` / ``arm_scene_driver.py``）是我们自己的新文件。
 
 用法::
@@ -106,6 +106,8 @@ from pathlib import Path
 import numpy as np
 
 from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
+from teleoperation.contracts.hand_control import valid_joint_result
+from teleoperation.retargeting.hand.angles import l21_legacy_values
 from teleoperation.applications.realtime_hand_sim import (
     PREVIEW_HINT_ROBOTS,
     _describe,
@@ -140,7 +142,7 @@ from teleoperation.simulation.arm_realtime import (
 )
 from teleoperation.simulation.arm_scene_driver import SLEW_MAX_STEP_M, ArmSceneDriver
 from teleoperation.simulation.scene_appearance import apply_appearance
-from teleoperation.simulation.hand_commands import add_hand_command_arguments, build_hand_commands
+from teleoperation.simulation.hand_commands import add_hand_command_arguments, build_hand_commands, apply_legacy_l21_mapping
 
 SIDES = ("left", "right")
 ARM_ENTRY = "realtime_teleop"
@@ -1158,21 +1160,19 @@ def run(args) -> int:
             elif window is not None:
                 result = retargeter.retarget(window)
                 for side in sides:
-                    angles = getattr(result, side + "_angles")
+                    angles = valid_joint_result(result, "l21", side)
                     if angles is None:
                         invalid[side] += 1
-                        commands.missing(side)
+                        commands.missing(('l21',side))
                         continue
-                    values = np.asarray(angles.values, dtype=np.float64)
-                    if values.shape != (HAND_ANGLE_DIM,) or not np.isfinite(values).all():
-                        raise ValueError(f"invalid {side} angles: shape={values.shape}")
-                    values = commands.update(side, values)
-                    scene.apply(side, values)
+                    command = commands.update(angles)
+                    apply_legacy_l21_mapping(scene, command)
+                    values = command.positions
                     samples[side].append(values)
                     latest[side] = values
             else:
                 for side in sides:
-                    commands.missing(side)
+                    commands.missing(('l21',side))
             targets = {}
             if diagnostics is not None:
                 diagnostics.record_ms("hand_inference_output", (time.perf_counter() - hand_started) * 1000)

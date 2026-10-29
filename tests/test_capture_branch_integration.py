@@ -38,24 +38,28 @@ class CaptureBranchIntegrationTests(unittest.TestCase):
             with self.subTest(frames=frames, fps=fps), self.assertRaises(ValueError):
                 sample.make_twohand_raw(frames, fps)
 
-    def test_pipeline_validation_rejects_nonfinite_predictions(self):
+    def test_legacy_inspection_reports_nonfinite_predictions(self):
+        from teleoperation.applications.hand_inspect import inspect_angle_h5
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "angles.h5"
             with h5py.File(path, "w") as handle:
                 handle["frame_ids"] = np.arange(4)
+                handle['timestamps'] = np.arange(4)/30
                 for side in ("left", "right"):
                     values = np.zeros((4, 18))
                     values[2, 4] = np.nan
                     handle[side + "_angles"] = values
                     handle[side + "_valid"] = np.ones(4, dtype=bool)
             with contextlib.redirect_stdout(io.StringIO()):
-                self.assertFalse(pipeline.verify_angles(path))
+                summary=inspect_angle_h5(path)
+                self.assertGreater(summary['left']['nonfinite'],0)
+                self.assertGreater(summary['right']['nonfinite'],0)
 
     def test_explicit_missing_recording_is_not_replaced_with_synthetic_data(self):
         with tempfile.TemporaryDirectory() as folder:
             args = ["pipeline", "--raw", str(Path(folder) / "missing.h5"),
                     "--work-dir", str(Path(folder) / "work")]
-            with patch("sys.argv", args), patch.object(pipeline, "run_step") as run, \
+            with patch("sys.argv", args), patch.object(pipeline.subprocess, "run") as run, \
                     contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:
                     pipeline.main()

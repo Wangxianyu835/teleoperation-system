@@ -76,7 +76,7 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(model.forward_calls, 7)  # left: 2; right: 5
         self.assertIn("recovery_after_3_valid_frames", output.getvalue())
         self.assertIn("window=(3, 25, 3)", output.getvalue())
-        self.assertIn("angles=(18,)", output.getvalue())
+        self.assertIn("angles=(17,)", output.getvalue())
 
     def test_headless_visualization_uses_shared_plotting_and_saves_png(self):
         try:

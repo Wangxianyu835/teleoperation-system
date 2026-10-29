@@ -16,6 +16,7 @@ import time
 import numpy as np
 
 from teleoperation.contracts.coordinates import palm_local_metadata
+from teleoperation.contracts.hand_control import valid_joint_result
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
 from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
 
@@ -48,6 +49,7 @@ class MediaPipeCameraWorkflow:
         max_center_displacement: float = DEFAULT_MAX_CENTER_DISPLACEMENT,
         max_shape_rmse: float = DEFAULT_MAX_SHAPE_RMSE,
         landmark_space: str = "world",
+        input_profile: str | None = None,
     ):
         if scale_factor != 1.0:
             raise ValueError("MediaPipe palm-local realtime requires scale_factor=1.0")
@@ -55,7 +57,7 @@ class MediaPipeCameraWorkflow:
             raise ValueError("MediaPipeCameraInput uses fixed min_confidence=0.5")
         self.model_asset_path = Path(model_asset_path)
         self.landmark_space = landmark_space
-        self.pipeline = MediaPipePalmLocalPipeline(landmark_space)
+        self.pipeline = MediaPipePalmLocalPipeline(landmark_space, input_profile=input_profile)
         self.processor = self.pipeline.processor
         self.last_raw_frame = None
         self._input = MediaPipeCameraInput(
@@ -122,8 +124,9 @@ def load_palm_local_retargeter(checkpoint_path=None, device="cpu", *, left_check
         ).eval()
     except FileNotFoundError as error:
         experiment = "world_canonical_shared_v1" if landmark_space == "world" else "palm_three_point_v2"
-        raise FileNotFoundError(f"{error}. Train a matching model: python -m teleoperation hand train "
-                                f"--input <aligned_{landmark_space}.h5> --run-name {experiment}") from error
+        raise FileNotFoundError(f"{error}. This legacy L21 loader requires an existing {experiment} checkpoint. "
+                                "New target training uses hand train --hand-model l21; run those weights with hand control. "
+                                "See docs/hand-retargeting-unified.md.") from error
 
 
 def run(args: argparse.Namespace) -> int:
@@ -165,7 +168,7 @@ def run(args: argparse.Namespace) -> int:
                 window = camera.next_window()
                 payload = None if window is None else window.to_payload()
                 result = None if window is None else retargeter.retarget(window)
-                predictions = {side: None if result is None or getattr(result, side + "_angles") is None else getattr(result, side + "_angles").values for side in SIDES}
+                predictions = {side: None if valid_joint_result(result, "l21", side) is None else result[("l21", side)].positions for side in SIDES}
                 completed += 1
                 descriptions = []
                 for side in SIDES:
@@ -181,7 +184,7 @@ def run(args: argparse.Namespace) -> int:
                         awaiting_recovery[side] = seen_output[side]
                         event = " reset"
                     if angles is not None:
-                        if angles.shape != (HAND_ANGLE_DIM,) or not np.isfinite(angles).all():
+                        if angles.shape != (17,) or not np.isfinite(angles).all():
                             raise ValueError(f"Invalid {side} model output")
                         counts[side]["outputs"] += 1
                         seen_output[side] = True

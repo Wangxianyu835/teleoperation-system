@@ -17,7 +17,7 @@
 默认保留原版的显式路由：**左侧传感器数据 -> 原版右侧 L21 模型/仿真手**。
 使用 `--source-hand` 指定输入侧，`--hand` 指定目标机器人侧；两者含义不同。
 右侧输入轴向来自原版相邻注释分支/离线转换，而完整数值对照验证的是原版默认左侧路线。
-旧单手模式切换目标侧只改变结果槽位，不会自动重训、镜像或修正权重。
+目标为左手时，单手与双手模式均在输出边界执行左手原生关节符号适配；模型原始 18D 输出保留作诊断，不改变上游模型或其输入。
 新增同侧双手模式必须显式指定 `--hand both --hand-mapping same`，在输出边界适配左侧原生角度。
 
 VR 输入不使用摄像头的 MediaPipe 21 点拓扑转换或三点掌面规范化。
@@ -31,7 +31,7 @@ VR 输入不使用摄像头的 MediaPipe 21 点拓扑转换或三点掌面规范
 - `TransHandRVisionProPipeline.process_frame()` 返回 `(HandWindow | None, CanonicalHandFrame)`；
   窗口保留 `(3,25,3)`，来源仍声明 `visionpro`，坐标使用已有 `source_to_l21_xyz` 标识。
 - `TransHandRVRRetargeter` 实现既有 `HandRetargeter.retarget()`，返回
-  `HandRetargetResult` 和 18 维 `L21HandAngles`；不改变动作向量布局。
+  `dict[("l21",side), HandJointResult]`，每侧为原生 17D 独立角度；`last_raw_angles` 保留上游原始 18D。历史 VR H5 在序列化边界恢复其 18D 诊断布局。
 - `VisionProReplayInput` 读取已交付 H5 的 `*_hand_transforms`、`*_valid` 和 `timestamps`；
   既有录制、裁剪和校验工具不需要改格式。
 
@@ -204,3 +204,15 @@ JSON 的 `routes` 为目标侧 -> 来源侧；`sides` 分侧统计输入有效�
 
 测试：`tests/test_transhandr_vr.py`，覆盖原轴向/腕原点、三帧顺序/缩放、缺手恢复、
 现有输入接口、结果路由、严格权重检查、H5 回放和统一 CLI 的实际 L21 无头场景。
+
+## 统一接口后的上游数值复核
+
+来源根目录 `D:/2026/code/TransHandR/TransHandR`。实际执行上游源码模型与预处理函数，在录制 `visionpro_hand_arm_20261012_213812_live.h5` 上检查左右各10个窗口，尺度1和1.7：输入张量与原始输出最大差异均为0；右侧FK轴与offset逐项一致。左目标侧符号适配后的轴最小点积0.9991503838621145。结果为源码/数值一致性，不表示头显实时或动作质量验收。
+
+| 来源 | SHA256 |
+|---|---|
+| main_visionpro_realtime.py | f6141c0aa57b88e98a641912edaa3791c81116dd49a61119b8c4b811c200ff8f |
+| model/model_poseformer.py | 9c80ba61d4465e63c7444347dbb4bb7f94e86fb976b884dc2b24c3155d94e8a3 |
+| checkpoint/models/thumb3/linker/model_final.pth | ffc4aeb4fd3f8c5b6687e7d5378da43f459480eee355e59a46eac65a34c8c895 |
+
+相机新规范、训练和接口详见 [统一手部流程](hand-retargeting-unified.md)。VR不自动使用该相机归一化。

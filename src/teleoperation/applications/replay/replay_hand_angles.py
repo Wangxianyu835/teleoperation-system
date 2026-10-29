@@ -153,7 +153,7 @@ def replay_pybullet(angles, valid, timestamps, urdf_path, urdf_dir,
     for i in range(len(angles)):
         if not valid[i]:
             continue
-        targets = adapter.map(L21HandAngles(angles[i]).native_mapping_dofs())
+        targets = adapter.map(legacy_l21_dofs(angles[i]))
         for d, jidx in dim2jidx.items():
             val = targets[joints_order[d]]
             p.setJointMotorControl2(rid, jidx, p.POSITION_CONTROL,
@@ -294,4 +294,4 @@ from teleoperation.data.urdf import parse_joint_limits
 from teleoperation.robots.l21 import MAPPING_18, L21_JOINT_ORDER
 
 from teleoperation.robots.l21 import L21HandAdapter
-from teleoperation.contracts.hand import L21HandAngles
+from teleoperation.retargeting.hand.angles import legacy_l21_dofs

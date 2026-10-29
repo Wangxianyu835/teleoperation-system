@@ -3,71 +3,68 @@ import unittest
 
 import numpy as np
 
-from teleoperation.simulation.hand_commands import HandCommandPipeline, L21CollisionGuard
+from teleoperation.simulation.hand_commands import L21CollisionGuard
+from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
 
 
-def bounds():
-    limits = np.tile((-2., 2.), (18, 1))
-    limits[0] = 0
-    return {side: limits.copy() for side in ("left", "right")}
+def specs():
+    from dataclasses import replace
+    from teleoperation.robots.hand_spec import load_hand_spec
+    return {('l21',side):replace(load_hand_spec('l21',side), joint_limits=((-2.,2.),)*17,
+                                joint_velocities=(100.,)*17, palm_frames=()) for side in ('left','right')}
+
+
+def result(pipeline, side, values):
+    from teleoperation.contracts.hand_control import HandJointResult
+    spec = pipeline.specs[('l21',side)]
+    return HandJointResult(*spec.key,spec.spec_hash,spec.independent_joint_names,values,0.)
 
 
 class HandCommandFilterTests(unittest.TestCase):
     def test_lowpass_matches_dex_recurrence_and_has_independent_sides(self):
-        pipeline = HandCommandPipeline(("left", "right"), bounds(), alpha=0.2, max_velocity=100)
-        target = np.ones(18); target[0] = 0
-        first = pipeline.update("left", target, timestamp=0.)
-        second = pipeline.update("left", target, timestamp=1 / 30)
-        np.testing.assert_allclose(first[1:], 0.2)
-        np.testing.assert_allclose(second[1:], 0.36)
-        np.testing.assert_allclose(pipeline.previous["right"], 0.)
-        first[:] = 99
-        np.testing.assert_allclose(pipeline.previous["left"][1:], 0.36)
+        pipeline = JointCommandPipeline(specs(), alpha=.2, max_velocity=100)
+        raw = result(pipeline,'left',np.ones(17))
+        first = pipeline.update(raw,timestamp=0.)
+        second = pipeline.update(raw,timestamp=1/30)
+        np.testing.assert_allclose(first.positions,.2)
+        np.testing.assert_allclose(second.positions,.36)
+        np.testing.assert_allclose(pipeline.previous[('l21','right')],0.)
+        self.assertFalse(first.positions.flags.writeable)
 
     def test_variable_fps_lowpass_has_same_time_constant(self):
-        target = np.ones(18); target[0] = 0
-        fast = HandCommandPipeline(("right",), bounds(), max_velocity=100)
-        slow = HandCommandPipeline(("right",), bounds(), max_velocity=100)
-        fast.update("right", target, timestamp=0.)
-        slow.update("right", target, timestamp=0.)
-        for index in range(1, 4):
-            fast.update("right", target, timestamp=index / 30)
-        np.testing.assert_allclose(fast.previous["right"], slow.update("right", target, timestamp=0.1))
+        fast = JointCommandPipeline(specs(),max_velocity=100)
+        slow = JointCommandPipeline(specs(),max_velocity=100)
+        raw = result(fast,'right',np.ones(17))
+        fast.update(raw,timestamp=0.); slow.update(raw,timestamp=0.)
+        for i in range(1,4): fast.update(raw,timestamp=i/30)
+        np.testing.assert_allclose(fast.previous[('l21','right')],slow.update(raw,timestamp=.1).positions)
 
     def test_startup_spikes_missing_hand_and_long_gap_are_rate_limited(self):
-        for mode in ("none", "lowpass", "kalman"):
-            with self.subTest(mode=mode):
-                pipeline = HandCommandPipeline(("right",), bounds(), filter_mode=mode,
-                                               alpha=1., max_velocity=1.5)
-                target = np.full(18, 2.); target[0] = 0
-                previous = np.zeros(18)
-                for index in range(20):
-                    raw = target if index % 2 else -target
-                    current = pipeline.update("right", raw, timestamp=index / 30)
-                    self.assertLessEqual(np.max(np.abs(current - previous)), 0.05 + 1e-9)
-                    previous = current
-                pipeline.missing("right")
-                reacquired = pipeline.update("right", target, timestamp=100.)
-                self.assertLessEqual(np.max(np.abs(reacquired - previous)), 0.05 + 1e-9)
-                after_gap = pipeline.update("right", -target, timestamp=200.)
-                self.assertLessEqual(np.max(np.abs(after_gap - reacquired)), 0.15 + 1e-9)
+        for mode in ('none','lowpass','kalman'):
+            pipeline = JointCommandPipeline(specs(),filter_mode=mode,alpha=1.,max_velocity=1.5)
+            before = np.zeros(17)
+            for i in range(20):
+                current = pipeline.update(result(pipeline,'right',np.full(17,2. if i%2 else -2.)),timestamp=i/30).positions
+                self.assertLessEqual(np.max(np.abs(current-before)),.05+1e-9)
+                before=current
+            pipeline.missing(('l21','right'),timestamp=20/30)
+            current=pipeline.update(result(pipeline,'right',np.full(17,2.)),timestamp=100.).positions
+            self.assertLessEqual(np.max(np.abs(current-before)),.05+1e-9)
+            after=pipeline.update(result(pipeline,'right',np.full(17,-2.)),timestamp=200.).positions
+            self.assertLessEqual(np.max(np.abs(after-current)),.15+1e-9)
 
-    def test_limits_and_fixed_placeholder_are_enforced_after_filtering(self):
-        limits = bounds(); limits["right"][2] = (0., 0.3)
-        pipeline = HandCommandPipeline(("right",), limits, filter_mode="kalman", max_velocity=100.)
-        for index in range(30):
-            value = pipeline.update("right", np.full(18, 100.), timestamp=index / 30)
-            self.assertEqual(value[0], 0.)
-            self.assertGreaterEqual(value[2], 0.)
-            self.assertLessEqual(value[2], 0.3)
-        with self.assertRaises(ValueError):
-            pipeline.update("right", np.full(18, np.nan), timestamp=2.)
+    def test_limits_are_enforced_after_filtering(self):
+        pipeline=JointCommandPipeline(specs(),filter_mode='kalman',max_velocity=100.)
+        for i in range(30):
+            current=pipeline.update(result(pipeline,'right',np.full(17,100.)),timestamp=i/30).positions
+            self.assertTrue(np.all(current <= 2.))
+        with self.assertRaises(ValueError): result(pipeline,'right',np.full(17,np.nan))
 
     def test_nonincreasing_timestamp_holds_the_last_command(self):
-        pipeline = HandCommandPipeline(("right",), bounds())
-        value = pipeline.update("right", np.ones(18), timestamp=1.)
-        np.testing.assert_array_equal(pipeline.update("right", -np.ones(18), timestamp=1.), value)
-        np.testing.assert_array_equal(pipeline.update("right", -np.ones(18), timestamp=0.), value)
+        pipeline=JointCommandPipeline(specs())
+        first=pipeline.update(result(pipeline,'right',np.ones(17)),timestamp=1.).positions
+        for timestamp in (1.,0.):
+            np.testing.assert_array_equal(pipeline.update(result(pipeline,'right',-np.ones(17)),timestamp=timestamp).positions,first)
 
 
 class L21CollisionGuardTests(unittest.TestCase):

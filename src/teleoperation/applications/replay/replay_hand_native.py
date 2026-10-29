@@ -324,7 +324,7 @@ def main(args=None):
                 for side, (mapping, arr, val, names) in plans.items():
                     if not val[i]:
                         continue
-                    dofs = L21HandAngles(arr[i]).native_mapping_dofs()
+                    dofs = legacy_l21_dofs(arr[i])
                     joints, nclip = adapters[side].map(dofs)
                     clip[side] += nclip
                     tot[side] += len(mapping)
@@ -391,5 +391,5 @@ def main(args=None):
 
 from teleoperation.data.hand_h5 import read_native_angles as load_data
 
-from teleoperation.contracts.hand import L21HandAngles
+from teleoperation.retargeting.hand.angles import legacy_l21_dofs
 from teleoperation.robots.native_hand import NativeHandAdapter

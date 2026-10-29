@@ -329,10 +329,11 @@ def run(args) -> int:
                 if window is not None:
                     result = retargeter.retarget(window)
                     for side in sides:
-                        angles = getattr(result, side + "_angles")
-                        if angles is None:
+                        angles = result[("l21", side)]
+                        if not angles.valid:
                             continue
-                        values = np.asarray(angles.values, dtype=np.float64)
+                        from teleoperation.retargeting.hand.angles import l21_legacy_values
+                        values = np.asarray(l21_legacy_values(angles), dtype=np.float64)
                         if values.shape != (HAND_ANGLE_DIM,) or not np.isfinite(values).all():
                             raise ValueError(f"invalid {side} angles: shape={values.shape}")
                         scene.apply(side, values)

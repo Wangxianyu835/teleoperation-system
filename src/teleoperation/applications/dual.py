@@ -99,8 +99,7 @@ class DualTeleoperator:
         self.hand_processing_seconds = 0.
 
     def update(self, observation: RawTeleopObservation | dict, *, control_seconds=None) -> Tron2AL21Command:
-        from teleoperation.retargeting.hand.angles import angle18_to_dofs
-        from teleoperation.contracts.hand import L21HandDOFs
+        from teleoperation.contracts.hand_control import valid_joint_result
         try:
             observation = self._raw_observation(observation)
             # Camera per-side nonfinite/lost Pose is handled by the existing
@@ -128,7 +127,7 @@ class DualTeleoperator:
         else:
             window, canonical = self.hand_pipeline.process_frame(observation.hands)
         result = None if window is None else self.hand_retargeter.retarget(window)
-        hand_output = {side: None if result is None else getattr(result, side + "_angles") for side in ("left", "right")}
+        hand_output = {side: valid_joint_result(result, "l21", side) for side in ("left", "right")}
         self.hand_processing_seconds = time.perf_counter() - started
         arm_valid, hand_valid = {}, {}
         for side in ("left", "right"):
@@ -136,7 +135,7 @@ class DualTeleoperator:
             predicted = hand_output[side]
             hand_valid[side] = predicted is not None
             if hand_valid[side]:
-                self.hand_q[side] = L21HandDOFs(angle18_to_dofs(predicted.values)).values
+                self.hand_q[side] = predicted.positions.astype(np.float32)
             if self.input_mode == "camera_world":
                 self.hand_diagnostics[side] = dict(
                     detected=observation.hands.world_hands[side] is not None,

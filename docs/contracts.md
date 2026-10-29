@@ -26,33 +26,25 @@ InputSource.close() -> None
 
 | 类型 | 语义 |
 |---|---|
-| CanonicalHandFrame | 每侧 `(25,3)` 或缺失；当前帧有效性与原因 |
-| HandWindow | 每侧 `(frames,25,3)` 或缺失；生产模型三帧 |
-| L21HandAngles | 单侧 `values.shape == (18,)`；保留 root placeholder |
-| HandRetargetResult | 左右侧 L21HandAngles、左右有效标志、timestamp |
-| L21HandDOFs | 单侧有限的 `values.shape == (17,)`，真正可动关节 |
-
-正式接口：
+| CanonicalHandFrame | 每侧 `(25,3)` 或缺失；声明坐标和单位 |
+| HandWindow | 每侧 `(frames,25,3)` 或缺失；新相机 profile 严格三帧 |
+| HandJointResult | hand_model、side、spec_hash、有序独立 joint_names、positions[D] rad、timestamp、valid/error、solve_ms |
+| HandJointCommand | 已接受的原生具名展开关节命令；与原始解分开 |
 
 ```python
-canonical = processor.process_frame(raw)
-window = temporal.append(canonical)
-result = retargeter.retarget(window)  # 仅在 window 非空时
+normalized = normalize_hand_window(metric_window)
+results = retargeter.retarget(normalized)  # dict[(hand_model,side), HandJointResult]
+command = pipeline.update(results[(hand_model,side)], timestamp=normalized.timestamp)
+executor.apply(command)
 ```
 
-单帧处理器拥有跟踪状态，时间缓冲独立。缓冲器只接收 CanonicalHandFrame，不重新做坐标或 21→25。
+新掌长 profile 为 `camera_palm_length_window3_v1`，坐标框架 `hand_canonical_right`，units/length_unit 为 `1`，原始来源仍为 `mediapipe_world_meters`。分母单独记录为 `palm_length_m`。目标 specs 确定 D、关节顺序与 hash，NN/dex 同手型同侧输出语义一致。无效结果 positions=None；缺手保持命令，但不把保持值标记为有效求解。
 
-18D 顺序为占位维，加食指、中指、无名指、小指各三维，再加拇指五维；映射常量位于 `robots/l21.py` 和 `robots/native_hand.py`。root placeholder 不作为 actuator 下发。
+L21 为 D=17，H1/GR1 为 D=6（展开 12/11），G1 为 D=7。旧 L21 18D 占位布局只由明确文件/FK/权重边界读取；`legacy_l21_dofs` 保留 float64 精度，旧 TRON2A 消费端显式选择 float32。没有旧 L21 和 Native 两套公共结果包装。
 
-```python
-# 原 TRON2A/L21 路径：保持旧转换的 float32 行为
-L21HandDOFs(angle18_to_dofs(angles.values))
+新 H5 schema `hand_joint_results_v1` 将 raw_positions[D] 和 command_positions[展开数] 分开；组中记录 hand_model/side/spec_hash 和两个有序关节表，根部保留 timestamps/frame_ids、输入及算法 metadata。回放验证完整身份、有限性、有效界和耦合，不重新滤波。旧 L21 和 `dex_native_results_v1` 仅走明确旧格式读取器；有损旧映射对照文件不能作为原生命令回放。
 
-# 原生回放：保留 float64 修复和映射精度，只切除占位维
-angles.native_mapping_dofs()
-```
-
-两条路径不能合并成隐式 dtype 转换。原生映射的符号、裁剪、rescale 和缺失关节行为保持既有策略。
+权重 schema `hand_joint_nn_v1` 严格校验目标与输入契约，不依赖维数相同就认定兼容。路径与字段详见 [统一流程](hand-retargeting-unified.md)。
 
 ## 双臂三阶段
 
@@ -82,7 +74,7 @@ IK 的 FK 矩阵仍可参与原有计算；进入正式 IK 接口前用 `target_
 
 后三者的语义目标为原生关节名到角度的 Mapping。adapter 的 joint_names 必须使用对应 RobotLoader 的实际 action_joint_names，验证维度、唯一性、所需关节与有限值。输入手臂属于该目标机器人；不接受 Tron2AL21Command 作为另一台机器人的动作。
 
-`NativeHandAdapter` 接收 L21HandDOFs，仅映射手部目标。其返回关节名称与角度，不解释人体 landmarks，不承担手臂转换。
+历史 `NativeHandAdapter` 接收有限的 L21 17D NumPy 坐标，仅映射手部目标。其返回关节名称与角度，不解释人体 landmarks，不承担手臂转换。
 
 辅助与正式拼接：
 

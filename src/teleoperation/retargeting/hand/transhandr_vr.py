@@ -5,7 +5,8 @@ import numpy as np
 import torch
 
 from teleoperation.contracts.coordinates import COORDINATE_ALIGNMENT
-from teleoperation.contracts.hand import HandWindow, HandRetargetResult, L21HandAngles
+from teleoperation.contracts.hand import HandWindow
+from .angles import canonical_to_native_angles, l21_joint_result
 from teleoperation.data.checkpoint import read_checkpoint
 from teleoperation.retargeting.hand.config import L21
 from teleoperation.retargeting.hand.interface import HandRetargeter
@@ -44,9 +45,10 @@ Source and destination are explicit so those two meanings cannot be confused.
             raise ValueError("VR source and target hand must be left or right")
         self.model, self.device = model, device
         self.source_side, self.target_side = source_side, target_side
+        self.last_raw_angles = None
 
     def reset(self):
-        pass  # Upstream inference is stateless; its window belongs to the producer.
+        self.last_raw_angles = None  # Model is stateless; window belongs to producer.
 
     @torch.no_grad()
     def retarget(self, window):
@@ -57,6 +59,7 @@ Source and destination are explicit so those two meanings cannot be confused.
         if window.metadata.get("vr_preprocessing") != "transhandr_axis_wrist_three_frame_v1":
             raise ValueError("VR retargeter requires the explicit upstream preprocessing profile")
         hands = {"left": None, "right": None}
+        self.last_raw_angles = None
         data = window.hands[self.source_side]
         if data is not None:
             if data.shape != (3, 25, 3) or not np.isfinite(data).all():
@@ -65,7 +68,6 @@ Source and destination are explicit so those two meanings cannot be confused.
             result = self.model(input_tensor).detach().cpu().numpy()[0]
             if result.shape != (18,) or not np.isfinite(result).all():
                 raise ValueError("VR model must output 18 finite angles")
-            hands[self.target_side] = L21HandAngles(result)
-        return HandRetargetResult(left_angles=hands["left"], right_angles=hands["right"],
-                                  left_valid=hands["left"] is not None, right_valid=hands["right"] is not None,
-                                  timestamp=window.timestamp)
+            self.last_raw_angles = result.copy()
+            hands[self.target_side] = canonical_to_native_angles(result, self.target_side)
+        return {("l21", side): l21_joint_result(side, hands[side], window.timestamp) for side in ("left", "right")}

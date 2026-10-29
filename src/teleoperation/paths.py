@@ -14,6 +14,18 @@ DEFAULT_WORLD_CAPTURE_DIR = PROJECT_ROOT / "outputs" / "hand_body_capture"
 DEFAULT_INPUT_H5 = PROJECT_ROOT / "input" / "visual_hand_data_20260912_112108.h5"
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "checkpoint/models/twohand_h5/linker/coord_aligned_100ep/model_best.pth"
 DEFAULT_WARMSTART_CHECKPOINT = None
+DEFAULT_HAND_MODEL_ROOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "models"
+
+
+def training_run_directory(root, hand_model, side, input_profile, run_name):
+    """An explicit target/profile run; never search for an implicit latest model."""
+    import re
+    for value in (hand_model, side, input_profile, run_name):
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
+            raise ValueError(f"Invalid model path component: {value!r}")
+    if side not in ("left", "right"):
+        raise ValueError(f"Invalid target side: {side!r}")
+    return Path(root) / hand_model / side / "nn" / input_profile / run_name
 
 DEFAULT_TRON2A_URDF = PROJECT_ROOT / "third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf"
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"

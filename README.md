@@ -1,5 +1,18 @@
 # 遥操作与运动重定向
 
+> **当前手部入口**：见 [统一手部训练、控制与结果规范](docs/hand-retargeting-unified.md)。使用 `hand train --hand-model ...`、`hand control --hand-model ... --backend nn|dex`、`hand export` 和 `replay hand-joints`。下文历史共享 L21 权重、18D 文件及三机器人降维映射示例仅对应旧配置，不能用来加载新版 D 维模型。
+
+```powershell
+python -m teleoperation hand list-models
+python -m teleoperation hand train --input aligned_world.h5 --hand-model l21 g1 --hand-side right --run-name experiment01
+python -m teleoperation hand control --hand-model l21 --backend nn --hand right --checkpoint <right_target_model.pth>
+# dex 使用 devtools/dex_native_env.ps1 中的独立解释器；无需权重或人工掌长标定
+python -m teleoperation hand control --hand-model l21 --backend dex --hand right
+```
+
+权重路径固定为 `outputs/hand_retargeting/models/<hand_model>/<side>/nn/camera_palm_length_window3_v1/<run_name>/`；同一人体米制 H5 可训练多个目标手。新相机窗口按三帧掌长中位数归一化。新 NN 与 dex 返回同侧同手型的独立原生角度；L21=17、H1/GR1=6、G1=7。接入能力不表示本地已有合格权重或跨操作者效果通过验收。
+
+
 本项目将人手关键点转换为机器人关节角，并在 PyBullet 中显示动作。
 输入设备可以是摄像头或 Vision Pro。
 仿真模型包括 L21 手，以及 H1-2、GR1-T2 和 G1 的原装手。

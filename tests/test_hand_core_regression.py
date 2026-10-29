@@ -8,7 +8,6 @@ import torch
 
 from teleoperation.retargeting.hand.transformer import PoseTransformer
 from teleoperation.learning.dataset import TwoHandH5Dataset
-from teleoperation.retargeting.hand.exporting import _hold_last_valid_angles
 from teleoperation.applications.hand_processing import CanonicalHandPipeline
 from teleoperation.retargeting.hand.angles import angle18_to_dofs
 from teleoperation.applications.replay.canonical import iter_angle_h5
@@ -213,23 +212,21 @@ class ModelAndAngleContractRegressionTests(unittest.TestCase):
 
 
 class InvalidOfflineRegressionTests(unittest.TestCase):
-    def test_invalid_bit_leading_zero_and_later_hold_previous(self):
-        angles = np.stack(
-            [
-                np.zeros(18, dtype=np.float32),
-                np.ones(18, dtype=np.float32),
-                np.full(18, 7.0, dtype=np.float32),
-            ]
-        )
-        valid = np.asarray([False, True, False], dtype=bool)
-
-        _hold_last_valid_angles(angles, valid)
-        self.assertFalse(bool(valid[0]))
-        self.assertTrue(bool(valid[1]))
-        self.assertFalse(bool(valid[2]))
-        np.testing.assert_array_equal(angles[0], np.zeros(18, dtype=np.float32))
-        np.testing.assert_array_equal(angles[1], np.ones(18, dtype=np.float32))
-        np.testing.assert_array_equal(angles[2], np.ones(18, dtype=np.float32))
+    def test_invalid_result_is_not_relabelled_as_valid_when_command_is_held(self):
+        from teleoperation.contracts.hand_control import HandJointResult
+        from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
+        from teleoperation.robots.hand_spec import load_hand_spec
+        spec=load_hand_spec('g1','right')
+        pipeline=JointCommandPipeline({spec.key:spec},filter_mode='none')
+        invalid=HandJointResult(*spec.key,spec.spec_hash,spec.independent_joint_names,None,0.,False)
+        first=pipeline.update(invalid,timestamp=0.)
+        np.testing.assert_array_equal(first.positions,spec.q_reference)
+        valid=HandJointResult(*spec.key,spec.spec_hash,spec.independent_joint_names,spec.bounds.mean(1),1/30)
+        second=pipeline.update(valid,timestamp=1/30)
+        third=pipeline.update(invalid,timestamp=2/30)
+        self.assertFalse(invalid.valid)
+        self.assertIsNone(invalid.positions)
+        np.testing.assert_array_equal(second.positions,third.positions)
 
     def test_angle_h5_iterator_preserves_invalid_bits_and_hold_policy(self):
         with tempfile.TemporaryDirectory() as temp_dir:
