@@ -1045,27 +1045,6 @@ class PyBulletArmIK:
 
         Temporary joint resets are enclosed by solve's state-restoration block.
         """
-        if orientation is not None and hasattr(self, "wrist_reference_q"):
-            # A position-only warm start can select a different shoulder/elbow
-            # branch before the wrist task even runs. Start from actual joints
-            # and keep both position and orientation in every solve pass.
-            reference = self.wrist_reference_q[side]
-            options = {key: list(value) if isinstance(value, list) else value
-                       for key, value in arguments.items()}
-            for index, name in self.arm[side]:
-                k = self.position_of[index]
-                radius = 1.2 if "wrist" in name.lower() else .8
-                options["lowerLimits"][k] = max(options["lowerLimits"][k], reference[name] - radius)
-                options["upperLimits"][k] = min(options["upperLimits"][k], reference[name] + radius)
-                options["jointRanges"][k] = max(1e-6, options["upperLimits"][k] - options["lowerLimits"][k])
-                options["restPoses"][k] = reference[name]
-            solution = self._ik_call(side, world, orientation, options)
-            self._teleport(side, solution)
-            position_error = 1000 * float(np.linalg.norm(np.asarray(self.measure(side)[0]) - world))
-            self._sequence_details = {"position_fallback": position_error > self.profile.max_residual_mm,
-                "position_candidate_residual_mm": None, "pose_candidate_residual_mm": position_error,
-                "wrist_solver": "current_pose_continuation", "joint_envelope_rad": [.8, 1.2]}
-            return solution, tuple(orientation)
         solution = (self._ik_call(side, world, None, arguments) if elbow_world is None
                     else self._ik_call2(side, world, elbow_world, arguments))
         position_solution = solution
@@ -1263,24 +1242,13 @@ class PyBulletArmIK:
                 largest_step = max(largest_step, abs(value - previous[index]))
             if rejection:
                 solution = [previous[index] for index in self.indices]
-            else:
-                dt = float(getattr(self, "wrist_frame_dt", 1/30))
-                dt = min(.1, max(1e-4, dt)) if np.isfinite(dt) else 1/30
-                max_step = min(.08, 1.0 * dt)
-                if largest_step > max_step:
-                    fraction = max_step / largest_step
-                    solution = [previous[i] + fraction * (value - previous[i])
-                                for i, value in zip(self.indices, solution)]
-                    details["wrist_joint_step_scaled"] = fraction
-            if not rejection and hasattr(self, "wrist_reference_q"):
-                for index, name in self.arm[side]:
-                    k = self.position_of[index]
-                    reference = self.wrist_reference_q[side][name]
-                    radius = 1.2 if "wrist" in name.lower() else .8
-                    if abs(solution[k] - reference) > radius + 1e-5:
-                        rejection = "alignment_joint_envelope"
-                        solution = [previous[index] for index in self.indices]
-                        break
+            elif largest_step > .35:
+                # Bound a branch-sized step without permanently rejecting an
+                # otherwise reachable target on every subsequent frame.
+                fraction = .35 / largest_step
+                solution = [previous[i] + fraction * (value - previous[i])
+                            for i, value in zip(self.indices, solution)]
+                details["wrist_joint_step_scaled"] = fraction
             details["wrist_rejection"] = rejection
             details["wrist_pose_requested"] = True
         self.last_target_world[side] = world
@@ -1289,11 +1257,7 @@ class PyBulletArmIK:
         self.last_posture[side] = {str(name): float(value)
                                    for name, value in dict(posture or {}).items()}
         self.last_elbow_world[side] = elbow_world
-        values = self._arm_values(side, solution)
-        if orientation is not None and hasattr(self, "wrist_collision_guard"):
-            values = self.wrist_collision_guard.project(side, values)
-            self.last_solve[side]["collision"] = self.wrist_collision_guard.summary()
-        return values
+        return self._arm_values(side, solution)
 
     def apply(self, side: str, values) -> None:
         """Write one side's arm angles: ``{joint name: angle}`` or a URDF-order sequence."""

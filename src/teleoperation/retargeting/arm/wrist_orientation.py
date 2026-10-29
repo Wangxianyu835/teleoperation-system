@@ -102,9 +102,7 @@ class WristTracker:
         self.spike_frames = 0
         self.last_observed = current
         raw = c @ (current * self.neutral.inv()).as_matrix() @ c.T
-        # A conservative response for the first wrist-following implementation.
-        # This is target amplitude, separate from interpolation/rate limiting.
-        wanted = Rotation.from_rotvec(Rotation.from_matrix(raw).as_rotvec() * .65)
+        wanted = Rotation.from_matrix(raw)
         error = wanted * self.delta.inv()
         angle = error.magnitude()
         fraction = min(1. - np.exp(-dt / .08), np.deg2rad(180.) * dt / max(angle, 1e-9))
