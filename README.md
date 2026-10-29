@@ -550,6 +550,7 @@ VR 入口只控制手部，不生成肩、肘数据。
 
 | 任务或主题 | 参考文档 |
 |---|---|
+| 灵巧手、机械臂与手臂协同重定向文献及项目定位 | [文献综述（2026-10-29）](docs/retargeting-literature-review-2026-10-29.md) |
 | 手动对齐、训练参数、几何重定向和任务仿真 | [工作流参考](docs/workflow-reference.md) |
 | 同步采集米制手部与肩、肘、腕关键点 | [世界坐标关键点采集](docs/world-landmark-capture.md) |
 | TRON2A 标定、双臂双手控制和组合离线命令 | [身体与手臂工作流](docs/workflow-reference.md#4-扩展身体采集双臂和任务仿真) |
