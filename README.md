@@ -421,6 +421,7 @@ if (-not (Test-Path $poseAsset)) { throw "缺少 Pose 模型：$poseAsset" }
 真人摄像头效果仍需复测。
 验收范围见[双臂诊断与验收](docs/arm-diagnostics.md)。
 相机与 VR 的腕朝向现由输入层提供并自动传给手臂后端；初始对齐、启动命令及待执行的人体验收清单见[腕输入与验收](docs/wrist-input-and-acceptance.md)。本轮未运行自动测试或现场设备验收。
+目前单独验证腕旋转请使用[独立彩色方块查看器](docs/wrist-viewer.md)：无需机器人、手指后端或 IK，旋转 1:1，支持相机和 VR。
 参数适配与旧 NPZ 回放行为见[分支整合记录](docs/branch-integration-2026-10-27.md)。
 
 ### 4.4 使用 dex-retargeting 直接驱动原装手（可选）
