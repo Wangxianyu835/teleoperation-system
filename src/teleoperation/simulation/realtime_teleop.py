@@ -1139,6 +1139,9 @@ def run(args) -> int:
                       f"chest) for about {args.arm_calibrate_frames} frames per side; until "
                       "then the arms hold their working point.", flush=True)
         started = time.perf_counter()
+        if backend == "geometric":
+            print("Hand zero alignment: keep the fingers OPEN until hand=ready; "
+                  "arm joints stay held until both wrist and body alignment finish.", flush=True)
         simulation_clock = SimulationStepClock(args.sim_steps,
             realtime=args.input_npz is None and not args.fixed_sim_steps)
 
@@ -1219,11 +1222,15 @@ def run(args) -> int:
                 # 第一帧拿不到间隔，用名义 1/30 s（= 旧口径 20 mm/帧），不是"关掉斜坡"。
                 driver.update_slew(frame_dt)
                 for side in sides:
+                    if wrist_control.trackers[side].neutral is None or not bridge.neutral[side]["complete"]:
+                        wrist_control.hold(side)
+                        continue
                     per_side = {name: entry[side] for name, entry in targets.items()}
                     positions = {name: target.position for name, target in per_side.items()
                                  if target.position is not None}
                     if len(positions) != len(per_side):
                         continue        # 还有机器人没目标：这一侧整侧跳过（保持上一帧）
+                    positions = wrist_control.camera_positions(side, positions)
                     # 肘位置任务（--arm-elbow-task）：只给量到锚点的那几台，缺的退回只喂腕。
                     elbows = {name: target.elbow for name, target in per_side.items()
                               if getattr(target, "elbow", None) is not None} or None
@@ -1248,8 +1255,8 @@ def run(args) -> int:
                         driver.apply_each(side, positions, source="base",
                                           orientation=orientation,
                                           orientation_frame="absolute",
-                                          elbows=elbows,
-                                          elbow_rigid=rigid,
+                                          elbows=None,
+                                          elbow_rigid=None,
                                           elbow_bend_baseline=bend_baseline,
                                           elbow_bend_deg=(None if bend_by_side is None
                                                           else bend_by_side[side]))
@@ -1277,6 +1284,12 @@ def run(args) -> int:
                 if wrist_control is not None:
                     for side in sides:
                         wrist_lines[side] = wrist_lines.get(side, "") + " wrist=" + wrist_control.trackers[side].status
+                        status = getattr(retargeter, "calibration_status", {})
+                        hand_state = ("ready" if status.get(side, True) else "open-hand-calibrating")
+                        amount = latest.get(side)
+                        wrist_lines[side] += " hand=" + hand_state
+                        wrist_lines[side] += (" cmd=missing" if amount is None else
+                                              f" cmdMax={float(np.max(np.abs(amount))):.2f}rad")
                 preview.update(raw_frame, latest, arm_hud(bridge, driver, targets),
                                arms=None if body is None else body.arms,
                                lines=wrist_lines)

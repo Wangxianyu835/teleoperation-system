@@ -594,7 +594,8 @@ def build_scene(args, sides):
     from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
 
     return ThreeRobotHandScene(sides, gui=not args.headless,
-                               steps_per_frame=args.sim_steps)
+                               steps_per_frame=args.sim_steps,
+                               robot_types=getattr(args, "robot", None))
 
 
 def run(args) -> int:

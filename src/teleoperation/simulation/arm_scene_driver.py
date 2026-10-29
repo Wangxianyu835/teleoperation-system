@@ -379,7 +379,8 @@ class ArmSceneDriver:
                         # 这一帧照旧限速：记下实际下发的这一对，供下一帧的护栏保持。
                         self.commanded_pair[(robot_type, side)] = (
                             elbow, tuple(float(value) for value in wanted))
-            shift = (None if source != "base"
+            wrist_orientation = (orientation.get(robot_type) if isinstance(orientation, Mapping) else orientation)
+            shift = (None if source != "base" or wrist_orientation is not None
                      else self._shoulder_shift(robot_type, side, adapter))
             if shift is not None:
                 # 平移放在斜坡**之后**：斜坡活在锚点系里（上一帧的命令也在锚点系），

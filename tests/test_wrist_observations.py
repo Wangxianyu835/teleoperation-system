@@ -41,6 +41,16 @@ class WristObservationTests(unittest.TestCase):
     def test_camera_no_world_data_has_no_orientation(self):
         self.assertFalse(camera_wrists(None)["left"].orientation_valid)
 
+    def test_rotation_amplitude_is_reduced_after_settling(self):
+        tracker = WristTracker(np.eye(3), calibration_frames=1)
+        def observation(angle, timestamp):
+            return WristObservation(Rotation.from_euler("z", angle, degrees=True).as_quat(),
+                CAMERA_REFERENCE, CAMERA_LOCAL, "camera_palm", timestamp, orientation_valid=True)
+        tracker.update(observation(0, 0.), .03)
+        for index in range(1, 100):
+            tracker.update(observation(30, index * .03), .03)
+        self.assertAlmostEqual(np.rad2deg(tracker.delta.magnitude()), 19.5, places=3)
+
     def test_hold_preserves_delta_and_source_change_realigns(self):
         tracker = WristTracker(np.eye(3), calibration_frames=1)
         tracker.update(vr_wrist(np.diag([1, 1, 1, 1]) + np.array(

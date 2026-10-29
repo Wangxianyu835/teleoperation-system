@@ -19,9 +19,21 @@ class WristSceneController:
         self.history = deque(maxlen=1800)
         self.recorded_frames = 0
         self.states = {}
+        self.initial_joints = {(name, side): adapter.joint_values(side)
+                               for name, adapter in driver.ik.items() for side in self.routes}
+        self.camera_origins = {}
+        self.hand_extents = {}
+        self.joint_extents = {}
+        from teleoperation.simulation.arm_collision import ArmCollisionGuard
+        for adapter in driver.ik.values():
+            adapter.wrist_collision_guard = ArmCollisionGuard(adapter)
+            adapter.wrist_reference_q = {side: dict(self.initial_joints[(adapter.robot_type, side)])
+                                         for side in self.routes}
         self.orientations = {side: {name: None for name in driver.ik} for side in self.routes}
 
     def update(self, wrists, dt):
+        for adapter in self.driver.ik.values():
+            adapter.wrist_frame_dt = dt
         for side, source in self.routes.items():
             tracker = self.trackers[side]
             tracker.update((wrists or {}).get(source), dt)
@@ -30,6 +42,7 @@ class WristSceneController:
                 self.states[side] = tracker.status
             if tracker.neutral is None:
                 self.orientations[side] = {name: None for name in self.driver.ik}
+                self.hold(side)
                 continue
             for name, adapter in self.driver.ik.items():
                 key = (name, side)
@@ -45,6 +58,27 @@ class WristSceneController:
                 self.orientations[side][name] = tuple(target.as_quat())
                 self._draw_axes(adapter, side, target)
         return self.orientations
+
+    def hold(self, side):
+        for name, adapter in self.driver.ik.items():
+            adapter.apply(side, self.initial_joints[(name, side)])
+
+    def camera_positions(self, side, positions):
+        """Use relative bounded movement from the robot's unmoved alignment pose.
+
+        Absolute anatomical posture directions can request a large relocation
+        even while the operator is standing still in the neutral pose.
+        """
+        result = {}
+        tracker = self.trackers[side]
+        for name, position in positions.items():
+            key = (name, side, tracker.generation)
+            if key not in self.camera_origins:
+                self.camera_origins[key] = np.asarray(position)
+            delta = .5 * (np.asarray(position) - self.camera_origins[key])
+            delta *= min(1., .10 / max(np.linalg.norm(delta), 1e-9))
+            result[name] = tuple(self.anchors[(name, side)][0] + delta)
+        return result
 
     def _draw_axes(self, adapter, side, target):
         draw = getattr(adapter.p, "addUserDebugLine", None)
@@ -76,6 +110,17 @@ class WristSceneController:
     def record(self):
         """Call after physics; retain the latest 1800 frames for manual acceptance."""
         self.recorded_frames += 1
+        for name, adapter in self.driver.ik.items():
+            for side in self.routes:
+                for joint, value in adapter.joint_values(side).items():
+                    key = name + "/" + side + "/" + joint
+                    low, high = self.joint_extents.get(key, (value, value))
+                    self.joint_extents[key] = (min(low, value), max(high, value))
+        for side in self.routes:
+            for name, value in self.driver.scene.joint_values(side).items():
+                key = side + "/" + name
+                low, high = self.hand_extents.get(key, (value, value))
+                self.hand_extents[key] = (min(low, value), max(high, value))
         self.history.append({"frame": self.recorded_frames,
             "timestamps": {s: t.last_timestamp for s, t in self.trackers.items()},
             "states": {s: t.status for s, t in self.trackers.items()},
@@ -100,6 +145,10 @@ class WristSceneController:
                     for (name, side), (p, r) in self.anchors.items()},
                 "robots": self._measurements(), "frames_recorded": self.recorded_frames,
                 "applied_frames": dict(self.driver.applied),
+                "hand_actual_range_rad": {k: high - low for k, (low, high) in self.hand_extents.items()},
+                "arm_actual_range_rad": {k: high - low for k, (low, high) in self.joint_extents.items()},
+                "collision": {name: adapter.wrist_collision_guard.summary() for name, adapter in self.driver.ik.items()},
+                "rotation_gain": .65, "camera_position_gain": .5, "camera_radius_m": .10,
                 "history_capacity": self.history.maxlen, "history": list(self.history)}
 
 
