@@ -1,8 +1,8 @@
-# 独立腕旋转查看器
+# 独立手掌与腕旋转查看器
 
-此入口只查看相机或 VR 输入的腕朝向，不加载机器人、手指重定向模型或 IK。
-橙色扁方块 + 蓝色前端 + 粉色侧翼 + 白色顶面标记用于区分三个旋转方向；RGB 轴分别代表 X/Y/Z。
-位置固定，旋转幅度 1:1，不使用机器人跟随中的增益、限速或平滑。输入估计本身的抖动会直接显示。
+此入口显示放大 2.5 倍的独立 L21 五指手，不加载整机或机械臂。手指采用现有 dex-retargeting Vector IK，无训练 checkpoint、无几何手指求角。
+各手指有独立颜色，橙色掌心与蓝色手背标记帮助辨认翻转；RGB 轴分别代表显示手根的 X/Y/Z。
+位置固定，腕旋转幅度 1:1，无输出缩放或平滑；手指单独按 URDF 速度且最多 2 rad/s 下发。输入朝向估计本身的抖动会直接显示。
 
 ## 相机
 
@@ -12,7 +12,8 @@
 Set-Location D:\2026\code\teleoperation-system-retargeting
 $env:PYTHONPATH = Join-Path (Get-Location).Path 'src'
 $env:PYTHONUTF8 = '1'
-$python = 'D:\Anaconda\envs\teleoperation\python.exe'
+. ./devtools/dex_native_env.ps1
+$python = $dexPython
 $session = Get-Date -Format 'yyyyMMdd_HHmmss'
 & $python -m teleoperation.applications.wrist_viewer --source camera --side right --report "outputs/tmp_realtime/wrist_viewer_$session.json"
 ```
@@ -30,7 +31,9 @@ $session = Get-Date -Format 'yyyyMMdd_HHmmss'
 & $dexPython -m teleoperation.applications.wrist_viewer --source visionpro --side both --ip '替换为头显地址或房间号'
 ```
 
-这里仅复用该环境的 SDK，不加载 dex 优化器，不需要 dex 标定文件。
+相机和 VR 均使用已有 dex-native 环境，初始化 L21 Vector 优化器，不需要 dex 标定文件。
+手指尺寸通过源掌长近三帧中位数与目标 URDF 掌长做比例匹配。放大的显示模型不参与 IK，优化仍使用物理尺寸。
+VR 使用已有 `DexInputAdapter('visionpro')` 的专用左右侧处理；不将相机掌预处理用于 VR，也不修改 TransHandR 模型路线。
 原始 VR 回放用 `--input-h5 <路径>` 替换 `--ip`。SDK 的 `(1,4,4)` 腕矩阵和 Z-up 定义沿用现有独立腕输入适配。
 既有 TransHandR 手指三帧流程不被调用或修改。
 
@@ -52,7 +55,7 @@ $session = Get-Date -Format 'yyyyMMdd_HHmmss'
 - 握拳/张手但不转掌：检查估计朝向是否明显受干扰。
 - 遮挡手或 VR 停流：保持最后方向，终端显示 hold/waiting 原因。
 
-报告保存输入参考系、初始四元数、显示四元数、相对初始旋转角和最近 6000 帧。
+报告保存输入参考系、初始四元数、显示四元数、相对初始旋转角和最近 6000 帧，`finger_ik` 保存后端、手侧求解状态及指关节输出。
 显示角是三维相对旋转的总角度，不是欧拉角；不能拿它直接当某个单独轴角。
 初始对齐与参考轴映射是为了方便观察，不是相机/头显到真实场景的外参标定。
 
@@ -64,3 +67,6 @@ $session = Get-Date -Format 'yyyyMMdd_HHmmss'
 新增查看器前基线 `a8c6087`，检查点 `checkpoint-20261029-2258-wrist-viewer-base`。
 
 本轮按用户要求不运行测试套件、不打开设备，不启动额外审查。只做语法和 `--help` 检查；真人显示效果待用户验收。
+
+五指版本修改前提交 `4860b1d924d3fb9ef12056206f2e53bfb575d3ff`，检查点 `checkpoint-20261029-2306-dex-wrist-hand`。
+新增 `wrist_dex.py` 仅组合已存在的源专用适配器和 NativeVectorSolver；未改动其数值求解算法。腕旋转始终独立于手指优化，R 只重置腕零位。

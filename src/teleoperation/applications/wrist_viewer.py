@@ -1,7 +1,7 @@
-"""Camera/VR wrist orientation viewer: no robot, hand retargeter or arm IK.
+"""Camera/VR isolated palm viewer: direct wrist rotation plus dex finger IK.
 
 Run with ``python -m teleoperation.applications.wrist_viewer``.
-The asymmetric paddle follows source-space spatial rotation at unit gain.
+The enlarged five-finger hand follows wrist rotation at unit gain, without arm IK.
 """
 from collections import deque
 from contextlib import ExitStack
@@ -110,7 +110,7 @@ class WristBlocks:
                 linkInertialFrameOrientations=[[0, 0, 0, 1]] * 3,
                 linkParentIndices=[0] * 3, linkJointTypes=[p.JOINT_FIXED] * 3,
                 linkJointAxis=[[0, 0, 0]] * 3, physicsClientId=self.cid)
-        p.addUserDebugText("WRIST ONLY | 1:1 | R: re-align | Q/Esc: exit",
+        p.addUserDebugText("WRIST 1:1 | DEX FINGERS | R: re-align | Q/Esc: exit",
                           [-.3, -.42, .77], textSize=1.2, physicsClientId=self.cid)
 
     def draw(self, side, display):
@@ -126,7 +126,7 @@ class WristBlocks:
             self.labels[key] = p.addUserDebugText("XYZ"[index], endpoint.tolist(), color,
                 textSize=1.5, replaceItemUniqueId=self.labels.get(key, -1), physicsClientId=self.cid)
         self.labels[side] = p.addUserDebugText(
-            f"{side.upper()} {display.state} | {np.rad2deg(display.rotation.magnitude()):.1f} deg",
+            f"{side.upper()} {display.state} | {getattr(display, 'angle_deg', np.rad2deg(display.rotation.magnitude())):.1f} deg",
             (origin + [0, 0, -.28]).tolist(), textColorRGB=[.2, .2, .2],
             textSize=1.2, replaceItemUniqueId=self.labels.get(side, -1), physicsClientId=self.cid)
 
@@ -139,6 +139,90 @@ class WristBlocks:
     def close(self):
         if self.alive():
             self.p.disconnect(self.cid)
+
+
+class WristHands(WristBlocks):
+    """Large independent L21 palms; RGB axes describe the actual displayed root."""
+    def __init__(self, sides, specs):
+        super().__init__(sides)
+        try:
+            self._load_hands(sides, specs)
+        except BaseException:
+            self.close()
+            raise
+
+    def _load_hands(self, sides, specs):
+        from teleoperation.simulation.urdf_loader import load_urdf
+        p = self.p
+        self.joints, self.inertials = {}, {}
+        self.markers = {}
+        self.display_initial = Rotation.from_euler("z", -90, degrees=True)
+        for side in sides:
+            p.removeBody(self.bodies[side], physicsClientId=self.cid)
+            # Native palm faces +X, fingers point upward. Turn palms toward a
+            # front-facing camera; this is a fixed display offset, not a gain.
+            origin = np.array([(-.32 if side == "left" else .32) if len(sides) == 2 else 0., 0., .12])
+            self.origins[side] = origin
+            body = load_urdf(specs[side].urdf_path, basePosition=origin.tolist(),
+                baseOrientation=self.display_initial.as_quat().tolist(), globalScaling=2.5,
+                useFixedBase=True, physicsClientId=self.cid)
+            self.bodies[side] = body
+            dynamics = p.getDynamicsInfo(body, -1, physicsClientId=self.cid)
+            self.inertials[side] = (dynamics[3], dynamics[4])
+            self.joints[side] = {}
+            self.markers[side] = []
+            for offset, color in (([.035, 0, .07], [1., .25, .05, 1.]),
+                                   ([-.035, 0, .07], [.1, .3, 1., 1.])):
+                visual = p.createVisualShape(p.GEOM_SPHERE, radius=.018,
+                                            rgbaColor=color, physicsClientId=self.cid)
+                marker = p.createMultiBody(baseMass=0, baseVisualShapeIndex=visual,
+                                           baseCollisionShapeIndex=-1, physicsClientId=self.cid)
+                self.markers[side].append((marker, np.asarray(offset) * 2.5))
+            for index in range(-1, p.getNumJoints(body, physicsClientId=self.cid)):
+                if index < 0:
+                    color = [.8, .82, .86, 1.]
+                else:
+                    info = p.getJointInfo(body, index, physicsClientId=self.cid)
+                    self.joints[side][info[1].decode()] = index
+                    link = info[12].decode()
+                    palette = {"thumb": [1., .45, .12, 1.], "index": [.2, .65, 1., 1.],
+                               "middle": [.3, .85, .45, 1.], "ring": [.9, .55, .9, 1.],
+                               "pinky": [1., .85, .25, 1.]}
+                    color = next((rgba for name, rgba in palette.items() if link.startswith(name)), [.8, .82, .86, 1.])
+                p.changeVisualShape(body, index, rgbaColor=color, physicsClientId=self.cid)
+            self._place(side, Rotation.identity())
+        p.resetDebugVisualizerCamera(.95 if len(sides) == 1 else 1.4, 0, -8,
+                                    [0, 0, .36], physicsClientId=self.cid)
+
+    def _place(self, side, rotation):
+        orientation = (rotation * self.display_initial).as_quat().tolist()
+        inertial_p, inertial_q = self.inertials[side]
+        position, quaternion = self.p.multiplyTransforms(self.origins[side].tolist(), orientation, inertial_p, inertial_q)
+        self.p.resetBasePositionAndOrientation(self.bodies[side], position, quaternion, physicsClientId=self.cid)
+        rotation_world = rotation * self.display_initial
+        for body, offset in self.markers[side]:
+            self.p.resetBasePositionAndOrientation(body,
+                (self.origins[side] + rotation_world.apply(offset)).tolist(),
+                rotation_world.as_quat().tolist(), physicsClientId=self.cid)
+
+    def draw(self, side, display):
+        # The base viewer owns RGB axes/text; use the same physical root offset.
+        from types import SimpleNamespace
+        super().draw(side, SimpleNamespace(rotation=display.rotation * self.display_initial,
+                     state=display.state, angle_deg=np.rad2deg(display.rotation.magnitude())))
+        self._place(side, display.rotation)
+        orientation = display.rotation * self.display_initial
+        for label, offset, color in (("PALM", [.03, 0, .07], [.9, .25, .05]),
+                                      ("BACK", [-.03, 0, .07], [.2, .3, .8])):
+            key = (side, label)
+            position = self.origins[side] + orientation.apply(np.asarray(offset) * 2.5)
+            self.labels[key] = self.p.addUserDebugText(label, position.tolist(), color,
+                textSize=1.3, replaceItemUniqueId=self.labels.get(key, -1), physicsClientId=self.cid)
+
+    def apply_fingers(self, commands):
+        for side, values in commands.items():
+            for name, value in values.items():
+                self.p.resetJointState(self.bodies[side], self.joints[side][name], float(value), physicsClientId=self.cid)
 
 
 class CameraReplay:
@@ -161,7 +245,9 @@ class CameraReplay:
             if key in self.data:
                 wrists[side] = recorded_camera_wrist(self.data[key][i], stamp,
                     str(self.data["wrist_reference_frame"]), str(self.data["wrist_local_frame"]))
-        return RawHandFrame({"left": None, "right": None}, stamp, wrists=wrists)
+        return RawHandFrame({s: self.data.get(s + "_hand", [None] * (i + 1))[i] for s in world},
+            stamp, "mediapipe_approx", {"world_landmark_space": "mediapipe_world_meters",
+                "world_length_unit": "m", "source_scale": 1.}, world_hands=world, wrists=wrists)
 
     def close(self):
         pass
@@ -194,6 +280,12 @@ def run(args):
         raise ValueError("Choose a new report path, distinct from inputs")
     sides = ("left", "right") if args.side == "both" else (args.side,)
     displays = {s: OrientationDisplay() for s in sides}
+    from teleoperation.applications.wrist_dex import WristFingerIK
+    try:
+        fingers = WristFingerIK(args.source, sides)
+    except ModuleNotFoundError as error:
+        raise RuntimeError("Palm viewer requires the existing dex-native environment. "
+                           "Run devtools/dex_native_env.ps1 and use $dexPython.") from error
     history = deque(maxlen=6000)
     processed, states, cv2 = 0, {}, None
     with ExitStack() as resources:
@@ -210,7 +302,7 @@ def run(args):
             from teleoperation.inputs.visionpro import VisionProInput, VisionProReplayInput
             source = VisionProReplayInput(args.input_h5, args.side) if args.input_h5 else VisionProInput(args.ip, args.side)
         resources.callback(source.close)
-        scene = WristBlocks(sides)
+        scene = WristHands(sides, fingers.specs)
         resources.callback(scene.close)
         print("Hold palm steady for 10 fresh samples. Unit gain, no output smoothing. R re-aligns; Q/Esc exits.", flush=True)
         try:
@@ -220,6 +312,7 @@ def run(args):
                     frame = source.next_observation()
                 except StopIteration:
                     break
+                scene.apply_fingers(fingers.update(frame))
                 for side, display in displays.items():
                     display.update(None if frame is None else (frame.wrists or {}).get(side))
                     scene.draw(side, display)
@@ -236,7 +329,7 @@ def run(args):
                 if cv2 is not None:
                     image = source.last_bgr.copy()
                     for i, side in enumerate(sides):
-                        cv2.putText(image, f"{side}: {displays[side].state} | 1:1 | R align | Q exit",
+                        cv2.putText(image, f"{side}: {displays[side].state} | dex={fingers.states[side]['state']} | R align | Q exit",
                                     (10, 25 + 25 * i), cv2.FONT_HERSHEY_SIMPLEX, .55, (0, 220, 255), 1)
                     cv2.imshow("Wrist input (unmirrored)", image)
                     key = cv2.waitKey(1) & 255
@@ -254,7 +347,8 @@ def run(args):
         args.report.parent.mkdir(parents=True, exist_ok=True)
         with args.report.open("x", encoding="utf-8") as stream:
             json.dump({"entry": "wrist_viewer", "source": args.source, "gain": 1.,
-                "smoothing": False, "robot": None, "ik": False, "frames": processed,
+                "smoothing": False, "robot": "isolated_l21", "arm_ik": False,
+                "finger_ik": fingers.summary(), "frames": processed,
                 "sides": {s: d.snapshot() for s, d in displays.items()},
                 "history_capacity": history.maxlen, "history": list(history)}, stream, indent=2)
         print(f"report written: {args.report}", flush=True)
