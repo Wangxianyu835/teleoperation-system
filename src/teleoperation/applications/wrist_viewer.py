@@ -309,7 +309,11 @@ def run(args):
             while scene.alive() and (not args.frames or processed < args.frames):
                 tick = time.monotonic()
                 try:
-                    frame = source.next_observation()
+                    # Camera defaults to omitting world_hands from its public
+                    # observation; dex needs the metric points explicitly.
+                    frame = (source.next_observation(include_world=True)
+                             if args.source == "camera" and not args.input_npz
+                             else source.next_observation())
                 except StopIteration:
                     break
                 scene.apply_fingers(fingers.update(frame))

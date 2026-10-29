@@ -69,4 +69,5 @@ VR 使用已有 `DexInputAdapter('visionpro')` 的专用左右侧处理；不将
 本轮按用户要求不运行测试套件、不打开设备，不启动额外审查。只做语法和 `--help` 检查；真人显示效果待用户验收。
 
 五指版本修改前提交 `4860b1d924d3fb9ef12056206f2e53bfb575d3ff`，检查点 `checkpoint-20261029-2306-dex-wrist-hand`。
+现场修正：查看器的相机调用显式请求 `include_world=True`，避免公开接口默认省略 world_hands 导致 dex 拒绝输入；VR 和 NPZ 回放沿用各自的观测接口。修正前提交 `e394a5c`，检查点 `checkpoint-20261029-2310-viewer-world-input`。本轮只做语法检查，未运行设备或测试套件。
 新增 `wrist_dex.py` 仅组合已存在的源专用适配器和 NativeVectorSolver；未改动其数值求解算法。腕旋转始终独立于手指优化，R 只重置腕零位。
