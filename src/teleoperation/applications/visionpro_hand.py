@@ -63,10 +63,14 @@ def run(args):
               for side in routes}
     processed = angle_frames = missing = 0
     previous_timestamp = None
+    previous_tick = None
     started = time.monotonic()
     with ExitStack() as resources:
         scene = build_scene(args, tuple(routes))
         resources.callback(scene.close)
+        from teleoperation.simulation.wrist_control import vr_arm_controller
+        wrist_control = vr_arm_controller(scene, routes)
+        wrist_report = None
         commands = build_hand_commands(args, scene, tuple(routes))
         if hasattr(scene, "frame_scene"):
             scene.frame_scene(args.view)
@@ -93,12 +97,17 @@ def run(args):
                     observation = source.next_observation()
                 except StopIteration:
                     break
-                timestamp = float(observation.timestamp) if observation is not None else tick
+                timestamp = float(observation.timestamp) if observation is not None else time.time()
                 if args.input_h5:
                     if not np.isfinite(timestamp) or (previous_timestamp is not None and timestamp <= previous_timestamp):
                         raise ValueError("VR recording timestamps must be finite and strictly increasing")
-                    previous_timestamp = timestamp
+                wrist_dt = ((1/30 if previous_timestamp is None else timestamp - previous_timestamp)
+                            if args.input_h5 else (1/30 if previous_tick is None else tick - previous_tick))
+                if wrist_control is not None:
+                    wrist_control.apply_vr(observation, wrist_dt)
                 window = pipeline.process_window(observation)
+                previous_timestamp = timestamp
+                previous_tick = tick
                 records, any_valid = {}, False
                 for side, source_side in routes.items():
                     input_valid = pipeline.current_hands[source_side] is not None
@@ -127,11 +136,16 @@ def run(args):
                 angle_frames += int(any_valid)
                 missing += int(not any_valid)
                 scene.step()
+                if wrist_control is not None:
+                    wrist_control.record()
                 if args.fps:
                     time.sleep(max(0., 1 / args.fps - (time.monotonic() - tick)))
         except KeyboardInterrupt:
             print("VR capture stopped.", flush=True)
+        if wrist_control is not None:
+            wrist_report = wrist_control.summary()
     report = {"entry": "visionpro_hand", "upstream": "TransHandR/main_visionpro_realtime.py",
+              "wrists": wrist_report,
               "source_hand": source_hand, "target_hand": args.hand,
               "hand_mapping": mapping or "upstream_single", "routes": routes,
               "sides": counts, "output_h5": None if output_h5 is None else str(output_h5),
@@ -148,7 +162,8 @@ def run(args):
     print(f"VR frames={processed} output_frames={angle_frames} missing/warmup={missing} sides={counts}", flush=True)
     if output_h5 is not None:
         print(f"VR per-frame results: {output_h5}", flush=True)
-    return 0 if angle_frames else 1
+    wrist_applied = wrist_report is not None and any(wrist_report["applied_frames"].values())
+    return 0 if angle_frames or wrist_applied else 1
 
 
 def main(args=None):

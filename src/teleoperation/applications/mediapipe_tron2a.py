@@ -424,7 +424,7 @@ def run_camera(args):
             if teleoperator is not None:
                 command = teleoperator.update(raw, control_seconds=seconds)
             else:
-                controller.update(raw.upper_body, seconds)
+                controller.update(raw.upper_body, seconds, raw.hands.wrists)
             controlled = time.perf_counter()
             if teleoperator is not None:
                 world.apply(command)

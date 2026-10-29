@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 import numpy as np
+from .wrist import WristObservation
 
 
 @dataclass(frozen=True)
@@ -19,8 +20,13 @@ class RawHandFrame:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     geometry_encoding: Mapping[str, str] = field(default_factory=dict)
     world_hands: dict[str, np.ndarray | None] | None = None
+    wrists: dict[str, WristObservation] | None = None
 
     def __post_init__(self):
+        if self.wrists is not None:
+            for side, wrist in self.wrists.items():
+                if side not in ("left", "right") or not isinstance(wrist, WristObservation):
+                    raise ValueError("wrists must map left/right to WristObservation")
         for side in ("left", "right"):
             if side not in self.hands:
                 raise KeyError(f"RawHandFrame missing {side}")

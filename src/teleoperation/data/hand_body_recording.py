@@ -165,6 +165,8 @@ def write_hand_body_recording(
             )
             h5_file.create_dataset("pose_visibility", data=visibility)
             h5_file.attrs.update(attributes)
+            from teleoperation.inputs.wrist import write_wrist_datasets
+            write_wrist_datasets(h5_file, rows, timestamps)
     return destination
 
 

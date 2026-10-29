@@ -1051,7 +1051,7 @@ class PyBulletArmIK:
         target_orientation = None
         pose_error = position_error = None
         fallback = False
-        if self.ik_mode == "pose":
+        if self.ik_mode == "pose" or orientation is not None:
             if warm_start:
                 self._teleport(side, solution)
                 if orientation is not None:
@@ -1075,7 +1075,7 @@ class PyBulletArmIK:
         elif warm_start:
             self._teleport(side, solution)
             solution = self._ik_call(side, world, None, arguments)
-        if elbow_world is not None and elbow_pass == "last":
+        if elbow_world is not None and elbow_pass == "last" and orientation is None:
             self._teleport(side, solution)
             solution = self._ik_call2(side, world, elbow_world, arguments)
         self._sequence_details = {
@@ -1161,8 +1161,9 @@ class PyBulletArmIK:
         neutral-relative framing the bridge emits (see ``arm_realtime.py``).  That is
         what makes one operator target usable by all three robots without a hand-eye
         calibration, because the joint axis convention cancels in the relative
-        rotation.  Position-only profiles (``ik_mode="position"``) ignore it either
-        way.
+        rotation. Explicit orientation targets also enable the pose pass for
+        position-only profiles. The input-wrist controller supplies absolute
+        world targets after source-space alignment instead of this legacy mode.
 
         ``posture`` (= ``{joint name: angle}``) replaces the null-space reference for
         this call only (see ``_rest_poses``).  That is what makes the elbow / upper arm
@@ -1216,7 +1217,7 @@ class PyBulletArmIK:
             solution, target_orientation = self._ik_sequence(
                 side, world, elbow_world, orientation, arguments, elbow_pass, warm_start)
             details = dict(self._sequence_details)
-            if elbow_world is not None:
+            if elbow_world is not None and orientation is None:
                 original_solution = solution
                 solution = self._recover_elbow_branch(
                     side, solution, world, elbow_world, orientation, arguments,
@@ -1229,6 +1230,27 @@ class PyBulletArmIK:
                 self.p.resetJointState(self.body, index, position_before,
                                        targetVelocity=velocity_before,
                                        physicsClientId=self.cid)
+        if orientation is not None:
+            previous = {i: q for i, (q, _v) in saved}
+            rejection = "pose_position_conflict" if details.get("position_fallback") else None
+            largest_step = 0.
+            for index, _name in self.arm[side]:
+                k = self.position_of[index]
+                value = solution[k]
+                if not np.isfinite(value) or not self.limits["lower"][k] - 1e-5 <= value <= self.limits["upper"][k] + 1e-5:
+                    rejection = "nonfinite_or_limit"
+                largest_step = max(largest_step, abs(value - previous[index]))
+            if rejection:
+                solution = [previous[index] for index in self.indices]
+            elif largest_step > .35:
+                # Bound a branch-sized step without permanently rejecting an
+                # otherwise reachable target on every subsequent frame.
+                fraction = .35 / largest_step
+                solution = [previous[i] + fraction * (value - previous[i])
+                            for i, value in zip(self.indices, solution)]
+                details["wrist_joint_step_scaled"] = fraction
+            details["wrist_rejection"] = rejection
+            details["wrist_pose_requested"] = True
         self.last_target_world[side] = world
         self.last_orientation[side] = target_orientation
         self.last_solve[side] = details
@@ -1275,12 +1297,12 @@ class PyBulletArmIK:
         return 1000.0 * sum((position[axis] - float(target[axis])) ** 2
                             for axis in range(3)) ** 0.5
 
-    def orientation_error_deg(self, side: str, target_quaternion=None) -> float:
+    def orientation_error_deg(self, side: str, target_quaternion=None) -> float | None:
         """Angle (deg) between the commanded orientation and the measured one."""
         target = (self.last_orientation.get(side) if target_quaternion is None
                   else target_quaternion)
         if target is None:
-            return 0.0
+            return None
         _position, measured = self.measure(side)
         difference = self.p.getDifferenceQuaternion(measured, target)
         return degrees(2.0 * acos(min(1.0, abs(float(difference[3])))))

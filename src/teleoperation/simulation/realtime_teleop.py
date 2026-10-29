@@ -245,7 +245,7 @@ class CameraFrameSource:
         else:
             raw = self._input.next_observation(include_world=True)
             self.last_observation = None
-        raw_frame = {**raw.hands, "timestamp": raw.timestamp,
+        raw_frame = {**raw.hands, "timestamp": raw.timestamp, "wrists": raw.wrists,
                      "metadata": dict(raw.metadata)}
         self.last_raw_frame = raw_frame
         if raw.world_hands is not None:
@@ -345,6 +345,17 @@ class ReplayFrameSource:
             raw_frame["metadata"]["world_invalid_reasons"] = world_missing
         self.last_raw_frame = raw_frame
         self._arms = arms
+        from teleoperation.inputs.wrist import camera_wrists
+        raw_frame["wrists"] = camera_wrists(
+            {side: raw_frame.get("world_" + side) for side in SIDES}, timestamp)
+        if "wrist_reference_frame" in self.data:
+            from teleoperation.inputs.wrist import recorded_camera_wrist
+            for side in SIDES:
+                key = side + "_wrist_orientation_xyzw"
+                if key in self.data:
+                    raw_frame["wrists"][side] = recorded_camera_wrist(
+                        self.data[key][index], timestamp,
+                        str(self.data["wrist_reference_frame"]), str(self.data["wrist_local_frame"]))
         diagnostics = getattr(self, "diagnostics", None)
         with (nullcontext() if diagnostics is None else diagnostics.stage("hand_preprocessing")):
             return self.pipeline.process_window(raw_frame)
@@ -394,16 +405,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="drive only these robots (repeatable; default: all three)")
     parser.add_argument("--no-arms", action="store_true",
                         help="baseline behaviour: drive the hands only, arms stay held")
-    parser.add_argument("--arm-orientation", choices=("off", "auto", "on"), default="off",
-                        help="auto = keep the orientation constraint where the profile has one "
-                             "(h1_2 only); off = position-only for every robot (default since "
-                             "2026-10-13); on = force the constraint. Measured on a 1560 frame "
-                             "live recording, same input, only this flag changed: h1_2 wrist "
-                             "residual 95.8 / 133.3 mm -> 17.1 / 3.9 mm, orientation error "
-                             "46.0 / 46.4 deg -> 1.5 / 0.4 deg, shoulder yaw travel 322.4 / "
-                             "235.5 deg -> 209.6 / 68.7 deg (the 3-point wrist frame flips its "
-                             "elbow-plane normal: 4-7%% of frames command a >60 deg step, max "
-                             "~178 deg). g1 / gr1_t2 are position-only either way")
+    # Accepted only so existing launcher argument lists still parse. Wrist
+    # observations now drive orientation automatically; no enable switch.
+    parser.add_argument("--arm-orientation", choices=("off", "auto", "on"), default="auto",
+                        help=argparse.SUPPRESS)
     parser.add_argument("--arm-elbow-follow", choices=("off", "operator"), default="off",
                         help="null-space posture reference for the arm IK. 'off' (default) = the "
                              "historical behaviour: the build-time neutral, or --arm-rest-poses. "
@@ -795,6 +800,9 @@ def _record_frame(dumped, raw_frame, arms) -> None:
         dumped["world"][side].append(np.full((21, 3), np.nan, dtype=np.float32)
                                      if world is None
                                      else np.asarray(world, dtype=np.float32))
+        wrist = ((raw_frame or {}).get("wrists") or {}).get(side)
+        dumped.setdefault("wrist", {s: [] for s in SIDES})[side].append(
+            wrist.orientation_xyzw if wrist is not None and wrist.orientation_valid else np.full(4, np.nan))
         dumped["arm"][side].append(np.full((3, 3), np.nan, dtype=np.float32)
                                    if arm is None
                                    else np.asarray(arm, dtype=np.float32))
@@ -809,6 +817,10 @@ def _save_dump(path, dumped) -> Path:
     np.savez_compressed(
         target,
         timestamps=np.asarray(dumped["timestamps"], dtype=np.float64),
+        wrist_reference_frame="mediapipe_hand_world_axes",
+        wrist_local_frame="palm_wrist_index_middle_v1",
+        left_wrist_orientation_xyzw=np.asarray(dumped["wrist"]["left"]),
+        right_wrist_orientation_xyzw=np.asarray(dumped["wrist"]["right"]),
         left_hand=np.stack(dumped["hand"]["left"]),
         right_hand=np.stack(dumped["hand"]["right"]),
         world_left_hand=np.stack(dumped["world"]["left"]),
@@ -923,6 +935,8 @@ def run(args) -> int:
         args.backend, checkpoint, args.device, args.calibration_frames,
         args.smoothing, args.landmark_space, **dex_options)
     scene = camera = preview = driver = bridge = diagnostics = None
+    wrist_control = None
+    wrist_summary = None
     fixed_slew_m = None
     arm_failures = {}
     processed = 0
@@ -1063,7 +1077,7 @@ def run(args) -> int:
                 [profiles[name] for name in robots], sides=sides, axis_map=axis_map,
                 calibration_frames=args.arm_calibrate_frames,
                 calibrate_mode=args.arm_calibrate_mode,
-                orientation=args.arm_orientation, gains=gains,
+                orientation="off", gains=gains,
                 max_travel_m=(None if args.arm_travel_mm is None
                               else float(args.arm_travel_mm) / 1000.0),
                 travel_mode=args.arm_travel_mode,
@@ -1077,9 +1091,11 @@ def run(args) -> int:
                                else args.arm_posture_frame),
                 max_direction_rate_deg_s=args.arm_direction_rate_deg_s,
                 anchors=robot_anchors)
+            from teleoperation.simulation.wrist_control import WristSceneController
+            wrist_control = WristSceneController(driver, axis_map.matrix())
             print(f"arms: {', '.join(robots)} | ik_mode "
                   f"{({name: profiles[name].ik_mode for name in robots})} | "
-                  f"orientation {args.arm_orientation} | travel limit "
+                  f"orientation input wrist (automatic) | travel limit "
                   f"{bridge.travel_limits()} m ({args.arm_travel_mode}) | "
                   f"lateral guard {args.arm_lateral_guard_mm} mm | "
                   f"neutral mode {args.arm_calibrate_mode} | "
@@ -1187,7 +1203,7 @@ def run(args) -> int:
                 with (nullcontext() if diagnostics is None else diagnostics.stage("arm_mapping")):
                     targets = bridge.update(arms_world=camera.arms(), hands=raw_frame,
                                             frame_dt=frame_dt)
-                orientation_by_side = bridge.orientation_target()
+                orientation_by_side = wrist_control.update((raw_frame or {}).get("wrists"), frame_dt)
                 # 「肘跟手」（``--arm-elbow-follow operator``）：操作者这一帧的肘弯（绝对角）。
                 # 与姿态口径同一个理由单独取一份（这一项机器人无关），缺数据的那一侧是 None，
                 # 于是那一侧如实退回历史行为（不猜、不保持一个假姿势）。
@@ -1225,15 +1241,13 @@ def run(args) -> int:
                                    if (getattr(target, "info", None) or {}).get(
                                        "posture_frame") == "delta" else None)
                             for name, target in per_side.items()}
-                    orientation = {name: target.orientation for name, target in per_side.items()}
+                    orientation = orientation_by_side[side]
                     try:
-                        # orientation 是**相对中性**的四元数（同一份给三台，各自乘自己的
-                        # 中性 EE 朝向 —— orientation_frame="neutral" 就是这件事）。
-                        # 取自 bridge.orientation_target()：不能从某一台的 target 里挑，
-                        # 那样会挑到 position-only 的那台（None，姿态被静默丢掉）。
+                        # Each robot receives an absolute world orientation from
+                        # the input wrist's spatial delta and its own alignment pose.
                         driver.apply_each(side, positions, source="base",
                                           orientation=orientation,
-                                          orientation_frame="neutral",
+                                          orientation_frame="absolute",
                                           elbows=elbows,
                                           elbow_rigid=rigid,
                                           elbow_bend_baseline=bend_baseline,
@@ -1247,6 +1261,7 @@ def run(args) -> int:
                 scene.steps_per_frame = simulation_clock.next_steps()
                 with (nullcontext() if diagnostics is None else diagnostics.stage("physics")):
                     driver.step(1)
+                wrist_control.record()
             else:
                 scene.steps_per_frame = simulation_clock.next_steps()
                 with (nullcontext() if diagnostics is None else diagnostics.stage("physics")):
@@ -1258,9 +1273,13 @@ def run(args) -> int:
                 body = camera.arms()
                 # 不在这里挑手臂点：arm_preview.update() 自己把形状不对 / 含 NaN 的一侧
                 # 当作"没有"（与桥的丢帧保持同口径），这里只负责把 None 原样传下去。
+                wrist_lines = arm_lines(bridge, sides)
+                if wrist_control is not None:
+                    for side in sides:
+                        wrist_lines[side] = wrist_lines.get(side, "") + " wrist=" + wrist_control.trackers[side].status
                 preview.update(raw_frame, latest, arm_hud(bridge, driver, targets),
                                arms=None if body is None else body.arms,
-                               lines=arm_lines(bridge, sides))
+                               lines=wrist_lines)
                 if diagnostics is not None:
                     diagnostics.record_ms("preview", (time.perf_counter() - preview_started) * 1000)
             if diagnostics is not None:
@@ -1287,6 +1306,7 @@ def run(args) -> int:
         arm_posture = {} if driver is None else driver.posture_summary()
         arm_gap = {} if driver is None else driver.forearm_gap_summary()
         arm_summary = None if driver is None else driver.summary()
+        wrist_summary = None if wrist_control is None else wrist_control.summary()
         # --arm-frame-dump 的数据也必须在这里读（to_base 要查基座位姿）：
         # 放在 finally 之后就是「断连后再问 PyBullet」，见 _collect_arm_frames 的说明。
         arm_frames = (None if (args.arm_frame_dump is None or driver is None)
@@ -1404,6 +1424,7 @@ def run(args) -> int:
         "arm_slew_mm_last_frame": (None if driver is None
                                    else round(1000.0 * driver.slew_m, 3)),
         "arm": arm_summary,
+        "wrists": wrist_summary,
         "arm_posture": arm_posture,
         "arm_forearm_gap_mm": arm_gap,
         "bridge": (None if bridge is None else bridge.summary()),

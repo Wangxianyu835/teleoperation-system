@@ -145,6 +145,8 @@ remain in MediaPipe's metre-based world space.
             "world_origin": "hand_geometric_center",
             **({"world_invalid_reasons": world_invalid_reasons} if world_invalid_reasons else {}),
         })
+    from teleoperation.inputs.wrist import camera_wrists
+    output["wrists"] = camera_wrists(world_hands, timestamp_ms)
     return output
 
 
@@ -243,8 +245,9 @@ class MediaPipeCameraInput:
 On failure both resources are released. VIDEO timestamps use the reference's
 wall-clock milliseconds, advanced by 1 ms only if the clock repeats or moves
 backward, to satisfy the landmarker's increasing-timestamp requirement.
-Set ``include_world=True`` to also return MediaPipe metre-based world landmarks
-under ``world_left`` and ``world_right``. Set ``include_pose=True`` to add the
+World landmarks and source-space wrist orientation are always retained for
+arm consumers. ``include_world`` remains accepted for compatibility.
+Set ``include_pose=True`` to add the
 shoulder/elbow/wrist subset and its metric pose-world copy.
 """
         if self._cap is None or self._landmarker is None:
@@ -268,7 +271,7 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
                 "image_width": int(frame.shape[1]),
                 "image_height": int(frame.shape[0]),
             }, invalid_hand_as_missing=self._invalid_hand_as_missing,
-               include_world=include_world)
+               include_world=True)
             if include_pose:
                 pose_result = self._pose_landmarker.detect_for_video(
                     mp_image, timestamp_ms
@@ -291,7 +294,7 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
 
     def next_observation(self, *, include_world: bool = False):
         from teleoperation.contracts.observations import RawHandFrame
-        raw = self.next_frame(include_world=include_world)
+        raw = self.next_frame(include_world=True)
         world_hands = None
         if include_world:
             world_hands = {
@@ -304,6 +307,7 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
             raw.get("metadata", {}),
             {"left": "landmarks21", "right": "landmarks21"},
             world_hands=world_hands,
+            wrists=raw.get("wrists"),
         )
 
     def close(self): self.release()
@@ -337,6 +341,7 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
             "mediapipe_approx", metadata,
             {side: "landmarks21" for side in sides},
             world_hands={side: raw[f"world_{side}"] for side in sides},
+            wrists=raw.get("wrists"),
         )
         body = UpperBodyObservation(
             {side: raw[f"{side}_arm_keypoints"] if valid[side] else None for side in sides},

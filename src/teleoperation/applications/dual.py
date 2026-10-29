@@ -35,10 +35,26 @@ class Tron2ADualArmController:
                     raise ValueError(f"{side} calibration reference does not match this URDF FK")
             self.controllers[side] = ArmSafetyController(spec, self.safe_q[side], calibration.max_acceleration, calibration.tracking_timeout)
         self.diagnostics = {}
+        from teleoperation.retargeting.arm.wrist_orientation import WristTracker
+        self.wrist_trackers = {s: WristTracker(calibration.rotation) for s in self.solvers}
+        self.wrist_initial = {}
+        self.wrist_generations = {}
+        self.wrist_times = {}
 
-    def update_side(self, body, side, timestamp):
+    def update_side(self, body, side, timestamp, wrist=None):
         target = self.arm_retargeter.update(body, side)
         solver, safety = self.solvers[side], self.controllers[side]
+        from scipy.spatial.transform import Rotation
+        tracker = self.wrist_trackers[side]
+        tracker.update(wrist, timestamp - self.wrist_times.get(side, timestamp - 1/30))
+        self.wrist_times[side] = timestamp
+        if tracker.neutral is not None:
+            if self.wrist_generations.get(side) != tracker.generation:
+                self.wrist_initial[side] = Rotation.from_matrix(solver.specification.robot.fkine(safety.q).A[:3, :3])
+                self.wrist_generations[side] = tracker.generation
+            pose = target.pose.copy()
+            pose[3:] = (tracker.delta * self.wrist_initial[side]).as_quat()
+            target = replace(target, pose=pose)
         in_workspace = bool(np.all(target.pose[:3] >= self.calibration.workspace_min)
                             and np.all(target.pose[:3] <= self.calibration.workspace_max))
         workspace_rejected = self.arm_retargeter.input_mode == "camera_world" and target.valid and not in_workspace
@@ -54,6 +70,7 @@ class Tron2ADualArmController:
                 success = position_error <= solver.position_tolerance and orientation_error <= solver.orientation_tolerance
         safety.update(result.q if success else None, success, timestamp)
         self.diagnostics[side] = dict(
+            wrist=tracker.summary(),
             observation_valid=bool(target.valid), ik_attempted=result is not None, ik_success=bool(success),
             ik_position_error_m=position_error, ik_orientation_error_rad=orientation_error,
             target_pose=target.pose.tolist(), orientation_held=self.arm_retargeter.orientation_held[side],
@@ -62,8 +79,8 @@ class Tron2ADualArmController:
         )
         return bool(success)
 
-    def update(self, body, timestamp):
-        return {side: self.update_side(body, side, timestamp) for side in ("left", "right")}
+    def update(self, body, timestamp, wrists=None):
+        return {side: self.update_side(body, side, timestamp, (wrists or {}).get(side)) for side in ("left", "right")}
 
 
 class DualTeleoperator:
@@ -131,7 +148,7 @@ class DualTeleoperator:
         self.hand_processing_seconds = time.perf_counter() - started
         arm_valid, hand_valid = {}, {}
         for side in ("left", "right"):
-            arm_valid[side] = self.arms.update_side(observation.upper_body, side, timestamp)
+            arm_valid[side] = self.arms.update_side(observation.upper_body, side, timestamp, (observation.hands.wrists or {}).get(side))
             predicted = hand_output[side]
             hand_valid[side] = predicted is not None
             if hand_valid[side]:

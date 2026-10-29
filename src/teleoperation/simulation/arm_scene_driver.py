@@ -551,7 +551,8 @@ class ArmSceneDriver:
     def orientation_errors_deg(self, sides=None) -> dict:
         """``{robot: {side: deg}}``: commanded vs measured wrist orientation."""
         return self._per_side(
-            lambda adapter, side: round(adapter.orientation_error_deg(side), 2), sides)
+            lambda adapter, side: (None if adapter.last_orientation.get(side) is None
+                                   else round(adapter.orientation_error_deg(side), 2)), sides)
 
     def _per_side(self, measure, sides=None) -> dict:
         wanted = self.sides if sides is None else tuple(sides)

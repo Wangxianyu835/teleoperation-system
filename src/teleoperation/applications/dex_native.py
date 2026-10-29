@@ -275,6 +275,9 @@ def visionpro_run(args):
     counts={"/".join(k):{"input_valid":0,"solved":0} for k in retargeter.models}
     timings={"capture":[],"preprocessing":[],"solve":[],"command":[],"render":[]}
     processed, previous_time, stopped = 0, None, "finished"
+    wrist_report = {}
+    wrist_control = None
+    previous_tick = None
     started=time.monotonic()
     try:
         with ExitStack() as resources:
@@ -282,6 +285,9 @@ def visionpro_run(args):
             resources.callback(scene.close)
             if len(scene.robots)!=3:
                 raise ValueError("Native VR requires all three robot assets")
+            from teleoperation.simulation.wrist_control import vr_arm_controller
+            wrist_control = vr_arm_controller(scene, {s: s for s in sides})
+            resources.callback(lambda: wrist_report.update(wrist_control.summary()))
             source=(iter_dex_observations(args.input_h5,"visionpro") if args.input_h5 else VisionProInput(args.ip,args.hand))
             resources.callback(source.close)
             writer=None
@@ -304,6 +310,10 @@ def visionpro_run(args):
                         geometry_encoding={s:"transforms25" for s in sides})
                 if previous_time is not None and raw.timestamp<=previous_time:
                     raise ValueError("VR timestamps must strictly increase")
+                wrist_dt = ((1/30 if previous_time is None else raw.timestamp-previous_time)
+                            if args.input_h5 else (1/30 if previous_tick is None else tick-previous_tick))
+                wrist_control.apply_vr(raw, wrist_dt)
+                previous_tick = tick
                 stamp=time.monotonic()
                 frame=adapter.adapt(raw)
                 timings["preprocessing"].append((time.monotonic()-stamp)*1000)
@@ -323,6 +333,7 @@ def visionpro_run(args):
                 dt=1/30 if previous_time is None else min(.1,raw.timestamp-previous_time)
                 scene.steps_per_frame=max(1,round(dt*240))
                 scene.step()
+                wrist_control.record()
                 timings["render"].append((time.monotonic()-stamp)*1000)
                 previous_time=raw.timestamp
                 processed+=1
@@ -331,6 +342,7 @@ def visionpro_run(args):
     except KeyboardInterrupt:
         stopped="interrupted"
     report={"backend":"dex","source":"visionpro","profile":calibration.profile,"frames":processed,
+        "wrists": wrist_report,
         "elapsed_seconds":time.monotonic()-started,"stopped":stopped,"hands":counts,
         "commands":commands.summary(),"source_queue":"get_latest, no accumulated frame queue",
         "timings_ms":{k:{"mean":float(np.mean(v)) if v else None,"p95":float(np.percentile(v,95)) if v else None} for k,v in timings.items()},
@@ -340,4 +352,4 @@ def visionpro_run(args):
         with args.report.open("x",encoding="utf-8") as stream:
             json.dump(report,stream,indent=2)
     print(f"Native VR frames={processed} hands={counts}")
-    return 0 if any(v["solved"] for v in counts.values()) else 1
+    return 0 if any(v["solved"] for v in counts.values()) or any(wrist_report.get("applied_frames", {}).values()) else 1

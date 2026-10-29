@@ -420,6 +420,7 @@ if (-not (Test-Path $poseAsset)) { throw "缺少 Pose 模型：$poseAsset" }
 方向路线已完成六条手臂的离线回放与诊断检查。
 真人摄像头效果仍需复测。
 验收范围见[双臂诊断与验收](docs/arm-diagnostics.md)。
+相机与 VR 的腕朝向现由输入层提供并自动传给手臂后端；初始对齐、启动命令及待执行的人体验收清单见[腕输入与验收](docs/wrist-input-and-acceptance.md)。本轮未运行自动测试或现场设备验收。
 参数适配与旧 NPZ 回放行为见[分支整合记录](docs/branch-integration-2026-10-27.md)。
 
 ### 4.4 使用 dex-retargeting 直接驱动原装手（可选）
@@ -574,6 +575,7 @@ VR 入口只控制手部，不生成肩、肘数据。
 | 输出滤波、限速与碰撞检查范围 | [手部输出说明](docs/hand-command-safety.md) |
 | 模块职责与依赖关系 | [架构说明](docs/architecture.md) |
 | 双臂离线验收与已测失败项 | [双臂诊断与验收](docs/arm-diagnostics.md) |
+| 相机 / VR 腕朝向、初始对齐与人工验收清单 | [腕输入与验收](docs/wrist-input-and-acceptance.md) |
 | hand_capture 与双臂分支迁移记录 | [分支整合记录](docs/branch-integration-2026-10-27.md) |
 | 项目进展演示 | [演示材料](present/README.md) |
 
