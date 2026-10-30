@@ -2,6 +2,12 @@
 
 日期：2026-10-30。状态：供用户评审，尚未实施。
 
+## 文档规则
+
+用户指定的规范是 ASD-STE100。该规范用于受控英语技术写作，不规定软件架构。本文使用中文，并采用其清晰写作原则：固定术语；使用主动语态；每条操作只描述一个动作；写明输入、输出和通过条件。本文不声明通过 ASD-STE100 英文词典或全文合规检查。
+
+术语固定如下：SMPLer-X 是图像估计模型；SMPL-X 是参数化人体模型；手臂输入包括肩肘腕位置和腕朝向；手指输入包括现有手部关键点；旧录制是已有的 H5/NPZ 文件。
+
 ## 需求与边界
 
 用户要求将 SMPLer-X 接入现有工程，删除 MediaPipe 驱动机械臂的代码，由 SMPLer-X 替代。背景问题是单相机自遮挡、肩肘腕估计误差和跳变造成机械臂抖动。
@@ -13,6 +19,8 @@
 - 本次替换感知输入，并为遮挡、过期结果、恢复加入时序处理；现有重定向/IK 后端先保留。dex 风格机械臂向量优化作为后续独立改动，便于归因性能差异。
 - 旧 MediaPipe 录制文件允许显式回放与对比，保留原始来源标签；不是实时回退后端。新相机机械臂不再加载或调用 PoseLandmarker。
 
+本次计划不创建或依赖新的本机启动脚本。用户当前从 `teleoperation` 环境运行工程。仓库内的历史 launcher 不是本机启动方式的证据。修改现有模块入口和 CLI 即可接入新模型。
+
 ## 现状与风险
 
 基线：`84af227fa881d2fb15bfdc5f8e94615e3619e39e`；检查点：`checkpoint-20261030-1336-smplerx-arm-plan`。
@@ -22,6 +30,8 @@
 `applications/arm_validation.py` 默认使用旧 chain 路线，没有复用实时入口的独立腕控制；必须改为与当前控制路径一致，不能用旧验收替代新路线验收。
 
 实机预检记录：RTX 4050 Laptop，6 GB 显存；内存约 31.6 GiB；主环境 PyTorch 2.14.1+cu130，CUDA 可用。未加载 SMPLer-X，无显存峰值和实时帧率证据。
+
+2026-10-30 的本机环境复核见 [环境核查](../../smplerx-environment-audit-2026-10-30.md)。主环境解释器是 `D:/Anaconda/envs/teleoperation/python.exe`。主环境和 dex 环境的 `pip check` 均通过，已检查的主要模块均可导入。主环境 NumPy 2.2.6 与 `environment.yml` 的 1.26.4、`requirements-retargeting.txt` 的 `<2` 不一致。dex 使用 `.venv/dex-native`，并通过 `.pth` 加载 `.venv/dex-pin-bundle`。两个路径同时暴露不同版本的 SciPy 元数据，当前实际导入 1.13.1。这些是重建风险，不能由 `pip check` 排除。
 
 ## 方案选择
 
@@ -49,6 +59,8 @@ SMPL-X 局部旋转沿骨架计算全局朝向；关节取同一次模型计算�
 
 腕观测标记为 `smplx_camera_axes` / `smplx_wrist_local`。保留通用 WristObservation 字段，局部人体腕轴到机器人工具轴通过中性对齐处理。相机手臂消费者只读取新腕来源；手指原始腕诊断可保留并独立标记。
 
+`RawTeleopObservation` 增加可选的 `wrists` 字段，默认 `None`。新相机入口把 SMPL-X 腕写入此字段。`RawHandFrame.wrists` 仍表示原手部来源，不覆盖为 SMPL-X 数据。机器人相机腕控制只读取组合观测的新字段。VR 和显式旧回放保留各自的来源分派。
+
 ## 连续性与遮挡
 
 统一输出 `calibrating / tracking / hold / lost_hold / reacquiring / fault` 状态。检查有限值、人体检测状态、骨段退化、样本时间、姿态/骨段变化与追踪状态差异。SMPLer-X 没有对应可靠可见性时不伪造 visibility=1 或置信概率。
@@ -59,10 +71,23 @@ SMPL-X 局部旋转沿骨架计算全局朝向；关节取同一次模型计算�
 
 ## 兼容性与删除
 
+“保留手指、VR 和旧录制的兼容接口”的具体含义如下。
+
+| 对象 | 保留的能力 | 与新手臂输入的关系 |
+|---|---|---|
+| 手指 | MediaPipe Hands 检测、现有 NN/dex 手指处理、HandWindow 和关节结果接口 | Hands 只驱动手指；它的腕点和掌朝向不再驱动新相机手臂 |
+| VR | Vision Pro / TransHandR 输入格式、数值处理和设备入口 | VR 继续直接提供原有观测，不经过 SMPLer-X |
+| 旧录制 | 明确指定来源后，读取或回放已有 H5/NPZ | 不重写文件，不改来源，不作为新模型推理结果 |
+| 旧标定 | 按原来源读取并用于旧数据 | 新 SMPL-X 输入必须生成新标定 |
+
+接口兼容不表示保存旧实时算法。旧 Pose 初始化、检测和驱臂代码会被删除。错误使用旧 Pose 参数时，入口只返回迁移说明。
+
 - 保持 RawHandFrame、UpperBodyObservation、RawTeleopObservation、HandWindow 既有调用可用；需要附加字段时使用可选默认值，不变更旧字段含义。
 - 新旧录制与标定按来源、版本分派；旧标定不能直接用于新输入，也不得通过改 metadata 冒充兼容。
 - 删除 PoseLandmarker 运行路径、专用实时参数与模型检查、手部位置兜底驱臂路径；废弃公共调用参数保留显式迁移错误信息，不能继续启动旧后端。
 - 保留旧录制读取、离线基线和必要的来源校验，不删除历史原始数据。
+
+TRON2A 当前在 `simulation/arm_profiles.py` 中仍为 `loadable=False`。本计划不把注册状态解释为已经可以从通用入口选择。新相机感知不依赖机器人型号，现有 TRON2A 专用服务使用同一新感知输入。将 TRON2A 完整接入通用机器人加载器需要单独完成资源、关节、末端和 FK 验证；不能仅改一个布尔值。
 
 ## 验收
 
@@ -73,6 +98,8 @@ S32 工程可用性的暂定目标：完整仿真与手指链路并行时，可�
 同一 RGB 视频比较静止抖动、跳变频次、遮挡错误动作、保持比例、有效跟随比例与恢复延迟。无三维真值时只报告稳定性与代理指标，不宣称真实三维精度提升；改善至少要求主要稳定性指标下降且覆盖率/延迟无不可接受退化，由验收报告呈现取舍。
 
 ## 参考
+
+- https://www.asd-ste100.org/about.html — 受控技术英语的适用范围。
 
 - https://github.com/MotrixLab/SMPLer-X — 模型、部署及 S32 配置。
 - https://github.com/MotrixLab/SMPLer-X/blob/main/main/SMPLer_X.py — 参数输出、局部/相对坐标处理。
