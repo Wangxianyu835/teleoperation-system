@@ -52,8 +52,10 @@ class CameraTeleopSource:
 
     def release(self):
         close_worker = getattr(self.smplerx_client, "close", None)
-        if close_worker is not None:
-            close_worker()
-        close = getattr(self.camera, "release", None)
-        if close is not None:
-            close()
+        try:
+            if close_worker is not None:
+                close_worker()
+        finally:
+            close = getattr(self.camera, "release", None)
+            if close is not None:
+                close()

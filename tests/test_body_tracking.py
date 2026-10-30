@@ -27,6 +27,24 @@ def make_result(sequence, capture_time, *, offset=0.0, left=True, right=True, ro
 
 
 class BodyTrackerTests(unittest.TestCase):
+    def test_waiting_and_held_samples_keep_source_contract(self):
+        tracker = BodyTracker()
+        waiting = tracker.update(None, now_s=1.)
+        self.assertEqual(waiting.body.metadata['source_coordinate_frame'], 'smplx_camera_root_relative_m')
+        tracker.update(make_result(1, 1.), now_s=1.)
+        held = tracker.update(None, now_s=1.1)
+        self.assertEqual(held.body.timestamp, 1.)
+        self.assertEqual(held.body.metadata['sample_sequence'], 1)
+        self.assertFalse(held.body.valid['left'])
+
+    def test_expiry_invalidates_body_and_wrist_without_discarding_hold_position(self):
+        tracker = BodyTracker()
+        tracker.update(make_result(1, 1.), now_s=1.)
+        held = tracker.update(None, now_s=1.501)
+        self.assertIsNotNone(held.body.world_arms['left'])
+        self.assertFalse(held.body.valid['left'])
+        self.assertFalse(held.wrists['left'].orientation_valid)
+
     def test_expired_source_stays_held(self):
         tracker = BodyTracker(max_age_s=.5)
         tracker.update(make_result(1, 0.0), now_s=0.0)

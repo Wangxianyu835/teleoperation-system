@@ -38,6 +38,20 @@ def result(session, sequence):
 
 
 class SmplerXProtocolTests(unittest.TestCase):
+    def test_duplicate_result_cannot_release_current_active_frame(self):
+        transport = FakeTransport()
+        client = SmplerXClient(transport, session_id='s')
+        rgb = np.zeros((2, 2, 3), dtype=np.uint8)
+        client.submit(result('s', 1).frame_id, rgb)
+        transport.incoming.append(result('s', 1))
+        client.poll()
+        client.submit(result('s', 2).frame_id, rgb)
+        transport.incoming.append(result('s', 1))
+        with self.assertRaises(PacketError):
+            client.poll()
+        client.submit(result('s', 3).frame_id, rgb)
+        self.assertEqual(len(transport.sent), 2)
+
     def test_packet_reader_accepts_fragmented_json_frame_and_arrays_are_explicit(self):
         packet = encode_packet("result", {"sample": result("s", 1)})
         reader = PacketReader()

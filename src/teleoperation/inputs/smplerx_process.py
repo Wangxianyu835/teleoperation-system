@@ -8,9 +8,21 @@ the worker exits or fails.
 from __future__ import annotations
 
 import queue
+import os
 import subprocess
 import threading
 from pathlib import Path
+from .smplerx import MAX_PACKET_BYTES, PacketError
+
+
+def _read_exact(stream, count):
+    chunks = bytearray()
+    while len(chunks) < count:
+        part = stream.read(count - len(chunks))
+        if not part:
+            break
+        chunks.extend(part)
+    return bytes(chunks)
 
 
 class SmplerXWorkerTransport:
@@ -31,6 +43,9 @@ class SmplerXWorkerTransport:
         self._results: queue.Queue[bytes | BaseException] = queue.Queue()
         self._closed = False
         self.stderr_lines: list[str] = []
+        worker_env = dict(os.environ)
+        src_path = str(Path(__file__).resolve().parents[2])
+        worker_env['PYTHONPATH'] = src_path + os.pathsep + worker_env.get('PYTHONPATH', '')
         self._process = subprocess.Popen(
             [str(self.worker_python), str(self.worker_script),
              "--smplerx-root", str(self.smplerx_root),
@@ -38,7 +53,7 @@ class SmplerXWorkerTransport:
              "--body-model-dir", str(self.body_model_dir),
              "--model", self.model],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=str(self.smplerx_root), bufsize=0,
+            cwd=str(self.smplerx_root), bufsize=0, env=worker_env,
         )
         self._stdout_thread = threading.Thread(target=self._read_stdout, name="smplerx-worker-stdout", daemon=True)
         self._stderr_thread = threading.Thread(target=self._read_stderr, name="smplerx-worker-stderr", daemon=True)
@@ -48,11 +63,15 @@ class SmplerXWorkerTransport:
     def _read_stdout(self):
         try:
             while True:
-                prefix = self._process.stdout.read(4)
+                prefix = _read_exact(self._process.stdout, 4)
                 if not prefix:
                     break
+                if len(prefix) != 4:
+                    raise PacketError('truncated packet prefix')
                 length = int.from_bytes(prefix, "big")
-                packet = prefix + self._process.stdout.read(length)
+                if length > MAX_PACKET_BYTES or length == 0:
+                    raise PacketError('invalid packet length')
+                packet = prefix + _read_exact(self._process.stdout, length)
                 if len(packet) != length + 4:
                     raise RuntimeError("SMPLer-X worker returned a truncated packet")
                 self._results.put(packet)

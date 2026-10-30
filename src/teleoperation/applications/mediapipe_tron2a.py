@@ -446,9 +446,8 @@ def run_camera(args):
             if (raw.upper_body.metadata.get("source") != "smplerx"
                     or raw.upper_body.metadata.get("source_coordinate_frame") != "smplx_camera_root_relative_m"
                     or raw.upper_body.metadata.get("source_units") != "m"
-                    or raw.upper_body.timestamp is None or not np.isfinite(raw.upper_body.timestamp)
                     or metadata.get("timestamp_unit") != "monotonic_s"
-                    or raw.upper_body.timestamp is None or not np.isfinite(raw.upper_body.timestamp)
+                    or (raw.upper_body.timestamp is not None and not np.isfinite(raw.upper_body.timestamp))
                     or raw.hands.timestamp is None or not np.isfinite(raw.hands.timestamp)):
                 raise ValueError("Camera observation source/units are not valid SMPL-X contracts")
             seconds = clock.next_seconds()

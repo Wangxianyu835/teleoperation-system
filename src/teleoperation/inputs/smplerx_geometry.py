@@ -94,6 +94,7 @@ def smplerx_observations(result: SmplerXResult) -> tuple[UpperBodyObservation, d
             "source_coordinate_frame": "smplx_camera_root_relative_m",
             "source_units": "m",
             "sample_sequence": result.frame_id.sequence,
+            "session_id": result.frame_id.session_id,
         },
     )
     return body, wrists

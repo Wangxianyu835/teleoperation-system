@@ -57,7 +57,7 @@ class ArmRetargeter:
         self.orientation_held[side] = self.orientation_mode == "forearm" and orientation is None
         if self.input_mode == "legacy" and self.orientation_held[side]:
             return ArmTargetPose(side, self._previous[side].copy(), False)
-        wrist = points[2]
+        wrist = points[2] - points[0] if self.input_mode == 'smplerx' else points[2]
         position = self.calibration.robot_neutral_pose[side][:3] + self.calibration.translation + self.calibration.rotation @ (self.calibration.scale * (wrist - self.calibration.human_neutral_wrist[side]))
         if self.input_mode == "legacy":
             position = np.clip(position, self.calibration.workspace_min, self.calibration.workspace_max)

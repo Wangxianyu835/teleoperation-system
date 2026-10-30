@@ -11,7 +11,9 @@ def run_worker(adapter, *, input_stream=None, output_stream=None) -> int:
     output_stream = output_stream or sys.stdout.buffer
     reader = PacketReader()
     while True:
-        chunk = input_stream.read(64 * 1024)
+        # BufferedReader.read(n) can wait for n bytes on a pipe. read1 returns
+        # an available frame fragment without waiting for the next request.
+        chunk = getattr(input_stream, 'read1', input_stream.read)(64 * 1024)
         if not chunk:
             return 0
         try:

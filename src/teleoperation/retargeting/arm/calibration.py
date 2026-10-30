@@ -187,6 +187,7 @@ class NeutralPoseCollector:
         self._last_time = None
         self._last_frame = None
         self._last_detection = None
+        self._session_id = None
         self.status = "waiting for both arms"
 
     @property
@@ -212,6 +213,14 @@ class NeutralPoseCollector:
         if source == "smplerx":
             frame = body_metadata.get("sample_sequence")
             detection = body.timestamp
+            if frame is None and not any(body.valid.values()):
+                self.status = 'waiting for a fresh SMPL-X sample'
+                return False
+            session_id = body_metadata.get('session_id')
+            if session_id != self._session_id:
+                self._clear('body session changed; restarting')
+                self._last_time = self._last_frame = self._last_detection = None
+                self._session_id = session_id
             if (not isinstance(frame, (int, np.integer)) or frame < 0
                     or detection is None or not np.isfinite(detection)):
                 raise ValueError("SMPL-X body requires a finite sample sequence and capture time")
@@ -221,21 +230,21 @@ class NeutralPoseCollector:
                 raise ValueError("Expected monotonic camera sample time")
         else:
             raise ValueError("Legacy MediaPipe Pose arm calibration is removed; use SMPL-X")
+        if self._last_frame is not None and frame <= self._last_frame:
+            # Cached polls cannot add calibration samples or clear a stable window.
+            return False
         if self._last_time is not None and (
             control_seconds - self._last_time > self.config.max_sample_gap
-            or frame != self._last_frame + 1 or detection <= self._last_detection
+            or detection <= self._last_detection
         ):
             self._clear("capture gap; restarting")
         self._last_time, self._last_frame, self._last_detection = control_seconds, frame, detection
-        visibility = np.ones(6, dtype=float)
         relative = {}
-        for side, indices in (("left", [0, 2, 4]), ("right", [1, 3, 5])):
+        for side in SIDES:
             points = None if body.world_arms is None else body.world_arms[side]
-            confidence = visibility[indices]
             if (not body.valid[side] or points is None or np.shape(points) != (3, 3)
-                    or not np.isfinite(points).all() or not np.isfinite(confidence).all()
-                    or np.any(confidence < self.config.min_visibility) or np.any(confidence > 1)):
-                self._clear(f"{side} arm invalid/low visibility")
+                    or not np.isfinite(points).all()):
+                self._clear(f"{side} arm invalid")
                 return False
             points = np.asarray(points, dtype=float)
             upper, forearm = points[1] - points[0], points[2] - points[1]
@@ -299,7 +308,7 @@ class NeutralPoseCollector:
                 "tool_offset_source": "neutral_forearm_alignment_to_reference_FK",
                 "hand_mount_source": "identity_placeholder_not_calibrated",
                 "notice": "Neutral capture estimates reference positions only; camera extrinsics and scale are not automatically calibrated. Shoulder-relative inputs are required before future retargeting.",
-                "sample_count": len(self.samples), "min_visibility": self.config.min_visibility,
+                "sample_count": len(self.samples),
                 "stability_tolerance_m": self.config.stability_tolerance,
                 "elbow_bend_degrees": [self.config.min_elbow_bend_degrees, self.config.max_elbow_bend_degrees],
                 "max_sample_gap_seconds": self.config.max_sample_gap,

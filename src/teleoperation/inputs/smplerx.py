@@ -158,6 +158,7 @@ class SmplerXClient:
         self._active = False
         self._pending: tuple[BodyFrameId, np.ndarray] | None = None
         self._last_sequence = -1
+        self._active_frame = None
 
     def submit(self, frame_id: BodyFrameId, rgb: np.ndarray) -> None:
         if frame_id.session_id != self.session_id:
@@ -177,6 +178,7 @@ class SmplerXClient:
         frame_id, rgb = sample
         self.transport.send(encode_packet("frame", {"frame_id": frame_id, "rgb": rgb}))
         self._active = True
+        self._active_frame = frame_id
 
     def poll(self) -> SmplerXResult | None:
         value = self.transport.poll()
@@ -191,8 +193,19 @@ class SmplerXClient:
             raise PacketError("worker result has an invalid type")
         if value.frame_id.session_id != self.session_id:
             raise PacketError("worker result belongs to an old session")
+        if value.frame_id != self._active_frame:
+            raise PacketError('worker result does not match the active frame')
         self._active = False
+        self._active_frame = None
         if self._pending is not None:
             pending, self._pending = self._pending, None
             self._send(pending)
         return value
+
+    def close(self):
+        self._pending = None
+        self._active = False
+        self._active_frame = None
+        close = getattr(self.transport, 'close', None)
+        if close is not None:
+            close()

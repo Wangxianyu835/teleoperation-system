@@ -49,6 +49,8 @@ class BodyTracker:
         self.rotation_jump_rad = float(rotation_jump_rad)
         self._session_id = None
         self._last_sequence = -1
+        self._metadata = {'source': 'smplerx', 'source_coordinate_frame': 'smplx_camera_root_relative_m',
+                          'source_units': 'm'}
         self._accepted_arms = {side: None for side in SIDES}
         self._accepted_world = {side: None for side in SIDES}
         self._accepted_wrists = {side: None for side in SIDES}
@@ -68,10 +70,10 @@ class BodyTracker:
     def _empty_body(self, timestamp=None) -> UpperBodyObservation:
         return UpperBodyObservation(
             {side: self._accepted_arms[side] for side in SIDES},
-            {side: self._accepted_arms[side] is not None for side in SIDES},
+            {side: self._accepted_arms[side] is not None and self._state[side] == 'tracking' for side in SIDES},
             timestamp=timestamp, coordinate_frame="smplx_image_normalized", units="normalized",
             world_arms={side: self._accepted_world[side] for side in SIDES},
-            metadata={"source": "smplerx", "tracking": True},
+            metadata={**self._metadata, 'tracking': True, 'tracking_state': dict(self._state)},
         )
 
     def _emit(self, now_s: float, *, timestamp=None, fresh=None) -> TrackedBody:
@@ -83,8 +85,10 @@ class BodyTracker:
                 self._state[side] = "lost_hold"
                 self._reason[side] = "body sample expired"
         return TrackedBody(
-            self._empty_body(timestamp),
-            {side: self._accepted_wrists[side] or _invalid_wrist(self._reason[side]) for side in SIDES},
+            self._empty_body(timestamp if timestamp is not None else max(
+                (stamp for stamp in self._accepted_time.values() if stamp is not None), default=None)),
+            {side: (self._accepted_wrists[side] if self._state[side] == 'tracking'
+                    and self._accepted_wrists[side] is not None else _invalid_wrist(self._reason[side])) for side in SIDES},
             dict(self._state), dict(self._reason), dict(self._accepted_sequence), ages,
             {side: bool((fresh or {}).get(side, False)) for side in SIDES},
         )
@@ -144,6 +148,7 @@ class BodyTracker:
         self._last_sequence = result.frame_id.sequence
         try:
             body, wrists = smplerx_observations(result)
+            self._metadata = dict(body.metadata)
         except (KeyError, TypeError, ValueError) as error:
             for side in SIDES:
                 self._state[side] = "fault"
