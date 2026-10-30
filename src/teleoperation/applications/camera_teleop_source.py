@@ -51,6 +51,9 @@ class CameraTeleopSource:
         return RawTeleopObservation(hands, tracked.body, tracked.wrists)
 
     def release(self):
+        close_worker = getattr(self.smplerx_client, "close", None)
+        if close_worker is not None:
+            close_worker()
         close = getattr(self.camera, "release", None)
         if close is not None:
             close()

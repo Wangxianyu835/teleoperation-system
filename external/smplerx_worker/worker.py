@@ -30,5 +30,17 @@ def run_worker(adapter, *, input_stream=None, output_stream=None) -> int:
 
 
 if __name__ == "__main__":
-    print("SMPLer-X adapter loading is required before starting the worker", file=sys.stderr)
-    raise SystemExit(2)
+    import argparse
+    from pathlib import Path
+    from adapter import SmplerXAdapter, SmplerXAssets
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--smplerx-root", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--body-model-dir", type=Path, required=True)
+    parser.add_argument("--model", default="s32", choices=("s32",))
+    options = parser.parse_args()
+    adapter = SmplerXAdapter(SmplerXAssets(options.smplerx_root, options.checkpoint,
+                                            options.body_model_dir, options.model))
+    adapter.load()
+    raise SystemExit(run_worker(adapter))

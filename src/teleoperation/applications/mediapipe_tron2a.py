@@ -1,4 +1,4 @@
-"""MediaPipe camera neutral calibration and TRON2A arms/hands simulation."""
+"""SMPLer-X camera neutral calibration and selected robot arms/hands simulation."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,6 +10,9 @@ import numpy as np
 from teleoperation.contracts.observations import RawTeleopObservation
 from teleoperation.data.calibration import write_calibration
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
+from teleoperation.inputs.smplerx import SmplerXClient
+from teleoperation.inputs.smplerx_process import SmplerXWorkerTransport
+from teleoperation.applications.camera_teleop_source import CameraTeleopSource
 from teleoperation.retargeting.arm.calibration import (
     ArmCalibration, CameraCalibrationConfig, NeutralPoseCollector, tron2a_reference,
 )
@@ -44,7 +47,7 @@ def _configuration(args):
                 for side in ("left", "right")},
         workspace_min=np.asarray(args.workspace_min, dtype=float),
         workspace_max=np.asarray(args.workspace_max, dtype=float),
-        sample_count=args.samples, min_visibility=args.pose_min_visibility,
+        sample_count=args.samples, min_visibility=0.0 if args.pose_min_visibility is None else args.pose_min_visibility,
         stability_tolerance=args.stability_tolerance,
         min_elbow_bend_degrees=args.min_elbow_bend,
         max_elbow_bend_degrees=args.max_elbow_bend,
@@ -65,9 +68,15 @@ def _configuration(args):
         raise ValueError("--output must end with .json")
     if output.exists():
         raise FileExistsError(f"Calibration already exists: {output}; choose a new output")
-    for name in ("model_asset_path", "pose_model_asset_path"):
+    for name in ("model_asset_path",):
         if not Path(getattr(args, name)).is_file():
             raise FileNotFoundError(f"{name} not found: {getattr(args, name)}")
+    for name in ("smplerx_worker_python", "smplerx_root", "smplerx_checkpoint", "smplx_model_dir"):
+        value = getattr(args, name, None)
+        if value is None:
+            raise ValueError(f"--{name.replace('_', '-')} is required for the SMPLer-X camera route")
+        if not Path(value).exists():
+            raise FileNotFoundError(f"{name} not found: {value}")
     # Validate URDF, safe joint bounds and FK before opening any camera.
     tron2a_reference(config, args.urdf)
     return config
@@ -89,7 +98,7 @@ def _preview(camera, timed, collector, window):
         for side in ("left", "right")
     )
     for row, text in enumerate((status, collector.status,
-                               f"relative seconds={timed.control_relative_seconds:.3f}; q/Esc cancels")):
+                               f"SMPL-X relative seconds={timed.control_relative_seconds:.3f}; q/Esc cancels")):
         cv2.putText(canvas, text, (10, 23 + row * 25), cv2.FONT_HERSHEY_SIMPLEX,
                     0.5, (255, 255, 255), 1)
     cv2.imshow(window, canvas)
@@ -371,12 +380,12 @@ def _runtime_preview(camera, raw, controller, actual, window, teleoperator=None)
 def run_camera(args):
     from teleoperation.applications.dual import Tron2ADualArmController, DualTeleoperator
     from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
-    camera = world = report = teleoperator = None
+    camera = source = world = report = teleoperator = None
     preview_open = False
     window = "TRON2A camera arms simulation"
     code = 0
     try:
-        calibration, visibility = _runtime_configuration(args)
+        calibration = _runtime_configuration(args)
         report = CameraRunReport(args)
         with_hands = getattr(args, "with_hands", False)
         if with_hands:
@@ -386,7 +395,7 @@ def run_camera(args):
             options = {name: None if path is None else str(Path(path).resolve()) for name, path in options.items()}
             model = load_palm_local_retargeter(device=args.device, landmark_space="world", **options)
             teleoperator = DualTeleoperator(model, args.device, calibration, args.urdf,
-                                           input_mode="camera_world", orientation_mode=args.orientation_mode)
+                                           input_mode="smplerx", orientation_mode=args.orientation_mode)
             teleoperator.hand_model_labels = [f"{name}: {'/'.join(Path(path).parts[-4:])}"
                                               for name, path in checkpoint_metadata(options).items()]
             controller = teleoperator.arms
@@ -395,7 +404,7 @@ def run_camera(args):
                                hand_coordinate_alignment=model.coordinate_alignment, hand_landmark_space="world")
             print(f"World hand model: {checkpoint_description(options)} device={args.device}", flush=True)
         else:
-            controller = Tron2ADualArmController(calibration, args.urdf, input_mode="camera_world", orientation_mode=args.orientation_mode)
+            controller = Tron2ADualArmController(calibration, args.urdf, input_mode="smplerx", orientation_mode=args.orientation_mode)
         report.data.update(orientation_mode=args.orientation_mode, attach_hands=args.attach_hands,
                            hand_reference_only=not with_hands,
                            extrinsics_calibrated=calibration.metadata.get("extrinsics_calibrated", False))
@@ -403,8 +412,14 @@ def run_camera(args):
                                   attach_hands=args.attach_hands, safe_q=controller.safe_q,
                                   hand_mount_pose=calibration.hand_mount_pose, hand_reference_only=not with_hands)
         camera = MediaPipeCameraInput(model_asset_path=args.model_asset_path, camera_index=args.camera_index,
-                    width=args.width, height=args.height, fps=args.fps, invalid_hand_as_missing=True,
-                    pose_model_asset_path=args.pose_model_asset_path, pose_min_visibility=visibility)
+                    width=args.width, height=args.height, fps=args.fps, invalid_hand_as_missing=True)
+        transport = SmplerXWorkerTransport(
+            worker_python=args.smplerx_worker_python, smplerx_root=args.smplerx_root,
+            checkpoint=args.smplerx_checkpoint, body_model_dir=args.smplx_model_dir,
+            model=args.smplerx_model,
+        )
+        client = SmplerXClient(transport, session_id=f"camera-{time.monotonic_ns()}")
+        source = CameraTeleopSource(camera, camera, client, session_id=client.session_id)
         clock = RelativeControlClock()
         print(f"TRON2A {'dual arms and hands' if with_hands else 'arm-only'} simulation. Start neutral; rotation/scale are configured, not estimated. q/Esc exits preview.", flush=True)
         while args.frames == 0 or report.data["frames"] < args.frames:
@@ -412,19 +427,22 @@ def run_camera(args):
                 report.data["exit_reason"] = "simulation_window_closed"
                 break
             started = time.perf_counter()
-            raw = camera.next_teleop_observation()
+            raw = source.next_teleop_observation()
             captured = time.perf_counter()
             metadata = raw.hands.metadata
-            if (metadata.get("arm_world_space") != "mediapipe_pose_world_meters"
-                    or metadata.get("timestamp_unit") != "unix_ms"
+            if (raw.upper_body.metadata.get("source") != "smplerx"
+                    or raw.upper_body.metadata.get("source_coordinate_frame") != "smplx_camera_root_relative_m"
+                    or raw.upper_body.metadata.get("source_units") != "m"
                     or raw.upper_body.timestamp is None or not np.isfinite(raw.upper_body.timestamp)
-                    or raw.hands.timestamp != raw.upper_body.timestamp):
-                raise ValueError("Camera observation source/units or matching detection timestamps invalid")
+                    or metadata.get("timestamp_unit") != "monotonic_s"
+                    or raw.upper_body.timestamp is None or not np.isfinite(raw.upper_body.timestamp)
+                    or raw.hands.timestamp is None or not np.isfinite(raw.hands.timestamp)):
+                raise ValueError("Camera observation source/units are not valid SMPL-X contracts")
             seconds = clock.next_seconds()
             if teleoperator is not None:
                 command = teleoperator.update(raw, control_seconds=seconds)
             else:
-                controller.update(raw.upper_body, seconds, raw.hands.wrists)
+                controller.update(raw.upper_body, seconds, raw.wrists)
             controlled = time.perf_counter()
             if teleoperator is not None:
                 world.apply(command)
@@ -469,7 +487,7 @@ def run_camera(args):
                 report.data.update(exit_reason="error", error=str(error))
     finally:
         # Every owned resource is closed even if another cleanup operation fails.
-        for resource, method in ((camera, "release"), (teleoperator, "close"), (world, "close")):
+        for resource, method in ((source, "release"), (teleoperator, "close"), (world, "close")):
             if resource is not None:
                 try:
                     getattr(resource, method)()

@@ -216,6 +216,7 @@ def dual_calibrate_camera(parser):
     )
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index, help="camera device number")
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET, help="Hands .task model (must exist)")
+    add_smplerx_arguments(parser)
     parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET, help="Pose .task model (must exist)")
     parser.add_argument("--output", type=Path, required=True, help="new calibration JSON; existing files are never overwritten")
     parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF, help="TRON2A URDF for FK and joint limits; meshes not required")

@@ -42,7 +42,7 @@ class SmplerXAdapter:
             "the upstream adapter before running model smoke tests."
         )
 
-    def infer(self, rgb):
+    def infer(self, rgb, frame_id):
         if self._backend is None:
             raise RuntimeError("SMPLer-X adapter is not loaded")
-        return self._backend.infer(rgb)
+        return self._backend.infer(rgb, frame_id)
