@@ -1,0 +1,8 @@
+name: smplerx-worker
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  # Fill these pins after the official S32 worker is installed and tested.
+  # Do not install this environment into teleoperation or dex-native.
