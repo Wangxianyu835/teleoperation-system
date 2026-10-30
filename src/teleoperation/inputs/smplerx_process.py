@@ -41,6 +41,7 @@ class SmplerXWorkerTransport:
             if not path.exists():
                 raise FileNotFoundError(f"{name} not found: {path}")
         self._results: queue.Queue[bytes | BaseException] = queue.Queue()
+        self._send_queue = queue.Queue(maxsize=1)
         self._closed = False
         self.stderr_lines: list[str] = []
         worker_env = dict(os.environ)
@@ -57,8 +58,10 @@ class SmplerXWorkerTransport:
         )
         self._stdout_thread = threading.Thread(target=self._read_stdout, name="smplerx-worker-stdout", daemon=True)
         self._stderr_thread = threading.Thread(target=self._read_stderr, name="smplerx-worker-stderr", daemon=True)
+        self._stdin_thread = threading.Thread(target=self._write_stdin, name='smplerx-worker-stdin', daemon=True)
         self._stdout_thread.start()
         self._stderr_thread.start()
+        self._stdin_thread.start()
 
     def _read_stdout(self):
         try:
@@ -85,8 +88,26 @@ class SmplerXWorkerTransport:
     def send(self, packet: bytes) -> None:
         if self._closed or self._process.poll() is not None:
             raise RuntimeError("SMPLer-X worker is not running")
-        self._process.stdin.write(packet)
-        self._process.stdin.flush()
+        try:
+            self._send_queue.put_nowait(packet)
+        except queue.Full as error:
+            raise RuntimeError('SMPLer-X transport already has an active write') from error
+
+    def _write_stdin(self):
+        try:
+            while True:
+                packet = self._send_queue.get()
+                if packet is None:
+                    break
+                remaining = memoryview(packet)
+                while remaining:
+                    count = self._process.stdin.write(remaining)
+                    if not count:
+                        raise RuntimeError('SMPLer-X worker closed its input pipe')
+                    remaining = remaining[count:]
+                self._process.stdin.flush()
+        except BaseException as error:
+            self._results.put(error)
 
     def poll(self):
         try:
@@ -106,10 +127,18 @@ class SmplerXWorkerTransport:
         if self._closed:
             return
         self._closed = True
-        if self._process.stdin is not None:
-            self._process.stdin.close()
+        try:
+            self._send_queue.put_nowait(None)
+        except queue.Full:
+            pass
+        # Unblock a writer even if upstream is stuck loading or inferring.
+        if self._process.poll() is None:
+            self._process.terminate()
         try:
             self._process.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            self._process.terminate()
+            self._process.kill()
             self._process.wait(timeout=2)
+        for stream in (self._process.stdin, self._process.stdout, self._process.stderr):
+            if stream is not None:
+                stream.close()

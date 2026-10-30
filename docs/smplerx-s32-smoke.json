@@ -1,0 +1,88 @@
+{
+  "status": "smoke_passed",
+  "model": "s32",
+  "python": "3.10.20 | packaged by Anaconda, Inc. | (main, Jun 11 2026, 15:13:20) [MSC v.1942 64 bit (AMD64)]",
+  "paths": {
+    "worker-python": ".venv/smplerx-worker/Scripts/python.exe",
+    "smplerx-root": ".superpowers/sdd/2026-10-30-smplerx-camera-arm/upstream",
+    "checkpoint": ".superpowers/sdd/2026-10-30-smplerx-camera-arm/smpler_x_s32.pth.tar",
+    "body-model-dir": "datasets/smpl_models"
+  },
+  "missing": [],
+  "model_smoke": {
+    "status": "passed",
+    "reason": "",
+    "model_hash": "1c78569f4e7b6e22e7166b55f322e5d5e019073b8d1a430a6926f93b4c86aa62",
+    "input_shape": [
+      640,
+      480,
+      3
+    ],
+    "output_shapes": {
+      "joints_root_m": [
+        55,
+        3
+      ],
+      "global_rotations": [
+        55,
+        3,
+        3
+      ],
+      "image_joints": [
+        55,
+        3
+      ],
+      "smplx_root_pose": [
+        3
+      ],
+      "smplx_body_pose": [
+        63
+      ],
+      "smplx_lhand_pose": [
+        45
+      ],
+      "smplx_rhand_pose": [
+        45
+      ],
+      "smplx_jaw_pose": [
+        3
+      ],
+      "smplx_shape": [
+        10
+      ],
+      "smplx_expr": [
+        10
+      ],
+      "cam_trans": [
+        3
+      ],
+      "fixed_shape": [
+        10
+      ],
+      "bbox_xywh": [
+        4
+      ],
+      "inverse_crop": [
+        2,
+        3
+      ]
+    },
+    "frame_latency_ms": [
+      1468.9999999991414,
+      156.00000000085856,
+      155.99999999903957
+    ],
+    "warmup_frames": 1,
+    "peak_allocated_bytes": 694183424,
+    "peak_reserved_bytes": 763363328,
+    "device": "NVIDIA GeForce RTX 4050 Laptop GPU",
+    "torch": "1.13.0+cu117"
+  },
+  "input_source": "https://raw.githubusercontent.com/pytorch/vision/main/gallery/assets/person1.jpg",
+  "scope": "Single-image smoke only; no live camera, robot simulation or finger inference.",
+  "direct_vs_worker_max_absolute_errors": {
+    "joints_root_m": 2.9802322387695312e-8,
+    "global_rotations": 7.897615432739258e-7,
+    "image_joints": 5.960464477539063e-8
+  }
+}

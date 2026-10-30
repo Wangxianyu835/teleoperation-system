@@ -2,6 +2,13 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+
+# Support direct execution from the upstream working directory. Only the
+# protocol/contracts and worker boundary are imported from this repository.
+_repository = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_repository))
+sys.path.insert(0, str(_repository / 'src'))
 
 from teleoperation.inputs.smplerx import PacketError, PacketReader, decode_packet, encode_packet
 
@@ -23,7 +30,9 @@ def run_worker(adapter, *, input_stream=None, output_stream=None) -> int:
                 if message["type"] != "frame":
                     raise PacketError("worker accepts frame messages only")
                 payload = message["payload"]
-                result = adapter.infer(payload["rgb"], payload["frame_id"])
+                from contextlib import redirect_stdout
+                with redirect_stdout(sys.stderr):
+                    result = adapter.infer(payload["rgb"], payload["frame_id"])
                 output_stream.write(encode_packet("result", {"result": result}))
                 output_stream.flush()
         except (PacketError, ValueError, TypeError) as error:
@@ -44,5 +53,10 @@ if __name__ == "__main__":
     options = parser.parse_args()
     adapter = SmplerXAdapter(SmplerXAssets(options.smplerx_root, options.checkpoint,
                                             options.body_model_dir, options.model))
-    adapter.load()
-    raise SystemExit(run_worker(adapter))
+    from contextlib import redirect_stdout
+    try:
+        with redirect_stdout(sys.stderr):
+            adapter.load()
+        raise SystemExit(run_worker(adapter))
+    finally:
+        adapter.close()

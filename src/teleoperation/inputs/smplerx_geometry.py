@@ -51,6 +51,19 @@ def _indices(result: SmplerXResult) -> Mapping[str, Mapping[str, int]]:
 
 def smplerx_observations(result: SmplerXResult) -> tuple[UpperBodyObservation, dict[str, WristObservation]]:
     """Build body positions and wrist orientations from one worker result."""
+    if not any(result.valid.values()):
+        sides = ('left', 'right')
+        body = UpperBodyObservation(
+            {side: None for side in sides}, {side: False for side in sides},
+            result.frame_id.capture_time_s, 'smplx_image_normalized', 'normalized',
+            world_arms={side: None for side in sides}, metadata={
+                'source': 'smplerx', 'model_id': result.model_id, 'model_hash': result.model_hash,
+                'source_coordinate_frame': 'smplx_camera_root_relative_m', 'source_units': 'm',
+                'sample_sequence': result.frame_id.sequence, 'session_id': result.frame_id.session_id})
+        return body, {side: WristObservation(
+            None, 'smplx_camera_axes', 'smplx_wrist_local', 'smplerx',
+            result.frame_id.capture_time_s, orientation_valid=False, position_valid=False,
+            reason=result.reason) for side in sides}
     joints = np.asarray(result.arrays["joints_root_m"], dtype=float)
     rotations = np.asarray(result.arrays["global_rotations"], dtype=float)
     image_joints = np.asarray(result.arrays.get("image_joints", joints), dtype=float)

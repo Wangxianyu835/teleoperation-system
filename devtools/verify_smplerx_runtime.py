@@ -10,6 +10,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import subprocess
 from typing import Any
 
 
@@ -22,6 +23,7 @@ def _arguments() -> argparse.ArgumentParser:
     parser.add_argument("--body-model-dir", type=Path, required=True)
     parser.add_argument("--model", default="s32", choices=("s32",))
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument('--input-image', type=Path, help='run real single-image inference in the worker environment')
     return parser
 
 
@@ -33,8 +35,14 @@ def inspect_assets(args: argparse.Namespace) -> dict[str, Any]:
         "body-model-dir": args.body_model_dir,
     }
     missing = [f"{name}: {path}" for name, path in paths.items() if not path.exists()]
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from external.smplerx_worker.adapter import SmplerXAssets
+    assets = SmplerXAssets(args.smplerx_root, args.checkpoint, args.body_model_dir, args.model)
+    for name, path in assets.body_files().items():
+        if not path.is_file():
+            missing.append(f'{name}: {path}')
     return {
-        "status": "ready" if not missing else "missing",
+        "status": "assets_present" if not missing else "missing",
         "model": args.model,
         "python": sys.version,
         "checker_python": str(Path(sys.executable).resolve()),
@@ -47,14 +55,29 @@ def inspect_assets(args: argparse.Namespace) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     args = _arguments().parse_args(argv)
     report = inspect_assets(args)
+    code = 0
+    if not report['missing'] and args.input_image is not None:
+        command = [str(args.worker_python), str(Path(__file__).resolve().parents[1] /
+                   'external/smplerx_worker/smoke.py'), '--smplerx-root', str(args.smplerx_root),
+                   '--checkpoint', str(args.checkpoint), '--body-model-dir', str(args.body_model_dir),
+                   '--input-image', str(args.input_image.resolve())]
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=300)
+        report['worker_stderr'] = completed.stderr[-12000:]
+        code = completed.returncode
+        try:
+            report['model_smoke'] = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            report['model_smoke'] = {'status': 'failed', 'reason': 'worker did not return a JSON report'}
+            code = code or 1
+        report['status'] = 'smoke_passed' if code == 0 else 'smoke_failed'
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if report["missing"]:
         for item in report["missing"]:
             print(f"MISSING {item}", file=sys.stderr)
         return 2 if args.check else 0
-    print(f"READY model={args.model} worker={args.worker_python}")
-    return 0
+    print(f"{report['status'].upper()} model={args.model} worker={args.worker_python}")
+    return code
 
 
 if __name__ == "__main__":

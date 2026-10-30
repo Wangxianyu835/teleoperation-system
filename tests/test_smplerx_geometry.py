@@ -11,6 +11,14 @@ from teleoperation.inputs.smplerx_geometry import (
 
 
 class SmplerXGeometryTests(unittest.TestCase):
+    def test_no_person_result_preserves_reason_without_requiring_joint_arrays(self):
+        result = SmplerXResult(BodyFrameId('session', 1, 1.), 1.01, 's32', 'a' * 64,
+                              {}, {'left': False, 'right': False}, reason='no person detected')
+        body, wrists = smplerx_observations(result)
+        self.assertFalse(body.valid['left'])
+        self.assertIsNone(body.world_arms['left'])
+        self.assertEqual(wrists['left'].reason, 'no person detected')
+
     def test_fk_composes_parent_rotations(self):
         local = np.stack([
             np.eye(3),
