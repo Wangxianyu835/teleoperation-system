@@ -6,6 +6,7 @@ from teleoperation.paths import *
 from teleoperation.retargeting.hand.config import L21, RUNTIME, ANGLE_LIMITS
 from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
 from .checkpoints import add_checkpoint_arguments
+from .smplerx_options import add_smplerx_arguments
 
 
 def hand_dex_calibrate(parser):
@@ -245,7 +246,7 @@ def dual_calibrate_camera(parser):
 
 
 def dual_camera(parser):
-    parser.description = "Realtime camera world -> TRON2A simulation: arms only or dual arms and L21 hands. Requires real neutral calibration."
+    parser.description = "Realtime camera SMPLer-X body -> selected robot simulation: arms only or dual arms and L21 hands. Requires real neutral calibration."
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--arms-only", action="store_true", help="arm-only simulation; no hand model required")
     modes.add_argument("--with-hands", action="store_true", help="full control using world hand checkpoints")
@@ -253,6 +254,9 @@ def dual_camera(parser):
     parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET, help="MediaPipe Hands detector .task")
+    add_smplerx_arguments(parser)
+    # Kept only as an explicit migration error until the old command handler
+    # has been removed; these options never load a Pose model.
     parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET)
     parser.add_argument("--calibration", type=Path, required=True, help="real dual calibrate-camera JSON; synthetic fixtures are rejected")
     parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF)

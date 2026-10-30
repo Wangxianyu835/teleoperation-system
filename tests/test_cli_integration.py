@@ -20,6 +20,18 @@ from tests.test_mediapipe_realtime import raw_frame
 
 
 class CliIntegrationTests(unittest.TestCase):
+    def test_dual_camera_exposes_isolated_smplerx_worker_options(self):
+        args = build_parser().parse_args([
+            "dual", "camera", "--arms-only", "--calibration", "calibration.json",
+            "--smplerx-worker-python", "worker-python",
+            "--smplerx-root", "smplerx", "--smplerx-checkpoint", "s32.pth",
+            "--smplx-model-dir", "body-models",
+        ])
+        self.assertEqual(args.smplerx_model, "s32")
+        self.assertEqual(args.smplerx_worker_python.name, "worker-python")
+        self.assertEqual(args.smplerx_checkpoint.name, "s32.pth")
+        self.assertEqual(args.smplx_model_dir.name, "body-models")
+
     def test_root_help_works_without_site_packages(self):
         result = subprocess.run(
             [sys.executable, "-B", "-S", "-m", "teleoperation", "hand", "--help"],
