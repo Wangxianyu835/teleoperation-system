@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. 本计划默认由当前会话顺序实施；不隐含授权创建子代理。
 
-**Goal:** 用 SMPLer-X 提供相机机械臂的位置和腕朝向，删除旧 Pose 实时驱臂代码，保持手指控制、VR 输入和旧文件读取可用。
+**Goal:** 用 SMPLer-X 提供相机机械臂的位置和腕朝向，删除旧 Pose 实时驱臂代码，保持手指控制和 VR 输入可用。
 
 **Architecture:** 单相机采集后分别分发 Hands 与独立 SMPLer-X 工作进程，使用版本化人体观测与时序追踪接入现有机械臂控制。实时、标定、记录与离线验收共用新输入语义，最终删除旧 Pose 控制代码。
 
@@ -17,12 +17,12 @@
 ## Global Constraints
 
 - 相机机械臂的位置、骨段方向和腕朝向统一来自 SMPLer-X / SMPL-X。禁止用 MediaPipe Hands 的腕点或掌朝向补驱机械臂。
-- 保持当前 public input、window、result 接口兼容；新增字段提供默认值，旧文件不重写来源。
+- 保持手指、VR 和新身体输入的 public input、window、result 接口；新增字段提供默认值。旧 MediaPipe 手臂录制接口不保留。
 - Vision Pro / TransHandR 数值链路继续显式独立；不套用相机预处理或新相机标定。
 - TRON2A 是可选机器人之一，新感知适配器不得硬编码机器人型号。
 - 本次不更换重定向/IK 后端；机械臂向量优化独立实施和验收。
 - 起点 S32 / 单人 / batch=1 / FP32；不假定 6 GB 显存或指定帧率已验证。
-- 旧 Pose 仅用于既有文件回放和离线基线，不保留实时回退开关。
+- 旧 Pose 不用于实时控制、文件回放或离线基线；旧 MediaPipe 手臂来源直接拒绝。
 - 当前主环境是 `D:/Anaconda/envs/teleoperation/python.exe`。不依赖历史 launcher，不创建本机启动脚本。
 - dex 已有独立第三方包环境和显式 Pinocchio bundle。SMPLer-X 使用第三个推理环境，不改写主环境或 dex 环境。
 - 主环境 NumPy 配置偏差和 dex 重复 SciPy 元数据见 [环境核查](../../smplerx-environment-audit-2026-10-30.md)。不得把 pip check 通过写成环境已统一。
@@ -33,7 +33,7 @@
 1. 工作进程迟到、冻结或退出：主控制继续保持，旧结果不能冒充新数据。任务 2、4、5 测试。
 2. 镜像、裁剪或局部旋转组合错误：左右手和轴方向必须由合成变换证明。任务 3 测试。
 3. Hands 丢失但身体可见 / 身体丢失但 Hands 可见：两条有效性独立。任务 5 测试。
-4. 旧标定、旧 H5/NPZ：来源显式，拒绝跨来源误用，旧文件按原语义读取。任务 3、6 测试。
+4. 旧标定、旧 H5/NPZ：旧 MediaPipe 手臂来源直接拒绝，不进入新回放。任务 3、6、8 测试。
 5. 新人进入、主体切换、重复帧：不自动改操作者身份，不累计错误标定。任务 2、4 测试。
 
 ## 保留和删除的边界
@@ -43,8 +43,8 @@
 | 手指 | 保留 MediaPipe Hands、NN/dex 手指处理、手部窗口和关节结果接口 |
 | 新相机手臂 | 肩肘腕和腕朝向全部来自 SMPLer-X / SMPL-X |
 | VR | 保留 Vision Pro / TransHandR 的原数值路线，不输入 SMPLer-X |
-| 旧 H5/NPZ | 保留显式旧来源读取和回放，不重写数据 |
-| 旧相机标定 | 仅服务原来源；新人体输入重新标定 |
+| 旧 MediaPipe 手臂 H5/NPZ | 不保留 reader 或回放兼容；新程序拒绝旧来源 |
+| 旧相机标定 | 不保留旧 MediaPipe 手臂标定分支；新人体输入重新标定 |
 | 旧 Pose 运行路径 | 删除初始化、推理、模型检查和手部兜底驱臂代码 |
 | dex 风格机械臂向量优化 | 另列后续计划；本次保留现有重定向与 IK，以便单独评估感知变化 |
 
@@ -77,35 +77,35 @@
 
 | 文件 | 位置 | 操作 |
 |---|---|---|
-| `src/teleoperation/inputs/pose_mediapipe.py` | 全文件 | 最终删除 Pose 结果解析器。旧文件 reader 不得依赖此文件 |
+| `src/teleoperation/inputs/pose_mediapipe.py` | 全文件 | 最终删除 Pose 结果解析器 |
 | `src/teleoperation/inputs/mediapipe.py` | 23；`MediaPipeCameraInput.__init__`，166-232 | 删除 Pose import、路径校验、options 和 landmarker 初始化。保留 Hands 初始化 |
 | 同上 | `next_frame`，241-285 | 拆出单次捕获和 Hands 帧处理；删除 `include_pose` 检测分支。显式传入旧 Pose 参数时返回迁移错误 |
 | 同上 | `next_teleop_observation`，315；`release`，365 | 移除旧 Pose 组合实现及其关闭分支。原组合方法保留迁移错误入口；保留 Hands 采集和释放 |
 | `src/teleoperation/simulation/realtime_teleop.py` | `CameraFrameSource`，205；`run`，906 | 使用新组合源；移除 Pose 专用配置、缺文件警告和静默降级 |
 | 同上 | `build_parser`，381；`run`，1086、1119、1393 | 旧 Pose 参数只报迁移错误；停止启用 Hands 驱臂兜底；结果报告记录新模型和新采样时间 |
-| 同上 | `ReplayFrameSource`，279；`_record_frame`，789；`_save_dump`，813 | 按 schema/source 区分新旧录制，不再将所有身体数据写成 MediaPipe 来源 |
+| 同上 | `ReplayFrameSource`，279；`_record_frame`，789；`_save_dump`，813 | 删除旧 MediaPipe 手臂回放分支；新录制只写 SMPL-X 来源 |
 | `src/teleoperation/simulation/arm_realtime.py` | `_operator_state`，1187；`_target_from_state`，1309；`_fallback_target`，1445 | 删除活动相机从 Hands 生成机械臂目标的分支。旧数据需要该基线时，从检查点运行；保持 body 几何映射与 IK 参数 |
-| `src/teleoperation/applications/mediapipe_tron2a.py` | `_configuration`，38；`run`，100；`_runtime_configuration`，293；`run_camera`，371 | 改接新组合源。删除 Pose 文件检查、可见性阈值及 418 行附近的 MediaPipe 来源/手身同时戳假设。保留公开命令和 TRON2A 机器人控制职责 |
+| `src/teleoperation/applications/mediapipe_tron2a.py` | `_configuration`，38；`run`，100；`_runtime_configuration`，293；`run_camera`，371 | 改接新组合源。删除 Pose 文件检查、可见性阈值及 418 行附近的 MediaPipe 来源/手身同时戳假设。保留命令名称，但命令只启动新管线 |
 | `src/teleoperation/applications/world_landmark_capture.py` | 18；`run`，141-234；`_draw_preview` | 删除 Pose parser import、自动下载和初始化；记录新人体样本及其独立时间，预览使用新投影 |
 | `src/teleoperation/contracts/observations.py` | `UpperBodyObservation`；`RawTeleopObservation` | 分别追加可选 metadata 和 wrists 字段，默认值保留旧构造方式 |
-| `src/teleoperation/retargeting/arm/calibration.py` | `NeutralPoseCollector.add`，201；`calibration`，263 | 将来源、时间和质量检查按来源分派；新模型不伪造 pose_visibility |
-| `src/teleoperation/retargeting/arm/retargeter.py` | `__init__`，13；`update`，38 | 为 SMPL-X 增加明确来源处理；旧来源检查移入旧回放分派 |
+| `src/teleoperation/retargeting/arm/calibration.py` | `NeutralPoseCollector.add`，201；`calibration`，263 | 只接受 SMPL-X 来源、时间和质量字段；删除旧 MediaPipe 标定分支，不伪造 pose_visibility |
+| `src/teleoperation/retargeting/arm/retargeter.py` | `__init__`，13；`update`，38 | 只接受 SMPL-X 身体来源；旧 MediaPipe 手臂来源抛出迁移错误 |
 | `src/teleoperation/retargeting/arm/wrist_orientation.py` | `WristTracker.update`，35；来源分派，67 | 加入显式 SMPL-X 轴变换；保留 VR 分支的现有数值与默认参数 |
 | `src/teleoperation/applications/dual.py` | `Tron2ADualArmController`；`DualTeleoperator` | 新相机只消费组合观测的 SMPL-X wrists，旧手部 wrists 保留原来源 |
 | `src/teleoperation/cli/schemas.py` | `hand_record_world`，152；`dual_calibrate_camera`，210；`dual_camera`，247 | 接入共享 SMPLer-X 参数；移除活动 Pose 默认路径和可见性参数 |
 | `src/teleoperation/cli/registry.py` | camera 与 calibrate-camera 注册项，10-11 | 保持已有命令名和 handler 可解析；模型替换在 handler 内完成 |
-| `src/teleoperation/data/hand_body_recording.py` | `write_hand_body_recording`，70；来源属性，130-131 | 新录制写入真实来源；保留旧格式读取分支 |
-| `src/teleoperation/data/world_landmark_recording.py` | `write_world_landmark_recording`；`read_world_landmark_recording` | 保持旧手指录制可读，委托新 body schema 保存模型输出 |
+| `src/teleoperation/data/hand_body_recording.py` | `write_hand_body_recording`，70；来源属性，130-131 | 删除旧 MediaPipe 手臂来源属性和旧手臂读取分支；手指记录字段单独保留 |
+| `src/teleoperation/data/world_landmark_recording.py` | `write_world_landmark_recording`；`read_world_landmark_recording` | 删除旧身体回放 reader；新身体记录只使用 `body_recording.py` |
 | `src/teleoperation/data/arm_validation.py` | `load_validation_recording`；`validate_recording` | 支持新版本身体记录和显式时间单位 |
 | `src/teleoperation/applications/arm_validation.py` | `run_case`，27 | 与实时入口共用新控制管线，报告实际 map mode 和腕来源 |
 | `src/teleoperation/simulation/arm_validation_metrics.py` | 验收指标计算 | 增加源年龄、有效更新率、保持比例和恢复延迟 |
 | `src/teleoperation/simulation/arm_preview.py` | 身体点显示和来源文字 | 显示 SMPL-X 重建/投影，不再显示 Pose 检测说明 |
 | `tests/test_pose_mediapipe.py` | 全文件 | 删除已移除解析器的专用测试；先把其他测试引用的 fixture 移入独立 fixture 模块 |
 | `tests/test_mediapipe_input.py` | Pose mock，210-211；Pose 组合测试，277-385 | 删除旧 Pose 成功路径测试；替换为迁移错误与 Hands 回归测试 |
-| `tests/test_mediapipe_tron2a.py`、`tests/test_world_landmark_recording.py` | Pose 资产参数、mock 和来源断言 | 改为新源；另保留旧文件读取断言 |
+| `tests/test_mediapipe_tron2a.py`、`tests/test_world_landmark_recording.py` | Pose 资产参数、mock 和来源断言 | 改为新源；删除旧 MediaPipe 手臂文件读取断言 |
 | `README.md`、`docs/architecture.md`、`docs/contracts.md` | 相机手臂的数据流、模型和记录说明 | 更新为 SMPLer-X，明确 VR 与手指边界 |
 
-不删除 MediaPipe Hands 模块、VR 模块、旧录制数据、旧标定文件或模型资产。Pose `.task` 文件不再被新手臂路径加载；本计划不自动清理用户下载的资产。
+不删除 MediaPipe Hands 模块或 VR 模块。删除旧 MediaPipe 手臂来源字段、reader、回放分支、标定分支和测试。磁盘上的历史文件不由迁移脚本自动删除，但新程序不读取这些文件。Pose `.task` 文件不再被新手臂路径加载；本计划不自动清理用户下载的资产。
 
 不修改历史 `devtools/run_realtime*_windows.py` 来推断或接管本机运行方式。实施后在文档中标明这些旧 launcher 不适用于新手臂入口。主环境需求偏差单独处理，不能借模型接入执行未经验证的批量升级。
 
@@ -155,7 +155,7 @@ TRON2A 的 `loadable=False` 属于通用机器人加载能力问题。本计划�
 - [ ] 运行 `tests.test_smplerx_geometry tests.test_wrist_observations`，确认新增断言先失败。
 - [ ] 从固定版本 SMPL-X 模型关节名称/父节点关系建立映射，在工作进程 adapter 中用模型 FK 得到同一根参考的肩肘腕与全局旋转；主工程 geometry 只用 NumPy/SciPy 消费派生结果，不能引入第二套 SMPL-X/PyTorch 依赖。不要硬套 MediaPipe 点号或人体模型内部重排后的数组。
 - [ ] 实现 body `arms` 为逆裁剪后的图像归一化投影、`world_arms` 为根相对米制坐标；元数据写入新来源。腕输出 `smplx_camera_axes/smplx_wrist_local`，显式提供经源码核验的轴变换，未知 frame 拒绝。
-- [ ] 新增 source-aware 标定校验和来源分派，`camera_world` 旧规范继续用于旧回放；SMPL-X 使用独立来源配置。旧 neutral/标定直接传新输入时必须拒绝，不改旧 JSON 元数据。
+- [ ] 新增 source-aware 标定校验和来源分派；VR 使用原有来源配置，SMPL-X 使用独立来源配置。旧 MediaPipe neutral/标定直接拒绝，不改旧 JSON 元数据。
 - [ ] 固定体型后重算派生骨架，保留原始预测；用真实单帧 FK/投影 overlay 检查坐标，不把无视觉证据的数值测试称为现场验收。
 - [ ] 相关测试通过后提交：`feat: adapt SMPL-X body and wrist observations`。
 
@@ -187,7 +187,7 @@ TRON2A 的 `loadable=False` 属于通用机器人加载能力问题。本计划�
 - [ ] 在 `test_body_wrists_do_not_overwrite_hand_wrists` 中断言组合 `wrists` 来源为 SMPL-X，`hands.wrists` 仍为原来源。在 `test_no_arms_does_not_start_worker` 中断言 worker 启动次数为 0。
 - [ ] 运行本任务四个测试模块及新增 source 测试，先确认预期失败。
 - [ ] 提取单相机所有权及 frame-processing 接口，保留手指旧 API 的结果。新 camera source 将 SMPL-X 腕写入 `RawTeleopObservation.wrists`。保持 `RawHandFrame.wrists` 的原来源，禁止机械臂读取该字段兜底。
-- [ ] 实时入口和 TRON2A 相机服务接入同一感知契约；TRON2A 仍按选定机器人资源校验，不让感知适配器依赖手指 checkpoint。公开旧服务命令可作为迁移兼容入口，但内部只走新身体输入。
+- [ ] 实时入口和 TRON2A 相机服务接入同一感知契约；TRON2A 仍按选定机器人资源校验，不让感知适配器依赖手指 checkpoint。保留命令名称只为减少调用方改动，命令内部只走新身体输入，不提供旧数据兼容模式。
 - [ ] 增加共享 SMPLer-X 配置参数和独立 runtime 检查命令。设备选择、模型缺失、CUDA OOM 均报告原因。旧 Pose 参数返回迁移错误，活动入口帮助不再提示下载 pose.task。
 - [ ] 增加新校准入口/来源支持，不能沿用原先硬编码 MediaPipe 的 TRON2A 摄像头标定检查。
 - [ ] 运行相关回归，提交：`feat: drive camera arms from SMPLer-X observations`。
@@ -196,13 +196,13 @@ TRON2A 的 `loadable=False` 属于通用机器人加载能力问题。本计划�
 
 **Files:** Create `src/teleoperation/data/body_recording.py`; Modify `src/teleoperation/data/hand_body_recording.py`, `src/teleoperation/data/world_landmark_recording.py`, `src/teleoperation/data/arm_validation.py`, `src/teleoperation/simulation/realtime_teleop.py`; Test `tests/test_body_recording.py`, `tests/test_world_landmark_recording.py`, `tests/test_capture_branch_integration.py`。
 
-**Interfaces:** `save_body_recording(path, samples, metadata) -> Path`、`load_body_recording(path) -> BodyRecording`；schema version 显式记录。旧 reader 继续沿旧来源分派，不覆盖输入文件。
+**Interfaces:** `save_body_recording(path, samples, metadata) -> Path`、`load_body_recording(path) -> BodyRecording`；schema version 显式记录。reader 只接受 SMPL-X 身体来源，遇到 `mediapipe_pose_*` 字段时抛出迁移错误。
 
 - [ ] 写 round-trip 测试：原始参数、派生肩肘腕、腕四元数、源时间/完成时间、sample_id、来源、模型 hash、状态、固定体型和标定版本完整保留。丢失用 mask 与缺值，不伪造单位四元数。
-- [ ] 写旧 NPZ/H5 和旧 neutral fixture 测试：仍能显式回放原协议；旧文件不能被导入为 SMPLer-X 成功证据；不明时间单位必须显式指定。
-- [ ] 在 `test_legacy_recording_preserves_source` 中断言读取前后文件 SHA256 不变，返回来源仍为 MediaPipe。在 `test_roundtrip_preserves_capture_time` 中断言写读后的 sample_id、单调捕获时间和模型 hash 完全一致。
-- [ ] 运行任务测试确认先失败，然后实现带来源的记录/读取。新 live dump 保留新来源，不再写死 MediaPipe metadata。
-- [ ] 新回放分别支持已估计姿态与 RGB 重推理；明确只有 RGB 才能用于两个感知模型的对比。记录用于模型重推理的原始视频与逐帧时间映射，避免视频帧率替代实际时间。
+- [ ] 写旧 NPZ/H5 拒绝测试：发现 `mediapipe_pose_*` 身体字段时返回迁移错误；不明时间单位和缺少 SMPL-X 模型 hash 时拒绝。
+- [ ] 在 `test_legacy_arm_recording_is_rejected` 中断言旧 MediaPipe 手臂文件不会返回 `BodyRecording`。在 `test_roundtrip_preserves_capture_time` 中断言新记录的 sample_id、单调捕获时间和模型 hash 完全一致。
+- [ ] 运行任务测试确认先失败，然后实现只接受 SMPL-X 来源的记录/读取。新 live dump 不写入 MediaPipe 来源字段。
+- [ ] 新回放只支持 SMPL-X 已估计姿态或 RGB 重新推理。记录用于模型推理的原始视频与逐帧时间映射，避免视频帧率替代实际时间。
 - [ ] 通过相关回归，提交：`feat: version SMPL-X arm recordings and replay`。
 
 ## Task 7: 同路径验收与全链路资源测试
@@ -222,14 +222,16 @@ TRON2A 的 `loadable=False` 属于通用机器人加载能力问题。本计划�
 
 ## Task 8: 删除 MediaPipe Pose 活动代码并收尾
 
-**Files:** Delete `src/teleoperation/inputs/pose_mediapipe.py`, `tests/test_pose_mediapipe.py`（先迁移仍被引用的 fixture）; Modify `src/teleoperation/inputs/mediapipe.py`, `src/teleoperation/simulation/arm_realtime.py`, `tests/test_mediapipe_input.py`, `tests/test_world_landmark_recording.py`, `tests/test_mediapipe_tron2a.py`, `src/teleoperation/simulation/arm_preview.py`, `README.md`, `docs/architecture.md`, `docs/contracts.md`, `docs/smplerx-arm.md`。
+**Files:** Delete `src/teleoperation/inputs/pose_mediapipe.py`, `tests/test_pose_mediapipe.py`（先迁移仍被引用的 Hands fixture）；Modify `src/teleoperation/inputs/mediapipe.py`, `src/teleoperation/simulation/arm_realtime.py`, `src/teleoperation/data/hand_body_recording.py`, `src/teleoperation/data/world_landmark_recording.py`, `tests/test_mediapipe_input.py`, `tests/test_world_landmark_recording.py`, `tests/test_mediapipe_tron2a.py`, `src/teleoperation/simulation/arm_preview.py`, `README.md`, `docs/architecture.md`, `docs/contracts.md`, `docs/smplerx-arm.md`。
 
-**Interfaces:** 公共旧参数仅作显式迁移提示；旧数据读取不依赖被删除的 Pose parser；MediaPipe Hands 的采集、窗口和手指输出协议保留。
+**Interfaces:** 公共旧参数仅作显式迁移提示；旧 MediaPipe 手臂数据读取接口删除；MediaPipe Hands 的采集、窗口和手指输出协议保留。
 
 - [ ] 为活动 camera arm 路线添加约束测试：不创建/调用 PoseLandmarker，不在异常时调用旧驱臂代码，不消费 Hands 的腕观测。先运行确认删除前测试失败。
 - [ ] 在 `test_camera_arm_never_uses_pose_landmarker` 中将 PoseLandmarker 的创建设为立即失败，断言新 source 完成一轮 fake SMPL-X 输入。在 `test_legacy_pose_option_returns_migration_error` 中断言旧参数返回清晰错误且不开相机。
-- [ ] 按上方删除表移除 Pose 初始化、detect、close 资源分支和活动 Hands 驱臂分支。仍被引用的旧数据 fixture 移入 `tests/fixtures/legacy_pose.py`，不导入被删除的 parser。先用 `rg` 检查引用，再删除旧测试文件。
-- [ ] 搜索 `PoseLandmarker|pose_mediapipe|pose_model_asset_path|pose_min_visibility|mediapipe_pose_world_meters`，逐处归类。生产实时调用必须清零；旧来源字符串只允许在显式兼容 reader、fixture 和历史文档中。
+- [ ] 按上方删除表移除 Pose 初始化、detect、close 资源分支、活动 Hands 驱臂分支、旧手臂录制字段和旧手臂 reader。仍被引用的 Hands fixture 移入 `tests/fixtures/hands.py`，不导入被删除的 parser。先用 `rg` 检查引用，再删除旧测试文件。
+- [ ] 搜索 `PoseLandmarker|pose_mediapipe|pose_model_asset_path|pose_min_visibility|mediapipe_pose_world_meters|mediapipe_pose_normalized`，逐处归类。生产代码、录制 reader、回放、标定和测试中的旧手臂来源必须清零；只允许在拒绝旧数据的测试输入中临时出现。
+- [ ] 删除旧 MediaPipe 手臂来源常量、schema 字段、标定字段和回放分支。保留的测试只构造一个临时旧字段，验证程序拒绝它；该字段不进入任何公共接口、记录格式或常量表。
+- [ ] 删除旧手臂 reader 的测试和旧来源断言。运行 `rg` 确认生产代码中没有旧来源字符串、旧 reader 名称或旧标定分派。
 - [ ] 更新相机预览，注明“SMPL-X 重建/投影”，不再写 Pose 检测。报告包括模型版本、hash、推理后端、真实样本时间与拒绝原因。
 - [ ] 执行完整 unittest、文档差异和 GBK 检查，更新真实验收结果与未完成项；提交：`refactor: remove MediaPipe Pose arm control path`。
 
