@@ -107,6 +107,26 @@ class ValidationInputTests(unittest.TestCase):
 
 @unittest.skipUnless(ASSETS_AVAILABLE and PYBULLET_AVAILABLE, "robot assets and PyBullet required")
 class ValidationSimulationTests(unittest.TestCase):
+    def test_recorded_posture_mode_checks_robot_reach_instead_of_chain_travel_box(self):
+        from tests.smplerx_fixtures import write
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(folder)
+            path = write(root/'body.h5',40)
+            result = run_case(load_validation_recording(path),root/'trace.csv',calibration_frames=3)
+            rows = read_trace(root/'trace.csv')
+        self.assertEqual(result['map_mode'],'posture')
+        self.assertTrue(result['passed'],[c for c in result['checks'] if c['status']=='fail'])
+        self.assertTrue(any(c['name'].startswith('posture_reach.') for c in result['checks']))
+        self.assertFalse(any(c['name'].startswith('travel_clamp.') for c in result['checks']))
+        # An unreachable target must still fail the replacement posture check.
+        for row in rows:
+            if row['valid']:
+                row['target_base'] = [100.,100.,100.]
+        from teleoperation.simulation.arm_profiles import profile_for
+        rejected = analyze_rows(rows,{name:profile_for(name) for name in ('h1_2','gr1_t2','g1')},
+                                map_mode='posture',robot_geometry=result['robot_geometry'])
+        self.assertTrue(any(c['status']=='fail' and c['name'].startswith('posture_reach.') for c in rejected['checks']))
+
     def test_six_arm_case_records_hold_recovery_clamp_and_explicit_time(self):
         data = synthetic_recording(13, scenarios=(("neutral", .4), ("static", 1.2),
                     ("drop_left", .2), ("recover_left", .5), ("clamp", .5)))

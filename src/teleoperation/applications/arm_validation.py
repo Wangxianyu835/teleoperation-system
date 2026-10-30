@@ -88,8 +88,12 @@ def run_case(recording, trace_path, calibration_frames=30):
             if scene is not None:
                 scene.close()
     rows = read_trace(trace_path)
+    geometry = None if recorded is None else {
+        name: {side: {**links[name][side], 'shoulder': anchors[name][side]['shoulder']}
+               for side in ('left', 'right')} for name in profiles}
     summary = analyze_rows(rows, profiles, synthetic=recording["metadata"].get("source") == "synthetic",
-                           max_hold_drift_rad=drift, calibrated=calibrated)
+                           max_hold_drift_rad=drift, calibrated=calibrated,
+                           map_mode=bridge.map_mode, robot_geometry=geometry)
     summary.update(source=recording["metadata"].get("source", "imported_npz"),
                    timestamp_unit=recording["timestamp_unit"], metadata=recording["metadata"],
                    frames=len(seconds), input_duration_s=float(seconds[-1] - seconds[0]),
@@ -103,7 +107,7 @@ def run_case(recording, trace_path, calibration_frames=30):
         for raw, stamp in zip(recorded, data['timestamps']):
             metrics.update(raw.upper_body, stamp)
         summary.update(body_source=metrics.summary(), wrist_source='smplerx', map_mode=bridge.map_mode,
-                       wrist_control=wrist_summary)
+                       wrist_control=wrist_summary, robot_geometry=geometry)
     return summary
 
 

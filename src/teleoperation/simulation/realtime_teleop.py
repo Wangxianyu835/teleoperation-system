@@ -139,6 +139,7 @@ class CameraFrameSource:
             arms_enabled=arms_enabled)
         self.body_enabled = bool(arms_enabled)
         self._start_timestamp = None
+        self._last_capture_time_s = self._capture_dt = None
 
     def next_frame(self):
         """采集一帧；返回手部三帧窗口（还没攒够就是 ``None``）。
@@ -153,6 +154,12 @@ class CameraFrameSource:
             return None
         self.last_observation = observation
         raw = observation.hands
+        stamp = float(raw.timestamp)
+        previous = getattr(self, '_last_capture_time_s', None)
+        if previous is not None and stamp <= previous:
+            raise ValueError('Camera capture times must increase')
+        self._capture_dt = None if previous is None else stamp - previous
+        self._last_capture_time_s = stamp
         if self._start_timestamp is None:
             self._start_timestamp = float(raw.timestamp)
         raw_frame = {**raw.hands, "timestamp": raw.timestamp, "wrists": raw.wrists,
@@ -173,7 +180,14 @@ class CameraFrameSource:
             frame.update({"world_" + side: raw.world_hands[side] for side in SIDES})
         diagnostics = getattr(self, "diagnostics", None)
         with (nullcontext() if diagnostics is None else diagnostics.stage("hand_preprocessing")):
+            if raw.world_hands is None and all(value is None for value in raw.hands.values()):
+                self.pipeline.reset()
+                return None
             return self.pipeline.process_window(frame)
+
+    @property
+    def frame_dt(self):
+        return self._capture_dt
 
     def arms(self):
         """The tracked SMPLer-X shoulder/elbow/wrist observation."""
@@ -201,10 +215,7 @@ class BodyReplayFrameSource(CameraFrameSource):
         self.last_raw_frame = self.last_observation = None
         self.body_enabled = True
         self._start_timestamp = None
-
-    @property
-    def frame_dt(self):
-        return self._source.frame_dt
+        self._last_capture_time_s = self._capture_dt = None
 
 
 
@@ -1122,8 +1133,8 @@ def run(args) -> int:
                 # Legacy NPZ replay uses the explicit fixed physics interval.
                 # Its timestamps have no guaranteed unit; host processing speed
                 # must not alter direction guards or target slew limiting.
-                frame_dt = (getattr(camera, 'frame_dt', None) or NOMINAL_FRAME_DT) if input_body is not None else (
-                    args.sim_steps / 240.0 if args.input_npz is not None else _median_interval(marks) or NOMINAL_FRAME_DT)
+                frame_dt = (args.sim_steps / 240.0 if args.input_npz is not None else
+                            getattr(camera, 'frame_dt', None) or NOMINAL_FRAME_DT)
                 from teleoperation.applications.camera_scene_arm import apply_camera_arm_frame
                 def arm_error(side, error):
                     if side not in arm_failures:

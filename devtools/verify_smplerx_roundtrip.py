@@ -13,7 +13,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input-image', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--frames', type=int, default=40, help='include five shape initialization frames and thirty neutral samples')
     args = parser.parse_args()
+    if args.frames < 6:
+        parser.error('--frames must be at least six')
     import cv2
     import numpy as np
     from teleoperation.cli.smplerx_options import smplerx_defaults
@@ -36,7 +39,7 @@ def main():
             raise ValueError('Cannot read input image')
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         started = time.monotonic()
-        for sequence in range(12):
+        for sequence in range(args.frames):
             stamp = time.monotonic()
             client.submit(BodyFrameId('roundtrip', sequence, stamp), rgb)
             deadline, result = time.monotonic() + 120., None
@@ -53,7 +56,8 @@ def main():
             rows.append(capture_sample(source, raw))
             results.append(raw)
         if not all(results[-1].upper_body.valid.values()):
-            raise RuntimeError('Real worker produced no accepted bilateral body result')
+            raise RuntimeError(f'Real worker produced no accepted bilateral body result: {result.reason}; '
+                               f'{tracked.state_by_side}; {tracked.reason_by_side}')
         args.output_dir.mkdir(parents=True, exist_ok=True)
         path = save_body_recording(args.output_dir / 'body.h5', rows,
             dict(source='smplerx', model_id=result.model_id, model_hash=result.model_hash, time_unit='monotonic_s',

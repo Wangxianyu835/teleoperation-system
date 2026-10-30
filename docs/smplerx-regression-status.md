@@ -1,101 +1,53 @@
 # SMPLer-X migration regression status
 
-Full command: `python -m unittest discover -s tests` with the teleoperation interpreter.
-Result: 546 tests; 10 failures, 72 errors, 3 skips.
+Date: 2026-10-31. Software migration and real-camera acceptance are separate.
 
-This is an incomplete migration, not a green regression baseline. The list includes
-removed Pose-mode expectations, unmigrated camera mocks and shared calibration
-fixtures, as well as IK and VR failures needing baseline comparison. No tests were
-skipped merely to hide these failures. Fixing or explicitly replacing each affected
-contract remains part of the plan.
+## Final full regression
 
-The real S32 single-image smoke and direct/worker numeric comparison passed
-independently; they do not establish camera/robot integration or VR compatibility.
+Interpreter: `D:/Anaconda/envs/teleoperation/python.exe`.
 
-## Failures and errors
+Command: `python -m unittest discover -s tests`.
 
-```text
-ERROR: test_diagnostics_leave_targets_commands_states_and_step_counts_identical (test_arm_diagnostics.DiagnosticLoopTests)
-ERROR: test_error_closes_trace_and_saves_partial_report (test_arm_diagnostics.DiagnosticLoopTests)
-ERROR: test_replay_loop_routes_both_wrist_orientations_and_keeps_fixed_physics (test_arm_following.ArmRealtimeLoopTests)
-ERROR: test_camera_frame_retains_world_points_for_recording_and_replay (test_arm_realtime_bridge.EntryAndReplayTests)
-ERROR: test_replay_source_feeds_frames_then_stops (test_arm_realtime_bridge.EntryAndReplayTests)
-ERROR: test_world_replay_declares_the_metadata_the_pipeline_demands (test_arm_realtime_bridge.EntryAndReplayTests)
-ERROR: test_ik_reachable_fk_targets_and_reject_unchecked_success (test_mediapipe_tron2a.ArmControlSafetyTests)
-ERROR: test_independent_pose_without_hands_and_ik_failure (test_mediapipe_tron2a.ArmControlSafetyTests)
-ERROR: test_initial_loss_bad_times_and_large_gap_do_not_jump (test_mediapipe_tron2a.ArmControlSafetyTests)
-ERROR: test_joint_bounds_velocity_acceleration_with_irregular_times_and_reversals (test_mediapipe_tron2a.ArmControlSafetyTests)
-ERROR: test_loss_brakes_residual_velocity_timeout_returns_and_recovers (test_mediapipe_tron2a.ArmControlSafetyTests)
-ERROR: test_mismatched_urdf_reference_and_unsafe_q_are_rejected (test_mediapipe_tron2a.ArmControlSafetyTests)
-ERROR: test_original_dual_keeps_hand_pipeline_and_call_order (test_mediapipe_tron2a.ArmControlSafetyTests)
-ERROR: test_outside_workspace_is_rejected_without_hiding_target (test_mediapipe_tron2a.ArmControlSafetyTests)
-ERROR: test_delivered_synthetic_fixture_is_loadable_and_matches_real_fk (test_mediapipe_tron2a.CalibrationPersistenceTests)
-ERROR: test_loading_rejects_invalid_key_values (test_mediapipe_tron2a.CalibrationPersistenceTests)
-ERROR: test_strict_json_save_reload_and_no_overwrite (test_mediapipe_tron2a.CalibrationPersistenceTests)
-ERROR: test_camera_initialization_failure_and_timeout_do_not_save (test_mediapipe_tron2a.CameraApplicationTests)
-ERROR: test_cancel_failure_and_insufficient_frames_close_and_do_not_save (test_mediapipe_tron2a.CameraApplicationTests)
-ERROR: test_configuration_errors_do_not_open_camera (test_mediapipe_tron2a.CameraApplicationTests)
-ERROR: test_help_does_not_open_camera_or_execute_configuration (test_mediapipe_tron2a.CameraApplicationTests)
-ERROR: test_preview_cancel_releases_camera_and_window_then_can_restart (test_mediapipe_tron2a.CameraApplicationTests)
-ERROR: test_preview_failure_and_write_failure_release_camera (test_mediapipe_tron2a.CameraApplicationTests)
-ERROR: test_reload_failure_removes_new_result_and_releases_camera (test_mediapipe_tron2a.CameraApplicationTests)
-ERROR: test_success_saves_then_reloads_and_closes (test_mediapipe_tron2a.CameraApplicationTests)
-ERROR: test_forearm_neutral_alignment_and_degenerate_position_still_updates (test_mediapipe_tron2a.CameraArmMappingTests)
-ERROR: test_legacy_absolute_wrist_behavior_is_unchanged (test_mediapipe_tron2a.CameraArmMappingTests)
-ERROR: test_missing_invalid_nonfinite_and_calibration_source_checks (test_mediapipe_tron2a.CameraArmMappingTests)
-ERROR: test_near_straight_and_plane_sign_crossing_do_not_flip_roll (test_mediapipe_tron2a.CameraArmMappingTests)
-ERROR: test_neutral_offset_rotated_scaled_axes_and_independent_shoulders (test_mediapipe_tron2a.CameraArmMappingTests)
-ERROR: test_bad_world_contract_and_model_alignment_refuse_normalized_fallback (test_mediapipe_tron2a.CameraDualTeleoperatorTests)
-ERROR: test_ik_failure_keeps_safe_output_and_fingers_continue (test_mediapipe_tron2a.CameraDualTeleoperatorTests)
-ERROR: test_invalid_times_reject_before_inference_or_arm_state_change (test_mediapipe_tron2a.CameraDualTeleoperatorTests)
-ERROR: test_seconds_raw_preservation_48d_order_and_array_independence (test_mediapipe_tron2a.CameraDualTeleoperatorTests)
-ERROR: test_shared_model_matches_hand_and_dual_windows_flags_and_native_angles (test_mediapipe_tron2a.CameraDualTeleoperatorTests)
-ERROR: test_three_frame_wait_single_loss_recovery_and_independent_pose (test_mediapipe_tron2a.CameraDualTeleoperatorTests)
-ERROR: test_bad_full_configuration_rejected_before_camera_or_world (test_mediapipe_tron2a.CameraFullRuntimeTests)
-ERROR: test_cli_exclusive_modes_checkpoint_selection_and_arms_default (test_mediapipe_tron2a.CameraFullRuntimeTests)
-ERROR: test_complete_apply_and_report_loss_recovery_statistics (test_mediapipe_tron2a.CameraFullRuntimeTests)
-ERROR: test_full_lifecycle_initialization_failure_error_cancel_and_restart (test_mediapipe_tron2a.CameraFullRuntimeTests)
-ERROR: test_full_preview_shows_independent_hand_states_device_and_weights (test_mediapipe_tron2a.CameraFullRuntimeTests)
-ERROR: test_real_shared_and_paired_loader_contracts (test_mediapipe_tron2a.CameraFullRuntimeTests)
-ERROR: test_shared_runtime_and_native_hand_targets_reach_pybullet (test_mediapipe_tron2a.CameraFullRuntimeTests)
-ERROR: test_camera_initialization_failure_and_simulation_window_close_release_world (test_mediapipe_tron2a.CameraRuntimeTests)
-ERROR: test_help_is_static_and_lists_both_modes_and_checkpoints (test_mediapipe_tron2a.CameraRuntimeTests)
-ERROR: test_interrupt_capture_and_preview_errors_close_resources_and_report (test_mediapipe_tron2a.CameraRuntimeTests)
-ERROR: test_invalid_configuration_and_synthetic_fixture_do_not_open_devices (test_mediapipe_tron2a.CameraRuntimeTests)
-ERROR: test_preview_includes_actual_pose_and_separate_tracking_errors (test_mediapipe_tron2a.CameraRuntimeTests)
-ERROR: test_real_headless_runtime_missing_hands_report_and_no_hand_models (test_mediapipe_tron2a.CameraRuntimeTests)
-ERROR: test_headless_left_right_and_bilateral_follow_actual_fk (test_mediapipe_tron2a.CameraSimulationTests)
-ERROR: test_optional_hand_geometry_holds_fixed_reference (test_mediapipe_tron2a.CameraSimulationTests)
-ERROR: test_pose_world_mapping_through_real_ik_safety_and_simulation (test_mediapipe_tron2a.CameraSimulationTests)
-ERROR: test_clock_seconds_are_independent_of_raw_unix_milliseconds (test_mediapipe_tron2a.NeutralCalibrationTests)
-ERROR: test_elbow_motion_with_stationary_wrist_is_unstable (test_mediapipe_tron2a.NeutralCalibrationTests)
-ERROR: test_frame_gap_detection_gap_and_time_gap_restart_window (test_mediapipe_tron2a.NeutralCalibrationTests) (index=5, seconds=0.03, repeat=False)
-ERROR: test_frame_gap_detection_gap_and_time_gap_restart_window (test_mediapipe_tron2a.NeutralCalibrationTests) (index=1, seconds=1.0, repeat=False)
-ERROR: test_frame_gap_detection_gap_and_time_gap_restart_window (test_mediapipe_tron2a.NeutralCalibrationTests) (index=1, seconds=0.03, repeat=True)
-ERROR: test_global_translation_does_not_change_shoulder_relative_reference (test_mediapipe_tron2a.NeutralCalibrationTests)
-ERROR: test_insufficient_and_unstable_samples_are_rejected (test_mediapipe_tron2a.NeutralCalibrationTests)
-ERROR: test_missing_invalid_low_visibility_world_and_straight_elbow_reset_window (test_mediapipe_tron2a.NeutralCalibrationTests) (kwargs={'invalid': 'left'})
-ERROR: test_missing_invalid_low_visibility_world_and_straight_elbow_reset_window (test_mediapipe_tron2a.NeutralCalibrationTests) (kwargs={'invalid': 'right'})
-ERROR: test_missing_invalid_low_visibility_world_and_straight_elbow_reset_window (test_mediapipe_tron2a.NeutralCalibrationTests) (kwargs={'visibility': 0.1})
-ERROR: test_missing_invalid_low_visibility_world_and_straight_elbow_reset_window (test_mediapipe_tron2a.NeutralCalibrationTests) (kwargs={'no_world': True})
-ERROR: test_missing_invalid_low_visibility_world_and_straight_elbow_reset_window (test_mediapipe_tron2a.NeutralCalibrationTests) (kwargs={'straight': True})
-ERROR: test_missing_invalid_low_visibility_world_and_straight_elbow_reset_window (test_mediapipe_tron2a.NeutralCalibrationTests) (kwargs={'missing': True})
-ERROR: test_nonfinite_metric_points_and_visibility_reset_window (test_mediapipe_tron2a.NeutralCalibrationTests)
-ERROR: test_synthetic_reference_positions_and_real_fk (test_mediapipe_tron2a.NeutralCalibrationTests)
-ERROR: test_existing_single_side_input_and_optional_both_side_input (test_transhandr_vr.VRInterfaceTests)
-ERROR: test_existing_record_world_file_explicit_alignment_retains_body_fields (test_world_hand_pipeline.WorldHandPipelineTests)
-ERROR: test_capture_app_writes_combined_output (test_world_landmark_recording.CombinedCaptureTests)
-ERROR: test_combined_capture_is_readable_by_hand_and_arm_pipelines (test_world_landmark_recording.CombinedCaptureTests)
-ERROR: test_combined_round_trip_contains_both_spaces (test_world_landmark_recording.CombinedCaptureTests)
-FAIL: test_unreachable_wrist_orientation_does_not_sacrifice_position (test_arm_following.ArmSolveStateTests) (side='left')
-FAIL: test_unreachable_wrist_orientation_does_not_sacrifice_position (test_arm_following.ArmSolveStateTests) (side='right')
-FAIL: test_ik_mode_from_the_profile_decides_if_orientation_is_constrained (test_arm_ik_multi_robot.ThreeRobotArmIkTests) (robot='gr1_t2')
-FAIL: test_ik_mode_from_the_profile_decides_if_orientation_is_constrained (test_arm_ik_multi_robot.ThreeRobotArmIkTests) (robot='g1')
-FAIL: test_missing_pose_arm_holds_the_previous_target_exactly (test_arm_realtime_bridge.HoldAndFallbackTests)
-FAIL: test_the_fallback_can_be_switched_off (test_arm_realtime_bridge.HoldAndFallbackTests)
-FAIL: test_a_neutral_frame_sits_on_the_profile_neutral_point (test_arm_realtime_bridge.RelativeMappingTests)
-FAIL: test_summary_and_trace_are_json_able (test_arm_realtime_bridge.ReportAndIoTests)
-FAIL: test_record_world_command_is_registered (test_world_landmark_recording.CombinedCaptureTests)
-FAIL: test_record_world_help_works_without_site_packages (test_world_landmark_recording.CombinedCaptureTests)
-```
+Result: **560 tests, 0 failures, 0 errors, 3 skips**, 120.699 seconds.
+The previous incomplete 546-test result is superseded by this verified run.
+No skip was added to hide a migration failure. Optional dex checks use their separate environment.
+
+## Independent review and fixes
+
+One fresh reviewer found three Important issues, no Critical issues and no deferred minors:
+
+1. Pending asynchronous polls cleared wrist neutral samples. A 5 Hz body / 30 Hz
+   camera test now proves that ten distinct samples align the wrist.
+2. A returning pose could recover in one frame after loss. Recovery now requires
+   three distinct consistent samples; invalid/stale results break that window.
+3. Live and replay used different control intervals. Both adapters now expose
+   adjacent capture-time differences, tested with irregular timestamps.
+
+The author's real public-command checks found two additional issues and fixed them:
+
+- A body recording without Hands failed metric-hand preprocessing. Missing hands
+  now reset the finger window while the body continues; metric fallback stays forbidden.
+- Posture mapping was checked against a chain displacement box. Offline acceptance
+  now checks measured robot reach in posture mode and retains the original travel
+  box for displacement modes. A deliberately unreachable target is rejected.
+
+Each issue was reproduced by a failing test before its fix. The complete suite
+above passed after the final changes. VR numerical implementation was unchanged;
+its source/interface and shared-controller tests are included in the full run.
+
+## Real model evidence
+
+- Five-minute S32 single-model run: 1,604 new static-image results; 5.34 Hz;
+  p50 187 ms, p95 234 ms; allocated GPU memory growth 0.
+  See `smplerx-s32-endurance.json`. **The 10 Hz / p95 150 ms target was not met.**
+- Real subprocess -> tracker -> combined H5 -> reader: 40 samples, body values
+  preserved exactly, RGB and raw model packets retained.
+- Formal three-robot headless replay: 40 frames, no arm execution errors,
+  both wrist alignments reached tracking.
+- Corresponding offline diagnostic: 15 checks passed. Projection was inspected.
+- These runs use a repeated static image. They do not verify live hands, occlusion,
+  motion accuracy or the combined camera/hand/robot endurance load.
+
+The licensed assets and model runtime remain local and ignored by Git.
+Actual camera validation remains outstanding; the software tests do not replace it.
 

@@ -58,6 +58,8 @@ class BodyTracker:
         self._accepted_sequence = {side: None for side in SIDES}
         self._candidate = {side: None for side in SIDES}
         self._candidate_count = {side: 0 for side in SIDES}
+        self._candidate_time = {side: None for side in SIDES}
+        self._recovery_required = {side: False for side in SIDES}
         self._state = {side: "calibrating" for side in SIDES}
         self._reason = {side: "no body sample" for side in SIDES}
 
@@ -82,6 +84,8 @@ class BodyTracker:
             stamp = self._accepted_time[side]
             ages[side] = float("inf") if stamp is None else max(0., float(now_s) - stamp)
             if ages[side] > self.max_age_s:
+                if stamp is not None:
+                    self._recovery_required[side] = True
                 self._state[side] = "lost_hold"
                 self._reason[side] = "body sample expired"
         body = self._empty_body(timestamp if timestamp is not None else max(
@@ -134,6 +138,8 @@ class BodyTracker:
         self._accepted_sequence[side] = int(sequence)
         self._candidate[side] = None
         self._candidate_count[side] = 0
+        self._candidate_time[side] = None
+        self._recovery_required[side] = False
         self._state[side] = "tracking"
         self._reason[side] = ""
 
@@ -160,6 +166,9 @@ class BodyTracker:
             self._metadata = dict(body.metadata)
         except (KeyError, TypeError, ValueError) as error:
             for side in SIDES:
+                self._candidate[side] = None
+                self._candidate_count[side] = 0
+                self._recovery_required[side] = self._accepted_time[side] is not None
                 self._state[side] = "fault"
                 self._reason[side] = str(error)
             return self._emit(now_s, timestamp=result.frame_id.capture_time_s, fresh={})
@@ -170,24 +179,33 @@ class BodyTracker:
             stamp = result.frame_id.capture_time_s
             age = float(now_s) - stamp
             if age < 0 or age > self.max_age_s:
+                self._candidate[side] = None
+                self._candidate_count[side] = 0
+                self._recovery_required[side] = self._accepted_time[side] is not None
                 self._state[side] = "lost_hold" if self._accepted_time[side] is not None else "calibrating"
                 self._reason[side] = "body sample expired or from the future"
                 fresh[side] = False
                 continue
             if not body.valid[side] or points is None or not wrist.orientation_valid:
+                self._candidate[side] = None
+                self._candidate_count[side] = 0
+                self._recovery_required[side] = self._accepted_time[side] is not None
                 self._state[side] = "hold" if self._accepted_time[side] is not None else "calibrating"
                 self._reason[side] = "invalid body side"
                 fresh[side] = False
                 continue
-            if not self._jump(side, points, wrist):
+            if not self._jump(side, points, wrist) and not self._recovery_required[side]:
                 self._accept(side, body.arms[side], points, wrist, stamp, result.frame_id.sequence)
                 fresh[side] = True
                 continue
-            if self._candidate_is_consistent(side, points, wrist):
+            candidate_time = self._candidate_time[side]
+            if (candidate_time is not None and 0 < stamp - candidate_time <= self.max_age_s
+                    and self._candidate_is_consistent(side, points, wrist)):
                 self._candidate_count[side] += 1
             else:
                 self._candidate[side] = (np.asarray(points, dtype=float).copy(), wrist)
                 self._candidate_count[side] = 1
+            self._candidate_time[side] = stamp
             if self._candidate_count[side] >= self.recovery_samples:
                 self._accept(side, body.arms[side], points, wrist, stamp, result.frame_id.sequence)
                 fresh[side] = True

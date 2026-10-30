@@ -42,7 +42,9 @@ class WristTracker:
             self.elapsed_missing += elapsed
             self.status = "uncalibrated" if self.neutral is None else ("lost_hold" if self.elapsed_missing >= .5 else "hold")
             self.reason = "missing wrist" if observation is None else observation.reason
-            if self.neutral is None:
+            pending_body = (observation is not None and observation.source == 'smplerx'
+                            and observation.reason == 'no new body result' and self.elapsed_missing < .5)
+            if self.neutral is None and not pending_body:
                 self.samples.clear()
             return
         signature = (observation.source, observation.reference_frame, observation.local_frame)
@@ -64,6 +66,8 @@ class WristTracker:
                 self.reason = "stale or nonmonotonic wrist sample"
                 return
             self.last_timestamp = stamp
+        if observation.source == 'smplerx':
+            self.elapsed_missing = 0.
         if observation.reference_frame == "visionpro_sdk_zup":
             c = VR_TO_BASE
         elif observation.reference_frame in ("mediapipe_hand_world_axes", "smplx_camera_axes"):

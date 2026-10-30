@@ -4,6 +4,39 @@ import numpy as np
 
 
 class OperatorInitializationTests(unittest.TestCase):
+    def test_async_pending_polls_preserve_only_distinct_wrist_calibration_samples(self):
+        from teleoperation.inputs.body_tracking import BodyTracker
+        from teleoperation.retargeting.arm.wrist_orientation import WristTracker
+        from tests.test_body_tracking import make_result
+        tracker, wrist = BodyTracker(), WristTracker(np.eye(3))
+        for sequence in range(10):
+            stamp = 10. + sequence * .2
+            tracked = tracker.update(make_result(sequence,stamp),now_s=stamp)
+            wrist.update(tracked.wrists['left'],1/30)
+            if sequence == 8:
+                self.assertIsNone(wrist.neutral)
+                self.assertEqual(len(wrist.samples),9)
+            for poll in range(1,6):
+                pending = tracker.update(None,now_s=stamp+poll/30)
+                wrist.update(pending.wrists['left'],1/30)
+        self.assertIsNotNone(wrist.neutral)
+        self.assertEqual(wrist.generation,1)
+
+    def test_loss_requires_three_fresh_consistent_samples_and_invalid_breaks_window(self):
+        from teleoperation.inputs.body_tracking import BodyTracker
+        from tests.test_body_tracking import make_result
+        tracker = BodyTracker()
+        tracker.update(make_result(1,10.),now_s=10.)
+        tracker.update(None,now_s=10.6)
+        first = tracker.update(make_result(2,10.7),now_s=10.7)
+        self.assertFalse(first.body.valid['left'])
+        tracker.update(make_result(3,10.8,left=False),now_s=10.8)
+        for sequence in (4,5):
+            tracked = tracker.update(make_result(sequence,10.+sequence/5),now_s=10.+sequence/5)
+            self.assertFalse(tracked.body.valid['left'])
+        final = tracker.update(make_result(6,11.2),now_s=11.2)
+        self.assertTrue(final.body.valid['left'])
+
     def test_stale_startup_frame_cannot_initialize_operator_identity(self):
         from unittest.mock import Mock, patch
         from external.smplerx_worker.backend import SmplerXBackend

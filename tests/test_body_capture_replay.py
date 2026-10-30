@@ -9,6 +9,53 @@ from teleoperation.data.body_recording import save_body_recording, load_body_rec
 
 
 class BodyCaptureReplayTests(unittest.TestCase):
+    def test_live_and_replay_keep_identical_irregular_capture_intervals(self):
+        from dataclasses import replace
+        from unittest.mock import Mock
+        from tests.smplerx_fixtures import observation
+        from teleoperation.data.body_recording import capture_sample
+        from teleoperation.simulation.realtime_teleop import CameraFrameSource, BodyReplayFrameSource
+        from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
+        from teleoperation.contracts.observations import CameraFrame
+        source = Mock()
+        live = CameraFrameSource.__new__(CameraFrameSource)
+        live.pipeline = MediaPipePalmLocalPipeline('world')
+        live._source, live._start_timestamp = source, None
+        live._last_capture_time_s = live._capture_dt = None
+        live.body_enabled = True
+        rows, intervals = [], []
+        for index,stamp in enumerate((10.,10.05,10.22,10.25)):
+            raw,result = observation(index)
+            raw = replace(raw,hands=replace(raw.hands,timestamp=stamp))
+            source.next_teleop_observation.return_value = raw
+            source.last_frame = CameraFrame(np.zeros((4,5,3),dtype=np.uint8),stamp,index)
+            source.session_id,source.last_result = 'camera',result
+            live.next_frame()
+            rows.append(capture_sample(source,raw))
+            intervals.append(live.frame_dt)
+        with tempfile.TemporaryDirectory() as directory:
+            from tests.smplerx_fixtures import METADATA
+            path = save_body_recording(Path(directory)/'irregular.h5',rows,METADATA)
+            replay = BodyReplayFrameSource(path,'world')
+            restored = []
+            for _ in rows:
+                replay.next_frame()
+                restored.append(replay.frame_dt)
+        self.assertEqual(intervals,restored)
+        np.testing.assert_allclose(intervals[1:],[.05,.17,.03])
+
+    def test_body_replay_with_absent_hands_does_not_require_metric_hand_geometry(self):
+        from teleoperation.data.body_recording import capture_sample
+        from teleoperation.simulation.realtime_teleop import BodyReplayFrameSource
+        source = CameraTeleopSource(FakeCamera(),FakeHands(),FakeClient(body_result()),session_id='camera')
+        raw = source.next_teleop_observation()
+        with tempfile.TemporaryDirectory() as directory:
+            from tests.smplerx_fixtures import METADATA
+            path = save_body_recording(Path(directory)/'no-hands.h5',[capture_sample(source,raw)],METADATA)
+            replay = BodyReplayFrameSource(path,'world')
+            self.assertIsNone(replay.next_frame())
+            self.assertTrue(replay.arms().valid['left'])
+
     def test_combined_file_feeds_hand_reader_and_body_frame_source(self):
         from teleoperation.data.body_recording import capture_sample
         from teleoperation.data.hand_h5 import load_twohand_h5

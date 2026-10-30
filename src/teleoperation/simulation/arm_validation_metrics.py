@@ -46,7 +46,8 @@ def _jitter(rows, field, scale):
     return float(np.sqrt(np.mean(np.sum((values - values.mean(axis=0)) ** 2, axis=1))) * scale)
 
 
-def analyze_rows(rows, profiles, *, synthetic=False, max_hold_drift_rad=0., calibrated=True):
+def analyze_rows(rows, profiles, *, synthetic=False, max_hold_drift_rad=0., calibrated=True,
+                 map_mode='chain', robot_geometry=None):
     groups, pairs, checks = {}, {}, []
     def check(name, passed, **details):
         checks.append({"name": name, "status": "observation" if passed is None else "pass" if passed else "fail", **details})
@@ -93,9 +94,14 @@ def analyze_rows(rows, profiles, *, synthetic=False, max_hold_drift_rad=0., cali
         limit = profiles[name].travel_limit(side)
         neutral = np.asarray(profiles[name].realtime_neutral(side))
         inside = True
+        reachable = True
+        geometry = (robot_geometry or {}).get(name, {}).get(side)
         for i, row in enumerate(entries):
             if row["target_base"] is not None:
                 inside &= bool(np.all(np.abs(np.asarray(row["target_base"]) - neutral) <= limit + 1e-9))
+                if map_mode == 'posture' and geometry is not None and row['valid']:
+                    distance = np.linalg.norm(np.asarray(row['target_base']) - geometry['shoulder'])
+                    reachable &= bool(np.isfinite(distance) and distance <= geometry['upper'] + geometry['fore'] + 1e-6)
             if row["scenario"].startswith("move_"):
                 motion.append(row["actual_world"])
             if i == 0:
@@ -110,7 +116,11 @@ def analyze_rows(rows, profiles, *, synthetic=False, max_hold_drift_rad=0., cali
         transitions.setdefault(name, {})[side] = {"held_target_delta_mm": distribution(hold_deltas),
             "recovery_first_target_jump_mm": distribution(recovery_jumps), "actual_motion_span_mm": span,
             "step_response_90_s": None, "classification": "observation"}
-        check(f"travel_clamp.{name}.{side}", inside, limit_m=limit)
+        if map_mode == 'posture':
+            check(f'posture_reach.{name}.{side}', reachable if geometry is not None else None,
+                  definition='Valid posture targets within the measured robot arm reach; chain travel box does not apply')
+        else:
+            check(f"travel_clamp.{name}.{side}", inside, limit_m=limit)
         check(f"dropout_hold.{name}.{side}", all(value <= 1e-6 for value in hold_deltas) if hold_deltas else None,
               samples=len(hold_deltas))
         if synthetic:
