@@ -119,7 +119,6 @@ class CameraCalibrationConfig:
     workspace_max: np.ndarray
     translation: np.ndarray = field(default_factory=lambda: np.zeros(3))
     sample_count: int = 60
-    min_visibility: float = 0.7
     stability_tolerance: float = 0.015
     min_elbow_bend_degrees: float = 10.0
     max_elbow_bend_degrees: float = 100.0
@@ -135,8 +134,6 @@ class CameraCalibrationConfig:
             raise ValueError("positive scale and ordered workspace bounds required")
         if isinstance(self.sample_count, bool) or not isinstance(self.sample_count, int) or self.sample_count < 3:
             raise ValueError("sample_count must be an integer >= 3")
-        if not np.isfinite(self.min_visibility) or not 0 <= self.min_visibility <= 1:
-            raise ValueError("min_visibility must be in [0,1]")
         for name in ("stability_tolerance", "max_sample_gap", "max_acceleration", "tracking_timeout"):
             _positive(getattr(self, name), name)
         if not (np.isfinite(self.min_elbow_bend_degrees) and np.isfinite(self.max_elbow_bend_degrees)
@@ -222,7 +219,7 @@ class NeutralPoseCollector:
                 self._last_time = self._last_frame = self._last_detection = None
                 self._session_id = session_id
             if (not isinstance(frame, (int, np.integer)) or frame < 0
-                    or detection is None or not np.isfinite(detection)):
+                    or detection is None or not np.isfinite(detection) or detection < 0):
                 raise ValueError("SMPL-X body requires a finite sample sequence and capture time")
             if body_metadata.get("source_coordinate_frame") != "smplx_camera_root_relative_m" or body_metadata.get("source_units") != "m":
                 raise ValueError("Expected SMPL-X root-relative metre coordinates")
@@ -233,9 +230,11 @@ class NeutralPoseCollector:
         if self._last_frame is not None and frame <= self._last_frame:
             # Cached polls cannot add calibration samples or clear a stable window.
             return False
+        if self._last_detection is not None and detection <= self._last_detection:
+            self._clear('nonmonotonic body sample time')
+            return False
         if self._last_time is not None and (
             control_seconds - self._last_time > self.config.max_sample_gap
-            or detection <= self._last_detection
         ):
             self._clear("capture gap; restarting")
         self._last_time, self._last_frame, self._last_detection = control_seconds, frame, detection

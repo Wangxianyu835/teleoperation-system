@@ -122,7 +122,7 @@ class DualTeleoperator:
             observation = self._raw_observation(observation)
             # Camera per-side nonfinite/lost Pose is handled by the existing
             # mapper and safety controller, independently of finger inference.
-            if self.input_mode in ("legacy", "smplerx"):
+            if self.input_mode == 'legacy':
                 observation.upper_body.validate(strict=True)
             if self.input_mode in ("camera_world", "smplerx") or control_seconds is not None:
                 if (isinstance(control_seconds, bool) or not isinstance(control_seconds, Real)

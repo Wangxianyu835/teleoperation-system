@@ -24,6 +24,7 @@ SCHEMA_VERSION = "smplerx_body_recording_h5_v1"
 REQUIRED_METADATA = ("source", "model_id", "model_hash", "time_unit")
 LEGACY_MARKERS = ("mediapipe_pose", "pose_visibility", "pose_model")
 ARRAY_FIELDS = (
+    'rgb', 'observation_packet', 'worker_packet',
     "joints_root_m",
     "global_rotations",
     "image_joints",
@@ -125,7 +126,7 @@ def save_body_recording(
                     array = np.asarray(row[key])
                     if not np.isfinite(array).all():
                         raise ValueError(f"sample {index} field {key} must be finite")
-                    sample.create_dataset(key, data=array)
+                    sample.create_dataset(key, data=array, compression='gzip' if key == 'rgb' else None)
                 extra = {key: value for key, value in row.items()
                          if key not in SCALAR_FIELDS and key not in ARRAY_FIELDS and key != "metadata"}
                 if extra:
@@ -163,6 +164,7 @@ def load_body_recording(path: str | Path) -> BodyRecording:
             for key in REQUIRED_METADATA:
                 if key not in metadata:
                     raise ValueError(f"Body recording metadata requires {key}")
+            _metadata(metadata, [])
             for key, value in metadata.items():
                 _reject_legacy(value, context=f"metadata.{key}")
             group = h5_file.get("samples")
@@ -177,6 +179,8 @@ def load_body_recording(path: str | Path) -> BodyRecording:
                         row[key] = np.asarray(sample[key][:])
                 if "extra_json" in sample.attrs:
                     row.update(json.loads(_read_attr(sample.attrs["extra_json"])))
+                if 'sample_id' not in row or not np.isfinite(float(row.get('capture_time_s', float('nan')))):
+                    raise ValueError('Body sample requires sample_id and finite capture_time_s')
                 for key, value in row.items():
                     _reject_legacy(key, context=f"sample.{key}")
                     _reject_legacy(value, context=f"sample.{key}")
@@ -184,3 +188,38 @@ def load_body_recording(path: str | Path) -> BodyRecording:
     except OSError as error:
         raise ValueError("Body recording is not a supported SMPL-X HDF5 file") from error
     return BodyRecording(tuple(rows), {**metadata, "schema_version": schema})
+
+
+def capture_sample(source, raw):
+    """Preserve RGB, independent hand/body times, raw model arrays and output."""
+    from teleoperation.inputs.smplerx import encode_packet
+    frame = source.last_frame
+    wrist_values = lambda values: None if values is None else {side: vars(value) for side, value in values.items()}
+    packet = encode_packet('observation', {
+        'hands': {**vars(raw.hands), 'wrists': wrist_values(raw.hands.wrists)},
+        'upper_body': vars(raw.upper_body), 'wrists': wrist_values(raw.wrists)})
+    row = {'sample_id': f'{source.session_id}:{frame.frame_id}',
+           'capture_time_s': float(frame.timestamp), 'rgb': frame.rgb,
+           'observation_packet': np.frombuffer(packet, dtype=np.uint8)}
+    if source.last_result is not None:
+        result = source.last_result
+        row['completed_time_s'] = result.completed_time_s
+        row['worker_packet'] = np.frombuffer(encode_packet('result', {'result': result}), dtype=np.uint8)
+    return row
+
+
+def replay_observation(row):
+    from teleoperation.inputs.smplerx import decode_packet
+    from teleoperation.contracts.observations import RawHandFrame, UpperBodyObservation, RawTeleopObservation
+    from teleoperation.contracts.wrist import WristObservation
+    packet = decode_packet(np.asarray(row['observation_packet'], dtype=np.uint8).tobytes())
+    if packet['type'] != 'observation':
+        raise ValueError('Body recording observation packet has wrong type')
+    values = packet['payload']
+    wrists = lambda mapping: None if mapping is None else {side: WristObservation(**value) for side, value in mapping.items()}
+    hands = values['hands']
+    hands['wrists'] = wrists(hands.get('wrists'))
+    body = UpperBodyObservation(**values['upper_body'])
+    if body.metadata.get('source') != 'smplerx':
+        raise ValueError('Body replay requires explicit SMPL-X source')
+    return RawTeleopObservation(RawHandFrame(**hands), body, wrists(values.get('wrists')))

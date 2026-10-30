@@ -557,7 +557,8 @@ def _side_map(value) -> dict:
     if value is None:
         return {}
     if hasattr(value, "world_arms"):
-        return dict(value.world_arms or {})
+        return {side: points if value.valid.get(side, False) else None
+                for side, points in (value.world_arms or {}).items()}
     if isinstance(value, dict):
         return value
     return {}
@@ -609,7 +610,7 @@ class RealtimeArmBridge:
                  gain_quality_guard: bool = True,
                  min_plausible_reach_m: float = MIN_PLAUSIBLE_ARM_REACH_M,
                  arm_reach_side_tolerance: float = ARM_REACH_SIDE_TOLERANCE,
-                 fallback_hand: bool = True,
+                 fallback_hand: bool = False,
                  fallback_scale: float = FALLBACK_IMAGE_SCALE,
                  map_mode: str = "chain",
                  robot_links=None,

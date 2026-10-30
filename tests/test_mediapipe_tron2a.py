@@ -32,7 +32,7 @@ def configuration(**kwargs):
     return CameraCalibrationConfig(**values)
 
 
-def observation(index=0, *, shift=0., invalid=None, visibility=0.95, no_world=False,
+def observation(index=0, *, shift=0., invalid=None, no_world=False,
                 straight=False, missing=False):
     left = np.array([[0.2, 0., 0.], [0.2, 0.25, 0.], [0.2, 0.45, -0.15]])
     right = np.array([[-0.2, 0., 0.], [-0.2, 0.25, 0.], [-0.3, 0.45, -0.1]])
@@ -40,17 +40,19 @@ def observation(index=0, *, shift=0., invalid=None, visibility=0.95, no_world=Fa
         left[2] = left[1] + left[1] - left[0]
     left[2, 0] += shift
     valid = {side: side != invalid for side in ("left", "right")}
-    timestamp = 1800000000000 + index * 33
-    metadata = dict(frame_index=index, timestamp_unit="unix_ms",
-                    arm_world_space="mediapipe_pose_world_meters",
-                    pose_visibility=np.full(6, visibility))
+    timestamp = 10.0 + index / 30.
+    metadata = dict(frame_index=index, timestamp_unit="monotonic_s")
+    body_metadata = dict(source='smplerx', source_coordinate_frame='smplx_camera_root_relative_m',
+                         source_units='m', sample_sequence=index, session_id='synthetic',
+                         model_id='s32', model_hash='test-only-synthetic')
     points = {"left": left, "right": right}
     return RawTeleopObservation(
         RawHandFrame({"left": None, "right": None}, timestamp, metadata=metadata),
         UpperBodyObservation({side: None if missing else points[side].copy() for side in points},
-                             valid, timestamp, "mediapipe_pose_normalized", "normalized",
+                             valid, timestamp, "smplx_image_normalized", "normalized",
                              world_arms=None if no_world else {
-                                 side: None if missing else points[side].copy() for side in points}),
+                                 side: None if missing else points[side].copy() for side in points},
+                             metadata=body_metadata),
     )
 
 
@@ -59,6 +61,20 @@ def synthetic_calibration():
     for index in range(5):
         collector.add(observation(index), index / 30.)
     return collector.calibration(DEFAULT_TRON2A_URDF)
+
+
+def worker_options(case):
+    """Mock only the heavyweight perception boundary in application tests."""
+    for name, options in (
+        ('SmplerXWorkerTransport', dict(return_value=Mock())),
+        ('CameraTeleopSource', dict(side_effect=lambda camera, *args, **kwargs: camera)),
+    ):
+        patcher = patch.object(application, name, **options)
+        patcher.start()
+        case.addCleanup(patcher.stop)
+    return ['--smplerx-worker-python', str(case.directory / 'hands.task'),
+            '--smplerx-root', str(case.directory), '--smplerx-checkpoint', str(case.directory / 'hands.task'),
+            '--smplx-model-dir', str(case.directory)]
 
 
 class NeutralCalibrationTests(unittest.TestCase):
@@ -98,7 +114,7 @@ class NeutralCalibrationTests(unittest.TestCase):
             collector.calibration(DEFAULT_TRON2A_URDF)
 
     def test_missing_invalid_low_visibility_world_and_straight_elbow_reset_window(self):
-        for kwargs in (dict(invalid="left"), dict(invalid="right"), dict(visibility=.1),
+        for kwargs in (dict(invalid="left"), dict(invalid="right"),
                        dict(no_world=True), dict(straight=True), dict(missing=True)):
             with self.subTest(kwargs=kwargs):
                 collector = NeutralPoseCollector(configuration())
@@ -109,14 +125,11 @@ class NeutralCalibrationTests(unittest.TestCase):
                     collector.add(observation(index), index / 30.)
                 self.assertTrue(collector.ready)
 
-    def test_nonfinite_metric_points_and_visibility_reset_window(self):
-        for what in ("world", "visibility"):
+    def test_nonfinite_metric_points_reset_window(self):
+        for what in ('left', 'right'):
             collector = NeutralPoseCollector(configuration())
             raw = observation()
-            if what == "world":
-                raw.upper_body.world_arms["left"][2, 0] = np.nan
-            else:
-                raw.hands.metadata["pose_visibility"][0] = np.nan
+            raw.upper_body.world_arms[what][2, 0] = np.nan
             self.assertFalse(collector.add(raw, 0.))
             self.assertEqual(len(collector.samples), 0)
 
@@ -135,18 +148,21 @@ class NeutralCalibrationTests(unittest.TestCase):
                 collector.add(observation(), 0.)
                 raw = observation(index)
                 if repeat_detection:
-                    raw = replace(raw, hands=replace(raw.hands, timestamp=1800000000000),
-                                  upper_body=replace(raw.upper_body, timestamp=1800000000000))
+                    raw = replace(raw, hands=replace(raw.hands, timestamp=10.0),
+                                  upper_body=replace(raw.upper_body, timestamp=10.0))
                 collector.add(raw, seconds)
-                self.assertEqual(len(collector.samples), 1)
+                self.assertEqual(len(collector.samples), 0 if repeat_detection else 2 if index == 5 else 1)
 
     def test_raw_timestamp_and_source_validation(self):
         for change in ("timestamp", "unit", "space", "frame"):
             raw = observation()
             if change == "timestamp":
-                raw = replace(raw, upper_body=replace(raw.upper_body, timestamp=1))
+                raw = replace(raw, upper_body=replace(raw.upper_body, timestamp=float('nan')))
             else:
-                raw.hands.metadata[{"unit": "timestamp_unit", "space": "arm_world_space", "frame": "frame_index"}[change]] = "wrong"
+                if change == 'unit':
+                    raw.hands.metadata['timestamp_unit'] = 'wrong'
+                else:
+                    raw.upper_body.metadata[{'space': 'source_coordinate_frame', 'frame': 'sample_sequence'}[change]] = 'wrong'
             with self.assertRaises(ValueError):
                 NeutralPoseCollector(configuration()).add(raw, 0.)
 
@@ -159,7 +175,7 @@ class NeutralCalibrationTests(unittest.TestCase):
         self.assertTrue(all(b > a for a, b in zip(values, values[1:])))
         raw = observation()
         timed = application.TimedCameraObservation(raw, .25)
-        self.assertEqual(timed.raw.hands.timestamp, 1800000000000)
+        self.assertEqual(timed.raw.hands.timestamp, 10.0)
         self.assertEqual(timed.control_relative_seconds, .25)
         collector = NeutralPoseCollector(configuration())
         collector.add(raw, 0.)
@@ -172,7 +188,7 @@ class NeutralCalibrationTests(unittest.TestCase):
             scale=[np.zeros(3), np.full(3, np.nan), np.full(3, -1.)],
             translation=[np.full(3, np.inf)], workspace_min=[np.ones(3)],
             workspace_max=[np.full(3, np.nan)], sample_count=[2, 3.5],
-            min_visibility=[-1, 1.1, np.nan], stability_tolerance=[0., np.nan],
+            stability_tolerance=[0., np.nan],
             max_sample_gap=[0.], max_acceleration=[-1., np.nan], tracking_timeout=[0.],
             min_elbow_bend_degrees=[0., 170., np.nan], max_elbow_bend_degrees=[5., 180.],
             safe_q=[{"left": np.full(7, np.inf), "right": np.zeros(7)}],
@@ -212,7 +228,7 @@ class CalibrationPersistenceTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), original)
             self.assertFalse(list(Path(directory).glob("*.tmp")))
             trace = loaded.metadata["capture_trace"]
-            self.assertEqual(trace[0]["detection_unix_ms"], 1800000000000)
+            self.assertEqual(trace[0]['capture_time_s'], 10.0)
             self.assertAlmostEqual(trace[-1]["control_relative_seconds"], 4 / 30.)
 
     def test_serialization_and_publish_failures_leave_no_result_or_temporary_file(self):
@@ -258,7 +274,7 @@ class CameraApplicationTests(unittest.TestCase):
         self.args = build_parser().parse_args([
             "dual", "calibrate-camera", "--output", str(self.directory / "calibration.json"),
             "--model-asset-path", str(self.directory / "hands.task"),
-            "--pose-model-asset-path", str(self.directory / "pose.task"),
+            *worker_options(self),
             "--safe-q-left", "0", "0", "0", "-0.5", "0", "0", "0",
             "--safe-q-right", "0", "0", "0", "-0.5", "0", "0", "0",
             "--rotation", "1", "0", "0", "0", "1", "0", "0", "0", "1",
@@ -290,7 +306,7 @@ class CameraApplicationTests(unittest.TestCase):
 
     def test_configuration_errors_do_not_open_camera(self):
         for name, value in (("model_asset_path", self.directory / "missing.task"),
-                            ("pose_model_asset_path", self.directory / "missing.task"),
+                            ("smplerx_checkpoint", self.directory / "missing.task"),
                             ("urdf", self.directory / "missing.urdf"),
                             ("samples", 2), ("timeout", float("nan")), ("width", 0)):
             original = getattr(self.args, name)
@@ -371,7 +387,7 @@ class CameraArmMappingTests(unittest.TestCase):
 
     def retargeter(self, **kwargs):
         from teleoperation.retargeting.arm.retargeter import ArmRetargeter
-        return ArmRetargeter(self.calibration, input_mode="camera_world", **kwargs)
+        return ArmRetargeter(self.calibration, input_mode="smplerx", **kwargs)
 
     def test_neutral_offset_rotated_scaled_axes_and_independent_shoulders(self):
         rotation = Rotation.from_euler("xyz", [0.2, -0.4, 0.7]).as_matrix()
@@ -418,7 +434,7 @@ class CameraArmMappingTests(unittest.TestCase):
             metadata = dict(self.calibration.metadata, **{key: value})
             from teleoperation.retargeting.arm.retargeter import ArmRetargeter
             with self.subTest(key=key), self.assertRaises(ValueError):
-                ArmRetargeter(replace(self.calibration, metadata=metadata), input_mode="camera_world")
+                ArmRetargeter(replace(self.calibration, metadata=metadata), input_mode="smplerx")
         with self.assertRaises(ValueError):
             mapper.update(replace(observation().upper_body, units="m"), "left")
 
@@ -450,7 +466,7 @@ class ArmControlSafetyTests(unittest.TestCase):
     def setUp(self):
         from teleoperation.applications.dual import Tron2ADualArmController
         self.calibration = synthetic_calibration()
-        self.controller = Tron2ADualArmController(self.calibration, DEFAULT_TRON2A_URDF, input_mode="camera_world")
+        self.controller = Tron2ADualArmController(self.calibration, DEFAULT_TRON2A_URDF, input_mode="smplerx")
 
     def test_independent_pose_without_hands_and_ik_failure(self):
         self.controller.update(observation().upper_body, 0.)
@@ -486,7 +502,7 @@ class ArmControlSafetyTests(unittest.TestCase):
             ("l21", side): l21_joint_result(side, np.zeros(18), .1) for side in ("left", "right")}
         with patch("teleoperation.applications.hand_processing.DualHandPipeline", return_value=pipeline), patch("teleoperation.retargeting.hand.interface.PoseTransformerRetargeter", return_value=adapter):
             dual = DualTeleoperator(hand, "cpu", self.calibration, DEFAULT_TRON2A_URDF)
-        def arm_update(body, side, time):
+        def arm_update(body, side, time, wrist=None):
             events.append(side + "_arm")
             return True
         with patch.object(dual.arms, "update_side", side_effect=arm_update):
@@ -524,11 +540,11 @@ class ArmControlSafetyTests(unittest.TestCase):
         poses = {s:p.copy() for s,p in self.calibration.robot_neutral_pose.items()}
         poses["left"][0] += .01
         with self.assertRaises(ValueError):
-            Tron2ADualArmController(replace(self.calibration, robot_neutral_pose=poses), DEFAULT_TRON2A_URDF, input_mode="camera_world")
+            Tron2ADualArmController(replace(self.calibration, robot_neutral_pose=poses), DEFAULT_TRON2A_URDF, input_mode="smplerx")
         joints = {s:q.copy() for s,q in self.calibration.safe_q.items()}
         joints["left"][0] = 99
         with self.assertRaises(ValueError):
-            Tron2ADualArmController(replace(self.calibration, safe_q=joints), DEFAULT_TRON2A_URDF, input_mode="camera_world")
+            Tron2ADualArmController(replace(self.calibration, safe_q=joints), DEFAULT_TRON2A_URDF, input_mode="smplerx")
 
     def test_loss_brakes_residual_velocity_timeout_returns_and_recovers(self):
         safety = self.controller.controllers["left"]
@@ -632,7 +648,7 @@ class CameraSimulationTests(unittest.TestCase):
         from teleoperation.retargeting.arm.ik import target_pose_from_matrix, _pose_matrix, _pose_error
         calibration = synthetic_calibration()
         for moving in (("left",), ("right",), ("left", "right")):
-            ctrl = Tron2ADualArmController(calibration, DEFAULT_TRON2A_URDF, input_mode="camera_world")
+            ctrl = Tron2ADualArmController(calibration, DEFAULT_TRON2A_URDF, input_mode="smplerx")
             world = Tron2ADualArmWorld(DEFAULT_TRON2A_URDF, gui=False, display="simplified", attach_hands=False, safe_q=calibration.safe_q)
             temporary = Path(world._temporary.name)
             try:
@@ -707,7 +723,7 @@ class CameraSimulationTests(unittest.TestCase):
         from teleoperation.retargeting.arm.ik import _pose_matrix, _pose_error
         calibration = synthetic_calibration()
         for moving in (("left",), ("right",), ("left", "right")):
-            controller = Tron2ADualArmController(calibration, DEFAULT_TRON2A_URDF, input_mode="camera_world")
+            controller = Tron2ADualArmController(calibration, DEFAULT_TRON2A_URDF, input_mode="smplerx")
             world = Tron2ADualArmWorld(DEFAULT_TRON2A_URDF, gui=False, display="simplified", attach_hands=False, safe_q=calibration.safe_q)
             try:
                 for frame in range(150):
@@ -741,7 +757,7 @@ class CameraRuntimeTests(unittest.TestCase):
         for model in ("hands.task", "pose.task"):
             (self.directory / model).write_bytes(b"mock")
         self.args = build_parser().parse_args(["dual", "camera", "--arms-only", "--calibration", str(self.directory / "neutral.json"),
-            "--model-asset-path", str(self.directory / "hands.task"), "--pose-model-asset-path", str(self.directory / "pose.task"),
+            "--model-asset-path", str(self.directory / "hands.task"), *worker_options(self),
             "--display", "simplified", "--no-gui", "--no-preview", "--frames", "2", "--report", str(self.directory / "report.json")])
 
     def test_help_is_static_and_lists_both_modes_and_checkpoints(self):
@@ -759,7 +775,7 @@ class CameraRuntimeTests(unittest.TestCase):
 
     def test_preview_includes_actual_pose_and_separate_tracking_errors(self):
         from teleoperation.applications.dual import Tron2ADualArmController
-        controller = Tron2ADualArmController(self.calibration, DEFAULT_TRON2A_URDF, input_mode="camera_world")
+        controller = Tron2ADualArmController(self.calibration, DEFAULT_TRON2A_URDF, input_mode="smplerx")
         raw = observation(invalid="left")
         controller.update(raw.upper_body, 0.)
         actual = dict(arms={side: dict(pose=self.calibration.robot_neutral_pose[side]) for side in ("left", "right")})
@@ -768,7 +784,7 @@ class CameraRuntimeTests(unittest.TestCase):
             self.assertTrue(application._runtime_preview(camera, raw, controller, actual, "test"))
         messages = [call.args[1] for call in text.call_args_list]
         self.assertTrue(any("EE=" in message and "target err=" in message and "control err=" in message for message in messages))
-        self.assertTrue(any("Pose=--" in message for message in messages))
+        self.assertTrue(any('SMPL-X=--' in message for message in messages))
 
     def test_real_headless_runtime_missing_hands_report_and_no_hand_models(self):
         try:
@@ -791,7 +807,7 @@ class CameraRuntimeTests(unittest.TestCase):
         self.assertFalse(report["real_camera_verified"])
 
     def test_invalid_configuration_and_synthetic_fixture_do_not_open_devices(self):
-        for name, value in (("frames", -1), ("simulation_steps", 0), ("pose_min_visibility", np.nan), ("report", self.args.calibration),
+        for name, value in (("frames", -1), ("simulation_steps", 0), ('smplerx_checkpoint', self.directory / 'missing.pth'), ("report", self.args.calibration),
                             ("calibration", Path(__file__).parent / "fixtures/tron2a_camera_neutral.synthetic.json")):
             old = getattr(self.args, name)
             setattr(self.args, name, value)
@@ -870,7 +886,7 @@ class CameraDualTeleoperatorTests(unittest.TestCase):
     def setUp(self):
         from teleoperation.applications.dual import DualTeleoperator
         self.dual = DualTeleoperator(world_predictor(), "cpu", synthetic_calibration(), DEFAULT_TRON2A_URDF,
-                                     input_mode="camera_world")
+                                     input_mode="smplerx")
         self.addCleanup(self.dual.close)
 
     def test_three_frame_wait_single_loss_recovery_and_independent_pose(self):
@@ -940,12 +956,12 @@ class CameraDualTeleoperatorTests(unittest.TestCase):
     def test_bad_world_contract_and_model_alignment_refuse_normalized_fallback(self):
         from teleoperation.applications.dual import DualTeleoperator
         from teleoperation.contracts.coordinates import PALM_LOCAL_COORDINATE_ALIGNMENT
-        for kwargs in (dict(input_mode="invalid"), dict(input_mode="camera_world", hand_preprocessing="palm-local")):
+        for kwargs in (dict(input_mode="invalid"), dict(input_mode="smplerx", hand_preprocessing="palm-local")):
             with self.assertRaises(ValueError):
                 DualTeleoperator(world_predictor(), "cpu", synthetic_calibration(), DEFAULT_TRON2A_URDF, **kwargs)
         model = Mock(coordinate_alignment=PALM_LOCAL_COORDINATE_ALIGNMENT)
         with self.assertRaisesRegex(ValueError, "mismatch"):
-            DualTeleoperator(model, "cpu", synthetic_calibration(), DEFAULT_TRON2A_URDF, input_mode="camera_world")
+            DualTeleoperator(model, "cpu", synthetic_calibration(), DEFAULT_TRON2A_URDF, input_mode="smplerx")
         raw = dual_world_observation()
         with self.assertRaisesRegex(ValueError, "world_hands"):
             self.dual.update(replace(raw, hands=replace(raw.hands, world_hands=None)), control_seconds=0.)
@@ -1079,7 +1095,7 @@ class CameraFullRuntimeTests(unittest.TestCase):
 
     def test_full_preview_shows_independent_hand_states_device_and_weights(self):
         from teleoperation.applications.dual import DualTeleoperator
-        dual = DualTeleoperator(world_predictor(), "cpu", self.calibration, DEFAULT_TRON2A_URDF, input_mode="camera_world")
+        dual = DualTeleoperator(world_predictor(), "cpu", self.calibration, DEFAULT_TRON2A_URDF, input_mode="smplerx")
         self.addCleanup(dual.close)
         for i in range(3):
             raw = dual_world_observation(i, left=False)
@@ -1097,7 +1113,7 @@ class CameraFullRuntimeTests(unittest.TestCase):
     def test_full_lifecycle_initialization_failure_error_cancel_and_restart(self):
         from teleoperation.applications.dual import DualTeleoperator
         for failure in ("world", "camera", "capture", "interrupt", "preview", "exit", "cleanup", "report", "normal"):
-            dual = DualTeleoperator(world_predictor(), "cpu", self.calibration, DEFAULT_TRON2A_URDF, input_mode="camera_world")
+            dual = DualTeleoperator(world_predictor(), "cpu", self.calibration, DEFAULT_TRON2A_URDF, input_mode="smplerx")
             camera, world = Mock(), self.fake_world()
             self.args.preview = failure in ("preview", "exit")
             self.args.attach_hands = None

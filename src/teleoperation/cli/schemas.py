@@ -227,7 +227,6 @@ def dual_calibrate_camera(parser):
     parser.add_argument("--workspace-min", type=float, nargs=3, required=True, help="minimum base_Link x/y/z in metres")
     parser.add_argument("--workspace-max", type=float, nargs=3, required=True, help="maximum base_Link x/y/z in metres")
     parser.add_argument("--samples", type=int, default=60, help="consecutive stable bilateral valid samples, >=3")
-    parser.add_argument("--pose-min-visibility", type=float, default=0.7, help="minimum visibility of all shoulder/elbow/wrist points, [0,1]")
     parser.add_argument("--stability-tolerance", type=float, default=0.015, help="maximum elbow/wrist distance from window mean, in shoulder-relative metres")
     parser.add_argument("--min-elbow-bend", type=float, default=10., help="minimum bend away from straight, degrees; prevents degenerate forearm plane")
     parser.add_argument("--max-elbow-bend", type=float, default=100., help="maximum allowed neutral elbow bend, degrees")

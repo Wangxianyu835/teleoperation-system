@@ -27,6 +27,9 @@ class CameraTeleopSource:
             raise ValueError("arms_enabled requires an SMPLer-X client")
         self.tracker = tracker or BodyTracker()
         self.last_frame: CameraFrame | None = None
+        self.last_result = None
+        self.last_tracked = None
+        self.last_fault = None
 
     def next_teleop_observation(self) -> RawTeleopObservation:
         frame = self.camera.capture_sample()
@@ -45,9 +48,16 @@ class CameraTeleopSource:
             )
             return RawTeleopObservation(hands, body, None)
         frame_id = BodyFrameId(self.session_id, frame.frame_id, frame.timestamp)
-        self.smplerx_client.submit(frame_id, frame.rgb)
-        result = self.smplerx_client.poll()
+        result = None
+        if self.last_fault is None:
+            try:
+                self.smplerx_client.submit(frame_id, frame.rgb)
+                result = self.smplerx_client.poll()
+            except (RuntimeError, ValueError, OSError) as error:
+                self.last_fault = str(error)
+        self.last_result = result
         tracked = self.tracker.update(result, now_s=frame.timestamp)
+        self.last_tracked = tracked
         return RawTeleopObservation(hands, tracked.body, tracked.wrists)
 
     def release(self):

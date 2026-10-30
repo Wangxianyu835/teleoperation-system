@@ -47,7 +47,7 @@ def _configuration(args):
                 for side in ("left", "right")},
         workspace_min=np.asarray(args.workspace_min, dtype=float),
         workspace_max=np.asarray(args.workspace_max, dtype=float),
-        sample_count=args.samples, min_visibility=0.0 if getattr(args, "pose_min_visibility", None) is None else args.pose_min_visibility,
+        sample_count=args.samples,
         stability_tolerance=args.stability_tolerance,
         min_elbow_bend_degrees=args.min_elbow_bend,
         max_elbow_bend_degrees=args.max_elbow_bend,
@@ -175,6 +175,8 @@ def run(args):
         try:
             if source is not None:
                 source.release()
+            elif camera is not None:
+                camera.release()
         finally:
             if preview_open:
                 import cv2
@@ -499,7 +501,7 @@ def run_camera(args):
                 report.data.update(exit_reason="error", error=str(error))
     finally:
         # Every owned resource is closed even if another cleanup operation fails.
-        for resource, method in ((source, "release"), (teleoperator, "close"), (world, "close")):
+        for resource, method in ((source if source is not None else camera, "release"), (teleoperator, "close"), (world, "close")):
             if resource is not None:
                 try:
                     getattr(resource, method)()

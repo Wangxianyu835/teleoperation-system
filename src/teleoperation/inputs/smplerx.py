@@ -20,6 +20,8 @@ class PacketError(ValueError):
 
 
 def _encode(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return _encode(value.item())
     if isinstance(value, BodyFrameId):
         return {"__type__": "frame_id", "session_id": value.session_id,
                 "sequence": value.sequence, "capture_time_s": value.capture_time_s}
