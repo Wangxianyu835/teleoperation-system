@@ -310,6 +310,51 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
             wrists=raw.get("wrists"),
         )
 
+    def capture_sample(self):
+        """Capture one RGB frame without running a body or hand detector."""
+        from teleoperation.contracts.observations import CameraFrame
+        if self._cap is None or self._landmarker is None:
+            raise RuntimeError("MediaPipe camera input is closed")
+        success, frame = self._cap.read()
+        if not success or frame is None or frame.size == 0:
+            raise RuntimeError(f"Frame read failed for camera {self._camera_index}")
+        self.last_bgr = frame
+        rgb = self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2RGB)
+        frame_id = self._frame_index
+        self._frame_index += 1
+        return CameraFrame(rgb, time.monotonic(), frame_id)
+
+    def process_sample(self, frame):
+        """Run Hands on a previously captured frame; never read the camera."""
+        from teleoperation.contracts.observations import RawHandFrame
+        if self._landmarker is None:
+            raise RuntimeError("MediaPipe camera input is closed")
+        if not hasattr(frame, "rgb") or np.asarray(frame.rgb).ndim != 3:
+            raise TypeError("frame must contain an RGB image")
+        frame_rgb = np.asarray(frame.rgb)
+        if frame_rgb.shape[2] != 3:
+            raise ValueError("RGB frame must have three channels")
+        mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=frame_rgb)
+        timestamp_ms = int(time.time() * 1000)
+        if self._last_timestamp_ms is not None:
+            timestamp_ms = max(timestamp_ms, self._last_timestamp_ms + 1)
+        result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
+        raw = parse_result(result, timestamp_ms, {
+            "camera_index": self._camera_index,
+            "frame_index": int(frame.frame_id),
+            "capture_time_s": float(frame.timestamp),
+            "image_width": int(frame_rgb.shape[1]),
+            "image_height": int(frame_rgb.shape[0]),
+        }, invalid_hand_as_missing=self._invalid_hand_as_missing, include_world=True)
+        self._last_timestamp_ms = timestamp_ms
+        return RawHandFrame(
+            {side: raw[side] for side in ("left", "right")}, float(frame.timestamp),
+            "mediapipe_hands", {**raw["metadata"], "timestamp_unit": "monotonic_s"},
+            {side: "landmarks21" for side in ("left", "right")},
+            world_hands={side: raw[f"world_{side}"] for side in ("left", "right")},
+            wrists=raw.get("wrists"),
+        )
+
     def close(self): self.release()
 
     def next_teleop_observation(self):
