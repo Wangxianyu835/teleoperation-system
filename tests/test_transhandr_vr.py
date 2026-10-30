@@ -113,6 +113,7 @@ class VRProcessingTests(unittest.TestCase):
 class VRInterfaceTests(unittest.TestCase):
     def test_existing_single_side_input_and_optional_both_side_input(self):
         stream = Mock()
+        stream.origin = "avp"
         stream.get_latest.return_value = {"left_fingers": transforms(), "right_fingers": transforms(1)}
         source = VisionProInput("unused", streamer=stream)
         frame = source.next_observation()

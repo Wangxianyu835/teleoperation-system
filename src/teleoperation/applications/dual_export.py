@@ -18,11 +18,13 @@ from teleoperation.retargeting.hand.angles import angle18_to_dofs
 
 def export_robot_commands(observation_h5: str | Path, angle_h5: str | Path, calibration_path: str | Path, output_path: str | Path, urdf_path: str | Path) -> int:
     frame_ids, timestamps, arms, arm_valid = _load_arm_observations(observation_h5)
+    from teleoperation.data.body_recording import load_body_recording, replay_observation
+    observations = [replay_observation(row) for row in load_body_recording(observation_h5).samples]
     angle_data = _load_hand_angles(angle_h5, frame_ids, timestamps)
     for side in ("left", "right"):
         angle_data[side + "_q"] = np.stack([angle18_to_dofs(angle) for angle in angle_data[side + "_angles"]])
     calibration = ArmCalibration.load(calibration_path)
-    retargeter = ArmRetargeter(calibration)
+    retargeter = ArmRetargeter(calibration, input_mode='smplerx')
     solvers = {side: RoboticsToolboxArmIK(load_arm_specification(urdf_path, side)) for side in ("left", "right")}
     controllers = {
         side: ArmSafetyController(solvers[side].specification, calibration.safe_q[side], calibration.max_acceleration, calibration.tracking_timeout)
@@ -33,7 +35,7 @@ def export_robot_commands(observation_h5: str | Path, angle_h5: str | Path, cali
     for index, timestamp in enumerate(timestamps):
         values = {}
         for side in ("left", "right"):
-            observation = UpperBodyObservation({s: arms[s][index] for s in ("left", "right")}, {s: bool(arm_valid[s][index]) for s in ("left", "right")}, float(timestamp))
+            observation = observations[index].upper_body
             target = retargeter.update(observation, side)
             ee_pose, observation_valid = target.pose, target.valid
             result = solvers[side].solve(target, controllers[side].q, calibration.safe_q[side]) if observation_valid else None

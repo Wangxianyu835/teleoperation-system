@@ -326,21 +326,18 @@ class WorldHandPipelineTests(unittest.TestCase):
         self.assertEqual(report["coordinate_metadata"]["coordinate_alignment"], PALM_LOCAL_COORDINATE_ALIGNMENT)
 
     def test_existing_record_world_file_explicit_alignment_retains_body_fields(self):
-        frames = []
-        for index in range(4):
-            frame = world_frame(index)
-            frames.append({"frame_id": index, "timestamp": frame["timestamp"],
-                           **{side + "_hand_keypoints": frame[side] for side in SIDES},
-                           **{side + "_world_landmarks": frame["world_" + side] for side in SIDES},
-                           "left_arm_world_keypoints": np.ones((3, 3), dtype=np.float32) * index})
-        raw, aligned = self.root / "combined.h5", self.root / "combined_aligned.h5"
-        write_hand_body_recording(raw, frames)
-        align_h5(raw, aligned, "world")
-        with h5py.File(raw, "r") as source, h5py.File(aligned, "r") as target:
-            for name in source:
-                if name not in ("left_hand_keypoints", "right_hand_keypoints"):
-                    np.testing.assert_array_equal(source[name][:], target[name][:])
-            self.assertEqual(target.attrs["coordinate_alignment"], WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT)
+        from tests.smplerx_fixtures import write
+        from teleoperation.data.body_recording import load_body_recording
+        raw, aligned = self.root / 'combined.h5', self.root / 'combined_aligned.h5'
+        write(raw, 4)
+        align_h5(raw, aligned, 'world')
+        before = load_body_recording(raw)
+        after = load_body_recording(aligned)
+        for a,b in zip(before.samples,after.samples):
+            np.testing.assert_array_equal(a['worker_packet'],b['worker_packet'])
+            np.testing.assert_array_equal(a['rgb'],b['rgb'])
+        with h5py.File(aligned,'r') as target:
+            self.assertEqual(target.attrs['coordinate_alignment'],WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT)
 
     def test_invalid_file_contracts_are_rejected(self):
         raw = self.root / "raw.h5"

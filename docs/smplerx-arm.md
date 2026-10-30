@@ -1,172 +1,116 @@
-# SMPLer-X camera arm integration: implementation status
+# SMPLer-X 相机机械臂链路
 
-Status: incomplete. The real S32 backend passes single-image inference and a
-real subprocess round trip on this RTX 4050. Camera command migration, recording
-and full runtime acceptance are still incomplete. Do not use the current branch
-as a completed camera arm release.
+相机机械臂输入使用 SMPLer-X S32。MediaPipe Hands 只提供手指数据。
+一次 RGB 采集同时交给 Hands 和独立工作进程。两者保留各自的采集时间。
+身体结果通过跟踪器进入现有重定向、腕姿态对齐、IK 和安全控制。
+机器人配置位于控制层，感知结果不绑定 TRON2A。
 
-## Upstream and model assets
+代码迁移与真实相机验收分开记录。遮挡、快速动作和现场抖动改善仍需实际视频确认。
+本机 S32 的性能没有达到 10 Hz / p95 150 ms 的工程目标。
 
-Official source: https://github.com/MotrixLab/SMPLer-X
+## 环境和资产
 
-The source inspected on 2026-10-30 is commit
-`064baef0e4ab5277a3297691bc1d46ea5412586f`. The working reference checkout is
-`.superpowers/sdd/2026-10-30-smplerx-camera-arm/upstream` (ignored scratch).
-The reference files are `README.md`, `main/inference.py`,
-`main/config/config_smpler_x_s32.py`, and `common/utils/human_models.py`.
+应用使用 `D:/Anaconda/envs/teleoperation/python.exe`。主环境和 dex 环境没有为模型安装升级依赖。
+独立工作进程使用 Python 3.10、torch 1.13.0+cu117、torchvision 0.14.0+cu117、
+mmcv-full 1.7.1。实际版本见 `external/smplerx_worker/environment.lock.yml`。
 
-Public S32 weights are linked by the official README:
-https://huggingface.co/caizhongang/SMPLer-X/resolve/main/smpler_x_s32.pth.tar
+| 内容 | 本机默认目录 |
+| --- | --- |
+| 官方源码 | `.venv/smplerx-assets/SMPLer-X` |
+| S32 权重 | `.venv/smplerx-assets/smpler_x_s32.pth.tar` |
+| 人体模型 | `datasets/smpl_models` |
+| 工作进程 | `.venv/smplerx-worker/Scripts/python.exe` |
 
-Downloaded to `.superpowers/sdd/2026-10-30-smplerx-camera-arm/smpler_x_s32.pth.tar`.
-Size: 384315279 bytes. SHA-256:
-`1c78569f4e7b6e22e7166b55f322e5d5e019073b8d1a430a6926f93b4c86aa62`.
-This hash records the downloaded artifact; a real model load is still pending.
+源码和权重已从临时目录迁出。以上目录不进入 Git，重新 clone 后需单独准备。
+四个路径可用 `--smplerx-root`、`--smplerx-checkpoint`、`--smplx-model-dir`、
+`--smplerx-worker-python` 覆盖。
+用户提供的 SMPL v1.1.0 原始文件保留原名；临时视图提供上游命名。
+SMPLX 文件不能替代 SMPL 文件。
 
-SMPL-X model access requires registration and agreement to the model license:
-https://smpl-x.is.tue.mpg.de/ . The user must complete this account step.
-No account password is needed in the repository or chat. Download the original
-body model assets, not a Blender/Unity add-on. The inspected upstream loads
-neutral, male and female SMPL-X models as well as SMPL models and correspondence
-files at import time. Its expected layout is:
+官方源码：[MotrixLab/SMPLer-X](https://github.com/MotrixLab/SMPLer-X)，版本
+`064baef0e4ab5277a3297691bc1d46ea5412586f`。
+S32 权重 SHA-256：
+`1c78569f4e7b6e22e7166b55f322e5d5e019073b8d1a430a6926f93b4c86aa62`。
 
-```text
-human_model_files/
-  smpl/
-    SMPL_NEUTRAL.pkl
-    SMPL_MALE.pkl
-    SMPL_FEMALE.pkl
-  smplx/
-    SMPLX_NEUTRAL.npz
-    SMPLX_MALE.npz
-    SMPLX_FEMALE.npz
-    MANO_SMPLX_vertex_ids.pkl
-    SMPL-X__FLAME_vertex_ids.npy
-    SMPLX_to_J14.pkl
-```
+## 输入、时间和安全策略
 
-Keep these licensed assets outside Git. Additional detector weights and
-ViTPose initialization requirements must be checked against the actual S32
-loader before the smoke test. No training datasets are required for the
-camera inference milestone.
+- 身体位置使用 SMPL-X 根相对米制坐标。图像点为逆裁剪后的投影。
+- 腕旋转来自完整父子旋转链，然后相对操作者中性姿态对齐机器人。
+- 相机轴向映射是配置值，系统不自动估计外参或手眼标定。
+- 体型取五个稳定预测的中位数，然后固定；原始预测仍保存在模型结果包中。
+- 无检测、单侧异常、重复包和过期结果使对应侧保持。源过期阈值为 0.5 秒。
+- 大幅跳变需三个不同且相互一致的新样本才能恢复；目标和关节仍受既有速率限制。
+- 多人、检测框突然换位或离场超过两秒会锁定身体输入。结束运行、重开会话并重新标定。
+  这是保守身份保护，不是人体身份识别。
+- 会话或模型身份改变会重置中性姿态与腕对齐。相机处理不应用于 VR 输入。
 
-Local model root: `datasets/smpl_models`. All nine required SMPL-X, SMPL and
-correspondence files were located there. The original SMPL v1.1.0 names
-`basicmodel_{neutral,m,f}_lbs_10_207_0_v1.1.0.pkl` are accepted at the asset
-boundary. A private temporary view supplies upstream `SMPL_{NEUTRAL,MALE,FEMALE}.pkl`
-names through hard links (copy fallback). User originals are never renamed.
-The directory is ignored by Git.
+已移除 MediaPipe Pose 解析、旧机械臂 NPZ/H5 reader、旧中性标定读取及 Hands 到机械臂的回退。
+旧文件需重新采集，磁盘上的用户旧数据没有被自动删除。
+`--input-npz` 只支持手指调试；包含旧机械臂或腕字段时拒绝读取。
 
-A real neutral SMPL-X forward pass using the vendored upstream body model and
-the existing main-environment torch succeeded: 10475 vertices, 55 skeletal
-joints and valid derived wrist rotations. Four poses also match upstream LBS
-FK: maximum position error 0 m and rotation matrix component error 1.79e-7.
+## 运行、录制和回放
 
-## Inference boundary adaptations
+在仓库根目录执行：
 
-`backend.py` calls upstream `SMPLer_X.get_model('test')`, preserves the
-`Demoer._make_model` checkpoint-key conversion, and fails if learned parameters
-are missing. It avoids `common.base`, whose imports eagerly load training
-datasets. `cfg.human_model_path` and the encoder config are explicit absolute
-paths; the upstream network itself is not edited.
+~~~powershell
+$python = 'D:/Anaconda/envs/teleoperation/python.exe'
+$env:PYTHONPATH = "$pwd/src"
 
-The official detector, crop, RGB normalization and full S32 network are used.
-Multiple qualifying people produce an invalid result rather than selecting a
-larger person. Continuous identity verification after a loss remains pending.
-Derived positions and full-pose FK rotations come from a second forward of the
-same neutral SMPL-X layer. Projection follows `Model.get_coord` and then inverts
-`generate_patch_image`'s affine transform to original image coordinates.
+# 三台机器人；可加 --robot g1 选择一台。
+& $python -m teleoperation.simulation.realtime_teleop `
+  --backend geometric --side both --arm-map posture --arm-calibrate-mode hold `
+  --dump-body outputs/session/body.h5 --report outputs/session/live.json
 
-Shape is currently frozen from the first accepted sample, with the raw shape
-retained in each result. Stable-window shape fitting remains unfinished.
-Model logs are redirected to stderr so stdout stays a framed protocol stream.
-Pipe writes use a bounded writer thread so upstream initialization cannot block
-the hand capture loop.
+# 先等待工作进程返回，再录制指定数量的相机样本。
+& $python -m teleoperation hand record-world --frames 300 `
+  --output outputs/session/capture.h5 --max-fps 5
 
-Two runtime compatibility adaptations are explicit: import MMDetection before
-custom MMPose registrations, as official inference.py does; and replace obsolete
-`1 - boolean_mask` expressions in torchgeometry 0.1.2 with logically identical
-`~boolean_mask` expressions through a checked in-memory shim. The installed
-third-party files and upstream network source are unchanged. Identity and
-90-degree rotation tests cover the shim.
+# 无相机、无 S32 推理的回放。
+& $python -m teleoperation.simulation.realtime_teleop `
+  --input-body outputs/session/body.h5 --backend geometric `
+  --headless --no-preview --report outputs/session/replay.json
 
-Reference file SHA-256 values at upstream commit `064baef0`:
+& $python -m teleoperation.applications.arm_validation `
+  --input-body outputs/session/body.h5 --output-dir outputs/session/validation
+~~~
 
-| Upstream file | SHA-256 |
+首次加载工作进程约需十余秒。期间手指可继续处理，机械臂保持。
+手指也可使用已有 checkpoint 或 dex。`hand record-world --no-arms` 只录制 Hands。
+TRON2A 的 `dual calibrate-camera` 和 `dual camera` 使用新感知源，仍要求显式安全关节、
+工作空间及真实中性标定。合成标定不能用于实时控制。
+
+组合 H5 使用 `smplerx_body_recording_h5_v1`。每个样本保存无损压缩 RGB、
+新工作进程结果包、最终身体/手指/腕观测、序号、独立时间、源年龄、状态和 fresh 标志。
+根层手部表供现有训练/对齐工具读取。手部对齐保留身体包，不重新解释身体坐标。
+回放按原始采集间隔控制。有效率只计不同的新结果。
+录制器在保存前持有本次数据，长录制会占用内存和磁盘。
+
+实时和回放共用 `apply_camera_arm_frame`。它连接 bridge、腕控制和现有 IK driver；
+TRON2A 专用控制器继续使用原有安全接口。重定向方法没有改成向量优化。
+
+## 上游适配及验证
+
+使用官方网络、检测器、裁剪与 `SMPLer_X.get_model('test')`，保留 Demoer 权重键转换；
+缺少学习参数时启动失败。跳过仅用于训练/评估的数据集导入。
+先导入 MMDetection，再注册自定义 MMPose。
+torchgeometry 0.1.2 布尔减法通过检查过的内存 shim 改为布尔取反。
+上游源码和安装包没有被修改。
+
+| 上游文件 | SHA-256 |
 | --- | --- |
 | `main/SMPLer_X.py` | `ad3215d700e917a9a6a818500bca853d1bd4d647778f24e78625a9554b5ebcf8` |
 | `common/utils/preprocessing.py` | `a6aedd2a8fef22f8c0e3d12ed65b0af6b4d1aff30e187659e0e3a9fae5b60ebb` |
 | `common/utils/human_models.py` | `343cf180b90e65e272817057ea04d0941d9d54eb6ec27450b96088384ad0cd3e` |
 
-The upstream installation example uses Python 3.8, torch 1.12 and mmcv 1.7.1.
-The application protocol requires Python 3.10+. A separate Windows candidate
-runtime is installed in `.venv/smplerx-worker` using torch 1.13.0/cu117,
-torchvision 0.14.0/cu117 and the official mmcv-full 1.7.1 Windows wheel compiled
-for torch 1.13/cu117. `environment.lock.yml` captures the installed versions after
-CUDA, MMCV ROIAlign and real S32 image inference passed. This verifies this
-Windows machine, not all platforms or long-running stability. Neither the
-teleoperation nor dex environment was upgraded for these dependencies.
+四个真实人体模型姿态的 FK 对照：位置误差 0 m，旋转矩阵分量最大误差 1.79e-7。
+先前直接调用与子进程对照最大误差：位置 2.98e-8 m、旋转 7.90e-7、图像投影 5.96e-8。
+这些检查验证接线，不能证明真实空间估计精度。
 
-## Real smoke evidence
+五分钟单模型静态图片测试见 `docs/smplerx-s32-endurance.json`：
+1,604 个新结果、5.34 Hz、p50 187 ms、p95 234 ms；显存峰值 allocated 662 MiB、
+reserved 728 MiB；测量期间 allocated 增长 0。没有相机、Hands 或机器人负载，性能目标未达到。
 
-Input: PyTorch vision gallery `person1.jpg` (480 x 640 RGB), downloaded from
-https://raw.githubusercontent.com/pytorch/vision/main/gallery/assets/person1.jpg .
-Three sequential detections/forwards returned valid bilateral observations.
-The measured times were 1469 ms (first/warmup), 156 ms and 156 ms. CUDA peak
-allocated memory was 694183424 bytes (about 662 MiB); peak reserved memory was
-763363328 bytes (about 728 MiB). This is a single-image smoke test, not 300-frame
-latency statistics or evidence that the 10 Hz / p95 150 ms acceptance target is
-met. Simulation, finger inference, live capture and RGB serialization are not
-included in those frame times.
-
-The actual length-prefixed worker round trip also passed and returned a
-55 x 3 skeleton with the expected checkpoint hash. Startup plus the first
-request took about 14.44 seconds. Applications must hold while the worker loads;
-this time is not steady-state inference latency.
-
-## Verified software behavior
-
-- One RGB capture is distributed to Hands and the body client.
-- Body and wrist observations carry independent sample time and source.
-- Expired or cached body samples retain their hold geometry but are invalid for
-  fresh control or neutral-sample accumulation.
-- Duplicate worker results cannot release an active request for another frame.
-- Pipe reads reassemble fragments and reject excessive packet lengths.
-- Calibration permits skipped camera frames and counts each body sequence once.
-- Calibration and retargeting use the same shoulder-relative wrist displacement.
-- MediaPipe Hands parser and camera lifecycle tests continue to pass.
-
-The focused verification before the compatibility shim ran 74 tests successfully.
-The shim also passed its isolated runtime test. The latest full suite ran
-546 tests with 10 failures, 72 errors and 3 skips.
-The full suite contains unmigrated Pose fixtures and removed-mode expectations,
-as well as IK and VR failures that require separate baseline comparison. These
-results do not establish VR regression safety or full integration success.
-Raw test logs are in the plan's ignored `.superpowers/sdd` workspace.
-Failure names are preserved in `docs/smplerx-regression-status.md`. The real
-smoke report is tracked in `docs/smplerx-s32-smoke.json`. Direct versus worker
-maximum absolute differences were 2.98e-8 m for body joints, 7.90e-7 for rotation
-matrix components and 5.96e-8 for normalized image coordinates, below the 1e-5
-protocol equivalence tolerance.
-
-## Remaining implementation and acceptance
-
-1. Extend the verified S32/environment smoke to short-video and endurance tests.
-2. Derive joints, wrist FK rotations and image projection from the real model;
-   validate projected joints with a rendered overlay. Four-pose body FK is
-   verified; real image projection overlay still needs inspection.
-3. Complete body recording/replay and capture wiring. `hand record-world`
-   currently writes Hands only; new body persistence exists separately and is
-   not yet the integrated replacement for combined capture.
-4. Remove remaining generic hand-fallback implementation and migrate the old
-   camera tests to new body fixtures. Reconcile shared-controller and VR tests.
-5. Enforce one smoothing/rate-limit owner, recovery rate bounds, session-neutral
-   reset and operator identity policy through the full runtime.
-6. Run full regression, deterministic replay and real GPU/video acceptance.
-   The smoke measured latency and GPU memory above; jitter improvement has not
-   been measured.
-
-Historical launcher files do not establish the runtime on this machine. Use
-the teleoperation environment for the application and a separately verified
-interpreter for inference. The present branch is not ready for a live command
-example with guaranteed successful output.
+`devtools/verify_smplerx_runtime.py` 支持资产检查、图片 smoke、`--input-video`、
+`--samples 300` 和 `--duration-s 300`。视频按序读取，不重复末帧补计。
+`devtools/verify_smplerx_roundtrip.py` 检查真实进程、跟踪、H5 往返与图像投影。
+现场仍需静止、单臂、双臂、交叉、遮挡、离场与恢复视频验收。

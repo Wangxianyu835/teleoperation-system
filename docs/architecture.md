@@ -2,6 +2,11 @@
 
 生产包是 `src/teleoperation`。完整工作流仅在 `applications` 中组装，CLI 使用静态命令注册并延迟导入应用 handler。
 
+相机机械臂链路使用 `CameraTeleopSource`：一次 RGB 采集分别进入 MediaPipe Hands 和独立
+SMPLer-X 工作进程。`inputs/body_tracking` 管理新身体源的时序有效性；实时与新 H5 回放通过
+`applications/camera_scene_arm` 共用既有映射、腕姿态与 IK 控制。模型依赖只进入独立环境。
+旧 Pose 身体 reader 和 Hands 驱动机械臂的回退已移除。配置见 [SMPLer-X 链路](smplerx-arm.md)。
+
 ```mermaid
 flowchart LR
   I[Input] --> O[Observation Contract]

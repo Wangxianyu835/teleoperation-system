@@ -29,7 +29,7 @@ ASD-STE100 面向英语。本文是中文操作说明，不声明符合其英语
 | 录制动作，再回放 L21 手 | 摄像头 | 使用模型权重计算 L21 关节角 | [第 2 节](#2-录制手部动作)、[第 3 节](#3-导出与回放关节角) |
 | 训练 L21 共享模型 | 已对齐的摄像头数据 | 使用无关节角标签的数据训练模型 | [第 4.1 节](#41-训练共享模型可选) |
 | 实时驱动 L21 双手 | 摄像头 | 使用模型权重计算 L21 关节角 | [第 4.2 节](#42-实时驱动-l21-双手可选) |
-| 实时驱动三台机器人的双臂与双手 | 摄像头 | 使用 Pose world 数据驱动手臂 | [第 4.3 节](#43-实时驱动三机器人的双臂与双手可选) |
+| 实时驱动三台机器人的双臂与双手 | 摄像头 | 使用 SMPLer-X 身体和腕姿态驱动手臂 | [第 4.3 节](#43-实时驱动三机器人的双臂与双手可选) |
 | 直接驱动三台机器人的原装手 | 摄像头或 Vision Pro | 使用 dex-retargeting 优化原装手关节角 | [第 4.4 节](#44-使用-dex-retargeting-直接驱动原装手可选) |
 | 使用上游 TransHandR 模型驱动 L21 手 | Vision Pro 或 VR 录制 | 使用专用 VR 预处理和上游权重 | [TransHandR VR 工作流](docs/transhandr-vr.md) |
 
@@ -96,7 +96,7 @@ if ($LASTEXITCODE -ne 0) { throw '项目入口检查失败。' }
 | 文件 | 用途 | 放置位置或要求 |
 |---|---|---|
 | MediaPipe Hand 模型 | 检测摄像头中的手部关键点 | `datasets/hand_landmarker.task` |
-| MediaPipe Pose 模型 | 检测肩、肘、腕关键点 | `datasets/pose_landmarker_lite.task`；仅双臂流程需要 |
+| SMPLer-X S32 | 估计身体与腕姿态 | 独立工作进程和许可人体资产，见 [SMPLer-X 配置](docs/smplerx-arm.md) |
 | 模型权重文件（checkpoint） | 计算 L21 关节角 | `.pth` 文件；坐标声明必须与输入一致 |
 | dex 校准文件 | 固定输入尺度，计算原装手关节角 | 在第 4.4 节生成；摄像头与 VR 分别校准 |
 
@@ -367,26 +367,24 @@ $checkpoint = "$checkpointRoot/models/twohand_h5/linker/$run/model_best.pth"
 ### 4.3 实时驱动三机器人的双臂与双手（可选）
 
 先按第 4.2 节准备权重、摄像头和 Hand 模型。
-然后准备 MediaPipe Pose 模型。
+然后按 [SMPLer-X 配置](docs/smplerx-arm.md) 准备独立工作进程和人体模型。
 
 此入口默认同时显示 H1-2、GR1-T2 和 G1。
 手指使用 L21 checkpoint。
-手臂使用 Pose world 米制肩、肘、腕关键点。
+手臂使用 SMPL-X 根相对肩、肘、腕与 FK 腕旋转。
 
 执行以下命令：
 
 ```powershell
 $armSession = Get-Date -Format 'yyyyMMdd_HHmmss'
-$poseAsset = 'datasets/pose_landmarker_lite.task'
-if (-not (Test-Path $poseAsset)) { throw "缺少 Pose 模型：$poseAsset" }
 
 & $python -m teleoperation.simulation.realtime_teleop `
   --backend checkpoint --checkpoint $checkpoint --landmark-space world --device cpu `
-  --camera-index $camera --model-asset-path $handAsset --pose-model-asset-path $poseAsset `
-  --side both --no-arm-fallback --arm-map posture --arm-elbow-follow operator `
+  --camera-index $camera --model-asset-path $handAsset `
+  --side both --arm-map posture --arm-elbow-follow operator `
   --diagnostics --diagnostic-trace "outputs/tmp_realtime/arm_trace_$armSession.csv" `
   --report "outputs/tmp_realtime/arm_report_$armSession.json" `
-  --dump-npz "outputs/tmp_realtime/arm_raw_$armSession.npz"
+  --dump-body "outputs/tmp_realtime/arm_raw_$armSession.h5"
 ```
 
 窗口打开后，依次完成以下操作：
@@ -400,7 +398,7 @@ if (-not (Test-Path $poseAsset)) { throw "缺少 Pose 模型：$poseAsset" }
 
 默认 `track` 模式从首个有效观测开始跟随，同时收集中性姿态。
 如需等待标定完成后再运动，请添加 `--arm-calibrate-mode hold`。
-`--no-arm-fallback` 使 Pose 丢失时保持上一目标。
+SMPL-X 丢失时保持上一目标，不从 Hands 生成机械臂目标。
 
 | 目标 | 参数 |
 |---|---|

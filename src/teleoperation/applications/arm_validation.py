@@ -40,20 +40,35 @@ def run_case(recording, trace_path, calibration_frames=30):
         driver = ArmSceneDriver(scene, sides=("left", "right"), ik_iterations=60,
                                 residual_threshold=1e-4, diagnostics=diag)
         bridge = RealtimeArmBridge(list(profiles.values()), calibration_frames=calibration_frames,
-                                   orientation="auto", fallback_hand=False)
+                                   orientation="auto")
+        recorded = recording.get('observations')
+        if recorded is not None:
+            from teleoperation.simulation.wrist_control import WristSceneController
+            from teleoperation.applications.camera_scene_arm import apply_camera_arm_frame, measure_camera_arm_geometry
+            links, anchors = measure_camera_arm_geometry(driver)
+            driver.set_shoulder_anchors(anchors)
+            bridge = RealtimeArmBridge(list(profiles.values()), calibration_frames=calibration_frames,
+                                       orientation='off', calibrate_mode='hold', map_mode='posture',
+                                       robot_links=links, anchors=anchors)
+            wrist_control = WristSceneController(driver, bridge.axis_map.matrix())
         for index, sample_time in enumerate(seconds):
             diag.begin_frame()
+            dt = seconds[1] - seconds[0] if index == 0 else sample_time - seconds[index - 1]
             arms = {side: _points(data, side + "_arm", index, (3, 3)) for side in ("left", "right")}
             # Stored keys retain the established dump-npz spelling.
             hands = {side: _points(data, side + "_hand", index, (21, 3)) for side in ("left", "right")}
             hands.update({"world_" + side: _points(data, "world_" + side + "_hand", index, (21, 3))
                           for side in ("left", "right")})
             with diag.stage("arm_mapping"):
-                targets = bridge.update(arms_world=arms, hands=hands)
-            for side in ("left", "right"):
-                driver.apply_each(side, {name: targets[name][side].position for name in profiles},
-                    orientation={name: targets[name][side].orientation for name in profiles})
-            dt = seconds[1] - seconds[0] if index == 0 else sample_time - seconds[index - 1]
+                if recorded is not None:
+                    raw = recorded[index]
+                    targets = apply_camera_arm_frame(bridge, driver, wrist_control,
+                                                     raw.upper_body, raw.wrists, dt)
+                else:
+                    targets = bridge.update(arms_world=arms, hands=None, frame_dt=dt)
+                    for side in ('left', 'right'):
+                        driver.apply_each(side, {name: targets[name][side].position for name in profiles},
+                                          orientation={name: targets[name][side].orientation for name in profiles})
             logical_time[0] += dt
             scene.steps_per_frame = clock.next_steps()
             with diag.stage("physics"):
@@ -65,6 +80,7 @@ def run_case(recording, trace_path, calibration_frames=30):
             with diag.stage("diagnostic_overhead"):
                 drift = max(drift, max(item["max_drift_rad"] for item in driver.hold_drift().values()))
         calibrated = not bridge.calibrating
+        wrist_summary = wrist_control.summary() if recorded is not None else None
     finally:
         try:
             diag.close()
@@ -81,6 +97,13 @@ def run_case(recording, trace_path, calibration_frames=30):
                                       "simulated_seconds": clock.total_steps / 240},
                    diagnostic_summary=diag.summary(), wall_processing_seconds=time.perf_counter() - started,
                    trace=str(trace_path), real_camera_verified=False, hand_inference_exercised=False)
+    if recorded is not None:
+        from teleoperation.applications.body_source_metrics import BodySourceMetrics
+        metrics = BodySourceMetrics()
+        for raw, stamp in zip(recorded, data['timestamps']):
+            metrics.update(raw.upper_body, stamp)
+        summary.update(body_source=metrics.summary(), wrist_source='smplerx', map_mode=bridge.map_mode,
+                       wrist_control=wrist_summary)
     return summary
 
 
@@ -100,6 +123,7 @@ def recommendations(cases):
 def build_parser():
     parser = argparse.ArgumentParser(description="Offline H1/GR1/G1 six-arm diagnostics and acceptance")
     parser.add_argument("--input-npz", type=Path)
+    parser.add_argument('--input-body', type=Path)
     parser.add_argument("--timestamp-unit", choices=("seconds", "milliseconds"))
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--seed", type=int, default=20261022)
@@ -114,7 +138,10 @@ def main(argv=None):
     created = False
     try:
         # Reject invalid or unlabelled imported time before creating artifacts.
-        imported = load_validation_recording(args.input_npz, args.timestamp_unit) if args.input_npz else None
+        if args.input_npz and args.input_body:
+            raise ValueError('Choose either --input-body or synthetic --input-npz')
+        input_path = args.input_body or args.input_npz
+        imported = load_validation_recording(input_path, args.timestamp_unit) if input_path else None
         root.mkdir(parents=True, exist_ok=False)
         created = True
         for rate in ((None,) if imported is not None else (30, 13)):

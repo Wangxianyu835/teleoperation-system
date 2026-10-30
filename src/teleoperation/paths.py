@@ -9,7 +9,6 @@ DEFAULT_REALTIME_SNAPSHOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "med
 DEFAULT_REALTIME_CHECKPOINT = DEFAULT_CHECKPOINT_ROOT / "models/twohand_h5/linker/palm_three_point_v2/model_best.pth"
 DEFAULT_WORLD_REALTIME_CHECKPOINT = DEFAULT_CHECKPOINT_ROOT / "models/twohand_h5/linker/world_canonical_shared_v1/model_best.pth"
 DEFAULT_MEDIAPIPE_ASSET = PROJECT_ROOT / "datasets" / "hand_landmarker.task"
-DEFAULT_POSE_ASSET = PROJECT_ROOT / "datasets" / "pose_landmarker_lite.task"
 DEFAULT_WORLD_CAPTURE_DIR = PROJECT_ROOT / "outputs" / "hand_body_capture"
 DEFAULT_INPUT_H5 = PROJECT_ROOT / "input" / "visual_hand_data_20260912_112108.h5"
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "checkpoint/models/twohand_h5/linker/coord_aligned_100ep/model_best.pth"

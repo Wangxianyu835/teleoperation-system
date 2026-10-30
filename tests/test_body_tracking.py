@@ -27,6 +27,14 @@ def make_result(sequence, capture_time, *, offset=0.0, left=True, right=True, ro
 
 
 class BodyTrackerTests(unittest.TestCase):
+    def test_duplicate_tracking_sample_cannot_count_for_calibration(self):
+        tracker = BodyTracker()
+        result = make_result(1, 1.)
+        tracker.update(result, now_s=1.)
+        repeated = tracker.update(result, now_s=1.01)
+        self.assertFalse(repeated.body.valid['left'])
+        self.assertFalse(repeated.fresh['left'])
+
     def test_waiting_and_held_samples_keep_source_contract(self):
         tracker = BodyTracker()
         waiting = tracker.update(None, now_s=1.)

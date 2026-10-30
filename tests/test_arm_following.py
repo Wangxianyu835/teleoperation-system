@@ -216,17 +216,10 @@ class ArmSolveStateTests(unittest.TestCase):
                 details = adapter.last_solve[side]
                 if details["pose_candidate_residual_mm"] > adapter.profile.max_residual_mm:
                     self.assertTrue(details["position_fallback"])
-                    solution = [float(state[0]) for state in before]
+                    self.assertIn(details['wrist_rejection'], ('pose_position_conflict', 'nonfinite_or_limit'))
                     for index, name in adapter.arm[side]:
-                        solution[adapter.position_of[index]] = values[name]
-                    try:
-                        adapter._teleport(side, solution)
-                        self.assertAlmostEqual(adapter.residual_mm(side),
-                                               details["position_candidate_residual_mm"], places=3)
-                    finally:
-                        for index, (q, velocity) in zip(adapter.indices, before):
-                            adapter.p.resetJointState(adapter.body, index, q, targetVelocity=velocity,
-                                                       physicsClientId=adapter.cid)
+                        self.assertEqual(values[name], before[adapter.position_of[index]][0])
+
 
 
 @unittest.skipUnless(ASSETS_AVAILABLE and PYBULLET_AVAILABLE, "robot assets and PyBullet required")
@@ -238,16 +231,10 @@ class ArmRealtimeLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             capture = Path(folder) / "capture.npz"
             report = Path(folder) / "report.json"
-            hand = open_hand()
-            data = {"timestamps": np.arange(4) / 30}
-            for side in ("left", "right"):
-                data[side + "_hand"] = np.stack([hand] * 4)
-                data["world_" + side + "_hand"] = np.stack([(hand - hand[0]) * 0.19] * 4)
-                # A relative wrist orientation requires a non-collinear elbow plane.
-                data[side + "_arm"] = np.stack([arm(side, wrist_offset=(0., 0., .12))] * 4)
-            np.savez(capture, **data)
+            from tests.smplerx_fixtures import write
+            write(capture, 18)
             args = build_parser().parse_args([
-                "--input-npz", str(capture), "--report", str(report),
+                "--input-body", str(capture), "--report", str(report),
                 "--backend", "geometric", "--headless", "--no-preview",
                 "--no-collision-guard", "--arm-calibrate-frames", "1", "--print-every", "0",
                 "--arm-orientation", "auto"])
@@ -257,13 +244,13 @@ class ArmRealtimeLoopTests(unittest.TestCase):
             result = json.loads(report.read_text(encoding="utf-8"))
         self.assertEqual(result["arm_failures"], {})
         self.assertEqual(result["simulation_timing"]["mode"], "fixed")
-        self.assertEqual(result["simulation_timing"]["physics_steps"], 32)
-        self.assertEqual(result["processed_frames"], 4)
+        self.assertEqual(result["simulation_timing"]["physics_steps"], 144)
+        self.assertEqual(result["processed_frames"], 18)
         for side in ("left", "right"):
-            self.assertEqual(result["arm"]["applied_frames"][side], 4)
+            self.assertEqual(result["arm"]["applied_frames"][side], 18)
             self.assertIsNotNone(result["arm"]["robots"]["h1_2"]["last_solve"][side][
                 "pose_candidate_residual_mm"])
-            self.assertIsNone(result["arm"]["robots"]["g1"]["last_solve"][side][
+            self.assertIsNotNone(result["arm"]["robots"]["g1"]["last_solve"][side][
                 "pose_candidate_residual_mm"])
 
 

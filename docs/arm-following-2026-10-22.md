@@ -1,5 +1,7 @@
 # 双臂跟随：抖动与延迟修复
 
+> 2026-10-31：本文包含迁移前的算法实验和命令记录。当前相机输入、录制、回放与运行命令以 [SMPLer-X 链路](smplerx-arm.md) 为准；旧 Pose 输入和手部回退已删除。
+
 适用入口：`python -m teleoperation.simulation.realtime_teleop`，或
 `devtools/run_realtime_arm_windows.py`。输入是摄像头的 MediaPipe Pose world
 肩、肘、腕；Vision Pro 的 TransHandR 数值预处理不经过本次修改。

@@ -29,6 +29,7 @@ class SmplerXBackend:
             raise
         self._session = None
         self._shape = None
+        self._operator = None
 
     def _initialize(self, assets):
         torch = self.torch
@@ -94,20 +95,29 @@ class SmplerXBackend:
         from teleoperation.contracts.body import SmplerXResult
         from external.smplerx_worker.geometry import derive_body_arrays
         if self._session != frame_id.session_id:
+            from external.smplerx_worker.operator_state import OperatorState
             self._session = frame_id.session_id
             self._shape = None
+            self._operator = OperatorState()
         if rgb.dtype != np.uint8 or rgb.ndim != 3 or rgb.shape[2] != 3:
             raise ValueError('worker input must be uint8 RGB')
+        age = time.monotonic() - frame_id.capture_time_s
+        if age < 0 or age > .5:
+            return self._invalid(frame_id, 'input frame expired before inference')
         # MMDetection receives BGR; upstream load_img/crop and the network use RGB.
         detections = np.asarray(self.detect(self.detector, rgb[..., ::-1].copy())[0])
         if detections.size == 0:
-            return self._invalid(frame_id, 'no person detected')
+            return self._invalid(frame_id, self._operator.person(None, frame_id.capture_time_s))
         detections = detections[(detections[:, 4] >= .5)
                                 & (detections[:, 2] - detections[:, 0] >= 50)
                                 & (detections[:, 3] - detections[:, 1] >= 150)]
         # Never choose a different operator merely because its box is larger.
         if len(detections) != 1:
-            return self._invalid(frame_id, 'no unambiguous single operator')
+            return self._invalid(frame_id, self._operator.person(None, frame_id.capture_time_s,
+                                                                ambiguous=len(detections) > 1))
+        reason = self._operator.person(detections[0, :4], frame_id.capture_time_s)
+        if reason:
+            return self._invalid(frame_id, reason)
         box = detections[0, :4].copy()
         box[2:] -= box[:2]
         height, width = rgb.shape[:2]
@@ -120,10 +130,11 @@ class SmplerXBackend:
         image = torch.from_numpy(patch.transpose(2, 0, 1).copy()).float().div(255).cuda()[None]
         with torch.inference_mode():
             out = self.model({'img': image}, {}, {}, 'test')
-            # Freeze shape at the first accepted operator sample. Keep the raw
-            # prediction separately; stable-window shape fitting remains pending.
             if self._shape is None:
-                self._shape = out['smplx_shape'].detach().clone()
+                shape = self._operator.shape_sample(out['smplx_shape'].detach().cpu().numpy()[0])
+                if shape is None:
+                    return self._invalid(frame_id, 'calibrating body shape: hold a neutral pose')
+                self._shape = torch.as_tensor(shape, device=image.device).reshape(1, 10)
             layer = self.model.module.smplx_layer
             zeros = torch.zeros((1, 3), device=image.device)
             derived = layer(
@@ -149,7 +160,7 @@ class SmplerXBackend:
                                  'joint_indices': {'left': {'shoulder': 16, 'elbow': 18, 'wrist': 20},
                                                    'right': {'shoulder': 17, 'elbow': 19, 'wrist': 21}},
                                  'upstream_commit': '064baef0e4ab5277a3297691bc1d46ea5412586f',
-                                 'shape_policy': 'first_accepted_sample',
+                                 'shape_policy': 'median_of_five_stable_samples_then_frozen',
                                  'checkpoint_missing_buffers': self.checkpoint_missing_buffers})
 
     def close(self):

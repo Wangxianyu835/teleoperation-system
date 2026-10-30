@@ -16,22 +16,26 @@ from tests.test_arm_ik_multi_robot import ASSETS_AVAILABLE, PYBULLET_AVAILABLE
 
 
 def recording(path, frames=4):
-    from tests.test_arm_realtime_bridge import arm, open_hand
-    hand = open_hand()
-    data = {"timestamps": np.arange(frames) / 30}
-    for side in ("left", "right"):
-        data[side + "_hand"] = np.stack([hand] * frames)
-        data["world_" + side + "_hand"] = np.stack([(hand - hand[0]) * .19] * frames)
-        data[side + "_arm"] = np.stack([arm(side, wrist_offset=(i * .001, 0, 0)) for i in range(frames)])
+    from tests.smplerx_fixtures import row, METADATA
+    from teleoperation.data.body_recording import save_body_recording, replay_observation
+    from teleoperation.inputs.smplerx import encode_packet
+    rows = [row(i) for i in range(frames)]
     if frames >= 3:
-        data["left_arm"][2] = np.nan
-    np.savez(path, **data)
+        raw = replay_observation(rows[2])
+        raw.upper_body.valid['left'] = False
+        packet = encode_packet('observation', {
+            'hands': {**vars(raw.hands), 'wrists': None},
+            'upper_body': vars(raw.upper_body),
+            'wrists': {s: vars(v) for s, v in raw.wrists.items()}})
+        rows[2]['observation_packet'] = np.frombuffer(packet, dtype=np.uint8)
+    save_body_recording(path, rows, METADATA)
+
 
 
 def arguments(capture, report, *extra):
-    return app.build_parser().parse_args(["--input-npz", str(capture), "--report", str(report),
+    return app.build_parser().parse_args(["--input-body", str(capture), "--report", str(report),
         "--backend", "geometric", "--headless", "--no-preview", "--no-collision-guard",
-        "--no-arm-fallback", "--arm-calibrate-frames", "1", "--print-every", "0", *extra])
+        "--arm-calibrate-frames", "1", "--print-every", "0", *extra])
 
 
 class DiagnosticUnitTests(unittest.TestCase):
@@ -129,7 +133,7 @@ class DiagnosticLoopTests(unittest.TestCase):
                          {(robot, side) for robot in ("g1", "h1_2", "gr1_t2") for side in ("left", "right")})
         lost = [row for row in rows if row["frame_id"] == "2" and row["side"] == "left"]
         self.assertTrue(all(row["input_valid"] == "False" and row["held"] == "True" for row in lost))
-        self.assertTrue(all(row["sample_time_s"] == "" and row["timestamp_unit"] == "unspecified_legacy" for row in rows))
+        self.assertTrue(all(row['sample_time_s'] != '' and row['timestamp_unit'] == 'monotonic_s' for row in rows))
         self.assertIn("ik.h1_2.left", reports[1]["diagnostics"]["timings_ms"])
         self.assertIn("diagnostic_overhead", reports[1]["diagnostics"]["timings_ms"])
         for row in rows:
@@ -139,14 +143,14 @@ class DiagnosticLoopTests(unittest.TestCase):
             self.assertAlmostEqual(float(row["ik_position_error_mm"]), error, places=9)
 
     def test_error_closes_trace_and_saves_partial_report(self):
-        original = app.ReplayFrameSource.next_frame
+        original = app.BodyReplayFrameSource.next_frame
         objects = []
         def make(*args, **kwargs):
             diag = ArmDiagnostics(*args, **kwargs)
             objects.append(diag)
             return diag
         def fail(source):
-            if source.index == 1:
+            if source._source.index == 1:
                 raise RuntimeError("capture lost")
             return original(source)
         with tempfile.TemporaryDirectory() as folder:
@@ -154,7 +158,7 @@ class DiagnosticLoopTests(unittest.TestCase):
             capture, report, trace = root / "input.npz", root / "report.json", root / "trace.csv"
             recording(capture)
             with patch("teleoperation.simulation.arm_diagnostics.ArmDiagnostics", side_effect=make), \
-                    patch.object(app.ReplayFrameSource, "next_frame", fail), \
+                    patch.object(app.BodyReplayFrameSource, "next_frame", fail), \
                     patch.object(app, "_drain_in_background", side_effect=lambda action, label: action()), \
                     contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(RuntimeError, "capture lost"):

@@ -151,7 +151,10 @@ def hand_realtime(parser: argparse.ArgumentParser) -> None:
 
 
 def hand_record_world(parser: argparse.ArgumentParser) -> None:
-    parser.description = "Record normalized and metre-based hand landmarks."
+    parser.description = "Record shared RGB, MediaPipe Hands and SMPL-X body observations."
+    add_smplerx_arguments(parser)
+    parser.add_argument('--no-arms', action='store_true', help='record fingers only; do not start SMPLer-X')
+    parser.add_argument('--startup-timeout', type=float, default=120., help='seconds to wait for first body result')
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET)
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
     parser.add_argument("--frames", type=int, default=30)
@@ -208,7 +211,7 @@ def sim_demo_joints(parser):
 
 def dual_calibrate_camera(parser):
     parser.description = (
-        "Capture stable bilateral shoulder-relative Pose world neutral wrists and "
+        "Capture stable bilateral shoulder-relative SMPL-X neutral wrists and "
         "TRON2A URDF FK references. Camera preview only; no robot control. "
         "Rotation and scale must be configured; neutral capture does not estimate extrinsics."
     )
@@ -221,7 +224,7 @@ def dual_calibrate_camera(parser):
         parser.add_argument(f"--safe-q-{side}", type=float, nargs=7, required=True,
                             help=f"{side} reference radians: proximal pitch/roll/yaw, elbow, wrist yaw/pitch/roll; must satisfy URDF limits")
     parser.add_argument("--rotation", type=float, nargs=9, required=True,
-                        help="explicit proper 3x3 rotation from Pose world to base_Link, row-major; not automatically estimated")
+                        help="explicit proper 3x3 rotation from SMPL-X camera axes to base_Link, row-major; not automatically estimated")
     parser.add_argument("--scale", type=float, nargs=3, default=[1., 1., 1.], help="positive x/y/z mapping scales (default 1 1 1; configured, not estimated)")
     parser.add_argument("--translation", type=float, nargs=3, default=[0., 0., 0.], help="extra robot-frame offset in metres (default zero)")
     parser.add_argument("--workspace-min", type=float, nargs=3, required=True, help="minimum base_Link x/y/z in metres")

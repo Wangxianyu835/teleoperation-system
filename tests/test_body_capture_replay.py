@@ -9,6 +9,28 @@ from teleoperation.data.body_recording import save_body_recording, load_body_rec
 
 
 class BodyCaptureReplayTests(unittest.TestCase):
+    def test_combined_file_feeds_hand_reader_and_body_frame_source(self):
+        from teleoperation.data.body_recording import capture_sample
+        from teleoperation.data.hand_h5 import load_twohand_h5
+        from teleoperation.simulation.realtime_teleop import BodyReplayFrameSource
+        camera = FakeCamera()
+        source = CameraTeleopSource(camera, FakeHands(), FakeClient(body_result()), session_id='camera')
+        raw = source.next_teleop_observation()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session.h5'
+            save_body_recording(path, [capture_sample(source, raw)],
+                                {'source': 'smplerx', 'model_id': 's32', 'model_hash': 'h', 'time_unit': 'monotonic_s'})
+            ids, times, hands = load_twohand_h5(path, require_aligned=False)
+            replay = BodyReplayFrameSource(path, 'normalized')
+            replay.next_frame()
+            np.testing.assert_array_equal(replay.arms().world_arms['left'], raw.upper_body.world_arms['left'])
+            self.assertEqual(replay.wrists()['left'].source, 'smplerx')
+            replay.next_frame()
+            self.assertTrue(replay.exhausted)
+        self.assertEqual(ids.tolist(), [0])
+        self.assertEqual(times.tolist(), [raw.hands.timestamp])
+        self.assertTrue(np.isnan(hands['left']).all())
+
     def test_capture_roundtrip_keeps_raw_body_hands_and_rgb(self):
         from teleoperation.data.body_recording import capture_sample, replay_observation
         camera = FakeCamera()

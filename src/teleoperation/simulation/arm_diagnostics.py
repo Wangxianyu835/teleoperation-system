@@ -64,6 +64,8 @@ class ArmDiagnostics:
                 points = world_arms.get(side)
                 points = None if points is None else np.asarray(points, dtype=float)
                 input_valid = points is not None and points.shape == (3, 3) and np.isfinite(points).all()
+                if arms is not None and not isinstance(arms, dict):
+                    input_valid = input_valid and bool(arms.valid.get(side, False))
                 actual, _ = adapter.measure(side)
                 target_world = None if target.position is None else adapter.to_world(target.position)
                 error = (None if target_world is None else

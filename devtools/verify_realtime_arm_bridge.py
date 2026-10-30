@@ -197,7 +197,7 @@ def drive(args) -> tuple:
                                 residual_threshold=args.arm_ik_residual_threshold)
         bridge = RealtimeArmBridge([profiles[name] for name in robots], sides=sides,
                                    calibration_frames=args.calibrate_frames,
-                                   orientation=args.arm_orientation, fallback_hand=True,
+                                   orientation=args.arm_orientation,
                                    neutral=(load_neutral(args.neutral_json)
                                             if args.neutral_json else None))
         stream, source = frame_stream(args, sides, args.frames)

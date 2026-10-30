@@ -108,7 +108,7 @@ def _preview(camera, timed, collector, window):
 
 def run(args):
     """Check -> capture -> collect -> calculate -> persist -> close resources."""
-    camera = source = None
+    camera = source = transport = None
     preview_open = False
     window = "TRON2A neutral calibration (camera only)"
     try:
@@ -178,6 +178,8 @@ def run(args):
             elif camera is not None:
                 camera.release()
         finally:
+            if source is None and transport is not None:
+                transport.close()
             if preview_open:
                 import cv2
                 try:
@@ -273,7 +275,7 @@ class CameraRunReport:
             self.metric(metrics, "actual_joint_vs_control_max_rad", np.max(np.abs(state["q"] - safety.q)))
             item["last"] = dict(diag, actual_q=state["q"].tolist(), actual_ee_pose=state["pose"].tolist(),
                                 control_fk_pose=controlled_fk.tolist(), control_relative_seconds=seconds,
-                                detection_unix_ms=raw.upper_body.timestamp)
+                                capture_time_s=raw.upper_body.timestamp)
         drift = max((abs(value) for value in actual["noncontrolled_joint_drift"].values()), default=0.)
         self.data["noncontrolled_drift_max_rad"] = max(self.data["noncontrolled_drift_max_rad"], drift)
 
@@ -297,7 +299,7 @@ class CameraRunReport:
                 previous["awaiting_recovery"] = False
             previous.update(detected=diag["aligned_valid"], inference_valid=diag["inference_valid"])
             item["last"] = dict(diag, control_relative_seconds=teleoperator.last_timestamp,
-                                detection_unix_ms=teleoperator.last_observation.hands.timestamp)
+                                capture_time_s=teleoperator.last_observation.hands.timestamp)
 
     def write(self, path):
         import json
@@ -395,7 +397,7 @@ def _runtime_preview(camera, raw, controller, actual, window, teleoperator=None)
 def run_camera(args):
     from teleoperation.applications.dual import Tron2ADualArmController, DualTeleoperator
     from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
-    camera = source = world = report = teleoperator = None
+    camera = source = world = report = teleoperator = transport = None
     preview_open = False
     window = "TRON2A camera arms simulation"
     code = 0
@@ -501,7 +503,9 @@ def run_camera(args):
                 report.data.update(exit_reason="error", error=str(error))
     finally:
         # Every owned resource is closed even if another cleanup operation fails.
-        for resource, method in ((source if source is not None else camera, "release"), (teleoperator, "close"), (world, "close")):
+        for resource, method in ((source if source is not None else camera, "release"),
+                                 (transport if source is None else None, 'close'),
+                                 (teleoperator, "close"), (world, "close")):
             if resource is not None:
                 try:
                     getattr(resource, method)()

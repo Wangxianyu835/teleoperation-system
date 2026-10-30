@@ -24,6 +24,9 @@ def _arguments() -> argparse.ArgumentParser:
     parser.add_argument("--model", default="s32", choices=("s32",))
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument('--input-image', type=Path, help='run real single-image inference in the worker environment')
+    parser.add_argument('--input-video', type=Path, help='benchmark chronological video frames in the isolated worker')
+    parser.add_argument('--samples', type=int, default=300)
+    parser.add_argument('--duration-s', type=float, default=0.)
     return parser
 
 
@@ -56,12 +59,17 @@ def main(argv: list[str] | None = None) -> int:
     args = _arguments().parse_args(argv)
     report = inspect_assets(args)
     code = 0
-    if not report['missing'] and args.input_image is not None:
+    if args.input_image is not None and args.input_video is not None:
+        raise ValueError('Choose image or video input')
+    if not report['missing'] and (args.input_image is not None or args.input_video is not None):
+        benchmark = args.input_video is not None or args.duration_s > 0
         command = [str(args.worker_python), str(Path(__file__).resolve().parents[1] /
-                   'external/smplerx_worker/smoke.py'), '--smplerx-root', str(args.smplerx_root),
+                   ('external/smplerx_worker/benchmark.py' if benchmark else 'external/smplerx_worker/smoke.py')), '--smplerx-root', str(args.smplerx_root),
                    '--checkpoint', str(args.checkpoint), '--body-model-dir', str(args.body_model_dir),
-                   '--input-image', str(args.input_image.resolve())]
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=300)
+                   '--input-video' if args.input_video else '--input-image', str((args.input_video or args.input_image).resolve())]
+        if benchmark:
+            command += ['--samples', str(args.samples), '--duration-s', str(args.duration_s)]
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=max(300, args.duration_s + 180))
         report['worker_stderr'] = completed.stderr[-12000:]
         code = completed.returncode
         try:

@@ -1,5 +1,7 @@
 # 多机器人手臂驱动：按 robot_type 选臂并驱动机器人关节
 
+> 2026-10-31：本文包含迁移前的算法实验和命令记录。当前相机输入、录制、回放与运行命令以 [SMPLer-X 链路](smplerx-arm.md) 为准；旧 Pose 输入和手部回退已删除。
+
 最后更新：2026-10-15（§8.19 「GR1-T2 的手臂怎么拐就怎么拐」的根因是**方向口径搬的是操作者的绝对方向**，而 gr1_t2 加载姿势下前臂朝后下方（基座系 `(-0.80,+0.09,-0.60)`）—— 同一句「指向前下方」对它等于「先拆开 97 度」，于是被顶进自己限位的一角并把残差全摊在肘上：换相对档（`delta`）后肘任务残差中位 197.5 -> 25.6 mm、上臂方向误差 65.8 -> 8.2 度；h1_2 / g1 换过去反而退化（9.9 -> 45.5 / 18.8 -> 26.1 度），所以口径落成**每台的属性**（`ArmProfile.posture_frame`，新旗子 `--arm-posture-frame {auto,mapped,delta}` 默认 `auto`），另两台六个读数逐位不动）| 本轮 §8.18 「跑一会 GR1-T2 的大臂与小臂夹角反过来」的根因是**斜坡只削了腕那一点**：`--arm-map posture` 的命令点是刚性的一对（腕 = 肘 + L_f*v），肘目标不限速、腕每帧最多 40 mm，于是这一对被拉近（命令的前臂段 250.6 -> 51.1 mm）、IK 把前臂折到反方向；修法是标记 `elbow_rigid` 后在会压扁的帧上保持上一对（现场开关 `--arm-slew-pair-floor`，0 = 关 = 旧行为），四个候选修法的 A/B 见 §8.18.4）| 前一轮 §8.17 「肘跟手」交付（`--arm-elbow-follow`）与现场固化档入口 §8.17.10 | 更早 §8.16 **「肘/小臂不跟手」的机制是 PyBullet `restPoses` 把解往加载姿势拽**：探针 A/B 把「精确可达目标」的残差从 6.6-140.1 mm 打到 0.0 mm / 拽动 35.0 度打到 0.00 度，证明主因是零空间代价项而不是链路帧口径；但同一条现场录制上换 `--arm-rest-poses live` **不是一边倒的赢**（肘任务只 3/6 侧变好、腕精度中位 17.2 -> 40.5 mm 变差），所以 CLI 默认仍留在 `current`、`live` 只作实验档）| 前一轮 §8.15「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」的根因是那场跑在默认 `chain` 口径上（`--arm-map` 默认改 `posture`、`report_table.py` 加行程与夹断列）| 前一轮 §8.14 中性标定永远等不到数据（`--arm-calibrate-mode track`、`record_posture` 静默丢腕命令、`--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
 相关代码：`src/teleoperation/simulation/arm_ik.py`、`arm_profiles.py`、`arm_scene_driver.py`、
 `arm_realtime.py`、`realtime_teleop.py`、`arm_preview.py`

@@ -21,6 +21,15 @@ class WristSceneController:
         self.states = {}
         self.orientations = {side: {name: None for name in driver.ik} for side in self.routes}
 
+    def reset(self):
+        """Explicit camera session reset; VR callers retain their own lifecycle."""
+        self.trackers = {side: WristTracker(tracker.camera_to_base, tracker.calibration_frames)
+                         for side, tracker in self.trackers.items()}
+        self.anchors.clear()
+        self.generations.clear()
+        self.states.clear()
+        self.orientations = {side: {name: None for name in self.driver.ik} for side in self.routes}
+
     def update(self, wrists, dt):
         for side, source in self.routes.items():
             tracker = self.trackers[side]

@@ -51,10 +51,10 @@ class ValidationInputTests(unittest.TestCase):
             path = Path(folder) / "old.npz"
             save_validation_recording(path, data)
             before = path.read_bytes()
-            with self.assertRaisesRegex(ValueError, "timestamp unit"):
+            with self.assertRaisesRegex(ValueError, "Legacy"):
                 load_validation_recording(path)
-            result = load_validation_recording(path, "milliseconds")
-            np.testing.assert_allclose(np.diff(result["seconds"]), 1/13, atol=1e-6)
+            with self.assertRaisesRegex(ValueError, 'Legacy'):
+                load_validation_recording(path, 'milliseconds')
             self.assertEqual(path.read_bytes(), before)
 
     def test_malformed_inputs_and_conflicting_units_fail(self):
@@ -71,7 +71,7 @@ class ValidationInputTests(unittest.TestCase):
         bad_units = dict(original, metadata_json=np.asarray(json.dumps({"timestamp_unit": "seconds", "length_unit": "cm"})))
         with self.assertRaisesRegex(ValueError, "world metres"):
             validate_recording(bad_units)
-        with self.assertRaisesRegex(ValueError, "hand-only H5"):
+        with self.assertRaises(FileNotFoundError):
             load_validation_recording("camera.h5", "seconds")
 
     def test_percentiles_and_empty_observations_are_json_safe(self):

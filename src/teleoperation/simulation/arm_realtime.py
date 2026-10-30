@@ -1,69 +1,14 @@
-"""Camera arm landmarks (metres) -> per-robot arm targets: relative retargeting.
+"""SMPL-X root-relative shoulder/elbow/wrist positions to robot arm targets.
 
-为什么是「相对」而不是标定
---------------------------
-论文链路要 SMPLer-X 的手腕 6D 位姿 + 手眼标定 + PINK 全身 IK；本机没有相机内参/外参，
-所以这里做的是**相对重定向**：以一次「中性姿势」为原点，把操作者手腕相对肩的位移按
-比例搬进机器人的基座系。
+The active camera route supplies tracked body geometry and uses this bridge for
+chain/segments/posture mapping. Robot link lengths, limits, IK and command rate
+limits remain in their existing owners. Wrist orientation is supplied separately
+by the SMPL-X FK chain through WristSceneController. Synthetic numerical probes
+may exercise the elbow-plane orientation helper directly.
 
-    d_op   = (W - S) - (W0 - S0)            # 你移动了多少（操作者系，米）
-    d_base = gain * M(d_op)                 # M = 轴向置换 + 符号（约定，可覆盖）
-    target = profile.metric_offset + d_base # 机器人基座系，夹在 profile 的行程内
-
-好处：不需要手眼标定 —— 人整体前后左右挪动时肩和腕一起动，d_op 不变，机器人不会
-被你的站位带跑。坏处同样如实说：**这不是论文数值**，gain / 轴向 / 行程都是本机调参，
-``docs/multi-robot-arm.md`` 第 7 节记了它们是怎么量出来的。
-
-三种口径（``MAP_MODES``，见 docs/multi-robot-arm.md 8.10 / 8.11）
---------------------------------------------------------------
-``chain`` 与 ``segments`` 都还在「**位移**」这一层做文章，所以幅度天生挂在「中性姿势下
-肩到腕有多长」上：你双手握拳贴胸（``|W0 - S0|`` 只有约 0.27 m）再摆大臂，位移虽然记下来
-了，可它能给出的目标位移也被这根短基线吃掉 —— 现场那三台「幅度很微小 / 映射完全不对」
-就是这个。``posture`` 换一层：不搬位移，搬**方向**，长度用机器人自己量出来的连杆：
-
-    u = unit(你的上臂方向)        v = unit(你的前臂方向)
-    elbow_target = 肩锚点 + L_u(robot) * M(u)
-    wrist_target = elbow_target + L_f(robot) * M(v)
-
-于是「你的上臂抬起 40 度」在 g1（两段 0.193+0.184 m）和 h1_2（0.331+0.229 m）上都是
-40 度，肘弯的角度也一比一 —— 幅度不再被你的站位、姿势或机器人臂长放大缩小；两个目标
-又都由机器人**自己的**连杆长从它**自己的**肩点推出来，所以永远同时可达，IK2 不再互相
-拉扯（这正是 ``segments`` + ``elbow_task`` 抽抽的原因）。
-
-数据从哪来（同一帧，来自 ``inputs/mediapipe.py`` 的 ``next_teleop_observation``）
--------------------------------------------------------------------------------
-``upper_body.world_arms[side]`` = (肩, 肘, 腕) 3x3、米制、原点=髋中点 -> **位置**用它；
-``world_hands[side]`` / ``hands[side]`` = 手 21 点 -> **姿态**用它（掌面基只用方向，
-与平移原点无关：手部 world 的原点是「手的几何中心」，不能当位置用）。
-
-退化输入（该侧没检到 / 非有限 / 掌面基不可张成）一律不猜：保持上一帧目标，并在
-``ArmTarget.reason`` 里写明原因。
-
-姿态目标（论文的腕部完整位姿，去掉需要标定的那一半）
---------------------------------------------------
-论文给 IK 的是「手腕 4x4 位姿」（SMPL-X 旋转链算出来），不是只给一个点；我们手上只有
-(肩, 肘, 腕) 三点，于是用**相对中性**的写法把它补上：
-
-    R_now  = wrist_orientation_frame(肩, 肘, 腕)     # 前臂方向 + 手臂平面
-    R_rel  = R_neutral^T @ R_now                    # 相对你站好的那一帧
-    R_target(robot) = R_robot_neutral_ee @ R_rel     # 每台各自乘自己的（在 arm_ik 里做）
-
-这样做有两个好处：轴向约定在相减里自然约掉（不需要把相机外参标出来），而且同一份目标
-被三台机器人各自乘上自己的中性 EE 朝向，天生是「每台一套」。如实说缺什么：手的轴向
-扭转（要手 21 点）不算；三点近共线（直臂）时手臂平面不定，这一帧就给不出姿态，保持
-位置模式而不是猜一个。
-
-轴向约定（默认值，不是标定）
---------------------------
-操作者系（MediaPipe pose world 口径）：x 图像向右、y 向下、z 远离相机为正。
-机器人基座系（URDF 惯例）：X 前、Y 左、Z 上。
-
-    robot X <- -op_z     手远离相机 = 远离你 = 机器人往前伸
-    robot Y <- +op_x     图像向右 = 你的左侧 = 机器人 +Y
-    robot Z <- -op_y     图像向下 = 机器人向下
-
-相机在你正前方、机器人也朝着你时这组符号自洽；相机挪到侧面或机器人背对你时必须改
-（``--arm-axis-order`` / ``--arm-axis-signs``）。真值要在你坐到位后实测确认。
+AxisMap is a configured camera-axis convention, not measured camera extrinsics.
+Missing or rejected body sides hold their previous targets. Hands never replace
+body input. See docs/smplerx-arm.md for source, timing and calibration contracts.
 """
 
 from __future__ import annotations
@@ -90,8 +35,6 @@ ARM_LENGTH_BAND = (0.5, 2.0)
 MIN_OPERATOR_REACH_M = 0.15
 #: 基座系里的默认行程上限（米，每轴），profile 没有 realtime_travel_m 时用它。
 DEFAULT_MAX_TRAVEL_M = 0.10
-#: 没有 pose 手臂时回落到「手 21 点 -> 手腕目标」的映射比例（沿用 wrist_targets 默认）。
-FALLBACK_IMAGE_SCALE = 0.7
 #: 肘平面可信判据：|上臂 x 前臂|（= 上臂与前臂夹角的正弦）小于它时这一帧不给姿态。
 MIN_ELBOW_PLANE_SINE = 0.05
 #: 目标超出行程上限后的做法：``clip`` = 逐轴剪断（**默认**）；``scale`` = 整条位移等比缩到上限。
@@ -178,8 +121,7 @@ DEFAULT_LATERAL_GUARD_M = 0.0
 MIN_PLAUSIBLE_ARM_REACH_M = 0.30
 #: 左右两侧标定臂长的最大相对差：超过它认为这一场标定不可信（左右同一个人不该差这么多）。
 ARM_REACH_SIDE_TOLERANCE = 0.25
-SOURCE_POSE = "smplerx"
-SOURCE_HAND = "hand"
+SOURCE_BODY = "smplerx"
 SOURCE_NONE = "none"
 
 
@@ -491,6 +433,8 @@ def _neutral_rotation(orientation):
 def load_neutral(path) -> dict:
     """读一份 ``--save-neutral`` 写出（或 ``--neutral-json`` 指定）的中性姿势记录。"""
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if payload.get('format') != 'smplerx_arm_neutral_v1' or payload.get('source') != 'smplerx':
+        raise ValueError('Legacy arm neutral calibration is removed; capture a new SMPL-X neutral')
     neutral = {}
     for side in SIDES:
         entry = payload.get("sides", {}).get(side, {})
@@ -530,7 +474,7 @@ def save_neutral(path, sides: dict, extra: dict | None = None) -> Path:
     """把中性姿势写进 JSON，方便下次直接复用（不用再站一次）。"""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"format": "realtime_arm_neutral_v2", "extra": extra or {}, "sides": {}}
+    payload = {"format": "smplerx_arm_neutral_v1", 'source': 'smplerx', "extra": extra or {}, "sides": {}}
     for side, entry in sides.items():
         offset = entry.get("offset")
         payload["sides"][side] = {
@@ -610,8 +554,6 @@ class RealtimeArmBridge:
                  gain_quality_guard: bool = True,
                  min_plausible_reach_m: float = MIN_PLAUSIBLE_ARM_REACH_M,
                  arm_reach_side_tolerance: float = ARM_REACH_SIDE_TOLERANCE,
-                 fallback_hand: bool = False,
-                 fallback_scale: float = FALLBACK_IMAGE_SCALE,
                  map_mode: str = "chain",
                  robot_links=None,
                  elbow_task: bool = False,
@@ -702,8 +644,6 @@ class RealtimeArmBridge:
         self.gain_quality_guard = bool(gain_quality_guard)
         self.min_plausible_reach_m = float(min_plausible_reach_m)
         self.arm_reach_side_tolerance = float(arm_reach_side_tolerance)
-        self.fallback_hand = bool(fallback_hand)
-        self.fallback_scale = float(fallback_scale)
         self.frames = 0
         self._samples = {side: [] for side in self.sides}
         self.neutral = {side: _neutral_default() for side in self.sides}
@@ -724,7 +664,7 @@ class RealtimeArmBridge:
         self.counts = {"frames": 0,
                        "valid": {side: 0 for side in self.sides},
                        "held": {side: 0 for side in self.sides},
-                       "fallback": {side: 0 for side in self.sides},
+
                        "oriented": {side: 0 for side in self.sides},
                        "clamped": {side: 0 for side in self.sides},
                        "guarded": {side: 0 for side in self.sides},
@@ -1164,7 +1104,7 @@ class RealtimeArmBridge:
             points = data["arm"]
             offset = points[2] - points[0]
             state = {
-                "source": SOURCE_POSE,
+                "source": SOURCE_BODY,
                 "valid": True,
                 "held": False,
                 "reason": "",
@@ -1184,26 +1124,6 @@ class RealtimeArmBridge:
                 self._guard_direction(side, state["upper"], state["fore"])
             self._last_state[side] = state
             self.counts["valid"][side] += 1
-            return state
-        if data["arm"] is None and self.fallback_hand and data["hand"] is not None:
-            state = {
-                "source": SOURCE_HAND,
-                "valid": True,
-                "held": False,
-                "reason": "",
-                "offset": None,
-                "delta_op": None,
-                "upper": None,
-                "fore": None,
-                "reach": float("nan"),
-                "elbow_bend_deg": float("nan"),
-                "orientation": self._orientation(data),
-                "hand": data["hand"],
-                "fallback_reason": data["reason"],
-            }
-            self._last_state[side] = state
-            self.counts["valid"][side] += 1
-            self.counts["fallback"][side] += 1
             return state
         previous = self._last_state[side]
         if previous is None:
@@ -1307,9 +1227,7 @@ class RealtimeArmBridge:
             "operator_reach_m": _round_or_none(state.get("reach"), 4),
             "elbow_bend_deg": _round_or_none(state.get("elbow_bend_deg"), 1),
         }
-        if state["source"] == SOURCE_HAND and state["hand"] is not None:
-            return self._fallback_target(profile, side, state, info)
-        if state["source"] == SOURCE_POSE and state["delta_op"] is not None:
+        if state["source"] == SOURCE_BODY and state["delta_op"] is not None:
             # 位移口径：chain = 历史口径（肩->腕整段，只动大臂时几乎不动）；segments =
             # 论文 scale_joints 的两段式（上臂段 + 前臂段各自按连杆长比缩放）。取不到连杆长 /
             # 老中性记录缺那两段向量时退回 chain，并把原因写进这一帧的 info。
@@ -1366,7 +1284,7 @@ class RealtimeArmBridge:
                         elbow=tuple(float(value) for value in elbow_point),
                         orientation=self._orientation_for(profile, state),
                         valid=bool(state["valid"]), held=bool(state["held"]),
-                        reason=state["reason"], source=SOURCE_POSE, info=info)
+                        reason=state["reason"], source=SOURCE_BODY, info=info)
             if self.map_mode == "segments":
                 mapped = self._segment_delta(profile, side, state)
                 if mapped is not None:
@@ -1433,7 +1351,7 @@ class RealtimeArmBridge:
                 elbow=elbow_point,
                 orientation=self._orientation_for(profile, state),
                 valid=bool(state["valid"]), held=bool(state["held"]),
-                reason=state["reason"], source=SOURCE_POSE, info=info)
+                reason=state["reason"], source=SOURCE_BODY, info=info)
         # 还没有任何目标（标定中 / 一侧一直没数据）：停在 profile 的中性工作点，
         # 这样手臂不会因为没人管而垂下去（held=True 会把它写进报告）。
         info["fallback_reason"] = state.get("fallback_reason", "")
@@ -1442,41 +1360,6 @@ class RealtimeArmBridge:
             position=tuple(float(value) for value in self._neutral(profile, side)),
             orientation=None, valid=False, held=True,
             reason=state["reason"] or "no target yet", source=SOURCE_NONE, info=info)
-
-    def _fallback_target(self, profile, side, state, info) -> ArmTarget:
-        """pose 手臂这帧不可信时的兜底：沿用既有「21 点 -> 手腕目标」映射。
-
-        它输出**已经在机器人基座系**里的位置（``base_offset`` 直接取 profile 的
-        ``metric_offset``），所以调用方要用 ``source="base"``，不能再叠一次 profile 缩放。
-        """
-        from teleoperation.retargeting.arm.wrist_targets import (
-            WristMapping, wrist_pose_from_landmarks)
-
-        mapping = WristMapping(scale=self.fallback_scale,
-                               base_offset=self._neutral(profile, side))
-        target = wrist_pose_from_landmarks(state["hand"], side, mapping)
-        info["fallback_scale"] = self.fallback_scale
-        info["fallback_reason"] = state.get("fallback_reason", "")
-        if not target.valid:
-            info["fallback_reason"] = target.reason or "hand landmarks unusable"
-            return ArmTarget(
-                side=side,
-                position=tuple(float(value) for value in self._neutral(profile, side)),
-                orientation=None, valid=False, held=True,
-                reason=info["fallback_reason"], source=SOURCE_NONE, info=info)
-        # 兜底路径没有肘，给不出「相对中性」的姿态（见 _orientation 的说明）。如实写进
-        # info：不要把掌面基的绝对姿态塞进一个相对目标的接口，那会让腕停在一个随机角度。
-        info["orientation_source"] = "none (hand fallback has no elbow)"
-        # 护栏对两条路径一视同仁：兜底映射同样可以把手腕送到身体另一侧。
-        position = np.asarray(target.position, dtype=np.float64)
-        guarded = self._apply_lateral_guard(side, position)
-        info["guarded"] = guarded
-        if guarded:
-            self.counts["guarded"][side] += 1
-        return ArmTarget(
-            side=side, position=tuple(float(value) for value in position),
-            orientation=None, valid=True, held=False, reason="",
-            source=SOURCE_HAND, info=info)
 
     def _orientation(self, data) -> tuple | None:
         """相对中性姿势的腕部姿态四元数（机器人无关；IK 那边再乘本机的中性 EE 朝向）。
@@ -1837,7 +1720,6 @@ class RealtimeArmBridge:
             "counts": {"frames": self.counts["frames"],
                        "valid": dict(self.counts["valid"]),
                        "held": dict(self.counts["held"]),
-                       "fallback": dict(self.counts["fallback"]),
                        "oriented": dict(self.counts["oriented"]),
                        "clamped": dict(self.counts["clamped"]),
                        "guarded": dict(self.counts["guarded"]),
@@ -1861,7 +1743,7 @@ class RealtimeArmBridge:
         self.counts = {"frames": 0,
                        "valid": {side: 0 for side in self.sides},
                        "held": {side: 0 for side in self.sides},
-                       "fallback": {side: 0 for side in self.sides},
+
                        "oriented": {side: 0 for side in self.sides},
                        "clamped": {side: 0 for side in self.sides},
                        "guarded": {side: 0 for side in self.sides},

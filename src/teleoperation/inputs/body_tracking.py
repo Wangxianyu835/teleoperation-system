@@ -84,9 +84,14 @@ class BodyTracker:
             if ages[side] > self.max_age_s:
                 self._state[side] = "lost_hold"
                 self._reason[side] = "body sample expired"
+        body = self._empty_body(timestamp if timestamp is not None else max(
+            (stamp for stamp in self._accepted_time.values() if stamp is not None), default=None))
+        body.metadata.update(body_sample_ids=dict(self._accepted_sequence),
+                             body_age_s={side: age if math.isfinite(age) else None for side, age in ages.items()},
+                             body_fresh={side: bool((fresh or {}).get(side, False)) for side in SIDES},
+                             body_reason=dict(self._reason))
         return TrackedBody(
-            self._empty_body(timestamp if timestamp is not None else max(
-                (stamp for stamp in self._accepted_time.values() if stamp is not None), default=None)),
+            body,
             {side: (self._accepted_wrists[side] if self._state[side] == 'tracking'
                     and self._accepted_wrists[side] is not None else _invalid_wrist(self._reason[side])) for side in SIDES},
             dict(self._state), dict(self._reason), dict(self._accepted_sequence), ages,
@@ -144,6 +149,10 @@ class BodyTracker:
         if self._session_id != session:
             self.reset(session)
         if result.frame_id.sequence <= self._last_sequence:
+            for side in SIDES:
+                if self._state[side] == 'tracking':
+                    self._state[side] = 'hold'
+                    self._reason[side] = 'duplicate or nonmonotonic body sample'
             return self._emit(now_s, timestamp=result.frame_id.capture_time_s, fresh={})
         self._last_sequence = result.frame_id.sequence
         try:
@@ -187,11 +196,4 @@ class BodyTracker:
                 self._reason[side] = "body jump; waiting for consistent samples"
                 fresh[side] = False
         emitted = self._emit(now_s, timestamp=result.frame_id.capture_time_s, fresh=fresh)
-        return TrackedBody(
-            UpperBodyObservation(
-                emitted.body.arms, emitted.body.valid, emitted.body.timestamp,
-                emitted.body.coordinate_frame, emitted.body.units, emitted.body.world_arms,
-                {**dict(body.metadata), "tracking_state": dict(self._state)},
-            ), emitted.wrists, emitted.state_by_side, emitted.reason_by_side,
-            emitted.sample_id, emitted.age_s, emitted.fresh,
-        )
+        return emitted

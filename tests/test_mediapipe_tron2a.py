@@ -801,7 +801,7 @@ class CameraRuntimeTests(unittest.TestCase):
         self.assertEqual(report["sides"]["left"]["invalid_observations"], 1)
         self.assertEqual(report["sides"]["right"]["ik_success"], 2)
         self.assertIn("actual_vs_target_position_m", report["sides"]["right"]["metrics"])
-        self.assertEqual(report["sides"]["right"]["last"]["detection_unix_ms"], observation(1).upper_body.timestamp)
+        self.assertEqual(report["sides"]["right"]["last"]["capture_time_s"], observation(1).upper_body.timestamp)
         self.assertLess(report["sides"]["right"]["last"]["control_relative_seconds"], 10)
         self.assertIn("capture_to_actual_ms", report["latency"])
         self.assertFalse(report["real_camera_verified"])
@@ -923,7 +923,7 @@ class CameraDualTeleoperatorTests(unittest.TestCase):
         self.assertEqual(raw.hands.timestamp, 1_700_000_000_000)
         payload = self.dual.hand_retargeter.retargeter.predict.call_args.args[0]
         self.assertEqual(payload["timestamp"], .066)
-        self.assertEqual(payload["metadata"]["raw_timestamp_ms"], raw.hands.timestamp)
+        self.assertEqual(payload["metadata"]["capture_time_s"], raw.hands.timestamp)
         self.assertEqual(payload["metadata"]["timestamp_unit"], "relative_seconds")
         flat = command.flatten()
         self.assertEqual(flat.shape, (48,))
@@ -996,7 +996,7 @@ class CameraDualTeleoperatorTests(unittest.TestCase):
             raw = dual_world_observation(i, left=left, invalid_pose="right" if i == 7 else None)
             seconds = i / 30
             frame = replace(raw.hands, timestamp=seconds, metadata={**raw.hands.metadata,
-                "raw_timestamp_ms":raw.hands.timestamp, "timestamp_unit":"relative_seconds"})
+                "capture_time_s":raw.hands.timestamp, "timestamp_unit":"relative_seconds"})
             window, canonical = pipeline.process_observation(frame)
             reference = None if window is None else original.retarget(window)
             with patch.object(self.dual.hand_retargeter, "retarget", wraps=self.dual.hand_retargeter.retarget) as infer:
@@ -1089,7 +1089,7 @@ class CameraFullRuntimeTests(unittest.TestCase):
         self.assertEqual(left["detection_recoveries"], 1)
         self.assertEqual(left["inference_recoveries"], 1)
         self.assertEqual(report["inference_device"], "cpu")
-        self.assertEqual(report["hands"]["left"]["last"]["detection_unix_ms"], dual_world_observation(6).hands.timestamp)
+        self.assertEqual(report["hands"]["left"]["last"]["capture_time_s"], dual_world_observation(6).hands.timestamp)
         self.assertIn("hand_processing_ms", report["latency"])
         camera.release.assert_called_once(); world.close.assert_called_once()
 

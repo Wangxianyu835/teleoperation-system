@@ -61,6 +61,13 @@ result = arm_ik.solve(target, q_previous, q_reference)
 
 实时应用调用 `UpperBodyObservation.validate(strict=True)`；非法点明确失败。离线 valid=False 或非有限观测保持上一目标。ArmTargetPose 不自动归一化或翻转四元数。标定输出属于 TRON2A `base_Link`。
 
+新相机身体输入由独立 SMPLer-X worker 提供。`source=smplerx`、
+`source_coordinate_frame=smplx_camera_root_relative_m`、`source_units=m` 为必需声明。
+身体与手部时间为独立单调秒，不能把缓存身体结果标成当前相机帧。
+跟踪器对每侧管理 valid、fresh、sample_id、age 和状态；无效侧保持，不阻止另一侧或手指。
+新 H5 保存原始模型包及最终观测，不接受旧 Pose 文件或缺少来源/模型 hash 的数据。
+回放入口和实时时间规则见 [SMPLer-X 链路](smplerx-arm.md)。
+
 IK 的 FK 矩阵仍可参与原有计算；进入正式 IK 接口前用 `target_pose_from_matrix(matrix, side)` 显式构造目标。IK 失败返回 previous q、success=False、两项误差 inf。安全控制继续使用原来的 q、success、timestamp 更新限制和保持策略。
 
 ## 机器人命令

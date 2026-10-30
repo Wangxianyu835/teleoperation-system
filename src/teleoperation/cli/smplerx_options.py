@@ -6,12 +6,19 @@ import argparse
 from pathlib import Path
 
 
+def smplerx_defaults():
+    root = Path(__file__).resolve().parents[3]
+    return dict(smplerx_worker_python=root / '.venv/smplerx-worker/Scripts/python.exe',
+                smplerx_root=root / '.venv/smplerx-assets/SMPLer-X',
+                smplerx_checkpoint=root / '.venv/smplerx-assets/smpler_x_s32.pth.tar',
+                smplx_model_dir=root / 'datasets/smpl_models')
+
+
 def add_smplerx_arguments(parser: argparse.ArgumentParser) -> None:
     """Add explicit paths for the external S32 inference process.
 
-    The main teleoperation environment does not import SMPLer-X.  ``None`` is
-    intentional for the paths: the application validates them before opening
-    a camera, so a missing model produces a useful configuration error.
+    The main environment does not import SMPLer-X. Defaults use local ignored
+    assets; applications validate these paths before opening a camera.
     """
 
     parser.add_argument(
@@ -44,3 +51,4 @@ def add_smplerx_arguments(parser: argparse.ArgumentParser) -> None:
         default="s32",
         help="SMPLer-X model variant (the camera arm route currently fixes S32)",
     )
+    parser.set_defaults(**smplerx_defaults())

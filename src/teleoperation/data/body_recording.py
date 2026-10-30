@@ -107,6 +107,8 @@ def save_body_recording(
             h5_file.attrs["source"] = "smplerx"
             h5_file.attrs["time_unit"] = "monotonic_s"
             h5_file.attrs["metadata_json"] = json.dumps(attributes, default=_json_default, sort_keys=True)
+            if all('observation_packet' in row for row in rows):
+                _write_hands(h5_file, rows)
             group = h5_file.create_group("samples")
             for index, row in enumerate(rows):
                 sample = group.create_group(str(index))
@@ -132,6 +134,29 @@ def save_body_recording(
                 if extra:
                     sample.attrs["extra_json"] = json.dumps(extra, default=_json_default, sort_keys=True)
     return destination
+
+
+def _write_hands(handle, rows):
+    """Expose finger-only tables to the existing hand training/export tools."""
+    observations = [replay_observation(row) for row in rows]
+    handle.create_dataset('frame_ids', data=np.arange(len(rows), dtype=np.int64))
+    handle.create_dataset('timestamps', data=[row['capture_time_s'] for row in rows])
+    for side in ('left', 'right'):
+        valid = np.ones(len(rows), dtype=bool)
+        for suffix, attr in (('hand_keypoints', 'hands'), ('world_landmarks', 'world_hands')):
+            values = np.full((len(rows), 21, 3), np.nan, dtype=np.float32)
+            for index, raw in enumerate(observations):
+                points = (getattr(raw.hands, attr) or {}).get(side)
+                if points is not None and np.shape(points) == (21, 3) and np.isfinite(points).all():
+                    values[index] = points
+                else:
+                    valid[index] = False
+            handle.create_dataset(f'{side}_{suffix}', data=values)
+        handle.create_dataset(f'{side}_valid', data=valid)
+    handle.attrs.update(source_landmark_space='mediapipe_normalized',
+                        hand_world_landmark_space='mediapipe_world_meters',
+                        hand_processing_landmark_space='mediapipe_world_meters',
+                        hand_world_origin='hand_geometric_center', length_unit='m')
 
 
 def _read_attr(value):

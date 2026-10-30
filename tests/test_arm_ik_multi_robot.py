@@ -187,18 +187,9 @@ class ThreeRobotArmIkTests(unittest.TestCase):
                                        orientation=way_off)
                 self.assertEqual(sorted(values),
                                  sorted(name for _i, name in adapter.arm["right"]))
-                if profile.ik_mode == "pose":
-                    np.testing.assert_allclose(adapter.last_orientation["right"],
-                                               way_off, atol=1e-12)
-                else:
-                    # A position-only profile must ignore the orientation argument:
-                    # same start, same target -> same numbers (solve() warm-starts,
-                    # so the arm is reset in between).
-                    self.assertIsNone(adapter.last_orientation["right"])
-                    self.reset_arm(adapter)
-                    baseline = adapter.solve("right", profile.metric_offset)
-                    np.testing.assert_allclose(list(values.values()),
-                                               list(baseline.values()), atol=1e-9)
+                # Explicit input wrist orientation enables a pose attempt for every robot.
+                self.assertIsNotNone(adapter.last_solve['right']['pose_candidate_residual_mm'])
+                self.assertEqual(adapter.last_solve['right']['wrist_pose_requested'], True)
 
     def test_each_arm_tracks_its_own_base_frame_target_and_moves(self):
         for robot in PAPER_ROBOTS:

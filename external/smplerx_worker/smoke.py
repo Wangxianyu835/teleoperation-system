@@ -34,7 +34,7 @@ def main():
             adapter.load()
             torch.cuda.reset_peak_memory_stats()
             durations = []
-            for sequence in range(3):
+            for sequence in range(7):
                 stamp = time.monotonic()
                 result = adapter.infer(rgb, BodyFrameId('smoke', sequence, stamp))
                 torch.cuda.synchronize()
@@ -43,7 +43,7 @@ def main():
                       'reason': result.reason, 'model_hash': result.model_hash,
                       'input_shape': list(rgb.shape),
                       'output_shapes': {key: list(value.shape) for key, value in result.arrays.items()},
-                      'frame_latency_ms': durations, 'warmup_frames': 1,
+                      'frame_latency_ms': durations, 'warmup_frames': 5,
                       'peak_allocated_bytes': torch.cuda.max_memory_allocated(),
                       'peak_reserved_bytes': torch.cuda.max_memory_reserved(),
                       'device': torch.cuda.get_device_name(), 'torch': torch.__version__}

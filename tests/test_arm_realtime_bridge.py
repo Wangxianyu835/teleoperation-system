@@ -297,7 +297,7 @@ class RelativeMappingTests(unittest.TestCase):
             entry = targets[name]["right"]
             self.assertTrue(entry.valid)
             self.assertFalse(entry.held)
-            self.assertEqual(entry.info["source"], "pose")
+            self.assertEqual(entry.info["source"], "smplerx")
             np.testing.assert_allclose(entry.position,
                                        profile_for(name).realtime_neutral("right"), atol=1e-9)
 
@@ -562,8 +562,8 @@ class HoldAndFallbackTests(unittest.TestCase):
         previous = first["gr1_t2"]["right"]
         entry = second["gr1_t2"]["right"]
         self.assertTrue(entry.held and not entry.valid)
-        self.assertEqual(entry.info["source"], "pose")      # 保持的是上一帧那次的来源
-        self.assertIn("no usable pose arm landmarks", entry.reason)
+        self.assertEqual(entry.info["source"], "smplerx")      # 保持的是上一帧那次的来源
+        self.assertIn("no usable SMPL-X arm landmarks", entry.reason)
         np.testing.assert_allclose(entry.position, previous.position, atol=0.0)
         self.assertGreaterEqual(bridge.counts["held"]["right"], 1)
 
@@ -576,22 +576,22 @@ class HoldAndFallbackTests(unittest.TestCase):
         self.assertTrue(entry.held)
         self.assertIn("below", entry.reason)
 
-    def test_the_hand_fallback_is_used_when_pose_is_missing(self):
-        bridge = calibrated(sides=("right",))
-        targets = bridge.update(arms_world={"right": None}, hands={"right": open_hand()})
-        entry = targets["h1_2"]["right"]
-        self.assertEqual(entry.source, "hand")
-        self.assertTrue(entry.valid and not entry.held)
-        self.assertIn("fallback_reason", entry.info)
-        self.assertAlmostEqual(entry.info["fallback_scale"], 0.7, places=9)
+    def test_hands_never_replace_missing_body_input(self):
+        bridge = calibrated(sides=('right',))
+        previous = bridge.trace()['right']
+        entry = bridge.update(arms_world={'right': None}, hands={'right': open_hand()})['h1_2']['right']
+        self.assertTrue(entry.held)
+        self.assertEqual(entry.source, 'smplerx')
+        with self.assertRaises(TypeError):
+            RealtimeArmBridge(PROFILES, fallback_hand=True)
 
     def test_the_fallback_can_be_switched_off(self):
         """关掉兜底后，pose 缺失时保持的是上一帧的 pose 目标 —— 绝不悄悄换成手部映射。"""
-        bridge = calibrated(sides=("right",), fallback_hand=False)
+        bridge = calibrated(sides=("right",))
         targets = bridge.update(arms_world={"right": None}, hands={"right": open_hand()})
         entry = targets["h1_2"]["right"]
         self.assertTrue(entry.held)
-        self.assertEqual(entry.info["source"], "pose")
+        self.assertEqual(entry.info["source"], "smplerx")
         self.assertNotEqual(entry.source, "hand")
 
     def test_before_any_data_every_robot_sits_on_its_neutral_point(self):
@@ -670,7 +670,7 @@ class ReportAndIoTests(unittest.TestCase):
         self.assertEqual(set(payload["counts"]["valid"]), {"right"})
         trace = bridge.trace()
         self.assertEqual(set(trace), {"right"})
-        self.assertEqual(trace["right"]["source"], "pose")
+        self.assertEqual(trace["right"]["source"], "smplerx")
         self.assertEqual(len(trace["right"]["delta_op_cm"]), 3)
         self.assertAlmostEqual(trace["right"]["operator_reach_m"], 0.60, delta=0.01)
 
@@ -721,14 +721,14 @@ class EntryAndReplayTests(unittest.TestCase):
         source = CameraFrameSource.__new__(CameraFrameSource)
         source.pipeline = MediaPipePalmLocalPipeline("world")
         source.pose_enabled = True
-        source._start_time = time.time()
-        source._input = Mock()
+        source._start_timestamp = None
+        source._source = Mock()
         dumped = {"hand": {side: [] for side in SIDES},
                   "world": {side: [] for side in SIDES},
                   "arm": {side: [] for side in SIDES}, "timestamps": []}
         frames = [world_frame(index) for index in range(3)]
         for frame in frames:
-            source._input.next_teleop_observation.return_value = SimpleNamespace(
+            source._source.next_teleop_observation.return_value = SimpleNamespace(
                 hands=observation(frame), upper_body=None)
             source.next_frame()
             _record_frame(dumped, source.last_raw_frame, None)
@@ -760,8 +760,6 @@ class EntryAndReplayTests(unittest.TestCase):
             "right_hand": np.stack([np.full((21, 3), np.nan)] * frames),
             "world_left_hand": np.stack([(hand - hand[0]) * 0.19] * frames),
             "world_right_hand": np.stack([np.full((21, 3), np.nan)] * frames),
-            "left_arm": np.stack([arm("left")] * frames),
-            "right_arm": np.stack([np.full((3, 3), np.nan)] * frames),
         }
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "frames.npz"
@@ -775,10 +773,7 @@ class EntryAndReplayTests(unittest.TestCase):
             self.assertIsNone(source.next_frame())
             self.assertTrue(source.exhausted)
             observation = source.arms()
-        self.assertTrue(observation.valid["left"])
-        self.assertFalse(observation.valid["right"])
-        np.testing.assert_allclose(observation.world_arms["left"], arm("left"), atol=1e-6)
-        self.assertIsNone(observation.world_arms["right"])
+        self.assertIsNone(observation)
         self.assertIsNone(source.release())
 
     def test_world_replay_declares_the_metadata_the_pipeline_demands(self):
@@ -797,8 +792,6 @@ class EntryAndReplayTests(unittest.TestCase):
             "right_hand": np.stack([missing] * frames),
             "world_left_hand": np.stack([(hand - hand[0]) * 0.19] * frames),
             "world_right_hand": np.stack([missing] * frames),
-            "left_arm": np.stack([arm("left")] * frames),
-            "right_arm": np.stack([arm("right")] * frames),
         }
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "frames.npz"
@@ -933,33 +926,25 @@ class NeutralOrientationTests(unittest.TestCase):
         bridge_off.update(arms_world={"right": neutral})
         self.assertIsNone(bridge_off.orientation_target()["right"])
 
-    def test_the_hand_fallback_carries_no_relative_orientation(self):
+    def test_hands_do_not_supply_body_wrist_orientation(self):
         bridge = self._calibrated_on_a_bent_arm()
-        entry = bridge.update(arms_world={"right": None},
-                              hands={"right": open_hand()})["h1_2"]["right"]
-        self.assertEqual(entry.source, "hand")
-        self.assertIsNone(entry.orientation)
-        self.assertIn("no elbow", entry.info["orientation_source"])
+        previous = bridge.orientation_target()['right']
+        entry = bridge.update(arms_world={'right': None}, hands={'right': open_hand()})['h1_2']['right']
+        self.assertTrue(entry.held)
+        self.assertEqual(entry.source, 'smplerx')
+        np.testing.assert_array_equal(entry.orientation, previous)
 
 
 class NeutralOrientationRecordTests(unittest.TestCase):
     """老中性记录不带姿态 -> 退化成位置模式；新记录带姿态 -> 存读一致。"""
 
-    def test_an_old_neutral_record_still_works_as_position_only(self):
-        payload = {"format": "realtime_arm_neutral_v1",
-                   "sides": {"right": {"offset": [0.0, 0.6, 0.0], "reach": 0.6,
-                                       "samples": 4, "complete": True}}}
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "old_neutral.json"
-            path.write_text(json.dumps(payload), encoding="utf-8")
-            loaded = load_neutral(path)
-            self.assertTrue(loaded["sides"]["right"]["complete"])
-            self.assertIsNone(loaded["sides"]["right"]["orientation"])
-            bridge = RealtimeArmBridge(PROFILES, sides=("right",), neutral=loaded)
-            entry = bridge.update(arms_world={"right": bent_arm("right")})["h1_2"]["right"]
-        self.assertTrue(entry.valid)
-        self.assertIsNone(entry.orientation)
-        self.assertEqual(bridge.counts["oriented"]["right"], 0)
+    def test_old_neutral_record_is_rejected(self):
+        payload = {'format': 'realtime_arm_neutral_v1', 'sides': {}}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'old.json'
+            path.write_text(json.dumps(payload), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'Legacy'):
+                load_neutral(path)
 
     def test_the_neutral_frame_survives_a_save_and_load_round_trip(self):
         bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=4)

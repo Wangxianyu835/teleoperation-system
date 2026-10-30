@@ -17,10 +17,29 @@ def sample_seconds(timestamps, unit):
 
 
 def load_validation_recording(path, timestamp_unit=None):
+    if Path(path).suffix.lower() in ('.h5', '.hdf5'):
+        from .body_recording import load_body_recording, replay_observation
+        recording = load_body_recording(path)
+        observations = [replay_observation(row) for row in recording.samples]
+        times = np.asarray([row['capture_time_s'] for row in recording.samples])
+        seconds = sample_seconds(times, 'seconds')
+        if len(seconds) < 2:
+            raise ValueError('Arm validation requires at least two frames')
+        arrays = {'timestamps': times}
+        for side in ('left', 'right'):
+            arrays[side + '_arm'] = np.asarray([
+                raw.upper_body.world_arms[side] if raw.upper_body.valid[side] else np.full((3, 3), np.nan)
+                for raw in observations])
+        return dict(arrays=arrays, seconds=seconds, timestamp_unit='monotonic_s',
+                    scenarios=np.asarray(['recorded'] * len(times)), metadata=recording.metadata,
+                    observations=observations)
     if Path(path).suffix.lower() != ".npz":
         raise ValueError("Arm validation requires NPZ with shoulder/elbow/wrist arrays; hand-only H5 is not arm input")
     with np.load(path, allow_pickle=False) as archive:
         data = {key: np.array(archive[key], copy=True) for key in archive.files}
+    metadata = json.loads(str(np.asarray(data.get('metadata_json', '{}')).item()))
+    if metadata.get('source') != 'synthetic' or metadata.get('schema') != 'synthetic_arm_validation_v1':
+        raise ValueError('Legacy arm NPZ is removed; use an SMPL-X body H5 recording')
     return validate_recording(data, timestamp_unit)
 
 

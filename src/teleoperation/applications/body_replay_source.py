@@ -12,6 +12,8 @@ class BodyReplaySource:
         self.last_observation = None
         self.last_time_s = None
         self.frame_dt = None
+        from .body_source_metrics import BodySourceMetrics
+        self.metrics = BodySourceMetrics()
 
     def next_teleop_observation(self):
         if self.index >= self.frames:
@@ -26,6 +28,7 @@ class BodyReplaySource:
             self.frame_dt = stamp - self.last_time_s
         self.last_time_s = stamp
         self.last_observation = replay_observation(row)
+        self.metrics.update(self.last_observation.upper_body, stamp)
         return self.last_observation
 
     def release(self):

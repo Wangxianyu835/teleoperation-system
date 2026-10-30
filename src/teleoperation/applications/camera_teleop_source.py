@@ -30,6 +30,8 @@ class CameraTeleopSource:
         self.last_result = None
         self.last_tracked = None
         self.last_fault = None
+        from .body_source_metrics import BodySourceMetrics
+        self.metrics = BodySourceMetrics()
 
     def next_teleop_observation(self) -> RawTeleopObservation:
         frame = self.camera.capture_sample()
@@ -58,6 +60,7 @@ class CameraTeleopSource:
         self.last_result = result
         tracked = self.tracker.update(result, now_s=frame.timestamp)
         self.last_tracked = tracked
+        self.metrics.update(tracked.body, frame.timestamp)
         return RawTeleopObservation(hands, tracked.body, tracked.wrists)
 
     def release(self):
