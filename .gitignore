@@ -94,3 +94,8 @@ $RECYCLE.BIN/
 # Downloaded MediaPipe models use the shared datasets directory.
 /datasets/hand_landmarker.task
 /datasets/pose_landmarker_lite.task
+
+# Licensed SMPL / SMPL-X body models and local source packages.
+/datasets/smpl_models/
+/datasets/models/
+/datasets/SMPL_python_v.1.1.0/
