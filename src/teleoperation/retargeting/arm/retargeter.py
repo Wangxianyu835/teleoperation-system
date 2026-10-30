@@ -12,15 +12,16 @@ class ArmRetargeter:
 
     def __init__(self, calibration: ArmCalibration, *, input_mode="legacy", orientation_mode=None):
         self.calibration = calibration
-        if input_mode not in ("legacy", "camera_world", "smplerx"):
+        if input_mode == "camera_world":
+            raise ValueError("camera_world arm input was removed; use SMPLer-X")
+        if input_mode not in ("legacy", "smplerx"):
             raise ValueError("Unknown arm input mode")
         self.input_mode = input_mode
-        self.orientation_mode = orientation_mode or ("fixed" if input_mode in ("camera_world", "smplerx") else "forearm")
+        self.orientation_mode = orientation_mode or ("fixed" if input_mode == "smplerx" else "forearm")
         if self.orientation_mode not in ("fixed", "forearm"):
             raise ValueError("Unknown arm orientation mode")
-        if input_mode in ("camera_world", "smplerx"):
-            source = ("smplx_camera_root_relative_m" if input_mode == "smplerx"
-                      else "mediapipe_pose_world_meters")
+        if input_mode == "smplerx":
+            source = "smplx_camera_root_relative_m"
             expected = dict(coordinate_source=source, units="m",
                             human_reference="each_side_own_shoulder", robot_reference_frame="base_Link",
                             point_order=["shoulder", "elbow", "wrist"])
@@ -41,9 +42,8 @@ class ArmRetargeter:
         if not isinstance(observation, UpperBodyObservation): raise TypeError("Expected UpperBodyObservation")
         if side not in ("left", "right"):
             raise ValueError(f"Invalid arm side: {side}")
-        if self.input_mode in ("camera_world", "smplerx"):
-            expected_frame = ("smplx_image_normalized" if self.input_mode == "smplerx"
-                              else "mediapipe_pose_normalized")
+        if self.input_mode == "smplerx":
+            expected_frame = "smplx_image_normalized"
             if observation.coordinate_frame != expected_frame or observation.units != "normalized":
                 raise ValueError("Expected camera body projection and root-relative world observation")
             keypoints = None if observation.world_arms is None else observation.world_arms[side]
@@ -53,11 +53,11 @@ class ArmRetargeter:
         points = np.asarray(keypoints, dtype=np.float64)
         if not valid or points.shape != (3, 3) or not np.isfinite(points).all():
             return ArmTargetPose(side, self._previous[side].copy(), False)
-        orientation = _forearm_rotation(points, min_bend_sine=0.05 if self.input_mode in ("camera_world", "smplerx") else 0.) if self.orientation_mode == "forearm" else None
+        orientation = _forearm_rotation(points, min_bend_sine=0.05 if self.input_mode == "smplerx" else 0.) if self.orientation_mode == "forearm" else None
         self.orientation_held[side] = self.orientation_mode == "forearm" and orientation is None
         if self.input_mode == "legacy" and self.orientation_held[side]:
             return ArmTargetPose(side, self._previous[side].copy(), False)
-        wrist = points[2] - points[0] if self.input_mode == "camera_world" else points[2]
+        wrist = points[2]
         position = self.calibration.robot_neutral_pose[side][:3] + self.calibration.translation + self.calibration.rotation @ (self.calibration.scale * (wrist - self.calibration.human_neutral_wrist[side]))
         if self.input_mode == "legacy":
             position = np.clip(position, self.calibration.workspace_min, self.calibration.workspace_max)
@@ -66,7 +66,7 @@ class ArmRetargeter:
         elif orientation is None:
             quaternion = self._previous[side][3:]
         else:
-            if self.input_mode in ("camera_world", "smplerx"):
+            if self.input_mode == "smplerx":
                 # The elbow plane is ambiguous across straight extension.
                 # Choose its sign continuously rather than introducing a roll flip.
                 if np.dot(orientation[:, 2], self._forearm_previous[side][:, 2]) < 0:
