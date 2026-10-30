@@ -54,6 +54,20 @@ class WristObservationTests(unittest.TestCase):
                        CAMERA_LOCAL, "camera_palm", .01, orientation_valid=True), .03)
         self.assertEqual(tracker.generation, 2)
 
+    def test_smplerx_camera_axes_are_supported(self):
+        tracker = WristTracker(np.eye(3), calibration_frames=1)
+        first = WristObservation(np.array([0., 0., 0., 1.]), "smplx_camera_axes",
+                                 "smplx_wrist_local", "smplerx", 1.0,
+                                 orientation_valid=True)
+        tracker.update(first, .03)
+        self.assertEqual(tracker.status, "aligned")
+        moved = WristObservation(
+            Rotation.from_euler("z", .2).as_quat(), "smplx_camera_axes",
+            "smplx_wrist_local", "smplerx", 1.1, orientation_valid=True,
+        )
+        tracker.update(moved, .03)
+        self.assertNotEqual(tracker.reason, "unsupported wrist reference frame")
+
     def test_cached_sdk_packet_does_not_gain_new_wrist_timestamps(self):
         matrix = np.eye(4)
         matrix[:3, 3] = [.1, .2, .3]

@@ -66,7 +66,7 @@ class WristTracker:
             self.last_timestamp = stamp
         if observation.reference_frame == "visionpro_sdk_zup":
             c = VR_TO_BASE
-        elif observation.reference_frame == "mediapipe_hand_world_axes":
+        elif observation.reference_frame in ("mediapipe_hand_world_axes", "smplx_camera_axes"):
             c = self.camera_to_base
         else:
             self.status, self.reason = "uncalibrated", "unsupported wrist reference frame"
