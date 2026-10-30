@@ -20,9 +20,6 @@ import time
 
 import numpy as np
 
-from .pose_mediapipe import DEFAULT_POSE_VISIBILITY, parse_pose_result
-
-
 from teleoperation.paths import DEFAULT_MEDIAPIPE_ASSET
 
 MODEL_PATH = DEFAULT_MEDIAPIPE_ASSET
@@ -164,18 +161,15 @@ class MediaPipeCameraInput:
         invalid_hand_as_missing: bool = False,
         include_image: bool = False,
         pose_model_asset_path: str | Path | None = None,
-        pose_min_visibility: float = DEFAULT_POSE_VISIBILITY,
+        pose_min_visibility: float | None = None,
     ):
+        if pose_model_asset_path is not None or pose_min_visibility is not None:
+            raise ValueError(
+                "MediaPipe Pose arm input was removed; configure the SMPLer-X body worker"
+            )
         model_path = Path(model_asset_path).expanduser().resolve()
         if not model_path.is_file():
             raise FileNotFoundError(f"MediaPipe hand model not found: {model_path}")
-        pose_path = (
-            None
-            if pose_model_asset_path is None
-            else Path(pose_model_asset_path).expanduser().resolve()
-        )
-        if pose_path is not None and not pose_path.is_file():
-            raise FileNotFoundError(f"MediaPipe pose model not found: {pose_path}")
 
         import cv2
         import mediapipe as mp
@@ -184,14 +178,12 @@ class MediaPipeCameraInput:
         self._mp = mp
         self._cap = None
         self._landmarker = None
-        self._pose_landmarker = None
         self._camera_index = camera_index
         self._frame_index = 0
         self._last_timestamp_ms = None
         self.last_bgr = None
         self._invalid_hand_as_missing = invalid_hand_as_missing
         self._include_image = include_image
-        self._pose_min_visibility = float(pose_min_visibility)
         previous = Path.cwd()
         try:
             # MediaPipe's native loader may reject a non-ASCII absolute path.
@@ -207,18 +199,6 @@ class MediaPipeCameraInput:
                     min_hand_presence_confidence=MIN_DET_CONF,
                     min_tracking_confidence=MIN_TRK_CONF,
                 )
-                pose_options = None
-                if pose_path is not None:
-                    pose_options = mp.tasks.vision.PoseLandmarkerOptions(
-                        base_options=mp.tasks.BaseOptions(
-                            model_asset_path=pose_path.name
-                        ),
-                        running_mode=mp.tasks.vision.RunningMode.VIDEO,
-                        num_poses=1,
-                        min_pose_detection_confidence=MIN_DET_CONF,
-                        min_pose_presence_confidence=MIN_DET_CONF,
-                        min_tracking_confidence=MIN_TRK_CONF,
-                    )
                 self._cap = cv2.VideoCapture(camera_index)
                 self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
                 self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
@@ -226,11 +206,6 @@ class MediaPipeCameraInput:
                 if not self._cap.isOpened():
                     raise RuntimeError(f"Cannot open camera {camera_index}")
                 self._landmarker = mp.tasks.vision.HandLandmarker.create_from_options(options)
-                if pose_options is not None:
-                    os.chdir(pose_path.parent)
-                    self._pose_landmarker = (
-                        mp.tasks.vision.PoseLandmarker.create_from_options(pose_options)
-                    )
             finally:
                 os.chdir(previous)
         except BaseException:
@@ -252,8 +227,10 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
 """
         if self._cap is None or self._landmarker is None:
             raise RuntimeError("MediaPipe camera input is closed")
-        if include_pose and self._pose_landmarker is None:
-            raise RuntimeError("MediaPipe pose landmarker is not configured")
+        if include_pose:
+            raise ValueError(
+                "MediaPipe Pose arm input was removed; use CameraTeleopSource with SMPLer-X"
+            )
         try:
             success, frame = self._cap.read()
             if not success or frame is None or frame.size == 0:
@@ -272,17 +249,6 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
                 "image_height": int(frame.shape[0]),
             }, invalid_hand_as_missing=self._invalid_hand_as_missing,
                include_world=True)
-            if include_pose:
-                pose_result = self._pose_landmarker.detect_for_video(
-                    mp_image, timestamp_ms
-                )
-                pose = parse_pose_result(
-                    pose_result,
-                    min_visibility=self._pose_min_visibility,
-                )
-                pose_metadata = pose.pop("metadata")
-                output.update(pose)
-                output["metadata"].update(pose_metadata)
             self._last_timestamp_ms = timestamp_ms
             self._frame_index += 1
             if self._include_image:
@@ -358,42 +324,9 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
     def close(self): self.release()
 
     def next_teleop_observation(self):
-        """One capture, one image/time for Hands and Pose; no control transforms.
-
-        Body ``arms`` are normalized; ``world_arms`` are Pose world metres.
-        Invalid sides become None in both spaces. Raw pose arrays/visibility
-        remain in hand metadata for diagnostics, never as valid control input.
-        """
-        from teleoperation.contracts.observations import (
-            RawHandFrame, RawTeleopObservation, UpperBodyObservation,
+        raise RuntimeError(
+            "MediaPipe Pose arm input was removed; use CameraTeleopSource with SMPLer-X"
         )
-
-        raw = self.next_frame(include_world=True, include_pose=True)
-        sides = ("left", "right")
-        valid = {}
-        for side in sides:
-            valid[side] = bool(raw[f"{side}_arm_valid"] and all(
-                np.shape(raw[key]) == (3, 3) and np.isfinite(raw[key]).all()
-                for key in (f"{side}_arm_keypoints", f"{side}_arm_world_keypoints")
-            ))
-        metadata = dict(raw["metadata"])
-        metadata.update({key: raw[key] for key in (
-            "pose_keypoints", "pose_world_keypoints", "pose_visibility",
-        )})
-        metadata["arm_point_order"] = ("shoulder", "elbow", "wrist")
-        hands = RawHandFrame(
-            {side: raw[side] for side in sides}, raw["timestamp"],
-            "mediapipe_approx", metadata,
-            {side: "landmarks21" for side in sides},
-            world_hands={side: raw[f"world_{side}"] for side in sides},
-            wrists=raw.get("wrists"),
-        )
-        body = UpperBodyObservation(
-            {side: raw[f"{side}_arm_keypoints"] if valid[side] else None for side in sides},
-            valid, raw["timestamp"], "mediapipe_pose_normalized", "normalized",
-            world_arms={side: raw[f"{side}_arm_world_keypoints"] if valid[side] else None for side in sides},
-        )
-        return RawTeleopObservation(hands, body)
 
     def release(
         self, *, wait_for_mediapipe: bool = True, close_landmarker: bool = True,
@@ -407,18 +340,17 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
         that will immediately terminate the process may set
         ``close_landmarker=False`` as well.
         """
-        cap, landmarker, pose_landmarker = (
+        cap, landmarker = (
             self._cap,
             self._landmarker,
-            self._pose_landmarker,
         )
-        self._cap = self._landmarker = self._pose_landmarker = None
+        self._cap = self._landmarker = None
         try:
             if cap is not None:
                 cap.release()
         finally:
             close_error = None
-            for resource in (landmarker, pose_landmarker):
+            for resource in (landmarker,):
                 if resource is None:
                     continue
                 try:
