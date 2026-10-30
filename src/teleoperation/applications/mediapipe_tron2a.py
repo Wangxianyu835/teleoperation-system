@@ -47,7 +47,7 @@ def _configuration(args):
                 for side in ("left", "right")},
         workspace_min=np.asarray(args.workspace_min, dtype=float),
         workspace_max=np.asarray(args.workspace_max, dtype=float),
-        sample_count=args.samples, min_visibility=0.0 if args.pose_min_visibility is None else args.pose_min_visibility,
+        sample_count=args.samples, min_visibility=0.0 if getattr(args, "pose_min_visibility", None) is None else args.pose_min_visibility,
         stability_tolerance=args.stability_tolerance,
         min_elbow_bend_degrees=args.min_elbow_bend,
         max_elbow_bend_degrees=args.max_elbow_bend,

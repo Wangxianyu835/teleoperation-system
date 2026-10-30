@@ -1,4 +1,4 @@
-"""Camera -> normalized and metre-based hand/arm H5.
+"""Camera -> normalized and metre-based hand H5.
 
 Run ``python -m teleoperation hand record-world --frames 30``.
 Argument parsing belongs to teleoperation.cli; this module assembles capture.
@@ -15,7 +15,6 @@ import numpy as np
 
 from teleoperation.data.hand_body_recording import write_hand_body_recording
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
-from teleoperation.inputs.pose_mediapipe import DEFAULT_POSE_VISIBILITY
 from teleoperation.paths import DEFAULT_WORLD_CAPTURE_DIR
 
 HAND_CONNECTIONS = (
@@ -25,7 +24,6 @@ HAND_CONNECTIONS = (
     (9, 13), (13, 14), (14, 15), (15, 16),
     (13, 17), (17, 18), (18, 19), (19, 20), (0, 17),
 )
-POSE_CONNECTIONS = ((0, 1), (0, 2), (2, 4), (1, 3), (3, 5))
 
 
 def _ensure_model(path: Path, urls: tuple[str, ...]) -> Path:
@@ -97,19 +95,10 @@ def _draw_preview(frame, data, window_name):
     canvas = frame.copy()
     _draw_landmarks(canvas, data.get("left"), HAND_CONNECTIONS, (0, 255, 0), "L-hand")
     _draw_landmarks(canvas, data.get("right"), HAND_CONNECTIONS, (0, 255, 0), "R-hand")
-    _draw_landmarks(
-        canvas,
-        data.get("pose_keypoints"),
-        POSE_CONNECTIONS,
-        (255, 255, 0),
-        "arms",
-        show_index=True,
-    )
     status = (
         f"L-hand={'OK' if data.get('left') is not None else '--'} "
         f"R-hand={'OK' if data.get('right') is not None else '--'} "
-        f"L-arm={'OK' if data.get('left_arm_valid') else '--'} "
-        f"R-arm={'OK' if data.get('right_arm_valid') else '--'}"
+        "hand capture"
     )
     cv2.rectangle(canvas, (0, 0), (canvas.shape[1], 32), (0, 0, 0), -1)
     cv2.putText(canvas, status, (10, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
@@ -150,10 +139,6 @@ def run(args, *, fast_exit: bool | None = None) -> int:
     max_fps = float(getattr(args, "max_fps", 5))
     if max_fps < 0:
         raise ValueError("--max-fps must be zero or positive")
-    pose_min_visibility = float(
-        getattr(args, "pose_min_visibility", DEFAULT_POSE_VISIBILITY)
-    )
-
     hand_model = _ensure_model(
         Path(args.model_asset_path),
         (
@@ -161,14 +146,6 @@ def run(args, *, fast_exit: bool | None = None) -> int:
             "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
         ),
     )
-    pose_model = _ensure_model(
-        Path(args.pose_model_asset_path),
-        (
-            "https://hf-mirror.com/google/mediapipe-models/resolve/main/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
-            "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
-        ),
-    )
-
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -188,13 +165,11 @@ def run(args, *, fast_exit: bool | None = None) -> int:
             height=args.height,
             fps=args.fps,
             invalid_hand_as_missing=True,
-            pose_model_asset_path=pose_model,
-            pose_min_visibility=pose_min_visibility,
         )
         for index in range(frame_count):
             frame_started = time.perf_counter()
             frame = _normalise_capture_frame(
-                camera.next_frame(include_world=True, include_pose=True)
+                camera.next_frame(include_world=True)
             )
             frame["frame_id"] = int(
                 frame.get("metadata", {}).get("frame_index", index)
@@ -228,10 +203,8 @@ def run(args, *, fast_exit: bool | None = None) -> int:
         captured,
         metadata={
             "hand_model_asset_path": str(hand_model),
-            "pose_model_asset_path": str(pose_model),
             "camera_index": args.camera_index,
             "fps": args.fps,
-            "pose_min_visibility": pose_min_visibility,
             "capture_source": "teleoperation hand record-world",
         },
     )

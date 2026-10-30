@@ -1,4 +1,9 @@
-"""Combined normalized and metric hand/arm capture persistence."""
+"""Combined hand capture persistence.
+
+Arm recordings use :mod:`body_recording` and are never embedded in this hand
+file.  This keeps the finger data format useful without preserving the old
+MediaPipe Pose arm reader.
+"""
 
 from __future__ import annotations
 
@@ -18,19 +23,12 @@ POINT_DATASETS = (
     ("right_hand_keypoints", (21, 3)),
     ("left_world_landmarks", (21, 3)),
     ("right_world_landmarks", (21, 3)),
-    ("left_arm_keypoints", (3, 3)),
-    ("right_arm_keypoints", (3, 3)),
-    ("left_arm_world_keypoints", (3, 3)),
-    ("right_arm_world_keypoints", (3, 3)),
 )
 VECTOR_DATASETS = (
     "frame_ids",
     "timestamps",
     "left_valid",
     "right_valid",
-    "left_arm_valid",
-    "right_arm_valid",
-    "pose_visibility",
 )
 DATASETS = (*[name for name, _ in POINT_DATASETS], *VECTOR_DATASETS)
 
@@ -77,6 +75,11 @@ def write_hand_body_recording(
     rows = list(frames)
     if not rows:
         raise ValueError("Capture requires at least one frame")
+    for index, frame in enumerate(rows):
+        legacy = [key for key in frame if key.startswith("left_arm") or key.startswith("right_arm")
+                  or key in {"pose_visibility", "pose_keypoints", "pose_world_keypoints"}]
+        if legacy:
+            raise ValueError(f"SMPL-X body recording is separate; legacy arm fields rejected in frame {index}: {legacy}")
 
     frame_ids = np.asarray(
         [frame.get("frame_id", index) for index, frame in enumerate(rows)],
@@ -107,29 +110,17 @@ def write_hand_body_recording(
         & hand_finite["right_hand_keypoints"]
         & hand_finite["right_world_landmarks"]
     )
-    left_arm_valid, left_arm_present = _stack_vector(rows, "left_arm_valid", 1, False)
-    right_arm_valid, right_arm_present = _stack_vector(rows, "right_arm_valid", 1, False)
-    visibility, _ = _stack_vector(rows, "pose_visibility", 6, 0.0)
-    left_arm_finite = (
-        np.isfinite(point_data["left_arm_keypoints"]).all(axis=(1, 2))
-        & np.isfinite(point_data["left_arm_world_keypoints"]).all(axis=(1, 2))
-    )
-    right_arm_finite = (
-        np.isfinite(point_data["right_arm_keypoints"]).all(axis=(1, 2))
-        & np.isfinite(point_data["right_arm_world_keypoints"]).all(axis=(1, 2))
-    )
-
     first_metadata = rows[0].get("metadata", {})
+    if any("mediapipe_pose" in str(value).lower() or "pose_model" in str(value).lower()
+           for value in first_metadata.values()):
+        raise ValueError("Legacy MediaPipe Pose arm metadata is not accepted")
     attributes = {
-        "dataset_format_version": FORMAT_VERSION,
+        "dataset_format_version": "hand_capture_h5_v2",
         "source_landmark_space": "mediapipe_normalized",
         "hand_processing_landmark_space": "mediapipe_world_meters",
         "hand_landmark_space": "mediapipe_normalized",
         "hand_world_landmark_space": "mediapipe_world_meters",
         "hand_world_origin": "hand_geometric_center",
-        "arm_source_space": "mediapipe_pose_normalized",
-        "arm_world_space": "mediapipe_pose_world_meters",
-        "arm_world_origin": "hip_midpoint",
         "length_unit": "m",
         "frame_count": len(rows),
         "image_width": int(first_metadata.get("image_width", 0)),
@@ -147,23 +138,6 @@ def write_hand_body_recording(
                 h5_file.create_dataset(name, data=values)
             h5_file.create_dataset("left_valid", data=left_valid)
             h5_file.create_dataset("right_valid", data=right_valid)
-            h5_file.create_dataset(
-                "left_arm_valid",
-                data=(
-                    left_arm_valid[:, 0].astype(bool)
-                    & left_arm_present
-                    & left_arm_finite
-                ),
-            )
-            h5_file.create_dataset(
-                "right_arm_valid",
-                data=(
-                    right_arm_valid[:, 0].astype(bool)
-                    & right_arm_present
-                    & right_arm_finite
-                ),
-            )
-            h5_file.create_dataset("pose_visibility", data=visibility)
             h5_file.attrs.update(attributes)
             from teleoperation.inputs.wrist import write_wrist_datasets
             write_wrist_datasets(h5_file, rows, timestamps)
@@ -176,6 +150,12 @@ def read_hand_body_recording(path: str | Path) -> tuple[dict[str, np.ndarray], d
     if not source.is_file():
         raise FileNotFoundError(f"Capture was not found: {source}")
     with h5py.File(source, "r") as h5_file:
+        legacy = [name for name in h5_file if name.startswith("left_arm") or name.startswith("right_arm")
+                  or name.startswith("pose_")]
+        legacy += [key for key, value in h5_file.attrs.items()
+                   if "mediapipe_pose" in str(value).lower() or "pose_model" in str(value).lower()]
+        if legacy:
+            raise ValueError("Legacy MediaPipe Pose arm recording is not accepted")
         missing = [name for name in DATASETS if name not in h5_file]
         if missing:
             raise ValueError(f"Capture is missing datasets: {', '.join(missing)}")

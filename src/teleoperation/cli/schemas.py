@@ -151,10 +151,8 @@ def hand_realtime(parser: argparse.ArgumentParser) -> None:
 
 
 def hand_record_world(parser: argparse.ArgumentParser) -> None:
-    parser.description = "Record normalized and metre-based hand and arm landmarks."
+    parser.description = "Record normalized and metre-based hand landmarks."
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET)
-    parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET)
-    parser.add_argument("--pose-min-visibility", type=float, default=0.2)
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
     parser.add_argument("--frames", type=int, default=30)
     destination = parser.add_mutually_exclusive_group()
@@ -217,7 +215,6 @@ def dual_calibrate_camera(parser):
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index, help="camera device number")
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET, help="Hands .task model (must exist)")
     add_smplerx_arguments(parser)
-    parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET, help="Pose .task model (must exist)")
     parser.add_argument("--output", type=Path, required=True, help="new calibration JSON; existing files are never overwritten")
     parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF, help="TRON2A URDF for FK and joint limits; meshes not required")
     for side in ("left", "right"):
@@ -256,9 +253,6 @@ def dual_camera(parser):
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET, help="MediaPipe Hands detector .task")
     add_smplerx_arguments(parser)
-    # Kept only as an explicit migration error until the old command handler
-    # has been removed; these options never load a Pose model.
-    parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET)
     parser.add_argument("--calibration", type=Path, required=True, help="real dual calibrate-camera JSON; synthetic fixtures are rejected")
     parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF)
     parser.add_argument("--orientation-mode", choices=("fixed", "forearm"), default="fixed")
@@ -272,7 +266,6 @@ def dual_camera(parser):
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--pose-min-visibility", type=float, default=None, help="defaults to stored calibration visibility")
     parser.set_defaults(_handler="teleoperation.applications.mediapipe_tron2a:run_camera")
 
 
