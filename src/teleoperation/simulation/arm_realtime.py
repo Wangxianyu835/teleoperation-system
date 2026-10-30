@@ -178,7 +178,7 @@ DEFAULT_LATERAL_GUARD_M = 0.0
 MIN_PLAUSIBLE_ARM_REACH_M = 0.30
 #: 左右两侧标定臂长的最大相对差：超过它认为这一场标定不可信（左右同一个人不该差这么多）。
 ARM_REACH_SIDE_TOLERANCE = 0.25
-SOURCE_POSE = "pose"
+SOURCE_POSE = "smplerx"
 SOURCE_HAND = "hand"
 SOURCE_NONE = "none"
 
@@ -1053,10 +1053,10 @@ class RealtimeArmBridge:
             reach = arm_reach(arm)
             if reach < MIN_OPERATOR_REACH_M:
                 ok = False
-                reason = (f"pose arm reach {reach * 1000.0:.0f} mm is below "
+                reason = (f"SMPL-X arm reach {reach * 1000.0:.0f} mm is below "
                           f"{MIN_OPERATOR_REACH_M * 1000.0:.0f} mm; frame rejected")
         if not ok and not reason:
-            reason = "no usable pose arm landmarks for this side"
+            reason = "no usable SMPL-X arm landmarks for this side"
         return {
             "side": side,
             "arm": np.asarray(arm, dtype=np.float64) if ok else None,
@@ -1254,7 +1254,7 @@ class RealtimeArmBridge:
             kind = "calibrating"
         elif data.get("arm") is not None:
             kind = "other"
-        elif "pose arm reach" in reason:
+        elif "SMPL-X arm reach" in reason:
             kind = "reach_below_min"
         elif reason:
             kind = "no_pose_landmarks"

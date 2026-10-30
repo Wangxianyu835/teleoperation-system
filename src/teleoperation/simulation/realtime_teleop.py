@@ -120,7 +120,10 @@ from teleoperation.applications.realtime_hand_sim import (
     resolve_model_asset,
 )
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
-from teleoperation.paths import DEFAULT_POSE_ASSET, realtime_checkpoint
+from teleoperation.inputs.smplerx import SmplerXClient
+from teleoperation.inputs.smplerx_process import SmplerXWorkerTransport
+from teleoperation.applications.camera_teleop_source import CameraTeleopSource
+from teleoperation.paths import realtime_checkpoint
 from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM, RUNTIME
 from teleoperation.simulation.arm_preview import (
     ARM_PREVIEW_WINDOW,
@@ -154,7 +157,7 @@ NOMINAL_FRAME_DT = 1.0 / 30.0
 #: 40 mm 是实测拐点（横摆传递 0.80，再快没有改善而残差变大）。见 docs/multi-robot-arm.md §8.9。
 DEFAULT_ARM_SLEW_MM_PER_S = 600.0
 #: HUD 里把来源缩成一个字母：P = pose 手臂（主），H = 手部兜底，- = 无数据（保持上一帧）。
-SOURCE_SHORT = {"pose": "P", "hand": "H", "none": "-"}
+SOURCE_SHORT = {"smplerx": "S", "hand": "H", "none": "-"}
 
 
 class ArmGainAction(argparse.Action):
@@ -216,20 +219,20 @@ class CameraFrameSource:
 
     def __init__(self, model_asset_path, camera_index: int = 0, width: int = 640,
                  height: int = 480, fps: int = 30, landmark_space: str = "world",
-                 pose_model_asset_path=None, pose_min_visibility=None):
+                 smplerx_client=None, session_id="camera", arms_enabled=False):
         self.model_asset_path = Path(model_asset_path)
         self.landmark_space = landmark_space
         self.pipeline = MediaPipePalmLocalPipeline(landmark_space)
         self.processor = self.pipeline.processor
         self.last_raw_frame = None
         self.last_observation = None
-        self.pose_enabled = pose_model_asset_path is not None
-        extra = ({} if pose_min_visibility is None
-                 else {"pose_min_visibility": float(pose_min_visibility)})
         self._input = MediaPipeCameraInput(
             model_asset_path=model_asset_path, camera_index=camera_index,
-            width=width, height=height, fps=fps, invalid_hand_as_missing=True,
-            pose_model_asset_path=pose_model_asset_path, **extra)
+            width=width, height=height, fps=fps, invalid_hand_as_missing=True)
+        self._source = CameraTeleopSource(
+            self._input, self._input, smplerx_client, session_id=session_id,
+            arms_enabled=arms_enabled)
+        self.body_enabled = bool(arms_enabled)
         self._start_time = time.time()
 
     def next_frame(self):
@@ -238,13 +241,9 @@ class CameraFrameSource:
         ``last_raw_frame`` 是这一帧的手部（归一化 + ``world_*``），``last_observation``
         是同一帧的完整观测（含 pose 手臂），两者同源且同一时间戳。
         """
-        if self.pose_enabled:
-            observation = self._input.next_teleop_observation()
-            self.last_observation = observation
-            raw = observation.hands
-        else:
-            raw = self._input.next_observation(include_world=True)
-            self.last_observation = None
+        observation = self._source.next_teleop_observation()
+        self.last_observation = observation
+        raw = observation.hands
         raw_frame = {**raw.hands, "timestamp": raw.timestamp, "wrists": raw.wrists,
                      "metadata": dict(raw.metadata)}
         self.last_raw_frame = raw_frame
@@ -266,13 +265,16 @@ class CameraFrameSource:
             return self.pipeline.process_window(frame)
 
     def arms(self):
-        """同一帧的 pose 肩/肘/腕（``UpperBodyObservation``）；没有就是 ``None``。"""
+        """The tracked SMPLer-X shoulder/elbow/wrist observation."""
         observation = self.last_observation
-        return None if observation is None else observation.upper_body
+        return None if observation is None or not self.body_enabled else observation.upper_body
+
+    def wrists(self):
+        observation = self.last_observation
+        return None if observation is None or not self.body_enabled else observation.wrists
 
     def release(self, **kwargs):
-        """转发给输入层；``close_landmarker=False`` 可让 42 s 的 TFLite 释放不挡退出。"""
-        return self._input.release(**kwargs)
+        return self._source.release()
 
 
 
@@ -290,16 +292,21 @@ class ReplayFrameSource:
         # 而这里的帧本来就只有几十 MB 级，读完之后不被文件句柄牵着走更安全。
         with np.load(str(path)) as handle:
             self.data = {key: np.asarray(handle[key]) for key in handle.files}
+        legacy = [key for key in self.data if "pose" in key.lower() or key in {
+            "left_arm", "right_arm", "wrist_reference_frame", "wrist_local_frame",
+            "left_wrist_orientation_xyzw", "right_wrist_orientation_xyzw"}]
+        if legacy:
+            raise ValueError(
+                "Legacy MediaPipe Pose arm NPZ is not accepted; replay an SMPL-X body recording"
+            )
         self.frames = int(np.asarray(self.data["timestamps"]).shape[0])
         self.landmark_space = landmark_space
         self.pipeline = MediaPipePalmLocalPipeline(landmark_space)
         self.processor = self.pipeline.processor
         self.last_raw_frame = None
         self.last_observation = None
-        self.pose_enabled = True
         self.exhausted = False
         self.index = 0
-        self._arms = None
 
     def _points(self, key, index, shape):
         if key not in self.data:
@@ -329,11 +336,9 @@ class ReplayFrameSource:
                                   "world_length_unit": "m",
                                   "world_origin": "hand_geometric_center",
                                   "source_scale": 1.0}}
-        arms = {}
         for side in SIDES:
             raw_frame[side] = self._points(f"{side}_hand", index, (21, 3))
             raw_frame[f"world_{side}"] = self._points(f"world_{side}_hand", index, (21, 3))
-            arms[side] = self._points(f"{side}_arm", index, (3, 3))
         # NaN（= 那帧没检到）照样报个原因，和实时链路 inputs/mediapipe.py 同一套口径。
         missing = {side: "npz replay: hand not detected in this frame"
                    for side in SIDES if raw_frame[side] is None}
@@ -344,7 +349,6 @@ class ReplayFrameSource:
         if world_missing:
             raw_frame["metadata"]["world_invalid_reasons"] = world_missing
         self.last_raw_frame = raw_frame
-        self._arms = arms
         from teleoperation.inputs.wrist import camera_wrists
         raw_frame["wrists"] = camera_wrists(
             {side: raw_frame.get("world_" + side) for side in SIDES}, timestamp)
@@ -361,17 +365,10 @@ class ReplayFrameSource:
             return self.pipeline.process_window(raw_frame)
 
     def arms(self):
-        """这一帧的 pose 手臂，包装成 ``UpperBodyObservation``（米制放在 ``world_arms``）。"""
-        if self._arms is None:
-            return None
-        from teleoperation.contracts.observations import UpperBodyObservation
+        return None
 
-        timestamp = float(self.last_raw_frame["timestamp"]) if self.last_raw_frame else None
-        return UpperBodyObservation(
-            {side: None for side in SIDES},
-            {side: self._arms[side] is not None for side in SIDES},
-            timestamp, "mediapipe_pose_normalized", "normalized",
-            world_arms={side: self._arms[side] for side in SIDES})
+    def wrists(self):
+        return None
 
     def release(self, **kwargs):
         """回放没有设备要关；保留接口以便和 ``CameraFrameSource`` 互换。"""
@@ -391,10 +388,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)
     parser.add_argument("--model-asset-path", type=Path, default=None)
-    parser.add_argument("--pose-model-asset-path", type=Path, default=None,
-                        help="pose landmarker .task (default datasets/pose_landmarker_lite.task); "
-                             "when it is missing the arms stay off and only the hands move")
-    parser.add_argument("--pose-min-visibility", type=float, default=None)
+    parser.add_argument("--smplerx-worker-python", type=Path, default=None)
+    parser.add_argument("--smplerx-root", type=Path, default=None)
+    parser.add_argument("--smplerx-checkpoint", type=Path, default=None)
+    parser.add_argument("--smplx-model-dir", type=Path, default=None)
+    parser.add_argument("--smplerx-model", choices=("s32",), default="s32")
+    parser.add_argument("--pose-model-asset-path", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--pose-min-visibility", type=float, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--camera-index", type=int, default=0)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
@@ -665,7 +665,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--arm-trace", action="store_true",
                         help="print the operator-side delta per axis (use this to check the axes)")
     parser.add_argument("--dump-npz", type=Path, default=None,
-                        help="record the raw frames (hands + pose arms) for offline replay")
+                        help="record hands-only debug frames; it is not an arm replay format")
     parser.add_argument("--arm-frame-dump", type=Path, default=None,
                         help="record every frame's arm samples (shoulder/upper/elbow/wrist in the "
                              "robot base frame plus the command that produced them) to an .npz; "
@@ -787,7 +787,7 @@ def print_arm_state(processed, bridge, driver, targets, profiles) -> None:
 
 
 def _record_frame(dumped, raw_frame, arms) -> None:
-    """记下这一帧的原始输入（没检到的位置填 NaN），供 ``--dump-npz`` 与离线复验。"""
+    """Record hands-only debug frames; arm dumps are not a supported source."""
     for side in SIDES:
         hand = None if raw_frame is None else raw_frame.get(side)
         world = None if raw_frame is None else raw_frame.get(f"world_{side}")
@@ -803,9 +803,6 @@ def _record_frame(dumped, raw_frame, arms) -> None:
         wrist = ((raw_frame or {}).get("wrists") or {}).get(side)
         dumped.setdefault("wrist", {s: [] for s in SIDES})[side].append(
             wrist.orientation_xyzw if wrist is not None and wrist.orientation_valid else np.full(4, np.nan))
-        dumped["arm"][side].append(np.full((3, 3), np.nan, dtype=np.float32)
-                                   if arm is None
-                                   else np.asarray(arm, dtype=np.float32))
     dumped["timestamps"].append(float(0.0 if raw_frame is None
                                      else raw_frame.get("timestamp", 0.0)))
 
@@ -817,16 +814,10 @@ def _save_dump(path, dumped) -> Path:
     np.savez_compressed(
         target,
         timestamps=np.asarray(dumped["timestamps"], dtype=np.float64),
-        wrist_reference_frame="mediapipe_hand_world_axes",
-        wrist_local_frame="palm_wrist_index_middle_v1",
-        left_wrist_orientation_xyzw=np.asarray(dumped["wrist"]["left"]),
-        right_wrist_orientation_xyzw=np.asarray(dumped["wrist"]["right"]),
         left_hand=np.stack(dumped["hand"]["left"]),
         right_hand=np.stack(dumped["hand"]["right"]),
         world_left_hand=np.stack(dumped["world"]["left"]),
-        world_right_hand=np.stack(dumped["world"]["right"]),
-        left_arm=np.stack(dumped["arm"]["left"]),
-        right_arm=np.stack(dumped["arm"]["right"]))
+        world_right_hand=np.stack(dumped["world"]["right"]))
     return target
 
 
@@ -910,7 +901,7 @@ def run(args) -> int:
     if diagnostics_enabled:
         trace_path = getattr(args, "diagnostic_trace", None)
         protected = [getattr(args, key, None) for key in
-                     ("input_npz", "checkpoint", "model_asset_path", "pose_model_asset_path", "neutral_json", "dump_npz", "save_neutral")]
+                     ("input_npz", "checkpoint", "model_asset_path", "smplerx_checkpoint", "smplx_model_dir", "neutral_json", "dump_npz", "save_neutral")]
         destinations = [value for value in (trace_path, args.report) if value is not None]
         if len({Path(path).resolve() for path in destinations}) != len(destinations):
             raise ValueError("Diagnostic CSV and report paths must differ")
@@ -918,18 +909,24 @@ def run(args) -> int:
                for source in protected if source is not None):
             raise ValueError("Diagnostic output must not overwrite an input or another output")
     asset = resolve_model_asset(args.model_asset_path) if args.input_npz is None else None
-    pose_asset = (Path(args.pose_model_asset_path) if args.pose_model_asset_path
-                  else DEFAULT_POSE_ASSET)
     checkpoint = (Path(args.checkpoint) if args.checkpoint
                   else realtime_checkpoint(args.landmark_space))
     robots = tuple(args.robot) if args.robot else loadable_robots()
     profiles = {name: profile_for(name) for name in robots}
     arms_wanted = not args.no_arms
-    if args.input_npz is None and arms_wanted and not pose_asset.is_file():
-        arms_wanted = False
-        print(f"[WARN] pose model not found at {pose_asset}: the arms stay held and only the "
-              f"hands move. Put pose_landmarker_lite.task into datasets/ or pass "
-              f"--pose-model-asset-path (--no-arms silences this).", flush=True)
+    if args.pose_model_asset_path is not None or args.pose_min_visibility is not None:
+        raise ValueError("MediaPipe Pose arm options were removed; configure SMPLer-X")
+    if args.input_npz is not None and arms_wanted:
+        raise ValueError("Legacy NPZ arm replay is removed; replay an SMPL-X body recording")
+    if args.input_npz is None and arms_wanted:
+        for name in ("smplerx_worker_python", "smplerx_root", "smplerx_checkpoint", "smplx_model_dir"):
+            value = getattr(args, name, None)
+            if value is None:
+                raise ValueError(f"--{name.replace('_', '-')} is required when arms are enabled")
+            if not Path(value).exists():
+                raise FileNotFoundError(f"{name} not found: {value}")
+    if args.dump_npz is not None and arms_wanted:
+        raise ValueError("--dump-npz is a hands-only debug format; use SMPL-X body recording for arms")
     dex_options = ({"dex_calibration": args.dex_calibration, "native_sides": sides} if args.backend == "dex" else {})
     retargeter, backend, note = build_retargeter(
         args.backend, checkpoint, args.device, args.calibration_frames,
@@ -947,7 +944,6 @@ def run(args) -> int:
     raw_seen = {side: 0 for side in sides}
     dumped = {"hand": {side: [] for side in SIDES},
               "world": {side: [] for side in SIDES},
-              "arm": {side: [] for side in SIDES},
               "timestamps": []}
     targets = {}
     try:
@@ -1083,7 +1079,7 @@ def run(args) -> int:
                 travel_mode=args.arm_travel_mode,
                 lateral_guard_m=max(0.0, float(args.arm_lateral_guard_mm)) / 1000.0,
                 gain_quality_guard=not args.no_arm_gain_quality_guard,
-                neutral=neutral, fallback_hand=not args.no_arm_fallback,
+                neutral=neutral, fallback_hand=False,
                 map_mode=args.arm_map, robot_links=robot_links,
                 elbow_task=args.arm_elbow_task, elbow_gain=args.arm_elbow_gain,
                 posture_gain=args.arm_posture_gain,
@@ -1114,13 +1110,21 @@ def run(args) -> int:
             print(f"replay: {args.input_npz} ({camera.frames} frames, "
                   f"landmark_space={args.landmark_space}); no camera is opened", flush=True)
         else:
+            transport = None
+            client = None
+            if arms_wanted:
+                transport = SmplerXWorkerTransport(
+                    worker_python=args.smplerx_worker_python,
+                    smplerx_root=args.smplerx_root,
+                    checkpoint=args.smplerx_checkpoint,
+                    body_model_dir=args.smplx_model_dir,
+                    model=args.smplerx_model,
+                )
+                client = SmplerXClient(transport, session_id=f"realtime-{time.monotonic_ns()}")
             camera = CameraFrameSource(asset, args.camera_index, args.width, args.height,
                                        args.fps, args.landmark_space,
-                                       pose_asset if arms_wanted else None,
-                                       args.pose_min_visibility)
-            if backend == "dex":
-                from teleoperation.applications.dex_native import LatestCameraInput
-                camera._input = LatestCameraInput(camera._input)
+                                       client, client.session_id if client is not None else "camera",
+                                       arms_wanted)
         preview = build_arm_preview(args, camera, sides)
         camera.diagnostics = diagnostics
         if not args.headless:
@@ -1201,9 +1205,9 @@ def run(args) -> int:
                 frame_dt = (args.sim_steps / 240.0 if args.input_npz is not None
                             else _median_interval(marks) or NOMINAL_FRAME_DT)
                 with (nullcontext() if diagnostics is None else diagnostics.stage("arm_mapping")):
-                    targets = bridge.update(arms_world=camera.arms(), hands=raw_frame,
+                    targets = bridge.update(arms_world=camera.arms(), hands=None,
                                             frame_dt=frame_dt)
-                orientation_by_side = wrist_control.update((raw_frame or {}).get("wrists"), frame_dt)
+                orientation_by_side = wrist_control.update(camera.wrists(), frame_dt)
                 # 「肘跟手」（``--arm-elbow-follow operator``）：操作者这一帧的肘弯（绝对角）。
                 # 与姿态口径同一个理由单独取一份（这一项机器人无关），缺数据的那一侧是 None，
                 # 于是那一侧如实退回历史行为（不猜、不保持一个假姿势）。
@@ -1390,7 +1394,8 @@ def run(args) -> int:
         "length_unit": "m" if args.landmark_space == "world" else "normalized",
         "backend_note": note,
         "model_asset": None if asset is None else str(asset),
-        "pose_model_asset": None if not arms_wanted else str(pose_asset),
+        "smplerx_model": None if not arms_wanted else args.smplerx_model,
+        "smplerx_checkpoint": None if not arms_wanted else str(Path(args.smplerx_checkpoint).resolve()),
         "camera_index": args.camera_index,
         "input_npz": None if args.input_npz is None else str(args.input_npz),
         "headless": bool(args.headless),

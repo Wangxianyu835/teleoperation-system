@@ -108,7 +108,7 @@ def _preview(camera, timed, collector, window):
 
 def run(args):
     """Check -> capture -> collect -> calculate -> persist -> close resources."""
-    camera = None
+    camera = source = None
     preview_open = False
     window = "TRON2A neutral calibration (camera only)"
     try:
@@ -119,15 +119,21 @@ def run(args):
         camera = MediaPipeCameraInput(
             model_asset_path=args.model_asset_path, camera_index=args.camera_index,
             width=args.width, height=args.height, fps=args.fps,
-            invalid_hand_as_missing=True, pose_model_asset_path=args.pose_model_asset_path,
-            pose_min_visibility=config.min_visibility,
+            invalid_hand_as_missing=True,
         )
+        transport = SmplerXWorkerTransport(
+            worker_python=args.smplerx_worker_python, smplerx_root=args.smplerx_root,
+            checkpoint=args.smplerx_checkpoint, body_model_dir=args.smplx_model_dir,
+            model=args.smplerx_model,
+        )
+        client = SmplerXClient(transport, session_id=f"calibration-{time.monotonic_ns()}")
+        source = CameraTeleopSource(camera, camera, client, session_id=client.session_id)
         clock = RelativeControlClock()
         for _ in range(args.max_frames):
             seconds = clock.next_seconds()
             if seconds >= args.timeout:
                 raise RuntimeError(f"Calibration timed out: {collector.status}")
-            raw = camera.next_teleop_observation()
+            raw = source.next_teleop_observation()
             timed = TimedCameraObservation(raw, clock.next_seconds())
             if timed.control_relative_seconds >= args.timeout:
                 raise RuntimeError(f"Calibration timed out: {collector.status}")
@@ -143,7 +149,8 @@ def run(args):
                 data["metadata"].update({
                     "camera_index": args.camera_index,
                     "hand_model_asset_path": str(Path(args.model_asset_path).resolve()),
-                    "pose_model_asset_path": str(Path(args.pose_model_asset_path).resolve()),
+                    "smplerx_model": args.smplerx_model,
+                    "smplerx_checkpoint": str(Path(args.smplerx_checkpoint).resolve()),
                 })
                 # Validate the exact serializable result before publishing it.
                 ArmCalibration.from_dict(data)
@@ -166,8 +173,8 @@ def run(args):
         return 1
     finally:
         try:
-            if camera is not None:
-                camera.release()
+            if source is not None:
+                source.release()
         finally:
             if preview_open:
                 import cv2
@@ -319,10 +326,19 @@ def _runtime_configuration(args):
     for name in ("width", "height", "fps", "simulation_steps"):
         if getattr(args, name) <= 0:
             raise ValueError(f"{name} must be positive")
-    for name in ("model_asset_path", "pose_model_asset_path"):
+    if getattr(args, "pose_model_asset_path", None) is not None or getattr(args, "pose_min_visibility", None) is not None:
+        raise ValueError("MediaPipe Pose arm options were removed; configure SMPLer-X")
+    for name in ("model_asset_path",):
         if not Path(getattr(args, name)).is_file():
             raise FileNotFoundError(f"{name} not found: {getattr(args, name)}")
-    inputs = [getattr(args, name) for name in ("calibration", "urdf", "model_asset_path", "pose_model_asset_path")]
+    for name in ("smplerx_worker_python", "smplerx_root", "smplerx_checkpoint", "smplx_model_dir"):
+        value = getattr(args, name, None)
+        if value is None:
+            raise ValueError(f"--{name.replace('_', '-')} is required for the SMPLer-X camera route")
+        if not Path(value).exists():
+            raise FileNotFoundError(f"{name} not found: {value}")
+    inputs = [getattr(args, name) for name in ("calibration", "urdf", "model_asset_path",
+                                                "smplerx_checkpoint", "smplx_model_dir")]
     if Path(args.report).resolve() in {Path(path).resolve() for path in inputs + paths if path is not None}:
         raise ValueError("Report path must not overwrite an input asset")
     if Path(args.report).suffix.lower() != ".json":
@@ -330,12 +346,9 @@ def _runtime_configuration(args):
     calibration = ArmCalibration.load(args.calibration)
     if "synthetic" in str(calibration.metadata.get("capture_kind", "")).lower() or ".synthetic." in Path(args.calibration).name.lower():
         raise ValueError("Synthetic calibration is not valid for live camera control; capture a real neutral calibration")
-    visibility = args.pose_min_visibility
-    if visibility is None:
-        visibility = calibration.metadata.get("min_visibility", 0.7)
-    if not np.isfinite(visibility) or not 0 <= visibility <= 1:
-        raise ValueError("Pose minimum visibility must be within [0,1]")
-    return calibration, visibility
+    if calibration.metadata.get("coordinate_source") != "smplx_camera_root_relative_m":
+        raise ValueError("Calibration was not captured from SMPL-X body coordinates")
+    return calibration
 
 
 def _runtime_preview(camera, raw, controller, actual, window, teleoperator=None):
@@ -347,7 +360,7 @@ def _runtime_preview(camera, raw, controller, actual, window, teleoperator=None)
         _draw_landmarks(canvas, raw.upper_body.arms[side], ((0, 1), (1, 2)), color, side)
         diag = controller.diagnostics[side]
         ik = "WORKSPACE" if diag["workspace_rejected"] else "OK" if diag["ik_success"] else "FAIL" if diag["ik_attempted"] else "--"
-        status = f"{side}: Pose={'OK' if diag['observation_valid'] else '--'} IK={ik} {diag['status']}"
+        status = f"{side}: SMPL-X={'OK' if diag['observation_valid'] else '--'} IK={ik} {diag['status']}"
         if diag["orientation_held"]:
             status += " direction HOLD"
         pose = actual["arms"][side]["pose"]
