@@ -1,5 +1,15 @@
-"""Conservative session identity and stable shape policy; no model dependencies."""
+"""Continuous operator selection and stable shape policy; no model dependencies."""
 import numpy as np
+
+
+PERSON_SCORE_THRESHOLD = .3
+
+
+def filter_person_detections(detections):
+    boxes = np.asarray(detections).reshape(-1, 5)
+    return boxes[(boxes[:, 4] >= PERSON_SCORE_THRESHOLD)
+                 & (boxes[:, 2] - boxes[:, 0] >= 50)
+                 & (boxes[:, 3] - boxes[:, 1] >= 150)]
 
 
 class OperatorState:
@@ -10,10 +20,6 @@ class OperatorState:
         self.last_seen = None
         self.last_box = None
         self.locked = False
-        self._uncertain_since = None
-        self._recovering = False
-        self._recovery_box = None
-        self._recovery_count = 0
         self.selection = {}
 
     @staticmethod
@@ -23,26 +29,27 @@ class OperatorState:
         return float(intersection / union) if union > 0 else 0.
 
     def select_person(self, detections, now_s):
-        """Associate filtered boxes with the existing operator, never by size/score.
+        """Choose a box immediately: highest IoU, then confidence for ties.
 
-        A unique strong match must overlap the previous box by >= .5 IoU and
-        exceed every other match by >= .25. Otherwise hold and recover below.
-        This is spatial continuity, not biometric identity recognition.
+        Without an existing operator choose the highest detector score.
+        Competing boxes never cause an ambiguity hold or recovery window.
         """
         boxes = np.asarray(detections, dtype=float).reshape(-1, 5)
         selected = 0 if len(boxes) == 1 else None
         policy = 'single_person'
-        if len(boxes) > 1 and self.last_box is not None:
-            overlaps = np.array([self._iou(self.last_box, box[:4]) for box in boxes])
-            order = np.argsort(overlaps)
-            best, runner_up = order[-1], order[-2]
-            if overlaps[best] >= .5 and overlaps[best] - overlaps[runner_up] >= .25:
-                selected, policy = int(best), 'previous_operator_iou'
+        if len(boxes) > 1:
+            if self.last_box is None:
+                selected, policy = int(np.argmax(boxes[:, 4])), 'highest_score'
+            else:
+                selected = max(range(len(boxes)),
+                               key=lambda index: (self._iou(self.last_box, boxes[index, :4]),
+                                                  boxes[index, 4]))
+                policy = 'previous_operator_iou'
         box = None if selected is None else boxes[selected, :4]
-        reason = self.person(box, now_s, ambiguous=len(boxes) > 1 and selected is None)
+        reason = self.person(box, now_s)
         self.selection = dict(accepted_count=len(boxes), selected_index=selected,
                               policy=policy if selected is not None else 'hold',
-                              recovering=self._recovering, recovery_count=self._recovery_count,
+                              recovering=False, recovery_count=0,
                               locked=self.locked)
         return (None if reason else box.copy()), reason
 
@@ -63,32 +70,14 @@ class OperatorState:
         return self.fixed_shape.copy()
 
     def person(self, box, now_s, *, ambiguous=False):
-        if ((self.last_seen is not None and now_s - self.last_seen > self.absence_s)
-                or (self._uncertain_since is not None and now_s - self._uncertain_since > self.absence_s)):
+        # Keep the legacy keyword compatible; ambiguity no longer gates input.
+        if self.last_seen is not None and now_s - self.last_seen > self.absence_s:
             self.locked = True
         if self.locked:
             return 'operator identity uncertain; start a new session and recalibrate'
-        if ambiguous:
-            if self._uncertain_since is None:
-                self._uncertain_since = float(now_s)
-            self._recovering = True
-            self._recovery_box, self._recovery_count = None, 0
-            return 'operator ambiguous; hold until the same operator is clear'
         if box is None:
-            self._recovery_box, self._recovery_count = None, 0
             return 'no person detected'
         box = np.asarray(box, dtype=float)
-        if self._recovering:
-            if self.last_box is not None and self._iou(box, self.last_box) < .5:
-                self._recovery_box, self._recovery_count = None, 0
-                return 'operator recovering: no match to the previous operator; hold'
-            consistent = self._recovery_box is not None and self._iou(box, self._recovery_box) >= .5
-            self._recovery_count = self._recovery_count + 1 if consistent else 1
-            self._recovery_box = box.copy()
-            if self._recovery_count < 3:
-                return f'operator recovering: {self._recovery_count}/3 consistent frames; hold'
-            self._recovering, self._uncertain_since = False, None
-            self._recovery_box, self._recovery_count = None, 0
         if self.last_box is not None:
             if self._iou(box, self.last_box) < .1:
                 self.locked = True

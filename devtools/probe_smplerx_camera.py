@@ -34,12 +34,13 @@ def array_report(arrays):
 
 def detection_report(boxes):
     import numpy as np
+    from external.smplerx_worker.operator_state import PERSON_SCORE_THRESHOLD
     boxes = np.asarray(boxes).reshape(-1, 5)
     entries = []
     for x1, y1, x2, y2, score in boxes:
         reasons = []
-        if score < .5:
-            reasons.append('score_below_0.5')
+        if score < PERSON_SCORE_THRESHOLD:
+            reasons.append(f'score_below_{PERSON_SCORE_THRESHOLD:g}')
         if x2 - x1 < 50:
             reasons.append('width_below_50px')
         if y2 - y1 < 150:

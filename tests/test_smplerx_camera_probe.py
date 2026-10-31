@@ -13,8 +13,10 @@ class CameraProbeTests(unittest.TestCase):
         self.assertEqual(probe.classify(False, 'no person detected', 0, False),
                          'no_accepted_person')
         boxes = [[0, 0, 100, 200, .9], [0, 0, 49, 200, .99],
-                 [0, 0, 100, 149, .99], [0, 0, 100, 200, .49]]
-        self.assertEqual(probe.detection_report(boxes)['accepted_count'], 1)
+                 [0, 0, 100, 149, .99], [0, 0, 100, 200, .49], [0, 0, 100, 200, .29]]
+        report = probe.detection_report(boxes)
+        self.assertEqual(report['accepted_count'], 2)
+        self.assertEqual(report['boxes'][-1]['rejected_by'], ['score_below_0.3'])
 
     def test_expiry_and_identity_rejection_are_not_model_failures(self):
         self.assertEqual(probe.classify(False, 'input frame expired before inference',

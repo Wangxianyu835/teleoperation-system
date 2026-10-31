@@ -95,6 +95,7 @@ class SmplerXBackend:
         import numpy as np
         from teleoperation.contracts.body import SmplerXResult
         from external.smplerx_worker.geometry import derive_body_arrays
+        from external.smplerx_worker.operator_state import filter_person_detections
         if self._session != frame_id.session_id:
             from external.smplerx_worker.operator_state import OperatorState
             self._session = frame_id.session_id
@@ -107,10 +108,7 @@ class SmplerXBackend:
             return self._invalid(frame_id, 'input frame expired before inference')
         # MMDetection receives BGR; upstream load_img/crop and the network use RGB.
         detections = np.asarray(self.detect(self.detector, rgb[..., ::-1].copy())[0])
-        detections = detections.reshape(-1, 5)
-        detections = detections[(detections[:, 4] >= .5)
-                                & (detections[:, 2] - detections[:, 0] >= 50)
-                                & (detections[:, 3] - detections[:, 1] >= 150)]
+        detections = filter_person_detections(detections)
         box, reason = self._operator.select_person(detections, frame_id.capture_time_s)
         if reason:
             return self._invalid(frame_id, reason, selection=self._operator.selection)
