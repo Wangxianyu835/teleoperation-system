@@ -1,4 +1,4 @@
-"""Train target-native joint networks against dimensionless human task vectors."""
+"""Train target-native joint networks with six weighted hand losses."""
 from datetime import datetime
 import hashlib
 import json
@@ -7,16 +7,18 @@ import random
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE, palm_length_metadata
 from teleoperation.data.transaction import atomic_output
 from teleoperation.data.hand_h5 import load_twohand_h5
 from teleoperation.learning.dataset import TwoHandH5Dataset
+from teleoperation.learning.losses import (
+    COLLISION_THRESHOLD_M, LOSS_NAMES, LOSS_WEIGHTS, hand_loss, hand_loss_geometry,
+)
 from teleoperation.paths import training_run_directory
 from teleoperation.robots.hand_spec import load_hand_spec
 from teleoperation.retargeting.hand.predictor import build_joint_model
-from teleoperation.retargeting.hand.hand_model import DifferentiableHandModel, human_target_vectors
+from teleoperation.retargeting.hand.hand_model import DifferentiableHandModel
 from teleoperation.retargeting.hand.checkpoint import (
     load_shared_joint_checkpoint,
     save_joint_checkpoint,
@@ -37,7 +39,8 @@ def _json(path, value):
         temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
 
 
-def _epoch(model, fk, samples, sides, batch_size, device, optimizer=None, seed=0):
+def _epoch(model, fk, samples, sides, batch_size, device, optimizer=None, seed=0,
+           loss_geometry=None):
     if isinstance(sides, str):
         sides = (sides,)
     entries = [
@@ -52,10 +55,9 @@ def _epoch(model, fk, samples, sides, batch_size, device, optimizer=None, seed=0
     model.train(training)
     if training:
         np.random.RandomState(seed).shuffle(entries)
-    total, vector_total = 0., 0.
-    bounds = torch.as_tensor(fk.spec.bounds, dtype=torch.float32, device=device)
-    neutral = torch.as_tensor(fk.spec.q_reference, dtype=torch.float32, device=device)
-    movable = bounds[:,1] > bounds[:,0]
+    totals = dict.fromkeys(('loss', *LOSS_NAMES), 0.)
+    if loss_geometry is None:
+        loss_geometry = hand_loss_geometry(fk)
     with torch.set_grad_enabled(training):
         for start in range(0, len(entries), batch_size):
             batch = entries[start:start+batch_size]
@@ -68,12 +70,8 @@ def _epoch(model, fk, samples, sides, batch_size, device, optimizer=None, seed=0
                 row[side + '_target'][0]
                 for row, (_, side) in zip(rows, batch)
             ])
-            targets = torch.as_tensor(human_target_vectors(human, fk.spec), dtype=torch.float32, device=device)
             q = model(inputs)
-            distance = torch.linalg.vector_norm(fk.vectors(q)-targets, dim=-1)
-            vector = F.smooth_l1_loss(distance, torch.zeros_like(distance), beta=.02)
-            regularizer = (((q[:,movable]-neutral[movable])/(bounds[movable,1]-bounds[movable,0]))**2).mean() if movable.any() else q.sum()*0
-            loss = vector + 1e-4*regularizer
+            loss, components = hand_loss(q, human, fk, loss_geometry)
             if not torch.isfinite(loss):
                 raise ValueError('Nonfinite joint training loss')
             if training:
@@ -81,9 +79,9 @@ def _epoch(model, fk, samples, sides, batch_size, device, optimizer=None, seed=0
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 10.)
                 optimizer.step()
-            total += float(loss.detach())*len(rows)
-            vector_total += float(vector.detach())*len(rows)
-    return {'loss':total/len(entries), 'vector_loss':vector_total/len(entries), 'windows':len(entries)}
+            for name, value in {'loss':loss, **components}.items():
+                totals[name] += float(value.detach())*len(rows)
+    return {**{name:value/len(entries) for name,value in totals.items()}, 'windows':len(entries)}
 
 
 def train_joint_models(*, input_path, root, hand_models, run_name,
@@ -109,6 +107,8 @@ def train_joint_models(*, input_path, root, hand_models, run_name,
         raise ValueError('Select unique target hand models')
     sides = ('left', 'right')
     specs = [load_hand_spec(name, 'right') for name in names]
+    fks = {spec.hand_model:DifferentiableHandModel(spec) for spec in specs}
+    geometries = {name:hand_loss_geometry(fk) for name,fk in fks.items()}
     if resume is not None and len(specs) != 1:
         raise ValueError('Resume requires one target model')
     runs = [training_run_directory(root,s.hand_model,'shared',PALM_LENGTH_PROFILE,run_name) for s in specs]
@@ -160,7 +160,12 @@ def train_joint_models(*, input_path, root, hand_models, run_name,
                   'seed':seed, 'early_stopping_patience':early_stopping_patience,
                   'initialization':initialization,
                   'model_kwargs':model.model_kwargs, **palm_length_metadata(),
-                  'loss':{'vector':'distance_smooth_l1', 'huber_delta':.02,'neutral_range_weight':1e-4},
+                  'loss':{'name':'hand_six_term_mse_v1', 'criterion':'MSELoss',
+                          'weights':dict(zip(LOSS_NAMES, LOSS_WEIGHTS)),
+                          'human_scale':'target_reference_palm_length_m',
+                          'collision_threshold_m':COLLISION_THRESHOLD_M,
+                          'tip_distance_scale':1000., 'thumb_distance_factor':.9,
+                          'geometry':geometries[spec.hand_model]},
                   'optimizer':{'type':'AdamW','weight_decay':.01,'eps':1e-6},
                   'scheduler':{'factor':.5,'patience':8,'min_lr':1e-6}, 'gradient_clip_norm':10.}
         optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=.01, eps=1e-6)
@@ -188,14 +193,16 @@ def train_joint_models(*, input_path, root, hand_models, run_name,
             run.mkdir(parents=True, exist_ok=False)
             _json(run/'config.json',config)
             _json(run/'dataset.json',identity)
-        fk = DifferentiableHandModel(spec).to(device)
+        fk = fks[spec.hand_model].to(device)
         with (run/'training.log').open('a',encoding='utf-8') as log, (run/'metrics.jsonl').open('a',encoding='utf-8') as metrics:
             log.write(f'{datetime.now().isoformat()} target={spec.key} device={device} start_epoch={first}\n')
             for epoch in range(first,epochs):
                 if stale >= early_stopping_patience:
                     break
-                training = _epoch(model,fk,train.samples,sides,batch_size,device,optimizer,seed+epoch)
-                valid = _epoch(model,fk,validation.samples,sides,batch_size,device)
+                training = _epoch(model,fk,train.samples,sides,batch_size,device,optimizer,seed+epoch,
+                                  loss_geometry=geometries[spec.hand_model])
+                valid = _epoch(model,fk,validation.samples,sides,batch_size,device,
+                               loss_geometry=geometries[spec.hand_model])
                 scheduler.step(valid['loss'])
                 improved = valid['loss'] < best
                 best, stale = (valid['loss'],0) if improved else (best,stale+1)

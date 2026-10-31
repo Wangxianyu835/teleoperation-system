@@ -37,7 +37,6 @@ COMMANDS = (
     ('tools', 'show-all-hands', 'tools_show_all_hands', 'teleoperation.applications.diagnostics.show_hands_all:main'),
     ('tools', 'validate-retarget-input', 'tools_validate_retarget_input', 'teleoperation.applications.diagnostics.validate_retarget_input:main'),
     ('tools', 'verify-hand-pipeline', 'tools_verify_hand_pipeline', 'teleoperation.applications.diagnostics.verify_hand_pipeline:main'),
-    ('tools', 'verify-p0', 'tools_verify_p0', 'teleoperation.applications.diagnostics.verify_p0:main'),
     ('tools', 'visualize-hand-keypoints', 'tools_visualize_hand_keypoints', 'teleoperation.applications.diagnostics.visualize_hand_keypoints:main'),
     ('tools', 'visualize-l21-fk', 'tools_visualize_l21_fk', 'teleoperation.applications.diagnostics.visualize_l21_fk:main'),
 )

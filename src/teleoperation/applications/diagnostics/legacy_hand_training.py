@@ -8,9 +8,6 @@ import torch
 from teleoperation.retargeting.hand.config import L21
 from teleoperation.retargeting.hand.kinematics import create_hand_kinematics
 
-LOSS_NAMES = ('total','vec','pos','collision','thumb','tip_distance','thumb2')
-
-
 def create_legacy_hand_fks(device, hand_sides=('left','right'), *, canonical=False):
     if canonical and tuple(hand_sides) != ('right',):
         raise ValueError('Canonical historical checkpoints use right robot FK only')

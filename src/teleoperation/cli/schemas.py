@@ -500,13 +500,6 @@ def tools_verify_hand_pipeline(parser):
     ap.add_argument('--render', action='store_true', help='最后打开 GUI')
     parser.set_defaults(_handler="teleoperation.applications.diagnostics.verify_hand_pipeline:main")
 
-def tools_verify_p0(parser):
-    parser = parser
-    parser.add_argument("--input", type=Path, required=True)
-    add_checkpoint_arguments(parser, required=True)
-    parser.add_argument("--sample-count", type=int, default=3)
-    parser.set_defaults(_handler="teleoperation.applications.diagnostics.verify_p0:main")
-
 def tools_visualize_hand_keypoints(parser):
     parser = parser
     parser.add_argument("--input", type=Path, required=True)
