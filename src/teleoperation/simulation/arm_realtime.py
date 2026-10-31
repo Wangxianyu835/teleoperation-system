@@ -968,14 +968,26 @@ class RealtimeArmBridge:
                 self.frame_dt = value
         normalized, world = _hand_frames(hands)
         arms = _side_map(arms_world)
+        body_metadata = getattr(arms_world, 'metadata', {}) or {}
         inputs = {}
         for side in self.sides:
             inputs[side] = self._frame_inputs(side, arms.get(side), normalized.get(side),
                                               world.get(side))
+            if inputs[side]['arm'] is None:
+                inputs[side]['reason'] = body_metadata.get('body_reason', {}).get(side) or inputs[side]['reason']
             self._collect_calibration(side, inputs[side])
         self.frames += 1
         self.counts["frames"] = self.frames
         states = {side: self._operator_state(side, inputs[side]) for side in self.sides}
+        # Display the current hold without replacing the last valid control pose.
+        self._trace_state = {side: {
+            **state,
+            'tracking_state': body_metadata.get('tracking_state', {}).get(side,
+                'tracking' if state['valid'] else 'hold'),
+            'fresh': bool(body_metadata.get('body_fresh', {}).get(side, state['valid'])),
+            'age_s': body_metadata.get('body_age_s', {}).get(side),
+            'sample_id': body_metadata.get('body_sample_ids', {}).get(side),
+        } for side, state in states.items()}
         for side in self.sides:
             if states[side].get("orientation") is not None:
                 self.counts["oriented"][side] += 1
@@ -1604,11 +1616,16 @@ class RealtimeArmBridge:
         """
         out = {}
         for side in self.sides:
-            state = self._last_state.get(side) or {}
+            state = getattr(self, '_trace_state', self._last_state).get(side) or {}
             delta = state.get("delta_op")
             out[side] = {
                 "source": state.get("source", SOURCE_NONE),
                 "valid": bool(state.get("valid", False)),
+                "held": bool(state.get("held", True)),
+                "tracking_state": state.get('tracking_state', 'calibrating'),
+                "fresh": bool(state.get('fresh', False)),
+                "age_s": state.get('age_s'),
+                "sample_id": state.get('sample_id'),
                 "reason": state.get("reason", "no frame yet"),
                 "delta_op_cm": None if delta is None else [round(float(v) * 100.0, 2)
                                                            for v in delta],
@@ -1739,6 +1756,7 @@ class RealtimeArmBridge:
         """清状态。``recalibrate=True`` 时连中性姿势一起清掉（要重新站一次）。"""
         self.frames = 0
         self._last_state = {side: None for side in self.sides}
+        self._trace_state = {side: None for side in self.sides}
         self._last_direction = {}
         self.counts = {"frames": 0,
                        "valid": {side: 0 for side in self.sides},

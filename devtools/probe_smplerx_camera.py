@@ -57,6 +57,10 @@ def classify(valid, reason, accepted_count, network_ran):
         return 'input_expired'
     if 'identity uncertain' in reason:
         return 'operator_rejected'
+    if 'operator ambiguous' in reason:
+        return 'operator_ambiguous'
+    if 'operator recovering' in reason:
+        return 'operator_recovering'
     if network_ran and 'calibrating body shape' in reason:
         return 'shape_initializing'
     if accepted_count == 0:

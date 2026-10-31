@@ -82,7 +82,7 @@ class OperatorInitializationTests(unittest.TestCase):
             self.assertIsNone(state.shape_sample(np.ones(10) * 2))
         np.testing.assert_allclose(state.shape_sample(np.ones(10) * 2), 2)
 
-    def test_ambiguous_or_long_absence_requires_explicit_new_session(self):
+    def test_long_absence_requires_explicit_new_session(self):
         from external.smplerx_worker.operator_state import OperatorState
         state = OperatorState()
         box = np.array([0.,0.,100.,200.])
@@ -91,7 +91,3 @@ class OperatorInitializationTests(unittest.TestCase):
         self.assertEqual(state.person(box, 1.3), '')
         state.person(None, 4.)
         self.assertIn('new session', state.person(box, 4.1))
-        state = OperatorState()
-        state.person(box, 1.)
-        state.person(None, 1.1, ambiguous=True)
-        self.assertIn('new session', state.person(box, 1.2))

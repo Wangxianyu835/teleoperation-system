@@ -21,6 +21,10 @@ class CameraProbeTests(unittest.TestCase):
                                         None, False), 'input_expired')
         self.assertEqual(probe.classify(False, 'operator identity uncertain; start a new session and recalibrate',
                                         2, False), 'operator_rejected')
+        self.assertEqual(probe.classify(False, 'operator ambiguous; hold until clear',
+                                        2, False), 'operator_ambiguous')
+        self.assertEqual(probe.classify(False, 'operator recovering: 1/3 consistent frames; hold',
+                                        1, False), 'operator_recovering')
 
     def test_nonfinite_raw_outputs_are_reported_without_invalid_json(self):
         import numpy as np

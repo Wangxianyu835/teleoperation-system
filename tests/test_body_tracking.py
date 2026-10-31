@@ -27,6 +27,17 @@ def make_result(sequence, capture_time, *, offset=0.0, left=True, right=True, ro
 
 
 class BodyTrackerTests(unittest.TestCase):
+    def test_expired_hold_keeps_original_worker_rejection_while_waiting(self):
+        tracker = BodyTracker()
+        tracker.update(make_result(1, 1.), now_s=1.1)
+        rejected = SmplerXResult(BodyFrameId('session', 2, 1.6), 1.7, 's32', 'c' * 64,
+                                {}, {'left': False, 'right': False}, reason='operator ambiguous; hold')
+        tracked = tracker.update(rejected, now_s=1.7)
+        self.assertEqual(tracked.state_by_side['left'], 'lost_hold')
+        self.assertEqual(tracked.reason_by_side['left'], 'operator ambiguous; hold')
+        waiting = tracker.update(None, now_s=1.8)
+        self.assertEqual(waiting.reason_by_side['left'], 'operator ambiguous; hold')
+
     def test_no_accepted_sample_does_not_invent_expiry(self):
         tracked = BodyTracker().update(None, now_s=1.)
         self.assertEqual(tracked.state_by_side['left'], 'calibrating')

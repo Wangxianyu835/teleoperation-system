@@ -640,8 +640,10 @@ def arm_hud(bridge, driver, targets) -> str:
     if bridge is None:
         return "arm=off (hands only)"
     per_side = next(iter(targets.values())) if targets else {}
+    trace = bridge.trace()
     sources = " ".join(
-        f"{side[0].upper()}={SOURCE_SHORT.get(getattr(target, 'source', 'none'), '?')}"
+        f"{side[0].upper()}={SOURCE_SHORT.get(getattr(target, 'source', 'none'), '?')}/"
+        f"{trace.get(side, {}).get('tracking_state', 'hold') if target.held else 'tracking'}"
         for side, target in sorted(per_side.items()))
     residuals = ""
     if driver is not None:
@@ -681,7 +683,10 @@ def arm_lines(bridge, sides) -> dict:
         reach = entry.get("operator_reach_m")
         elbow = entry.get("elbow_bend_deg")
         reason = str(entry.get("reason") or "")
+        age = entry.get('age_s')
+        age_text = '--' if age is None else f'{age:.2f}s'
         lines[side] = (f"{side} {letter} d(cm){moved} "
+                       f"{entry.get('tracking_state', 'hold')} age={age_text} "
                        f"reach={'--' if reach is None else f'{float(reach):.3f}'}m "
                        f"elbow={'--' if elbow is None else f'{float(elbow):.0f}'}deg"
                        f"{'' if not reason else ' ' + reason[:44]}")
@@ -696,6 +701,8 @@ def print_arm_state(processed, bridge, driver, targets, profiles) -> None:
         text = ("n/a" if delta is None
                 else "[" + ", ".join(f"{value:+6.1f}" for value in delta) + "]")
         print(f"  arm trace frame={processed} {side:<5} src={entry['source']:<4} "
+              f"state={entry['tracking_state']} held={entry['held']} fresh={entry['fresh']} "
+              f"age_s={entry['age_s']} sample={entry['sample_id']} "
               f"delta_op_cm={text} reach={entry['operator_reach_m']} "
               f"elbow={entry['elbow_bend_deg']} reason={entry['reason'] or '-'}",
               flush=True)

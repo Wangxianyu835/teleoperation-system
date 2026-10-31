@@ -73,6 +73,30 @@ def open_hand(centre=(0.5, 0.5, 0.0), span: float = 1.0) -> np.ndarray:
     return np.asarray(points, dtype=np.float64)
 
 
+class CurrentHeldStatusTests(unittest.TestCase):
+    def test_trace_and_hud_show_current_hold_without_changing_last_target(self):
+        from teleoperation.contracts.observations import UpperBodyObservation
+        from teleoperation.simulation.realtime_teleop import arm_hud
+        bridge = calibrated(sides=('right',))
+        previous = bridge.update(arms_world={'right': arm('right')})
+        body = UpperBodyObservation({'left': None, 'right': None}, {'left': False, 'right': False},
+            world_arms={'left': None, 'right': None}, metadata={
+                'tracking_state': {'right': 'lost_hold'},
+                'body_reason': {'right': 'operator ambiguous; hold'},
+                'body_age_s': {'right': 1.2}, 'body_sample_ids': {'right': 7},
+                'body_fresh': {'right': False}})
+        targets = bridge.update(arms_world=body)
+        trace = bridge.trace()['right']
+        self.assertFalse(trace['valid'])
+        self.assertTrue(trace['held'])
+        self.assertEqual(trace['reason'], 'operator ambiguous; hold')
+        self.assertEqual(trace['tracking_state'], 'lost_hold')
+        self.assertEqual(trace['age_s'], 1.2)
+        self.assertFalse(trace['fresh'])
+        self.assertIn('lost_hold', arm_hud(bridge, None, targets))
+        np.testing.assert_array_equal(targets['g1']['right'].position, previous['g1']['right'].position)
+
+
 def bent_arm(side: str, wrist_offset=(0.0, 0.06, 0.10)) -> np.ndarray:
     """米制 (肩, 肘, 腕)，但肘是弯的：前臂不平行上臂，所以手臂平面能张成（有姿态）。
 

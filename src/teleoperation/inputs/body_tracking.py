@@ -86,7 +86,8 @@ class BodyTracker:
             if stamp is not None and ages[side] > self.max_age_s:
                 self._recovery_required[side] = True
                 self._state[side] = "lost_hold"
-                self._reason[side] = "body sample expired"
+                if self._reason[side] in ('', 'no new body result'):
+                    self._reason[side] = "body sample expired"
         body = self._empty_body(timestamp if timestamp is not None else max(
             (stamp for stamp in self._accepted_time.values() if stamp is not None), default=None))
         body.metadata.update(body_sample_ids=dict(self._accepted_sequence),
@@ -148,7 +149,8 @@ class BodyTracker:
         if result is None:
             for side in SIDES:
                 self._state[side] = "hold" if self._accepted_time[side] is not None else "calibrating"
-                self._reason[side] = "no new body result"
+                if self._reason[side] in ('', 'no body sample', 'no new body result', 'body sample expired'):
+                    self._reason[side] = "no new body result"
             return self._emit(now_s, fresh={})
         session = result.frame_id.session_id
         if self._session_id != session:

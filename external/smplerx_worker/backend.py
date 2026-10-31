@@ -85,10 +85,11 @@ class SmplerXBackend:
         from utils.preprocessing import process_bbox, generate_patch_image
         self.process_bbox, self.generate_patch = process_bbox, generate_patch_image
 
-    def _invalid(self, frame_id, reason):
+    def _invalid(self, frame_id, reason, *, selection=None):
         from teleoperation.contracts.body import SmplerXResult
         return SmplerXResult(frame_id, time.monotonic(), 's32', self.model_hash, {},
-                             {'left': False, 'right': False}, reason=reason)
+                             {'left': False, 'right': False}, reason=reason,
+                             metadata=None if selection is None else {'operator_selection': dict(selection)})
 
     def infer(self, rgb, frame_id):
         import numpy as np
@@ -106,19 +107,13 @@ class SmplerXBackend:
             return self._invalid(frame_id, 'input frame expired before inference')
         # MMDetection receives BGR; upstream load_img/crop and the network use RGB.
         detections = np.asarray(self.detect(self.detector, rgb[..., ::-1].copy())[0])
-        if detections.size == 0:
-            return self._invalid(frame_id, self._operator.person(None, frame_id.capture_time_s))
+        detections = detections.reshape(-1, 5)
         detections = detections[(detections[:, 4] >= .5)
                                 & (detections[:, 2] - detections[:, 0] >= 50)
                                 & (detections[:, 3] - detections[:, 1] >= 150)]
-        # Never choose a different operator merely because its box is larger.
-        if len(detections) != 1:
-            return self._invalid(frame_id, self._operator.person(None, frame_id.capture_time_s,
-                                                                ambiguous=len(detections) > 1))
-        reason = self._operator.person(detections[0, :4], frame_id.capture_time_s)
+        box, reason = self._operator.select_person(detections, frame_id.capture_time_s)
         if reason:
-            return self._invalid(frame_id, reason)
-        box = detections[0, :4].copy()
+            return self._invalid(frame_id, reason, selection=self._operator.selection)
         box[2:] -= box[:2]
         height, width = rgb.shape[:2]
         bbox = self.process_bbox(box, width, height)
@@ -133,7 +128,8 @@ class SmplerXBackend:
             if self._shape is None:
                 shape = self._operator.shape_sample(out['smplx_shape'].detach().cpu().numpy()[0])
                 if shape is None:
-                    return self._invalid(frame_id, 'calibrating body shape: hold a neutral pose')
+                    return self._invalid(frame_id, 'calibrating body shape: hold a neutral pose',
+                                         selection=self._operator.selection)
                 self._shape = torch.as_tensor(shape, device=image.device).reshape(1, 10)
             layer = self.model.module.smplx_layer
             zeros = torch.zeros((1, 3), device=image.device)
@@ -161,6 +157,7 @@ class SmplerXBackend:
                                                    'right': {'shoulder': 17, 'elbow': 19, 'wrist': 21}},
                                  'upstream_commit': '064baef0e4ab5277a3297691bc1d46ea5412586f',
                                  'shape_policy': 'median_of_five_stable_samples_then_frozen',
+                                 'operator_selection': dict(self._operator.selection),
                                  'checkpoint_missing_buffers': self.checkpoint_missing_buffers})
 
     def close(self):
