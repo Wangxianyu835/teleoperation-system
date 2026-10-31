@@ -1,53 +1,39 @@
 # 遥操作与运动重定向
 
-> **当前手部入口**：见 [统一手部训练、控制与结果规范](docs/hand-retargeting-unified.md)。使用 `hand train --hand-model ...`、`hand control --hand-model ... --backend nn|dex`、`hand export` 和 `replay hand-joints`。下文历史共享 L21 权重、18D 文件及三机器人降维映射示例仅对应旧配置，不能用来加载新版 D 维模型。
+本项目将摄像头或 Vision Pro 的人体观测转换为机器人关节命令，并在 PyBullet 中显示动作。手部支持 L21、H1-2、GR1-T2 和 G1；摄像头还支持三机器人双臂跟随与 TRON2A 工作流。下列示例用于仿真，不连接实体机器人。
 
-```powershell
-python -m teleoperation hand list-models
-python -m teleoperation hand train --input aligned_world.h5 --hand-model l21 g1 --hand-side right --run-name experiment01
-python -m teleoperation hand control --hand-model l21 --backend nn --hand right --checkpoint <right_target_model.pth>
-# dex 使用 devtools/dex_native_env.ps1 中的独立解释器；无需权重或人工掌长标定
-python -m teleoperation hand control --hand-model l21 --backend dex --hand right
-```
-
-权重路径固定为 `outputs/hand_retargeting/models/<hand_model>/<side>/nn/camera_palm_length_window3_v1/<run_name>/`；同一人体米制 H5 可训练多个目标手。新相机窗口按三帧掌长中位数归一化。新 NN 与 dex 返回同侧同手型的独立原生角度；L21=17、H1/GR1=6、G1=7。接入能力不表示本地已有合格权重或跨操作者效果通过验收。
-
-
-本项目将人手关键点转换为机器人关节角，并在 PyBullet 中显示动作。
-输入设备可以是摄像头或 Vision Pro。
-仿真模型包括 L21 手，以及 H1-2、GR1-T2 和 G1 的原装手。
-摄像头入口还支持双臂跟随。
-本文中的命令不连接实体机器人。
-
-本文参考 [ASD-STE100](https://www.asd-ste100.org/STE_faq.html) 的写作原则：使用短句，统一术语，每个步骤只说明一个操作。
-ASD-STE100 面向英语。本文是中文操作说明，不声明符合其英语词汇规则。
+本文按 2026-10-31 的代码入口整理。新版相机手部流程使用目标手原生关节角；相机机械臂使用独立 SMPLer-X S32 工作进程；Vision Pro 保持专用 VR 输入路线。
 
 ## 选择工作流
 
-| 目标 | 输入 | 方法 | 操作入口 |
-|---|---|---|---|
-| 录制动作，再回放 L21 手 | 摄像头 | 使用模型权重计算 L21 关节角 | [第 2 节](#2-录制手部动作)、[第 3 节](#3-导出与回放关节角) |
-| 训练 L21 共享模型 | 已对齐的摄像头数据 | 使用无关节角标签的数据训练模型 | [第 4.1 节](#41-训练共享模型可选) |
-| 实时驱动 L21 双手 | 摄像头 | 使用模型权重计算 L21 关节角 | [第 4.2 节](#42-实时驱动-l21-双手可选) |
-| 实时驱动三台机器人的双臂与双手 | 摄像头 | 使用 SMPLer-X 身体和腕姿态驱动手臂 | [第 4.3 节](#43-实时驱动三机器人的双臂与双手可选) |
-| 直接驱动三台机器人的原装手 | 摄像头或 Vision Pro | 使用 dex-retargeting 优化原装手关节角 | [第 4.4 节](#44-使用-dex-retargeting-直接驱动原装手可选) |
-| 使用上游 TransHandR 模型驱动 L21 手 | Vision Pro 或 VR 录制 | 使用专用 VR 预处理和上游权重 | [TransHandR VR 工作流](docs/transhandr-vr.md) |
+| 目标 | 输入与方法 | 入口 |
+|---|---|---|
+| 录制、训练、导出和回放目标手 | 相机 world 关键点，NN | [相机数据与训练](#2-录制相机手部数据)、[导出与回放](#4-导出检查与回放) |
+| 无权重实时驱动目标手 | 相机 world 关键点，dex | [实时控制](#5-实时控制目标手) |
+| 同时训练多种机器人手 | 同一份人体米制 H5，每个目标侧独立 NN | [训练模型](#3-训练目标手模型) |
+| 三机器人双臂与双手仿真 | SMPLer-X 身体和腕姿态、MediaPipe Hands 手指 | [相机机械臂](#6-smpler-x-相机机械臂录制与回放) |
+| 使用上游 TransHandR 权重 | Vision Pro 实时流或 VR H5 | [Vision Pro](#7-vision-pro-与历史流程) |
+| TRON2A 标定与双臂控制 | SMPLer-X 身体观测与显式安全配置 | [SMPLer-X 配置](docs/smplerx-arm.md)、[工作流参考](docs/workflow-reference.md) |
 
-首次使用摄像头时，按以下顺序操作：
-
-**准备环境 → 录制关键点 → 导出关节角 → 回放动作。**
-
-如果没有兼容的模型权重，请在导出前执行第 4.1 节。
-如果选择 dex-retargeting，请先阅读第 4.4 节的独立环境要求。
+首次使用新版相机 NN，按以下顺序操作：**准备环境 → 录制 world 数据 → 训练目标手模型 → 导出 → 回放**。已有严格匹配的新版权重时，可跳过训练。dex 不需要 NN 权重，但需要独立环境。
 
 ## 1. 准备环境
 
-本文命令使用 Windows PowerShell。
-示例路径来自本地开发计算机。请按实际安装位置修改路径。
+### 1.1 安装并设置终端
 
-### 1.1 设置终端
+以下命令使用 Windows PowerShell。在仓库根目录执行，按实际位置修改解释器路径。
 
-在每个新终端中，先执行以下命令：
+首次安装：
+
+```powershell
+conda env create -f environment.yml
+conda activate teleoperation
+python -m pip install -e . --no-deps --no-build-isolation
+```
+
+`environment.yml` 记录 Windows x86_64 与 NVIDIA GPU 的已验证配置，包含 CUDA 依赖。其他平台需要调整配置。dex 和 SMPLer-X 使用各自的独立环境，见后文。
+
+在每个新终端中设置：
 
 ```powershell
 Set-Location D:\2026\code\teleoperation-system-retargeting
@@ -62,71 +48,52 @@ foreach ($cacheName in @('PIP_CACHE_DIR', 'MPLCONFIGDIR', 'HF_HOME', 'TORCH_HOME
     New-Item -ItemType Directory -Force -Path $cachePath | Out-Null
     Set-Item -Path "Env:$cacheName" -Value $cachePath
 }
-```
 
-缓存设置只影响当前终端。
-缓存和临时文件保存在项目的 `outputs/` 目录中。
-
-### 1.2 安装项目
-
-如果已有可用的 `teleoperation` 环境，请转到第 1.3 节。
-首次安装时，依次执行以下命令：
-
-```powershell
-conda env create -f environment.yml
-conda activate teleoperation
-python -m pip install -e . --no-deps --no-build-isolation
-```
-
-`environment.yml` 记录 Windows x86_64 与 NVIDIA GPU 的已验证环境。
-文件包含 CUDA 依赖。其他平台需要调整环境配置。
-
-### 1.3 检查解释器与模型文件
-
-执行以下命令，检查项目入口：
-
-```powershell
 if (-not (Test-Path $python)) { throw "找不到 Python 解释器：$python" }
 & $python -m teleoperation --help
-if ($LASTEXITCODE -ne 0) { throw '项目入口检查失败。' }
+& $python -m teleoperation hand list-models
 ```
 
-按所选工作流准备文件：
+缓存设置只影响当前终端。生成文件和临时缓存位于 `outputs/`。
 
-| 文件 | 用途 | 放置位置或要求 |
-|---|---|---|
-| MediaPipe Hand 模型 | 检测摄像头中的手部关键点 | `datasets/hand_landmarker.task` |
-| SMPLer-X S32 | 估计身体与腕姿态 | 独立工作进程和许可人体资产，见 [SMPLer-X 配置](docs/smplerx-arm.md) |
-| 模型权重文件（checkpoint） | 计算 L21 关节角 | `.pth` 文件；坐标声明必须与输入一致 |
-| dex 校准文件 | 固定输入尺度，计算原装手关节角 | 在第 4.4 节生成；摄像头与 VR 分别校准 |
+### 1.2 准备所需资产
 
-本文用 checkpoint 表示保存模型权重的文件。
-主程序不会自动下载这些模型文件。
-`MediaPipe/` 中的独立采集工具有自己的下载行为，见第 2.1 节。
+| 资产 | 用途与要求 |
+|---|---|
+| `datasets/hand_landmarker.task` | MediaPipe Hands 相机检测；主程序不会自动下载 |
+| 新版目标手 `.pth` | NN 训练产物，schema 为 `hand_joint_nn_v1`，严格匹配手型、目标侧、规格与输入 profile |
+| `.venv/dex-native/` | dex 独立解释器和依赖；见 [环境重建](docs/dex-native.md#环境重建) |
+| SMPLer-X 官方源码、S32 权重、许可人体模型与工作进程 | 仅相机身体链路需要；见 [环境和资产](docs/smplerx-arm.md#环境和资产) |
+| 上游 TransHandR 权重与实时 SDK | 仅相应 VR 流程需要；见 [VR 文档](docs/transhandr-vr.md) |
 
-### 1.4 检查数据是否兼容
+本地权重、人体模型和工作进程不随 Git 仓库分发。接入某个手型不表示本机已有经过验收的权重。
 
-| 数据 | 内容 | 使用要求 |
-|---|---|---|
-| 摄像头原始 H5 | 每只手的 21 个关键点，同时保存 `normalized` 和 `world` 坐标 | 供对齐、检查或 dex 摄像头流程使用 |
-| 摄像头对齐 H5 | 每只手的 25 个关键点，位于手掌局部坐标系 | 供 L21 训练或导出使用 |
-| L21 关节角 H5 | 每只手的 18 维关节角，以及各侧有效性标记 | 供 `l21-hand`、`native-hand`、`mounted-hand` 回放使用 |
-| dex 原装手结果 H5 | 按机器人和手侧保存原装手关节角 | 使用 `replay dex-native` 回放；格式为 `dex_native_results_v1` |
-| TransHandR VR 结果 H5 | 保存 VR 模型输出和最终仿真命令 | 专用诊断格式，见 [VR 文档](docs/transhandr-vr.md#结果文件) |
+### 1.3 手型与数据兼容性
 
-`world` 表示米制手部坐标。`normalized` 表示图像归一化坐标。
-对齐后，关键点以手掌为参考，但仍保留其来源坐标声明。
+| `--hand-model` | 每侧独立关节数 D | 展开关节数 | 新版 NN / dex |
+|---|---:|---:|---|
+| `l21` | 17 | 17 | 已接入 |
+| `h1_2` | 6 | 12 | 已接入 |
+| `gr1_t2` | 6 | 11 | 已接入 |
+| `g1` | 7 | 7 | 已接入 |
 
-**摄像头 `world` 数据必须使用兼容的 `world` checkpoint。**
-使用 VR 数据时，请选择明确的 VR 入口。
-请勿将摄像头预处理用于 VR 数据。
-请勿修改文件元数据来绕过兼容性检查。
-完整要求见[数据契约](docs/contracts.md)。
+NN 每个目标手、目标侧使用独立权重。dex 直接优化目标手独立关节，再展开 URDF 耦合关系。L21 的原生 17D 与历史模型内部 18D 布局不同。
 
-## 2. 录制手部动作
+| 文件 | 内容与入口 |
+|---|---|
+| 相机原始 H5 | 21 点 `world` 米制坐标及 `normalized` 图像坐标；用于对齐与检查 |
+| 相机对齐 H5 | canonical right 掌部坐标中的 25 点，仍保存米制数据；供新版训练与导出 |
+| `hand_joint_results_v1` | 目标手原始 D 维解、展开后的命令、有效性与诊断；使用 `replay hand-joints` |
+| `smplerx_body_recording_h5_v1` | RGB、原始模型结果及身体、手指和腕观测；使用 `--input-body` 回放 |
+| 历史 L21、dex-native 或 VR H5 | 使用各自旧 schema 的明确入口，见[历史流程](#7-vision-pro-与历史流程) |
 
-先完成第 1 节。
-然后在同一个终端中执行以下命令：
+新版相机输入 profile 是 `camera_palm_length_window3_v1`：先建立掌部坐标、形成三帧窗口，再按该窗口的掌长中位数归一化。训练和控制共用此处理；H5 中人体数据仍保持米制。无需人工掌长标定，但换操作者效果仍需单独验收。
+
+不要将图像归一化坐标、机器人根坐标或旧 18D 权重改标签后作为新版输入。VR 使用专用预处理，不应用相机掌长规范。完整定义见[统一手部规范](docs/hand-retargeting-unified.md)与[数据契约](docs/contracts.md)。
+
+## 2. 录制相机手部数据
+
+先完成环境设置，检查 Hand 模型，然后录制：
 
 ```powershell
 $session = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -136,7 +103,6 @@ $raw = "datasets/raw/camera_$session.h5"
 $aligned = "datasets/raw/aligned_camera_$session.h5"
 
 if (-not (Test-Path $handAsset)) { throw "缺少 MediaPipe Hand 模型：$handAsset" }
-
 & $python -m teleoperation hand record `
   --landmark-space world --hand-side both `
   --camera-index $camera --model-asset-path $handAsset `
@@ -145,454 +111,208 @@ if (-not (Test-Path $handAsset)) { throw "缺少 MediaPipe Hand 模型：$handAs
 if ($LASTEXITCODE -ne 0) { throw '录制失败，请检查上方输出。' }
 ```
 
-录制开始后，依次完成以下操作：
+将双手放入画面，依次张开、握紧并弯曲各根手指。在预览中按 `q` / `Esc`、关闭预览窗口或在终端按 `Ctrl+C` 停止。正常停止后保存原始 H5，并自动生成 `$aligned`，无需再对齐。此入口保存关键点和时间戳，不保存视频。
 
-1. 将双手放在摄像头画面内。
-2. 张开双手。
-3. 握紧双手。
-4. 分别弯曲各根手指。
-5. 使用下表中的一种方式停止录制。
+`--frames 900` 表示录制指定帧数；`--no-preview` 关闭预览；`--hand-side left|right` 选择单侧。`--fps` 是请求帧率，实际速度取决于设备与处理负载。
 
-| 停止方式 | 操作 |
-|---|---|
-| 预览窗口按键 | 在预览窗口中按 `q` 或 `Esc`。 |
-| 窗口按钮 | 关闭预览窗口。 |
-| 终端按键 | 在终端中按 `Ctrl+C`。 |
-
-正常停止后，程序保存原始文件 `$raw`，再自动生成对齐文件 `$aligned`。
-无需再次执行 `hand align`。
-H5 文件保存关键点和时间戳，不保存摄像头视频。
-
-按需要修改录制设置：
-
-| 目标 | 修改方法 |
-|---|---|
-| 选择其他摄像头 | 将 `$camera` 改为设备编号，例如 `1`。 |
-| 只录制左手 | 将 `--hand-side both` 改为 `--hand-side left`。 |
-| 只录制右手 | 将 `--hand-side both` 改为 `--hand-side right`。 |
-| 录制 900 帧后停止 | 将 `--frames 0` 改为 `--frames 900`。 |
-| 关闭预览 | 添加 `--no-preview`，然后使用 `Ctrl+C` 停止。 |
-
-`--fps 30` 是请求的采集帧率。实际录制时间取决于设备与处理速度。
-时间后缀用于区分每次录制的文件。
-
-后续步骤使用当前终端中的变量。
-如果打开新终端，请重新执行第 1.1 节，并设置所需文件路径。
-
-### 2.1 使用 hand_capture 归一化录制工具（可选）
-
-如果需要保留上游 `hand_capture` 的归一化数据，请选择以下一种工具：
+如果已有原始 world H5，单独执行一次对齐；不要给已对齐文件重复处理：
 
 ```powershell
-# 录制双手的 21 点归一化坐标。
-& $python 'MediaPipe/hand capture media.py'
-
-# 同步录制双手和 14 个身体关键点。
-& $python 'MediaPipe/body capture media.py'
+& $python -m teleoperation hand align --input $raw --output $aligned --landmark-space world
 ```
 
-在摄像头窗口中按 `q` 停止。
-手部文件保存在 `outputs/hand_capture/visual_hand_dataset/`。
-身体与手部文件保存在 `outputs/hand_capture/body_hand_arm_dataset/`。
-这些工具在 `datasets/` 中查找模型。模型缺失时，工具会尝试下载。
+## 3. 训练目标手模型
 
-选择对应命令，回放最近保存的录制：
+以下示例训练 L21 右手，不需要机器人关节角标签：
 
 ```powershell
-& $python 'MediaPipe/read_hand_xyz.py'
-& $python 'MediaPipe/body picture.py'
-```
-
-训练前，请先执行 `hand align`，再选择坐标声明匹配的 checkpoint。
-这些工具不输出米制手臂坐标。
-需要双臂输入时，请使用[世界坐标关键点采集](docs/world-landmark-capture.md)。
-
-## 3. 导出与回放关节角
-
-### 3.1 使用已有模型导出关节角
-
-先完成第 2 节，或将 `$aligned` 设为已有的兼容对齐文件。
-
-选择一个兼容的 `world` checkpoint。
-下方路径是本地示例，不保证其他计算机上存在该文件：
-
-```powershell
-$checkpoint = 'outputs/hand_retargeting/checkpoint/models/twohand_h5/linker/world_shared_20261014_000112/model_best.pth'
-```
-
-如果没有兼容的 checkpoint，请先执行第 4.1 节。
-如果刚完成训练，请保留训练步骤设置的 `$checkpoint`。
-
-执行以下命令，导出关节角：
-
-```powershell
-$angles = "outputs/hand_retargeting/camera_angles_$session.h5"
-if (-not (Test-Path $checkpoint)) { throw "缺少模型权重文件：$checkpoint" }
-if (-not (Test-Path $aligned)) { throw "缺少对齐文件：$aligned" }
-
-& $python -m teleoperation hand export `
-  --input $aligned --checkpoint $checkpoint --output $angles --device auto
-if ($LASTEXITCODE -ne 0) { throw '关节角导出失败，请检查上方输出。' }
-```
-
-导出不使用摄像头。
-成功后，`$angles` 指向 L21 关节角文件。
-
-### 3.2 在同一窗口中回放两只 L21 手
-
-执行以下命令，从正面观察双手掌面：
-
-```powershell
-& $python devtools/replay_capture_to_l21.py `
-  --angles-h5 $angles --scene hands --hand both --view front `
-  --gui --fps 30 --render-every 0 --hold-seconds 30
-```
-
-窗口显示两只 L21 手。
-回放结束后，窗口保持最后姿态 30 秒。
-此工具直接显示导出的原生关节角，不应用实时程序的输出滤波或碰撞检查。
-
-也可以使用标准回放入口：
-
-```powershell
-& $python -m teleoperation replay l21-hand `
-  --file $angles --hand both --render --speed 1.0
-```
-
-标准入口按录制时间戳控制回放速度。
-
-| 目标 | 修改方法 |
-|---|---|
-| 只显示右手 | 在任一命令中将 `--hand both` 改为 `--hand right`。 |
-| 工具入口只回放前 900 帧 | 添加 `--max-frames 900`。 |
-| 调整工具入口的帧率上限 | 修改 `--fps`。 |
-| 标准入口半速回放 | 将 `--speed 1.0` 改为 `--speed 0.5`。 |
-
-两条命令都需要 `$angles` 关节角文件。
-下次回放时，请将 `$angles` 设为已保存的文件路径。
-
-### 3.3 在机器人模型上显示手部动作（可选）
-
-以下两个入口都读取 L21 关节角文件：
-
-| 入口 | 显示方式 |
-|---|---|
-| `native-hand` | 将 L21 关节角映射到机器人原装手，省略原装手无法复现的自由度。 |
-| `mounted-hand` | 将 L21 手安装到机器人模型上。 |
-
-执行以下命令，循环回放 H1-2 原装右手：
-
-```powershell
-& $python -m teleoperation replay native-hand `
-  --file $angles --robot h1_2 --hand right --view right-hand --render --loop 0
-```
-
-执行以下命令，回放安装在 H1-2 上的 L21 右手：
-
-```powershell
-& $python -m teleoperation replay mounted-hand `
-  --file $angles --robot h1_2 --hand right --render --speed 1.0
-```
-
-`--robot` 也支持 `gr1_t2` 和 `g1`。
-需要直接优化原装手关节角时，请使用第 4.4 节的 dex 流程。
-
-### 3.4 检查原装手运动或导出快照（可选）
-
-选择以下工具，检查 L21 映射后的原装手动作：
-
-```powershell
-& $python devtools/check_native_hand_motion.py --file $angles
-& $python devtools/render_hand_snapshots.py --file $angles --out outputs/hand_snapshots
-```
-
-第一条命令测量关节运动范围和跟踪误差，不打开仿真窗口。
-第二条命令生成三台机器人原装手的姿态快照。
-
-## 4. 训练模型或实时运行
-
-### 4.1 训练共享模型（可选）
-
-先完成第 2 节，或将 `$aligned` 设为已有的 `world` 对齐文件。
-共享模型可以使用左手、右手或双手数据。
-训练不需要机器人关节角标签。
-
-执行以下命令：
-
-```powershell
-$run = "world_$session"
-$checkpointRoot = 'outputs/hand_retargeting/checkpoint'
+$run = "camera_$session"
+$modelRoot = 'outputs/hand_retargeting/models'
 
 & $python -m teleoperation hand train `
-  --input $aligned --run-name $run --hand-side shared `
-  --checkpoint-root $checkpointRoot --device auto `
+  --input $aligned --hand-model l21 --hand-side right --run-name $run `
+  --checkpoint-root $modelRoot --device auto `
   --epochs 100 --batch-size 64 --learning-rate 0.0001
 if ($LASTEXITCODE -ne 0) { throw '训练失败，请检查上方输出。' }
 
-$checkpoint = "$checkpointRoot/models/twohand_h5/linker/$run/model_best.pth"
+$checkpoint = "$modelRoot/l21/right/nn/camera_palm_length_window3_v1/$run/model_best.pth"
 ```
 
-训练成功后，依次完成以下操作：
+将 `--hand-model l21` 改为 `--hand-model l21 h1_2 gr1_t2 g1`，可对同一份人体数据依次训练多个手型；`--hand-side both` 为左右侧分别训练。所选侧必须有有效数据。旧 `--hand-side shared` 已移除。
 
-1. 保留新设置的 `$checkpoint`。
-2. 执行第 3.1 节的导出命令块。
-3. 执行第 3.2 节的回放命令。
+保存路径固定为：
 
-训练参数与模型兼容性要求见[工作流参考](docs/workflow-reference.md)。
+```text
+outputs/hand_retargeting/models/<hand_model>/<left|right>/nn/
+  camera_palm_length_window3_v1/<run_name>/
+    model_best.pth
+    model_last.pth
+    config.json
+    dataset.json
+    metrics.jsonl
+    training.log
+```
 
-### 4.2 实时驱动 L21 双手（可选）
+已有目录拒绝覆盖。`--resume <model_last.pth>` 在同一目标、运行配置与数据下恢复训练；`--epochs` 表示总轮数。`--init-checkpoint` 仅初始化严格匹配的新模型参数，与 `--resume` 互斥。详细约束见[训练与保存路径](docs/hand-retargeting-unified.md#训练与保存路径)。
 
-此流程无需先录制数据。
-先完成第 1 节，再设置以下变量：
+短训练只能检查流程。跨操作者效果需要按人划分数据并做独立验收。
 
-- `$checkpoint`：兼容摄像头 `world` 输入的权重路径。
-- `$camera`：摄像头编号，例如 `0`。
-- `$handAsset`：MediaPipe Hand 模型路径。
+## 4. 导出、检查与回放
 
-如果刚完成第 2 节和第 3 节，可以继续使用当前变量。
-执行以下命令，启动实时仿真：
+继续使用训练产生的 `$checkpoint`，或将其设为已有的同手型、同目标侧新版权重：
 
 ```powershell
-& $python -m teleoperation.applications.realtime_hand_sim `
-  --backend checkpoint --checkpoint $checkpoint --landmark-space world --device cpu `
-  --camera-index $camera --model-asset-path $handAsset `
-  --scene hands --hand both --view front --frames 0
+$results = "outputs/hand_retargeting/nn_results_$session.h5"
+if (-not (Test-Path $checkpoint)) { throw "缺少模型权重：$checkpoint" }
+
+& $python -m teleoperation hand export `
+  --input $aligned --output $results --hand-model l21 --backend nn `
+  --hand right --checkpoint $checkpoint --device auto
+if ($LASTEXITCODE -ne 0) { throw '关节角导出失败，请检查上方输出。' }
+
+& $python -m teleoperation hand inspect --angle-h5 $results
+& $python -m teleoperation replay hand-joints --input $results --hand-model l21 --hand right
 ```
 
-在摄像头窗口中按 `q` 或 `Esc` 停止。
-也可以关闭摄像头窗口，或在终端中按 `Ctrl+C`。
-此入口不保存关节角 H5 文件。
-输出滤波、角速度限制与碰撞检查见[手部输出说明](docs/hand-command-safety.md)。
+导出不打开摄像头。结果保留完整时间线，包括前两帧预热及缺手帧。回放验证手型、关节顺序、限位与耦合后直接执行已接受命令，不再次滤波。结果文件独占创建，不覆盖已有路径。
 
-### 4.3 实时驱动三机器人的双臂与双手（可选）
+导出双侧 NN 时使用 `--hand both --left-checkpoint <left.pth> --right-checkpoint <right.pth>`，回放也选 `--hand both`。新版结果不交给旧 `replay l21-hand`、`native-hand` 或 `mounted-hand`。
 
-先按第 4.2 节准备权重、摄像头和 Hand 模型。
-然后按 [SMPLer-X 配置](docs/smplerx-arm.md) 准备独立工作进程和人体模型。
+## 5. 实时控制目标手
 
-此入口默认同时显示 H1-2、GR1-T2 和 G1。
-手指使用 L21 checkpoint。
-手臂使用 SMPL-X 根相对肩、肘、腕与 FK 腕旋转。
+### 5.1 NN 控制
 
-执行以下命令：
+无需先录制数据；准备匹配的权重与 Hand 模型即可启动：
 
 ```powershell
-$armSession = Get-Date -Format 'yyyyMMdd_HHmmss'
-
-& $python -m teleoperation.simulation.realtime_teleop `
-  --backend checkpoint --checkpoint $checkpoint --landmark-space world --device cpu `
+& $python -m teleoperation hand control `
+  --hand-model l21 --backend nn --hand right --checkpoint $checkpoint `
   --camera-index $camera --model-asset-path $handAsset `
-  --side both --arm-map posture --arm-elbow-follow operator `
-  --diagnostics --diagnostic-trace "outputs/tmp_realtime/arm_trace_$armSession.csv" `
-  --report "outputs/tmp_realtime/arm_report_$armSession.json" `
-  --dump-body "outputs/tmp_realtime/arm_raw_$armSession.h5"
+  --record-results "outputs/hand_retargeting/live_$session.h5"
 ```
 
-窗口打开后，依次完成以下操作：
+双侧 NN 同样使用 `--hand both --left-checkpoint ... --right-checkpoint ...`。程序在打开相机和 GUI 前检查权重身份，不自动寻找最新权重。`Ctrl+C` 或关闭 PyBullet 窗口停止；`--frames N --headless` 可执行有限运行。
 
-1. 保持双臂中性姿态约 30 个有效帧。
-2. 小幅移动左上臂。
-3. 小幅移动右上臂。
-4. 分别弯曲左右肘部。
-5. 检查手臂方向和手指动作。
-6. 在摄像头窗口中按 `q` 或 `Esc` 停止。
+### 5.2 dex 控制与离线导出
 
-默认 `track` 模式从首个有效观测开始跟随，同时收集中性姿态。
-如需等待标定完成后再运动，请添加 `--arm-calibrate-mode hold`。
-SMPL-X 丢失时保持上一目标，不从 Hands 生成机械臂目标。
-
-| 目标 | 参数 |
-|---|---|
-| 只运行一台机器人 | 添加 `--robot h1_2`、`--robot gr1_t2` 或 `--robot g1`。 |
-| 按上臂与前臂方向跟随 | 使用 `--arm-map posture`，这是当前默认模式。 |
-| 使用旧腕部相对位移映射 | 改为 `--arm-map chain`。 |
-| 使用分段位移与肘部位置目标 | 改为 `--arm-map segments --arm-elbow-task`。 |
-| 关闭肘角参考跟随 | 改为 `--arm-elbow-follow off`；未指定时默认 `off`。 |
-| 选择方向参考系 | 使用 `--arm-posture-frame auto`；GR1-T2 选 `delta`，其余两台选 `mapped`。 |
-| 选择 IK 关节参考 | 默认 `--arm-rest-poses current`；其他值为 `live`、`loaded`、`zero`，其中 `live` 是 `current` 的别名。 |
-| 启用腕姿态约束 | 改为 `--arm-orientation auto`；默认 `off`。 |
-
-`posture` 按机器人骨段长度构造方向目标。
-最终运动受 URDF 关节限位、目标限速和 IK 收敛情况影响。
-报告中的 `ik_target_base`、`ik_target_world` 和 `ik_position_error_mm` 对应实际交给 IK 的目标及误差。
-
-方向路线已完成六条手臂的离线回放与诊断检查。
-真人摄像头效果仍需复测。
-验收范围见[双臂诊断与验收](docs/arm-diagnostics.md)。
-相机与 VR 的腕朝向现由输入层提供并自动传给手臂后端；初始对齐、启动命令及待执行的人体验收清单见[腕输入与验收](docs/wrist-input-and-acceptance.md)。本轮未运行自动测试或现场设备验收。
-参数适配与旧 NPZ 回放行为见[分支整合记录](docs/branch-integration-2026-10-27.md)。
-
-### 4.4 使用 dex-retargeting 直接驱动原装手（可选）
-
-`dex` 后端使用 Vector 优化器，直接计算三台机器人的原装手关节角。
-它不需要 L21 checkpoint，也不经过 L21 关节角映射。
-H1-2 和 GR1-T2 每手各优化 6 个独立驱动量，再展开耦合关节。
-G1 每手优化 7 个关节。
-
-#### 准备独立环境
-
-先按 [dex 环境重建说明](docs/dex-native.md#环境重建)建立独立环境。
-普通 `teleoperation` 环境不包含该后端的全部依赖。
-
-在仓库根目录执行以下命令：
+先按 [dex 环境重建说明](docs/dex-native.md#环境重建)准备独立环境，再执行：
 
 ```powershell
 . ./devtools/dex_native_env.ps1
 if (-not (Test-Path $dexPython)) { throw '缺少 dex 独立环境，请先完成环境重建。' }
 & $dexPython -m pip check
 if ($LASTEXITCODE -ne 0) { throw 'dex 环境依赖检查失败。' }
-$dexSession = Get-Date -Format 'yyyyMMdd_HHmmss'
+
+& $dexPython -m teleoperation hand control `
+  --hand-model g1 --backend dex --hand both `
+  --camera-index $camera --model-asset-path $handAsset
+
+$dexResults = "outputs/hand_retargeting/dex_results_$session.h5"
+& $dexPython -m teleoperation hand export `
+  --input $aligned --output $dexResults --hand-model g1 --backend dex --hand both
+& $dexPython -m teleoperation replay hand-joints --input $dexResults --hand-model g1 --hand both
 ```
 
-后续 dex 命令均使用 `$dexPython`。
-校准文件与结果文件不覆盖已有路径。重复运行时，请生成新的 `$dexSession`。
+新版相机 dex 无需 NN 权重或人工掌长校准。将 `g1` 换为其他登记手型即可选择对应目标。旧 VR dex 和旧三机器人集成入口仍有独立校准要求，不能套用此说明。
 
-#### 使用 Vision Pro 录制导出与回放
+两种方法共用滤波、URDF 有效限位、关节限速和耦合展开。缺手时保持上一条接受命令，恢复时限制首步时间预算。L21 保留网格路径检查；其他原装手没有等价运行时网格检查。方法比较与指标说明见[统一手部规范](docs/hand-retargeting-unified.md#导出检查回放比较)。
 
-先将 `$vrRaw` 设为已有的 Vision Pro 原始录制。
-下方示例使用本地已有文件：
+## 6. SMPLer-X 相机机械臂、录制与回放
+
+相机身体链路使用 SMPLer-X S32；MediaPipe Hands 仅提供手指。一次 RGB 采集共享给 Hands 和独立模型工作进程，保留各自时间。手臂使用根相对米制肩、肘、腕及完整旋转链得到的腕朝向，再进入既有重定向、腕对齐、IK 和安全控制。
+
+先按 [SMPLer-X 配置](docs/smplerx-arm.md)准备源码、权重、许可人体模型和独立解释器。默认目录为 `.venv/smplerx-assets/SMPLer-X`、`.venv/smplerx-assets/smpler_x_s32.pth.tar`、`datasets/smpl_models` 和 `.venv/smplerx-worker/Scripts/python.exe`；可用对应 CLI 参数覆盖。
+
+以下以几何手指后端演示三机器人集成入口，无需 NN 权重：
 
 ```powershell
-$vrRaw = 'datasets/raw/visionpro_hand_arm_20261012_215137_live.h5'
-$vrCal = "outputs/tmp_dex_native/vr_cal_$dexSession.json"
-$vrNative = "outputs/tmp_dex_native/vr_native_$dexSession.h5"
+$armSession = Get-Date -Format 'yyyyMMdd_HHmmss'
+$body = "outputs/smplerx/$armSession/body.h5"
 
-& $dexPython -m teleoperation hand dex-calibrate --source visionpro `
-  --input $vrRaw --start 3 --duration 2 --output $vrCal
-if ($LASTEXITCODE -ne 0) { throw 'VR 校准失败。' }
+& $python -m teleoperation.simulation.realtime_teleop `
+  --backend geometric --side both --arm-map posture --arm-calibrate-mode hold `
+  --camera-index $camera --model-asset-path $handAsset `
+  --dump-body $body --report "outputs/smplerx/$armSession/live.json"
 
-& $dexPython -m teleoperation hand dex-export --source visionpro `
-  --input $vrRaw --calibration $vrCal --output $vrNative
-if ($LASTEXITCODE -ne 0) { throw '原装手关节角导出失败。' }
+# 无相机、无 S32 推理，按原始采集间隔回放。
+& $python -m teleoperation.simulation.realtime_teleop `
+  --input-body $body --backend geometric --headless --no-preview `
+  --report "outputs/smplerx/$armSession/replay.json"
 
-& $dexPython -m teleoperation replay dex-native --file $vrNative --render
+& $python -m teleoperation.applications.arm_validation `
+  --input-body $body --output-dir "outputs/smplerx/$armSession/validation"
 ```
 
-`--start` 是相对于录制首帧的秒数。
-示例中的 `--start 3` 只适用于这份录制。
-使用其他录制时，请选择双手连续张开至少两秒的片段。
+默认同时显示 H1-2、GR1-T2 和 G1；添加 `--robot g1` 可选一台。首次加载工作进程约需十余秒，期间机械臂保持。请保持中性姿态等待标定完成。多人、检测框突然换位或离场超过两秒会锁定身体输入，需重开会话并重新标定。
 
-#### 使用摄像头实时驱动原装手
-
-先准备 MediaPipe Hand 模型。
-然后录制双手连续张开至少两秒的数据：
+只录制观测、不启动机器人仿真时使用：
 
 ```powershell
-$camera = 0
-$handAsset = 'datasets/hand_landmarker.task'
-$cameraRaw = "outputs/tmp_dex_native/camera_open_$dexSession.h5"
-$cameraCal = "outputs/tmp_dex_native/camera_cal_$dexSession.json"
-
-& $dexPython -m teleoperation hand record --landmark-space world --hand-side both `
-  --camera-index $camera --model-asset-path $handAsset --frames 0 --output $cameraRaw
-if ($LASTEXITCODE -ne 0) { throw '摄像头校准录制失败。' }
+& $python -m teleoperation hand record-world --frames 300 --max-fps 5 `
+  --camera-index $camera --model-asset-path $handAsset `
+  --output "outputs/smplerx/$armSession/capture.h5"
 ```
 
-在预览窗口中按 `q` 停止录制。
-将 `$openStart` 设为双手开始连续张开的相对秒数，再执行校准：
+`record-world` 等待首个身体结果后开始指定数量的采集；加 `--no-arms` 仅采集 Hands。组合 H5 保存无损压缩 RGB、原始模型包及最终观测。录制器在保存前持有本次数据，长录制会占用内存和磁盘。
+
+此三机器人入口仍采用历史 L21 手指配置，不能加载新版目标手 D 维 NN 权重。其 checkpoint / dex 选项与校准要求见 [SMPLer-X 文档](docs/smplerx-arm.md)。旧 MediaPipe Pose 机械臂输入及旧机械臂 NPZ/H5 reader 已移除，需要重新采集；`--input-npz` 仅支持手指调试，不接受旧机械臂或腕字段。
+
+当前实测的五分钟 S32 单模型静态图片运行得到 1,604 个新结果、5.34 Hz、p95 234 ms，未达到 10 Hz / p95 150 ms 目标。40 个真实模型结果完成 H5 往返和三机器人回放；这些输入是重复静态图片。真实相机、动态动作、遮挡及组合负载连续运行仍待验收，见[回归与验收状态](docs/smplerx-regression-status.md)。
+
+## 7. Vision Pro 与历史流程
+
+Vision Pro 使用独立 `hand vr` 入口，保留 TransHandR 上游预处理、时间窗口和权重语义。默认路线是左侧传感器输入到右侧 L21；同侧双手必须显式选择 `--hand both --hand-mapping same`。不要把相机 NN 权重用于 VR。
+
+先配置 `$vrCheckpoint` 为真实上游权重、`$vrRaw` 为已有的 Vision Pro 原始 H5：
 
 ```powershell
-$openStart = 0
-& $dexPython -m teleoperation hand dex-calibrate --source camera `
-  --input $cameraRaw --start $openStart --duration 2 --output $cameraCal
-if ($LASTEXITCODE -ne 0) { throw '摄像头校准失败，请检查张开手片段。' }
-
-& $dexPython -m teleoperation.applications.realtime_hand_sim `
-  --backend dex --dex-calibration $cameraCal --landmark-space world `
-  --scene robots --hand both --camera-index $camera --model-asset-path $handAsset --frames 0
+$vrCheckpoint = 'D:/2026/code/TransHandR/TransHandR/checkpoint/models/thumb3/linker/model_final.pth'
+$vrRaw = '<Vision Pro 原始录制.h5>'
+& $python -m teleoperation hand vr `
+  --input-h5 $vrRaw --checkpoint $vrCheckpoint `
+  --source-hand left --hand right --scene hands --device cpu --frames 120 `
+  --report "outputs/hand_retargeting/vr_replay_$session.json"
 ```
 
-摄像头 dex 流程只接受 `world` 米制数据。
-双臂双手入口也支持 `--backend dex --dex-calibration $cameraCal`。
-使用该入口时，请替换第 4.3 节中的后端和 checkpoint 参数，并用 `$dexPython` 运行。
-手臂参数保持相同设置。
+实时连接将 `--input-h5 $vrRaw` 换为 `--ip '<头显地址>'`，并安装实时 SDK。数值来源、源码哈希、左右侧边界适配和完整命令见 [TransHandR VR 文档](docs/transhandr-vr.md)。VR 手部入口不生成肩肘数据。
 
-#### 连接 Vision Pro 实时驱动原装手
+历史数据使用明确的兼容入口：
 
-先按 [Vision Pro SDK 安装说明](docs/dex-native.md#安装-vision-pro-实时-sdk)准备 `avp_stream`。
-本地独立环境已安装依赖适配包 `avp_stream==2.51+wincontrib`。
-该包保留 SDK 算法与网络协议，依赖变更记录在接入文档中。
-
-1. 将电脑与头显连接到同一局域网。
-2. 在头显中打开 Tracking Streamer。
-3. 选择 Teleoperation。
-4. 保持跟踪会话运行。
-5. 将命令中的地址替换为应用显示的头显 IP。
-6. 执行以下命令。
-
-```powershell
-& $dexPython -m teleoperation hand vr --backend dex `
-  --ip '<头显地址>' --dex-calibration $vrCal `
-  --scene robots --hand both --hand-mapping same `
-  --report "outputs/tmp_dex_native/vr_live_$dexSession.json"
-```
-
-`$vrCal` 必须来自当前操作者的合格 VR 校准。
-上方离线示例生成的校准仅在操作者与尺度适用时使用。
-新操作者需先录制张开手片段，再按 VR 校准步骤生成自己的文件。
-录制入口见[头显录制](docs/visionpro-offline-capture.md)。
-
-Local Network 与 Remote 是并列连接信息区，无需寻找模式切换按钮。
-在终端中按 `Ctrl+C`，或关闭 PyBullet 窗口，可停止运行。
-VR 入口只控制手部，不生成肩、肘数据。
-
-摄像头与 VR 使用不同的校准配置。
-当前 VR 配置为 `dex_visionpro_palm_v2`，旧 v1 校准不能用于新路线。
-需要上游 TransHandR 模型时，请使用[专用 VR 工作流](docs/transhandr-vr.md)。
-
-#### 当前验证范围
-
-截至 2026-10-28，记录中的验证状态如下：
-
-| 项目 | 状态与范围 |
+| 历史流程 | 使用要求 |
 |---|---|
-| 原装手可达姿态 | 600 个姿态通过验收。 |
-| VR 离线数据 | 两份实录完成导出、回放和数值检查。 |
-| 六手独立求解性能 | 预热后测试 1,000 帧，P95 为 22.1 ms；不含检测和渲染。 |
-| 头显现场动作 | 已完成本人尺度校准；操作者确认动作清单。 |
-| 头显连续运行 | 后续测试保存 2,409 次更新；接收新数据持续约 148 秒，未达到连续 5 分钟。 |
-| 摄像头现场验证 | 新校准、方法比较、动作测试和连续 5 分钟测试仍待完成。 |
-| 原装手碰撞检查 | 本轮没有新增原装手网格避碰。 |
+| 旧相机 L21 NN | 在支持的入口显式选择 `legacy_l21_world` 或 `legacy_l21_normalized`，仅限 L21；见[历史链路边界](docs/hand-retargeting-unified.md#历史链路边界) |
+| 旧 L21 18D 结果 | 使用 `replay l21-hand`；`native-hand` 的原装手映射是有损诊断，`mounted-hand` 显示挂载 L21 |
+| 旧 dex-native / VR dex | 使用 `dex-calibrate`、`dex-export`、`replay dex-native` 或 VR dex 入口；摄像头与 VR 校准独立，见 [dex 记录](docs/dex-native.md) |
+| `MediaPipe/` 独立采集工具 | 保留上游归一化数据工具；模型缺失时可能自行下载，不作为 SMPL-X 身体输入；见[工作流参考](docs/workflow-reference.md) |
 
-人体目标拟合误差仍为厘米量级。
-独立求解耗时不代表实时控制帧率。
-数值检查结果不代表抓取精度或硬件控制精度。
-完整指标、负载说明和待验收项目见 [dex 接入与验收记录](docs/dex-native.md)。
+历史文档中的旧共享训练与旧身体数据命令不代表当前接口。以当前 `--help`、统一手部规范和 SMPLer-X 配置为准，不修改 checkpoint 元数据绕过检查。
 
-## 5. 查找其他功能与源文件
+## 8. 文档、源码与验证
 
-| 任务或主题 | 参考文档 |
+| 主题 | 文档 |
 |---|---|
-| 灵巧手、机械臂与手臂协同重定向文献及项目定位 | [文献综述（2026-10-29）](docs/retargeting-literature-review-2026-10-29.md) |
-| 手动对齐、训练参数、几何重定向和任务仿真 | [工作流参考](docs/workflow-reference.md) |
-| 同步采集米制手部与肩、肘、腕关键点 | [世界坐标关键点采集](docs/world-landmark-capture.md) |
-| TRON2A 标定、双臂双手控制和组合离线命令 | [身体与手臂工作流](docs/workflow-reference.md#4-扩展身体采集双臂和任务仿真) |
-| Vision Pro 录制与离线数据 | [头显录制](docs/visionpro-offline-capture.md) |
-| 上游 TransHandR VR 预处理、权重与 L21 推理 | [TransHandR VR 工作流](docs/transhandr-vr.md) |
-| dex 环境、校准、性能与待验收项目 | [dex 接入与验收记录](docs/dex-native.md) |
-| H5 格式、坐标与模型兼容性 | [数据契约](docs/contracts.md) |
-| 输出滤波、限速与碰撞检查范围 | [手部输出说明](docs/hand-command-safety.md) |
-| 模块职责与依赖关系 | [架构说明](docs/architecture.md) |
-| 双臂离线验收与已测失败项 | [双臂诊断与验收](docs/arm-diagnostics.md) |
-| 相机 / VR 腕朝向、初始对齐与人工验收清单 | [腕输入与验收](docs/wrist-input-and-acceptance.md) |
-| hand_capture 与双臂分支迁移记录 | [分支整合记录](docs/branch-integration-2026-10-27.md) |
-| 项目进展演示 | [演示材料](present/README.md) |
+| 原生目标手、掌长归一化、训练与结果格式 | [统一手部规范](docs/hand-retargeting-unified.md) |
+| SMPLer-X 资产、时间策略、录制与验收 | [相机机械臂](docs/smplerx-arm.md)、[回归状态](docs/smplerx-regression-status.md) |
+| dex 独立环境、历史校准与性能 | [dex 接入记录](docs/dex-native.md) |
+| Vision Pro 录制与上游数值路线 | [头显录制](docs/visionpro-offline-capture.md)、[TransHandR VR](docs/transhandr-vr.md) |
+| 身体与手部采集 | [世界坐标采集](docs/world-landmark-capture.md) |
+| 手部输出与机械臂诊断 | [手部输出处理](docs/hand-command-safety.md)、[双臂诊断](docs/arm-diagnostics.md) |
+| 数据、坐标与模块职责 | [数据契约](docs/contracts.md)、[架构](docs/architecture.md)、[坐标约定](docs/CONVENTIONS.md) |
+| 腕输入和现场验收清单 | [腕输入与验收](docs/wrist-input-and-acceptance.md) |
+| 扩展命令与历史工作流 | [工作流参考](docs/workflow-reference.md) |
+| 文献与演示材料 | [文献综述](docs/retargeting-literature-review-2026-10-29.md)、[演示材料](present/README.md) |
 
-临时调整设置时，请使用命令行参数。
-修改默认设置时，请查找以下文件：
+命令行参数定义在 [`schemas.py`](src/teleoperation/cli/schemas.py)，目标手参数在 [`hand_joint_options.py`](src/teleoperation/cli/hand_joint_options.py)，默认路径在 [`paths.py`](src/teleoperation/paths.py)。需要调整设置时优先使用 CLI 参数。
 
-| 默认设置 | 源文件 |
-|---|---|
-| 训练与模型 | [`config.py`](src/teleoperation/retargeting/hand/config.py) |
-| 统一命令行接口 | [`schemas.py`](src/teleoperation/cli/schemas.py) |
-| 资源路径 | [`paths.py`](src/teleoperation/paths.py) |
-
-在命令后添加 `--help`，可查看全部参数。例如：
+查看帮助与运行回归测试：
 
 ```powershell
-& $python -m teleoperation hand record --help
+& $python -m teleoperation hand train --help
+& $python -m teleoperation hand control --help
 & $python -m teleoperation hand export --help
-& $python -m teleoperation replay l21-hand --help
-& $dexPython -m teleoperation hand dex-calibrate --help
+& $python -m teleoperation replay hand-joints --help
+& $python -m teleoperation hand record-world --help
+& $python -m unittest discover -s tests
 ```
 
-最后一条命令需要先加载第 4.4 节的独立环境。
+测试通过只说明软件回归状态；不代替相机、头显、不同操作者或硬件控制验收。可选 dex 检查需在独立环境运行，现场验收范围以各专题文档为准。
