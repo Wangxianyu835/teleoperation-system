@@ -91,7 +91,7 @@ def train_joint_models(*, input_path, root, hand_models, run_name,
                        input_profile=PALM_LENGTH_PROFILE):
     """Train targets sequentially, preflighting every output before the first run.
 
-    Train one canonical right-hand output model from both source sides.
+    Train one canonical right-hand output model from available source sides.
 
     The selected target hand model remains independent, while left and right
     camera windows share one canonical output checkpoint.
@@ -140,9 +140,12 @@ def train_joint_models(*, input_path, root, hand_models, run_name,
                 'frames':frames, 'train_raw_range':[0,train_end], 'validation_raw_range':[val_start,frames],
                 'train_side_counts':train.side_counts(), 'validation_side_counts':validation.side_counts(),
                 'input_profile':PALM_LENGTH_PROFILE}
-    for side in sides:
-        if not train.side_counts()[side] or not validation.side_counts()[side]:
-            raise ValueError(f'No valid {side} windows in training/validation split')
+    for split, counts in (('training', identity['train_side_counts']),
+                          ('validation', identity['validation_side_counts'])):
+        if not any(counts.values()):
+            raise ValueError(f'No valid hand windows in {split} split')
+    sides = tuple(side for side in sides
+                  if identity['train_side_counts'][side] or identity['validation_side_counts'][side])
     for spec, run in zip(specs,runs):
         random.seed(seed)
         torch.manual_seed(seed)
