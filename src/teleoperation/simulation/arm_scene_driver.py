@@ -1,33 +1,7 @@
-"""Drive the arms of the three-robot scene without editing the teammate's file.
+"""Drive selected arms in an existing three-robot PyBullet scene.
 
-``ThreeRobotHandScene`` holds every non-hand joint -- the 7+7 arm joints included --
-at its load angle each frame, which is exactly why the arms look frozen.  That file
-is teammate-owned (CONVENTIONS rule 3), so this wrapper detaches the arm joints from
-``robot["hold_ids"]`` / ``robot["hold_targets"]`` after construction (both are plain
-Python lists) and drives them from per-robot IK instead:
-
-    scene = ThreeRobotHandScene(sides=("right",), gui=False)   # teammate's class
-    driver = ArmSceneDriver(scene, sides=("right",))           # our layers
-    for position in sweep:                                     # base-frame metres
-        driver.apply("right", position, source="base")
-        driver.step()                                          # scene.step()
-    print(driver.summary(), driver.residuals_mm())
-
-``robot_type`` is what selects the arm; nothing in the retargeting interfaces changes:
-
-    ArmProfile      simulation/arm_profiles.py   per-robot tuning, ik_mode, ee link
-      -> PyBulletArmIK  simulation/arm_ik.py      one solver per loaded robot
-      -> ArmSceneDriver this file                 release holds, write motors, step
-
-The hands keep working exactly as before: ``scene.apply(side, angles_18)`` is not
-touched, and finger joints are never in the hold lists to begin with.  Finger
-dynamics do not disturb the arm either -- the arm motors are the stiff ones here.
-
-Why a wrapper instead of two lines in the scene: the scene is in the teammate's
-baseline tree, so editing it would show up as a modified teammate file in
-``devtools/preflight.ps1`` (rule 3).  The two-line version is described in
-``docs/multi-robot-arm.md`` as a patch to hand back to whoever owns that file.
-"""
+ArmSceneDriver releases the selected arm joints from scene holds, applies
+per-robot IK targets and advances the scene. Finger control remains scene-owned."""
 
 from __future__ import annotations
 
@@ -50,30 +24,15 @@ from teleoperation.simulation.arm_profiles import (
     table,
 )
 
-#: 斜坡换算成「每帧一步」之后的硬上限（米）。摄像头循环掉速时 ``slew_m_per_s * dt`` 会长大，
-#: 但一步几十厘米会把 IK 送回坏分支（这正是斜坡要修的东西），所以给它一个天花板。
-#: 40 mm 是 2026-10-13 实测的拐点：40/60/80 mm 三档的横摆传递比都是 0.80（不再有改善），
-#: 但 60 mm 的最大残差从 19.8 涨到 26.1 mm（判据 30 mm），所以取 40。
+#: Hard ceiling for each target step in metres.
 SLEW_MAX_STEP_M = 0.04
-#: 「肘-腕」这一对（``--arm-map posture`` 的刚性配方）被斜坡压到请求长度的这个比例以下时，
-#: 这一帧**保持上一帧下发的那一对**（两个点都不动：不跳、也不压扁），等操作者慢下来再继续跟。
-#: 为什么不是在会压扁的帧上「按请求值一步到位」：那样症状更好（前臂反向帧 7 -> 1），但目标要跳
-#: 一步，前臂抽动 max 从 26 度涨到 70 度 —— 而「手臂会抽」正是上一轮刚修掉的东西。保持那一对
-#: 的版本：前臂反向帧 7 -> 3（剩下的 3 帧在未修复的版本里本来就有，逐帧数字相同）、抽动 26 度
-#: 不变、残差不变、前臂间距还从 0.55 改善到 23.8 mm（g1）。数字见 docs/multi-robot-arm.md 8.18。
+#: Hold the previous rigid elbow/wrist pair if slew would shrink it below this ratio.
 SLEW_PAIR_FLOOR_RATIO = 0.6
 
 
 def slew_per_frame(speed_m_per_s: float, frame_dt: float,
                    ceiling_m: float = SLEW_MAX_STEP_M) -> float:
-    """把「米/秒」的跟随速率换成「这一帧最多走多少米」（含天花板）。
-
-    为什么不能写死 mm/帧：现场摄像头循环只有 8-12 fps，写死的 20 mm/帧 = 0.20 m/s，
-    而实测录制里操作者手的每帧位移是「中位 37 mm、p90 147 mm」（10.05 fps -> p90 1.48 m/s），
-    于是斜坡帧帧都在生效，机器人被按 13% 的手速拖着走，左右摆动直接消失（正弦实测传递比
-    只有 0.43）。换成速率口径后 30 fps 与 10 fps 的跟随速度一致（30 fps 13.3 mm/帧、
-    10 fps 40 mm/帧），摄像头再慢也不会给 IK 一步几十厘米。
-    """
+    """Convert metres/second and frame seconds to a step bounded by ceiling_m."""
     if speed_m_per_s <= 0.0 or frame_dt <= 0.0:
         return 0.0
     return min(float(speed_m_per_s) * float(frame_dt), float(ceiling_m))
@@ -114,13 +73,7 @@ class ArmSceneDriver:
         self.applied = {side: 0 for side in self.sides}
         #: 目标速率上限（米/帧）：0 = 关闭（目标一步到位）。见 ``_slew_target``。
         self.slew_m = max(0.0, float(slew_m))
-        #: 跟随速率（米/秒）：非 0 时每帧用 ``update_slew(dt)`` 换算成 ``slew_m``。
-        #: 摄像头循环帧率不固定（现场 8-12 fps），按速率给才不会"帧率一低就变慢"。
         self.slew_m_per_s = max(0.0, float(slew_m_per_s))
-        #: 「肘-腕」这一对（``elbow_rigid``）的地板比例：斜坡一次不许把这一对压到请求长度的
-        #: 这个比例以下，否则这一帧保持上一帧下发的那一对（见 ``SLEW_PAIR_FLOOR_RATIO`` 与 8.18）。
-        #: 0 = 关护栏。``None``（默认）= 用 ``SLEW_PAIR_FLOOR_RATIO``，于是现场可以用
-        #: ``--arm-slew-pair-floor 0`` 回到历史行为做 A/B，也可以给 0.4 让护栏少介入。
         self.slew_pair_floor_ratio = (
             SLEW_PAIR_FLOOR_RATIO if slew_pair_floor_ratio is None
             else max(0.0, float(slew_pair_floor_ratio)))
@@ -128,18 +81,11 @@ class ArmSceneDriver:
         self.commanded = {}
         #: 「肘-腕」这一对最后一次下发的值（``elbow_rigid`` 的护栏在会压扁的帧上保持它）。
         self.commanded_pair = {}
-        #: 同时给了腕与肘两个位置目标时，肘任务放在第几遍（``arm_ik.ELBOW_PASS_ORDERS``）。
-        #: 实测 2026-10-13：``first`` 时第二遍的腕姿态收尾会把肘拉回（肘误差 141-256 mm），
-        #: ``last`` 结束时两个位置目标同时满足（见 devtools/probe_elbow_task.py）。
         if elbow_pass not in ELBOW_PASS_ORDERS:
             raise ValueError(
                 f"elbow_pass must be one of {ELBOW_PASS_ORDERS}, got {elbow_pass!r}")
         self.elbow_pass = str(elbow_pass)
-        #: 肘反向支路的恢复阈值（毫米）：None = 用 arm_ik 的默认值，0 = 关（A/B 用）。
-        #: 见 ``PyBulletArmIK._recover_elbow_branch``（现场「前臂弯曲方向相反」的修法）。
         self.elbow_recovery_deg = elbow_recovery_deg
-        #: 恢复的滞回（度）与「尝试过之后的冷却帧数」：0 = 关。滞回 + 冷却一起解决 2026-10-14
-        #: 现场反馈的「整条手臂会抽」（1 度门槛 + 无冷却时每 6 帧换一次支路）。
         self.elbow_recovery_margin_deg = elbow_recovery_margin_deg
         self.elbow_recovery_cooldown = elbow_recovery_cooldown
         #: 加载时的肩锚点（基座系，米）：``{robot: {side: [x, y, z]}}``。非空时每一帧都把腕/肘
@@ -148,8 +94,6 @@ class ArmSceneDriver:
                                              for side, point in dict(per_side or {}).items()
                                              if point is not None}
                                  for name, per_side in dict(shoulder_anchors or {}).items()}
-        #: 上臂的「肩端」取哪个 FK 点：``"upper"`` = 肘的父连杆原点（刚体，默认）；
-        #: ``"shoulder"`` = 名字匹配到的肩关节连杆（历史口径，只留给 A/B 与回退）。
         if shoulder_anchor_key not in ("upper", "shoulder"):
             raise ValueError("shoulder_anchor_key must be 'upper' or 'shoulder', got "
                              f"{shoulder_anchor_key!r}")
@@ -161,8 +105,6 @@ class ArmSceneDriver:
         self.shoulder_shift_mm = {}
         #: 被斜坡削掉一部分的帧数（报告用：说明这一场有多少帧没一步到位）。
         self.slew_limited = 0
-        #: 其中有多少帧为了让「肘-腕」这一对不退化而**放弃限速**（``elbow_rigid``，方向口径）。
-        #: 报告里的 ``target_slew_pair_skips``：它说明护栏救了几帧（见 8.18）。
         self.slew_pair_skips = 0
         #: 每帧两只前臂的最近距离（毫米）：左右臂交叉 / 叠中线就是这个量掉下来。
         self.forearm_gaps = []
@@ -239,10 +181,7 @@ class ArmSceneDriver:
                                orientation_frame=orientation_frame)
 
     def set_shoulder_anchors(self, anchors) -> None:
-        """加载后调用：``{robot: {side: {"shoulder": [x, y, z], ...}}}``（基座系，米）。
-
-        只取 ``"shoulder"``；给空字典 = 关闭平移（与历史行为一致）。
-        """
+        """Set per-robot, per-side base-frame shoulder anchors; an empty mapping disables following."""
         self.shoulder_anchors = {}
         for name, per_side in dict(anchors or {}).items():
             entries = {}
@@ -254,21 +193,10 @@ class ArmSceneDriver:
                 self.shoulder_anchors[str(name)] = entries
 
     def _shoulder_shift(self, robot_type, side, adapter):
-        """``当前肩 FK - 加载时肩锚点``（基座系，米）；没有锚点给 ``None``。
+        """Return current FK shoulder minus the load-time anchor in base metres.
 
-        为什么需要：``arm_realtime`` 的肘/腕目标 = **加载时**的肩锚点 + 机器人连杆长*方向。
-        机器人的躯干会被手臂反作用力推着走（这一场最差那帧 gr1_t2 的肩 FK 比锚点前移了 72 mm），
-        于是「目标到**当前**肩的距离」不再等于上臂长：7 自由度链这时只能折中，肘被甩到别的
-        位置 —— 现场看到的就是「前臂弯曲方向相反」。把两个目标一起平移
-        「当前肩 - 锚点」之后，目标重新落在「离当前肩正好一根上臂」的球面上，方向也才是本来
-        要的那个 M(你的方向)。数字见 docs/multi-robot-arm.md 第 8.12 节。
-
-        2026-10-14 起默认「肩」指 ``arm_points()["upper"]``（= 肘关节父连杆原点，与肘刚性相连），
-        不再是名字匹配的 ``"shoulder"``：后者不随 shoulder_roll 刚性移动，这一项会把
-        「roll 转出来的 48-102 mm」误当成「躯干漂移」。锚点由 ``set_shoulder_anchors`` 写入，
-        两边必须同一口径（``realtime_teleop.build_scene`` 也用同一个 key；``--arm-anchor
-        shoulder`` 可以把这一行切回历史口径做 A/B）。
-        """
+        Translate elbow and wrist targets together so torso motion preserves their
+        geometry relative to the current shoulder. Return None without an anchor."""
         anchor = (getattr(self, "shoulder_anchors", {}).get(robot_type) or {}).get(side)
         if anchor is None:
             return None
@@ -279,58 +207,13 @@ class ArmSceneDriver:
                    orientation=None, orientation_frame: str = "absolute",
                    elbows=None, elbow_bend_deg=None, elbow_rigid=None,
                    elbow_bend_baseline=None) -> dict:
-        """One frame for one side with a target per robot: ``{robot_type: position}``.
+        """Apply one side's per-robot targets in the selected coordinate frame.
 
-        ``orientation`` accepts a shared quaternion or a mapping from robot name
-        to quaternion/None. A mapping must include every driven robot.
-        ``elbows`` = optional ``{robot_type: point}`` in the same space: the paper's
-        elbow position task.  A robot missing from it gets no elbow target (wrist only),
-        so an older caller keeps working unchanged.
-
-        ``elbow_bend_deg`` = the operator's elbow bend this frame, in degrees
-        (``arm_realtime``'s ``elbow_bend_target()``; 180 = straight).  It becomes each
-        adapter's null-space posture reference for this frame
-        (``PyBulletArmIK.posture_from_bend``) -- the paper's ``PostureTask``: the wrist
-        and elbow tasks still decide *where*, this decides how the elbow bends while
-        doing it, and each robot converts the same number through its own measured elbow
-        joint and bend slope.  ``None`` (default) leaves the reference exactly where it
-        was, so an older caller is byte-for-byte unchanged.
-
-        ``elbow_bend_baseline`` = optional ``{robot_type: bend or None}`` that **moves the
-        baseline** of that robot's posture reference: a robot listed with a number measures
-        the operator's bend change against *that* number instead of against its own loaded
-        bend.  The ``delta`` direction frame (``ArmProfile.posture_frame``) needs this,
-        because there its "operator did not move" pose *is* the robot's loaded pose, so the
-        baseline has to be the operator's neutral bend (``arm_realtime.elbow_bend_neutral``).
-        Mixing the two puts a constant between the posture reference and the position task
-        -- the 8.17.4 failure.  ``None`` (default) = every robot keeps its own loaded bend.
-
-        ``elbow_rigid`` = optional collection of robot types whose elbow target forms a
-        **rigid pair with the wrist target** (the ``--arm-map posture`` recipe:
-        ``wrist = elbow + L_f * v``, see ``arm_realtime._posture_target``).  The slew cap
-        below only walks the *wrist* in, so on a fast operator move the elbow target runs
-        ahead and the two points come together: measured 2026-10-15 on the 200 frame
-        replay (``--arm-slew-mm 40``) gr1_t2 left commanded forearm 251 mm -> **51 mm** on
-        11 frames, and the solver folded the forearm the other way on 7 of them (128.7 deg)
-        -- the "GR1-T2 大臂与小臂夹角反过来" the operator reports after a while.  For a
-        robot listed here the cap is therefore **skipped and the pair that was sent on the
-        previous frame is held** on the frames where it would squash the pair
-        (``slew_pair_floor_ratio``, default ``SLEW_PAIR_FLOOR_RATIO``; **0 switches the guard
-        off**, which is the historical behaviour and what an on-site A/B uses), and applies
-        exactly as before on every other frame:
-        measured 2026-10-15, gr1_t2 left commanded forearm never below 151 mm (was 51 mm),
-        squashed frames 11 -> 0, achieved forearm pointing away from the command 7 -> 3
-        frames (the 3 remaining frames are the older IK branch burst, identical in the
-        unfixed run), jerk and residuals unchanged, and the g1 forearm gap improved from
-        0.55 mm to 23.8 mm.  Robots left out (the ``--arm-elbow-task`` recipe, where the
-        elbow is an independent position target) keep the historical behaviour
-        byte-for-byte.  Two other variants were measured and rejected (translating the
-        pair as a whole, and letting the cap through on the squashed frames): numbers in
-        docs/multi-robot-arm.md 8.18.
-
-        Returns ``{robot_type: {"ee": link, "ik_mode": ..., "joints": {name: angle}}}``
-        so a demo, a test or a report can state exactly which arm was driven.
-        """
+        Orientations may be shared or keyed by robot. Optional elbow targets use the
+        same frame as wrist positions. For elbow_rigid robots, preserve the paired
+        target geometry during slew limiting and hold the previous pair if its
+        length would fall below slew_pair_floor_ratio. Shoulder following translates
+        both targets together. Elbow bend references are converted per robot."""
         if side not in self.sides:
             raise ValueError(f"{side!r} is not driven by this driver ({list(self.sides)})")
         missing = sorted(robot_type for robot_type in self.ik
@@ -356,10 +239,6 @@ class ArmSceneDriver:
                 requested = tuple(float(value) for value in wanted)
                 wanted = self._slew_target(robot_type, side, adapter, wanted)
                 if rigid and self.slew_pair_floor_ratio > 0.0:
-                    # 压扁护栏：斜坡只许把**腕**慢慢挪过去，不许把「肘-腕」这一对压成
-                    # 退化目标（见 ``apply_each`` docstring 与 8.18）。会压扁就这一帧
-                    # **保持上一帧下发的那一对**（两个点都不动）：不跳、不压扁，等操作者
-                    # 慢下来再继续跟。第一帧还没有可保持的一对时按请求值一步到位。
                     shape = float(np.linalg.norm(
                         np.asarray(requested, dtype=np.float64)
                         - np.asarray(elbow, dtype=np.float64)))
@@ -415,7 +294,6 @@ class ArmSceneDriver:
                                    "ik_mode": adapter.ik_mode,
                                    "shoulder_shift_mm": getattr(self, "shoulder_shift_mm", {}).get(
                                        robot_type, {}).get(side, 0.0),
-                                   #: 这一帧交给零空间项的那个参考角（空的 = 历史行为）。
                                    "posture": {str(name): round(float(value), 5)
                                                for name, value in (posture or {}).items()},
                                    "joints": values}
@@ -424,12 +302,7 @@ class ArmSceneDriver:
 
     # ------------------------------------------------------------------ #
     def update_slew(self, frame_dt: float) -> float:
-        """按这一帧的实测时长把「米/秒」的跟随速率换算成本帧的步长上限（米/帧）。
-
-        ``slew_m_per_s`` 为 0 时**不动** ``slew_m``：那种情况调用方用的是固定的
-        ``--arm-slew-mm``（复现旧数字）或者干脆关掉了斜坡，这里绝不能把它改写成 0。
-        返回本帧生效的 ``slew_m``（报告用）。
-        """
+        """Convert the capture interval and configured target speed to a per-frame step limit."""
         if self.slew_m_per_s <= 0.0:
             return self.slew_m
         self.slew_m = slew_per_frame(self.slew_m_per_s, frame_dt)
@@ -451,27 +324,9 @@ class ArmSceneDriver:
                                                dtype=np.float64))
 
     def _slew_target(self, robot_type, side, adapter, position):
-        """Rate-limit one commanded base-frame point to ``slew_m`` metres per call.
+        """Limit a base-frame target step to slew_m metres from the previous command.
 
-        Why this exists: the two-pass solver starts from the body's current angles, so a
-        target that arrives in one large step can land it in a bad branch, and it then
-        keeps solving into that branch every frame.  Measured on this machine 2026-10-13
-        (gravity -9.81, 60 iterations / 1e-4, the app's own settings):
-
-        * one command then hold (what an offline render or a probe does): h1_2 stops
-          47.8 mm short with the two forearms 6.0 mm apart -- hands on the centre line --
-          and g1 68.7 mm / gr1_t2 31.6 mm, all three past the 30 mm gate.  The same
-          working point walked in at 20 mm/frame reaches h1_2 8.9 mm with an 83.5 mm gap
-          (gr1_t2 6.7 / 200.0, g1 8.9 / 186.8).
-        * replayed live session (outputs/tmp_realtime/live_demo_frames.npz, 300 frames,
-          the app's own loop): cap off, h1_2 holds a constant 45 mm during frames
-          105-165; at 20 mm/frame the same frames are 9 mm.
-
-        So the first call of a side starts from the wrist's *current* position, and every
-        later call starts from the previous command.  ``source`` must be ``"base"`` (the
-        driver's one-target-per-robot contract); anything else passes through untouched.
-        Frame-by-frame curve: E:\\cache\\tmp\\probe_slew_curve.py (tmp, not in git).
-        """
+        Initialize from the current wrist position; a zero limit disables target slew."""
         key = (robot_type, side)
         previous = self.commanded.get(key)
         if previous is None:
@@ -613,7 +468,6 @@ class ArmSceneDriver:
             "target_slew_ceiling_mm": round(1000.0 * SLEW_MAX_STEP_M, 3),
             "target_slew_limited_frames": self.slew_limited,
             "target_slew_pair_skips": self.slew_pair_skips,
-            #: 护栏的地板比例（0 = 关）：现场调它 / 对照旧行为就是这一项。
             "target_slew_pair_floor_ratio": round(self.slew_pair_floor_ratio, 4),
             "robots": {robot_type: adapter.describe()
                        for robot_type, adapter in self.ik.items()},
@@ -634,14 +488,11 @@ class ArmSceneDriver:
             "posture": self.posture_summary(),
             "forearm_gap_mm": self.forearm_gap_summary(),
             "hold_drift": self.hold_drift(),
-            # 斜坡：速率口径 + 本场实际用到的每帧上限（现场 8-12 fps，数字会大于 30 fps 时）。
             "target_slew_mm": round(1000.0 * self.slew_m, 3),
             "target_slew_mm_per_s": round(1000.0 * self.slew_m_per_s, 3),
             "target_slew_ceiling_mm": round(1000.0 * SLEW_MAX_STEP_M, 3),
             "target_slew_limited_frames": self.slew_limited,
-            #: 其中有多少帧为了让「肘-腕」这一对不退化而放弃限速（``elbow_rigid``）；见 8.18。
             "target_slew_pair_skips": self.slew_pair_skips,
-            #: 护栏的地板比例（0 = 关护栏 = 历史行为）：报告里一眼看出这一场用的哪一档。
             "target_slew_pair_floor_ratio": round(self.slew_pair_floor_ratio, 4),
             "hands": self.scene.summary(),
             "robots": self.describe()["robots"],
@@ -828,7 +679,5 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
 
 

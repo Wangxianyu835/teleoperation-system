@@ -1,29 +1,9 @@
-"""PyCharm 一键入口：摄像头窗口 + PyBullet 窗口，**手和手臂一起动**。
+"""Windows launcher for camera hand and arm simulation.
 
-它和 ``devtools/run_realtime_windows.py`` 的关系
-----------------------------------------------
-那个脚本启动基线入口 ``applications/realtime_hand_sim``（只驱动手，手臂被 hold 住）。
-本脚本启动 ``simulation/realtime_teleop``：同一帧同时驱动手（18 维）+ 手臂（相对重定向）。
-
-两者需要的前置条件完全一样（E: 解释器、``PYTHONPATH=src``、工作目录=仓库根、
-缓存不落 C 盘），所以这里直接 import 那个脚本的工具函数，只换被启动的入口模块，
-另外补一项它不做的检查：pose 模型（手臂要用它）。
-
-PyCharm 怎么配
---------------
-    Script path        = F:\\simulation_platform_cs\\devtools\\run_realtime_arm_windows.py
-    Working directory  = F:\\simulation_platform_cs
-    Python interpreter = E:\\python3.11.7\\python.exe   <- 选错也能起来：本文件会自己在 E: 上重跑
-
-命令行等价写法::
-
-    E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py
-    E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --check
-    E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --arm-trace
-    E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --robot h1_2 --side right
-
-退出码：0 = 至少一侧有输出（手角度或手臂目标）；1 = 全程没有数据；3 = 解释器/依赖/模型不对。
-"""
+Delegates to simulation.realtime_teleop, reusing environment and window helpers
+from run_realtime_windows. Camera body input uses the SMPLer-X worker; see
+docs/smplerx-arm.md for assets and runtime configuration.
+Use --check for environment checks and --arm-trace for arm target diagnostics."""
 from __future__ import annotations
 
 import os
@@ -39,7 +19,7 @@ POSE_ASSET = ROOT / "datasets" / "pose_landmarker_lite.task"
 
 
 def check_arm_entry() -> int:
-    """基线体检不做的两件事：新入口能不能 import、pose 模型在不在。"""
+    """检查机械臂入口导入及启动器资源状态。"""
     try:
         from teleoperation.simulation.realtime_teleop import build_parser  # noqa: F401
     except Exception as error:  # noqa: BLE001 - 体检要把原因原样报出来
@@ -118,7 +98,7 @@ def main(argv) -> int:
 
 if __name__ == "__main__":
     # 与真实入口一致：先跑完 main()（统计/报告都写完），flush 之后直接 os._exit，
-    # 免得卡在 MediaPipe landmarker.close()（本机实测约 42 s）上。
+    # 避免退出时等待手部 landmarker 关闭。
     status = main(sys.argv[1:])
     sys.stdout.flush()
     sys.stderr.flush()

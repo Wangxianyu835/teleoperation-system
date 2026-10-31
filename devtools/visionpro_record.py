@@ -18,7 +18,7 @@
     <side>_pinch_distance float     拇指-食指距离（米）
 
 **Vision Pro 不提供肩、肘**（骨架到前臂为止）。所以本文件不写任何"肩肘"数字，
-也不假装团队的 ``left_arm_keypoints (3,3)``（肩/肘/腕三点，MediaPipe Pose 产物）；
+也不假装团队的 ``left_arm_keypoints (3,3)``（肩/肘/腕三点）；
 腕与前臂按原始矩阵如实保存。需要肩肘时只能另配摄像头或 IMU，并单独声明来源。
 
 产出两个层

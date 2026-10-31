@@ -1,14 +1,4 @@
-"""unit tests: simulation/arm_realtime.py (relative arm retargeting) + the replay source.
-
-这些用例**不碰 PyBullet、不开摄像头**：桥本身是纯 numpy，所以能在这里把相对映射、
-中性标定、丢帧保持、兜底来源、每侧行程都算清楚。仿真侧"手臂真的跟上了"的判据在
-``devtools/verify_realtime_arm_bridge.py``（那里才有残差、行程、漂移的实测数字）。
-
-运行::
-
-    $env:PYTHONPATH = "$pwd\\src"
-    E:\\python3.11.7\\python.exe -m unittest tests.test_arm_realtime_bridge -v
-"""
+"""unit tests: simulation/arm_realtime.py (relative arm retargeting) + the replay source."""
 from __future__ import annotations
 
 import importlib.util
@@ -225,12 +215,7 @@ class CalibrationTests(unittest.TestCase):
 
 
 class CalibrateModeTests(unittest.TestCase):
-    """还没攒够中性帧时跟不跟手（``--arm-calibrate-mode``）。
-
-    2026-10-14 现场：85% 的帧没有任何可用手臂数据，``hold`` 下标定进度停在
-    ``cal=left=15/30 right=16/30`` 整整 4 分钟，三台机器人一动不动 —— 用户看到的就是
-    「手臂卡在胸前举着」。``track`` 让「看见一次就动」，代价只是开头几帧还没有基准。
-    """
+    """还没攒够中性帧时跟不跟手（``--arm-calibrate-mode``）。"""
 
     def test_hold_is_the_constructor_default_and_keeps_the_working_point(self):
         bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=4)
@@ -247,7 +232,7 @@ class CalibrateModeTests(unittest.TestCase):
         bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=30,
                                    calibrate_mode="track")
         hold = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=30)
-        for _ in range(3):                       # 现场要求站定 30 帧，这里站 3 帧
+        for _ in range(3):
             bridge.update(arms_world={"right": arm("right")})
             hold.update(arms_world={"right": arm("right")})
         self.assertTrue(bridge.calibrating)      # 30 帧远没攒够
@@ -296,7 +281,6 @@ class CalibrateModeTests(unittest.TestCase):
         self.assertEqual(reasons["calibrating"], 1)
         self.assertEqual(reasons["no_pose_landmarks"], 1)
         self.assertEqual(reasons["reach_below_min"], 1)
-        # 报告里能直接读到同一份计数（现场拿到报告不用再翻 HUD 日志）。
         self.assertEqual(bridge.summary()["counts"]["held_reason"]["right"], reasons)
         self.assertEqual(sorted(reasons), sorted(HOLD_REASONS))
 
@@ -304,7 +288,7 @@ class CalibrateModeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             RealtimeArmBridge(PROFILES, sides=SIDES, calibrate_mode="still")
         args = build_parser().parse_args([])
-        self.assertEqual(args.arm_calibrate_mode, CALIBRATE_MODES[1])   # track 是现场默认
+        self.assertEqual(args.arm_calibrate_mode, CALIBRATE_MODES[1])
         hold = build_parser().parse_args(["--arm-calibrate-mode", "hold"])
         self.assertEqual(hold.arm_calibrate_mode, CALIBRATE_MODES[0])
         with self.assertRaises(SystemExit):
@@ -402,16 +386,12 @@ class RelativeMappingTests(unittest.TestCase):
 
 
 class TravelModeAndGuardTests(unittest.TestCase):
-    """2026-10-13 三个护栏：行程等比缩 / 横向护栏 / 标定可信度。
-
-    现场那场 1560 帧的旧口径实测（outputs\\tmp_guard\\ab_baseline.json）：
-    行程夹取 6599 次（每帧每轴都夹）、h1_2 肩关节行程 322 度、前臂间距最小 2.21 mm。
-    """
+    """Regression coverage for TravelModeAndGuardTests."""
 
     def test_defaults_match_the_documented_guards(self):
         bridge = RealtimeArmBridge(PROFILES, sides=SIDES)
         self.assertEqual(bridge.travel_mode, "clip")
-        self.assertEqual(DEFAULT_LATERAL_GUARD_M, 0.0)      # 2026-10-13 晚：默认不拦横向
+        self.assertEqual(DEFAULT_LATERAL_GUARD_M, 0.0)
         self.assertAlmostEqual(bridge.lateral_guard_m, DEFAULT_LATERAL_GUARD_M, places=9)
         self.assertTrue(bridge.gain_quality_guard)
         report = bridge.summary()
@@ -446,7 +426,6 @@ class TravelModeAndGuardTests(unittest.TestCase):
         args = build_parser().parse_args([])
         self.assertEqual(args.arm_slew_mm, None)
         self.assertGreater(args.arm_slew_mm_s, 0.0)
-        # 30 fps 下换算回来就是 2026-10-13 那次实测用的 20 mm/帧。
         self.assertAlmostEqual(args.arm_slew_mm_s / 30.0, 20.0, places=9)
         fixed = build_parser().parse_args(["--arm-slew-mm", "20"])
         self.assertEqual(fixed.arm_slew_mm, 20.0)
@@ -483,12 +462,7 @@ class TravelModeAndGuardTests(unittest.TestCase):
         self.assertGreater(float(np.linalg.norm(delta)), float(np.linalg.norm(scaled)))
 
     def test_the_default_mode_only_cuts_the_axis_that_is_over_the_limit(self):
-        """回归（2026-10-13 现场"横向摆动丢失"）：只有一个轴超限时，别的轴必须原样保留。
-
-        现场那次复合位移 (-9.3, +6.4, +24.5) cm 里只有 op_z（纵深，MediaPipe 最抖的轴）
-        超限。``scale`` 把整条位移等比压小，于是横向 9.0 cm 的请求只剩 0.42 倍；``clip``
-        （现在的默认）只压超限的那一轴，横向按 gain 原样过去。
-        """
+        """Regression coverage for test the default mode only cuts the axis that is over the limit."""
         offset = (0.09, 0.0, 0.24)          # 操作者系：横向 9 cm + 纵深 24 cm
         deltas = {}
         for mode in ("clip", "scale"):
@@ -513,7 +487,6 @@ class TravelModeAndGuardTests(unittest.TestCase):
 
 
     def test_the_lateral_guard_keeps_the_left_wrist_on_the_left_side(self):
-        # 护栏默认已经是 0（2026-10-13 晚，见 §8.9），这里显式给 20 mm 测机制本身。
         bridge = calibrated(sides=("left",), lateral_guard_m=0.02)
         entry = bridge.update(
             arms_world={"left": arm("left", wrist_offset=(-0.50, 0.0, 0.0))})["h1_2"]["left"]
@@ -526,10 +499,7 @@ class TravelModeAndGuardTests(unittest.TestCase):
         self.assertGreaterEqual(bridge.counts["guarded"]["left"], 1)
 
     def test_the_default_guard_is_off_so_the_target_really_does_cross_the_midline(self):
-        """默认不再拦横向（2026-10-13 晚的决定）：跨中线是操作者自己把右手横过身体中线。
-
-        代价写在 §8.9：要恢复"窗口里永不跨中线"就给 `--arm-lateral-guard-mm 20`。
-        """
+        """Regression coverage for test the default guard is off so the target really does cross the midline."""
         bridge = calibrated(sides=("left",))
         self.assertEqual(bridge.lateral_guard_m, 0.0)
         entry = bridge.update(
@@ -633,13 +603,7 @@ class HoldAndFallbackTests(unittest.TestCase):
 
 
 class ElbowBendTargetTests(unittest.TestCase):
-    """``elbow_bend_target``：``--arm-elbow-follow operator`` 的那一份「操作者姿势」输入。
-
-    口径与 ``elbow_bend_degrees`` 一致（180 = 完全伸直，0 = 完全折起），给的是**绝对**角：
-    位置任务命令的形状就是这个角，而每台机器人加载姿势下自己的夹角各不相同，所以由
-    ``PyBulletArmIK.posture_from_bend`` 拿绝对角减掉自己那个数（本项目现场录制：操作者的
-    中性肘弯 138.9 度，而 g1 / gr1_t2 / h1_2 加载姿势下自己是 172.9 / 111.2 / 155.2 度）。
-    """
+    """``elbow_bend_target``：``--arm-elbow-follow operator`` 的那一份「操作者姿势」输入。"""
 
     def test_nothing_is_offered_before_a_neutral_exists(self):
         bridge = RealtimeArmBridge(PROFILES, sides=SIDES)
@@ -661,10 +625,7 @@ class ElbowBendTargetTests(unittest.TestCase):
             self.assertAlmostEqual(bends[side], 164.5, delta=0.5)
 
     def test_a_frame_without_pose_arms_keeps_the_last_bend(self):
-        """断流那一帧沿用上一帧的姿势（与目标保持同口径）。
-
-        必须这样：否则每丢一帧参考就弹回加载姿势，而「一断流肘就掉回去」正是现场那一件事。
-        """
+        """断流那一帧沿用上一帧的姿势（与目标保持同口径）。"""
         bridge = calibrated()
         bridge.update(arms_world={side: bent_arm(side) for side in SIDES}, hands=None)
         before = bridge.elbow_bend_target()
@@ -801,12 +762,7 @@ class EntryAndReplayTests(unittest.TestCase):
         self.assertIsNone(source.release())
 
     def test_world_replay_declares_the_metadata_the_pipeline_demands(self):
-        """world 口径回放必须自带队友处理器要的三个声明（world 米制 + source_scale）。
-
-        回归用例：缺这几项时 ``MediaPipePalmLocalProcessor.process_frame`` 会在第一帧抛
-        ``ValueError: World input must declare mediapipe_world_meters and
-        world_length_unit='m'``，整场回放直接退出码 1（实测踩到，见 docs 第 8 节）。
-        """
+        """world 口径回放必须自带队友处理器要的三个声明（world 米制 + source_scale）。"""
         frames = 3
         hand = open_hand()
         missing = np.full((21, 3), np.nan)
@@ -928,12 +884,7 @@ class NeutralOrientationTests(unittest.TestCase):
                 self.assertIsNone(targets[name]["right"].orientation)
 
     def test_the_robot_independent_orientation_target_is_available(self):
-        """``orientation_target()`` 给的是「操作者那一份」，与哪台机器人无关。
-
-        回归：调用方曾经用 ``per_side[sorted(per_side)[0]].orientation`` 取姿态，而
-        ``sorted(['g1','gr1_t2','h1_2'])[0]`` 是 ``g1``（position-only -> None），
-        于是 h1_2 的 pose 约束被静默丢掉（2026-10-12 现场那次就是这样）。
-        """
+        """``orientation_target()`` 给的是「操作者那一份」，与哪台机器人无关。"""
         bridge = self._calibrated_on_a_bent_arm()
         neutral = bent_arm("right")
         rotation = axis_angle(wrist_orientation_frame(neutral)[:, 2], np.radians(25.0))
@@ -985,9 +936,6 @@ class NeutralOrientationRecordTests(unittest.TestCase):
         np.testing.assert_allclose(entry.orientation, (0.0, 0.0, 0.0, 1.0), atol=1e-9)
 
 
-# --------------------------------------------------------------------------- #
-# 2026-10-13 现场症状的两条出口：两段式映射（--arm-map segments）与肘位置任务
-# --------------------------------------------------------------------------- #
 def segment_links(upper: float = 0.30, fore: float = 0.20) -> dict:
     """每台机器人每侧一个假连杆长（米）：只测两段式映射的算术，不接仿真。"""
     return {name: {side: {"upper": upper, "fore": fore} for side in SIDES}
@@ -1002,11 +950,7 @@ def segment_anchors() -> dict:
 
 
 def swung_bent_arm(side: str, angle: float) -> np.ndarray:
-    """弯肘中性姿势上把上臂绕「肩->腕」轴转 angle、腕点不动：现场那个「只摆大臂」。
-
-    必须用弯肘的姿势：直臂时上臂方向就**在**「肩->腕」轴上，绕它转等于没转（位移恒为 0），
-    那是几何事实，不是 bug。现场「握拳贴胸」正是弯肘的。
-    """
+    """Regression coverage for swung bent arm."""
     points = bent_arm(side)
     shoulder, elbow, wrist = points
     return np.stack((shoulder,
@@ -1023,10 +967,9 @@ def calibrated_bent(sides=SIDES, frames: int = 4, **kwargs) -> RealtimeArmBridge
 
 
 class SegmentsMappingTests(unittest.TestCase):
-    """只动大臂这一帧：chain 给不出目标（现场零反应），segments 给得出；肘任务再把它交给 IK。"""
+    """Regression coverage for SegmentsMappingTests."""
 
     def test_only_swinging_the_upper_arm_gives_an_empty_target_with_chain(self):
-        # 现场症状的复现：手留在胸前、只把肘摆开，历史口径下目标**一点都不动**。
         bridge = calibrated_bent(sides=("right",), map_mode="chain")
         neutral = profile_for("h1_2").realtime_neutral("right")
         entry = bridge.update(arms_world={"right": swung_bent_arm("right", 0.8)})["h1_2"]["right"]
@@ -1079,7 +1022,6 @@ class SegmentsMappingTests(unittest.TestCase):
         self.assertEqual(entry.info["elbow_task"], "on")
 
     def test_elbow_task_without_the_segments_map_is_refused(self):
-        # 两个目标必须出自同一条按连杆长缩放的链，否则它们互相打架（实测腕残差 107 mm）。
         with self.assertRaises(ValueError):
             RealtimeArmBridge(PROFILES, sides=("right",), elbow_task=True)
 
@@ -1091,14 +1033,7 @@ class SegmentsMappingTests(unittest.TestCase):
         self.assertTrue(entry.info["elbow_task"].startswith("off"))
 
 
-# --------------------------------------------------------------------------- #
-# 2026-10-13 晚：方向口径（--arm-map posture）—— 现场判定两种位移口径都不像之后加的
-# --------------------------------------------------------------------------- #
-#: 每台一套**不同**的假连杆长（米，与实测量级一致）：方向口径的幅度不该随臂长变。
 POSTURE_LINKS = {"g1": (0.193, 0.184), "gr1_t2": (0.280, 0.250), "h1_2": (0.331, 0.229)}
-#: 这些用例喂帧用的帧长（秒）：现场摄像头 8-12 fps，比名义 1/30 s 更接近真值。
-#: 跳变护栏的上限按帧长换算（600 度/秒 x 0.25 s = 150 度/帧），所以「一帧转 40-60 度」
-#: 在这里是正常手速、不该被拦；护栏本身另有一组用例（DirectionGlitchGuardTests）。
 TEST_FRAME_DT = 0.25
 
 
@@ -1145,11 +1080,7 @@ def raised_arm(side: str, angle: float) -> np.ndarray:
 
 
 def posture_bridge(side: str = "right", **kwargs) -> RealtimeArmBridge:
-    """方向口径的桥，中性姿势是弯肘的（上臂与前臂方向不同，才测得出两个方向）。
-
-    ``frame_dt=TEST_FRAME_DT``：现场摄像头 8-12 fps，一帧几百度/秒是正常手速；用名义 1/30 s
-    会把「一帧转 40-60 度」也判成关键点跳变（护栏的上限是 600 度/秒），那测的就不是方向口径了。
-    """
+    """方向口径的桥，中性姿势是弯肘的（上臂与前臂方向不同，才测得出两个方向）。"""
     kwargs.setdefault("frame_dt", TEST_FRAME_DT)
     return calibrated_bent(sides=(side,), map_mode="posture",
                            robot_links=posture_links(), anchors=posture_anchors(),
@@ -1160,10 +1091,6 @@ class PostureMappingTests(unittest.TestCase):
     """方向口径：你的方向一比一搬过去，长度用机器人自己的 —— 幅度与臂长无关。"""
 
     def test_robot_arm_directions_follow_the_operators_verbatim(self):
-        # 现场症状的根因是「幅度被短基线/行程夹掉」，所以这里断言的是**方向**：
-        # 同一帧、三台臂长完全不同的机器人，上臂方向都等于你的方向（过 axis_map）。
-        # 2026-10-15：这一条钉的是**绝对档**（历史口径）。gr1_t2 的默认已经换成相对档
-        # （profile.posture_frame，见 8.19），所以要显式给 mapped 才测得到绝对档。
         frame = raised_arm("right", np.radians(40.0))
         for name in PAPER_ROBOTS:
             with self.subTest(robot=name):
@@ -1198,8 +1125,6 @@ class PostureMappingTests(unittest.TestCase):
                 self.assertAlmostEqual(fore, POSTURE_LINKS[name][1], places=9)
 
     def test_both_targets_are_reachable_together(self):
-        # 腕目标与肘目标同出一源（腕 - 肘 正好是机器人的前臂向量），所以 IK2 不会互相拉扯；
-        # 位移口径下两个目标各自被逐轴夹断，正是现场「抽抽」的来源。
         bridge = posture_bridge()
         entry = bridge.update(arms_world={"right": raised_arm("right", 1.1)})["h1_2"]["right"]
         here = np.asarray(posture_anchors()["h1_2"]["right"]["shoulder"], dtype=float)
@@ -1211,8 +1136,6 @@ class PostureMappingTests(unittest.TestCase):
                                POSTURE_LINKS["h1_2"][1], places=9)
 
     def test_amplitude_is_not_squeezed_by_the_travel_ceiling(self):
-        # 现场症状：g1 每轴 40 mm 的行程上限把大臂压得看不出来。方向口径下目标位移是
-        # 「你的转角 x 机器人自己的上臂长」，落在大臂自己的球面上，不受那个上限约束。
         bridge = posture_bridge()
         rest = bridge.update(arms_world={"right": raised_arm("right", 0.0)})["g1"]["right"]
         swung = bridge.update(
@@ -1262,11 +1185,7 @@ class PostureMappingTests(unittest.TestCase):
                     self.assertEqual(forced_entry[name]["right"].info["posture_frame"], frame)
 
     def test_the_delta_frame_turns_the_robots_own_neutral_by_your_rotation(self):
-        """相对档的两条不变量：「你没动 = 本机停在自己中性方向」与「你转多少它就转多少」。
-
-        2026-10-15：绝对档在 gr1_t2 上不成立（它加载姿势下前臂朝后下方），于是给它叠加一个
-        常数偏移 —— 现场看到的就是「GR1-T2 的手臂怎么拐就怎么拐、对不准」。数字见 8.19。
-        """
+        """相对档的两条不变量：「你没动 = 本机停在自己中性方向」与「你转多少它就转多少」。"""
         bridge = posture_bridge(posture_frame="delta")
         here = {name: np.asarray(posture_anchors()[name]["right"]["elbow"], dtype=float)
                 - np.asarray(posture_anchors()[name]["right"]["shoulder"], dtype=float)
@@ -1317,19 +1236,13 @@ class PostureMappingTests(unittest.TestCase):
         self.assertIn("posture", summary["counts"])
 
     def test_the_live_entry_defaults_to_the_direction_recipe(self):
-        """2026-10-14 现场第三轮：默认 chain 时「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂反」
-        三个症状全回来了（chain 不给肘目标，肩只被逐轴行程夹到 40-150 mm）。入口默认改 posture，
-        显式 ``--arm-map chain`` 仍然要能进（A/B 与老记录靠它复现）。
-        """
+        """Regression coverage for test the live entry defaults to the direction recipe."""
         self.assertEqual(build_parser().parse_args([]).arm_map, "posture")
         self.assertEqual(build_parser().parse_args(["--arm-map", "chain"]).arm_map, "chain")
         self.assertEqual(build_parser().parse_args(["--arm-map", "segments"]).arm_map,
                          "segments")
 
 
-# --------------------------------------------------------------------------- #
-# 2026-10-13 现场第二个症状（H1-2 手臂与手掌交界处偶尔抽搐）的修法：关键点跳变护栏。
-# --------------------------------------------------------------------------- #
 class DirectionGlitchGuardTests(unittest.TestCase):
     """单帧方向变化超过人手臂角速度上限 -> 判为关键点跳变，保持上一帧。
 
@@ -1407,19 +1320,7 @@ class DirectionGlitchGuardTests(unittest.TestCase):
 
 
 class HelpTextTests(unittest.TestCase):
-    """``--help`` 必须真的打得开（全入口，不只手臂那几个参数）。
-
-    argparse 在渲染帮助时会对每条 ``help`` 再做一次 ``%`` 格式化
-    （``_format_action`` -> ``_get_help_string(action) % params``）。所以 help 字符串里
-    **任何**剩下的裸 ``%`` 都会抛 ``TypeError: %o format: an integer is required, not
-    dict`` —— 2026-10-14 现场那条命令就是这么崩的：``--help`` 退出码 1，用户根本查不到新参数
-    （``--arm-calibrate-mode``）。凶手是 ``--arm-elbow-recovery-deg`` 那段 ``91%%``：
-    它自己先用 ``"% CONST"`` 格式化过一道，``%%`` 被吃成一个 ``%``，argparse 再看到就崩。
-
-    修法是那一块改成 f-string，字面百分号只留 ``%%`` 给 argparse。本测试就是那条不变量的
-    看门人：``format_help()`` 不抛异常、参数在帮助里、而且最后渲染出来的是一个 ``%``
-    而不是两个。
-    """
+    """``--help`` 必须真的打得开（全入口，不只手臂那几个参数）。"""
 
     def test_help_renders_and_lists_the_arm_options(self):
         text = build_parser().format_help()      # 裸 '%' 会在这里抛 TypeError
@@ -1428,9 +1329,10 @@ class HelpTextTests(unittest.TestCase):
             self.assertIn(option, text)
 
     def test_a_literal_percent_survives_as_one_percent(self):
-        text = build_parser().format_help()
-        # argparse 把 %% 还原成 %：报告数字里的百分号必须只出现一次。
-        self.assertIn("91% of frames", text)
+        parser = build_parser()
+        parser.add_argument("--test-percent", help="100%% complete")
+        text = parser.format_help()
+        self.assertIn("100% complete", text)
         self.assertNotIn("%%", text)
 
     def test_the_calibrate_mode_choices_are_listed(self):
@@ -1459,11 +1361,7 @@ def load_elbow_launcher():
 
 
 class ElbowFollowLauncherTests(unittest.TestCase):
-    """固化档入口只干一件事：把这一版钉死（现场"下次一键跑出同样的东西"）。
-
-    ``--arm-elbow-follow`` 的语义在 ``arm_ik`` / ``arm_scene_driver`` 侧已由
-    ``ElbowPostureTests`` 覆盖；这里钉的是"到底把哪个参数交给了入口"。
-    """
+    """Regression coverage for ElbowFollowLauncherTests."""
 
     def setUp(self):
         self.launcher = load_elbow_launcher()

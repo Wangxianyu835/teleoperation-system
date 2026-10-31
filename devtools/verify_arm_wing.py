@@ -44,7 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-#: 操作者中性的三点基准（米，MediaPipe pose world 口径：x 右、y 下、z 远离相机）。
+#: 操作者中性的三点基准（米，合成输入轴向：x 右、y 下、z 远离相机）。
 #: 「双手握拳贴胸」：上臂向下略前，前臂折回胸前，|腕-肩| 约 0.27 m。
 NEUTRAL_SHOULDER = {"left": np.array([-0.20, -0.30, 0.00]),
                     "right": np.array([0.20, -0.30, 0.00])}

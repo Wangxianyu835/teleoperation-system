@@ -41,7 +41,7 @@ flowchart LR
 
 | 位置 | 应研究的问题 | 本项目对应位置 | 文献如何归位 |
 |---|---|---|---|
-| A 输入 | 遮挡、漂移、帧率、设备、同步 | `inputs/camera.py`、`mediapipe.py`、`pose_mediapipe.py`、`visionpro.py`、`replay.py` | ACE、DexCap 的采集贡献主要在此 |
+| A 输入 | 遮挡、漂移、帧率、设备、同步 | `inputs/camera.py`、`mediapipe.py`、`smplerx.py`、`body_tracking.py`、`visionpro.py`、`replay.py` | ACE、DexCap 的采集贡献主要在此 |
 | B 原始观测 | 关键点/矩阵、左右手、单位、时间戳、缺失；是否有物体与力 | `contracts/observations.py`、`data/*recording.py` | 接触方法往往要求额外物体 pose、mesh、接触或力目标 |
 | C 坐标与拓扑 | 世界/掌局部、相对/绝对、尺度、21/25 点、左右手、机器人对应 | `retargeting/hand/{coordinates,topology,processing}.py`、`applications/visionpro_processing.py`、`retargeting/arm/calibration.py` | 输入规范不一致会使 E 的比较失去意义 |
 | D 离线 | 数据集、训练损失、示范清理、轨迹精化、模型导出 | `learning/{dataset,losses,trainer}.py`、`applications/training.py` | GeoRT/TransRetarget 训练在此；SPIDER 等的主工作流也在此 |

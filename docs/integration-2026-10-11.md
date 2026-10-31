@@ -37,20 +37,13 @@ python -m teleoperation hand record-world --help
 
 实时三机器人入口默认只驱动手指，手臂与其他关节保持固定。
 几何后端需要张开手标定；它与 PoseTransformer 是不同后端，不能用几何结果证明训练模型的精度。
-`wrist_targets.py` 与 `devtools/verify_arm_from_capture.py` 提供近似手腕位姿及 PyBullet IK 验证，默认映射参数没有完成相机标定。
-
-`hand record` 原有录制/自动对齐与 `hand record-world` 并存。
-前者保存供现有训练与导出使用的 palm-local 对齐数据；后者保存额外的米制手部和身体姿态字段，未自动接入训练。
-world 手部原点在手的几何中心，pose world 原点在髋部中点，不能把这两套坐标直接当作同一个全局坐标系。
-完整字段见 [米制采集说明](world-landmark-capture.md)。
+当前身体采集与机械臂控制见 [SMPLer-X 链路](smplerx-arm.md)。
 
 ## 冲突处理
 
 - 所有运行入口统一为 `teleoperation.applications`，迁移 world 采集模块、CLI、直接运行脚本和测试引用；修复三机器人场景遗留的 `teleoperation.apps` 导入。
-- MediaPipe 输入同时保留 `include_image` 和新增的 world/pose 数据读取，同一帧的两种检测使用相同时间戳。
 - 保留当前双侧 checkpoint 必须成对提供的契约、独立单手模型支持和坐标校验；将旧测试适配到该契约。
 - 保留 world 分支修改过的回归测试，并恢复它们依赖的测试夹具和坐标测试模块。
-- 模型默认路径统一在 `datasets/`；下载的 hand/pose task 文件加入 ignore。
 - README 的指尖距离权重更新为实际代码中的 `0.01`。
 
 ## 验证
@@ -70,7 +63,6 @@ world 手部原点在手的几何中心，pose world 原点在髋部中点，不
 | `python record_world_landmarks.py --help` | 0 | 根目录直接运行入口可解析 |
 
 两个跳过项分别需要本地 `hand_landmarker.task` 或默认 `palm_local_v2` checkpoint。
-采集、world/pose 解析、同帧图像预览、H5 持久化、坐标和双 checkpoint 契约通过 mock/synthetic 回归验证；本次没有打开真实摄像头。
 新增 TRON2A URDF 不等于实体标定或双臂 IK 已全面验收。
 
 `CONVENTIONS.md` 和 `RETARGETING_PIPELINE.md` 中的历史机器路径、19 项测试数字与早期采集资源记录属于分支原始环境；本次合并的入口和验证结果以此文为准。

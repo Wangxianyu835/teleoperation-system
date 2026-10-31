@@ -52,7 +52,7 @@ from teleoperation.simulation.arm_scene_driver import (  # noqa: E402
 )
 
 SIDES = ("left", "right")
-#: 合成操作者的肩高（相对髋中点，米）：与 MediaPipe pose world 的量级一致。
+#: 合成操作者的肩高（相对髋中点，米）：用于合成米制身体输入。
 SHOULDER = (0.17, -0.35, 0.0)
 UPPER_ARM = (0.0, 0.26, 0.0)
 FORE_ARM = (0.0, 0.23, 0.0)

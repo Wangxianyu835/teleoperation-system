@@ -1,15 +1,4 @@
-"""``simulation/arm_preview.py`` 的回归用例：采集窗口的手臂层（只画，不碰算法）。
-
-不需要相机、不需要显示器：用一个假 sink（就是 ``{"frame": ndarray}``）+ ``show_window=False``，
-直接看 ``annotate`` 出来的像素有没有被改过，以及 ``build_arm_preview`` 的开关语义。
-
-判据都是"画没画"而不是"画得像不像"：像素位置依赖 MediaPipe 坐标与机器分辨率，
-断言具体坐标会变成脆测；这里只锁四件真会回归的事 ——
-(1) 合法点能画出来、非法点被当"没有"；(2) ``--no-arm-overlay`` 下逐像素等于基线；
-(3) 没相机 / 不需要窗口时返回 ``None`` 而不是抛异常；
-(4) ``devtools/run_realtime_windows.py`` 跑完回的那句"窗口开没开"，必须按报告里的
-``window_rect`` 判断（曾经把"按 q 正常退出"误报成"窗口没开"，见文末那个类）。
-"""
+"""``simulation/arm_preview.py`` 的回归用例：采集窗口的手臂层（只画，不碰算法）。"""
 
 from __future__ import annotations
 
@@ -148,7 +137,7 @@ class OverlayDrawingTests(unittest.TestCase):
 
 
 class OutsideFrameTests(unittest.TestCase):
-    """真机实测到的现象：人离相机太近时肩/肘/腕会落到画面外，这时必须给提示而不是"看不见线"。"""
+    """Regression coverage for OutsideFrameTests."""
 
     def test_all_points_inside_are_counted_as_zero(self):
         arms = np.asarray([[0.5, 0.5], [0.55, 0.55], [0.6, 0.6]], dtype=np.float64)
@@ -253,13 +242,7 @@ def summarise(module, report, want_window=True):
 
 
 class CameraWindowSummaryTests(unittest.TestCase):
-    """``devtools/run_realtime_windows.summarise_camera_window``：跑完回的那一句话。
-
-    真实事故（2026-10-14）：按 q 退出后末尾打的是 ``[WARN] the camera window did NOT
-    stay open: unknown reason``，而日志里明明有 ``camera window: on (mirrored)``、报告里
-    也有 ``window_rect``。原因是队友入口收尾时把 ``CameraPreview.show`` 置 ``False``
-    （``show`` 与写报告是竞态），所以判据只能是 ``window_rect``。
-    """
+    """``devtools/run_realtime_windows.summarise_camera_window``：跑完回的那一句话。"""
 
     def setUp(self):
         self.launcher = load_launcher()

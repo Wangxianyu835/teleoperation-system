@@ -1,19 +1,4 @@
-"""Multi-robot arm IK: profiles, per-robot joint selection, and headless tracking.
-
-Covers the three layers added on the simulation side (none of them touch the
-teammate's baseline files):
-
-    teleoperation.simulation.arm_profiles     per-robot table (pure arithmetic)
-    teleoperation.simulation.arm_ik           PyBullet IK per loaded robot
-    teleoperation.simulation.arm_scene_driver release the scene's arm holds + drive
-
-The numbers asserted here are the ones measured on this machine
-(``devtools/verify_arm_multi_robot.py``, 2026-10-12, gravity -9.81, holds active,
-full sweep per profile): h1_2 pose mean 17.0 / max 23.8 mm, gr1_t2 position mean 8.9
-/ max 13.3 mm, g1 position mean 7.7 / max 14.9 mm, travel within 1 mm of the target.
-The thresholds come from each profile, so a robot whose arm stops being tracked fails
-this test instead of silently producing a frozen arm.
-"""
+"""Multi-robot arm IK: profiles, per-robot joint selection, and headless tracking."""
 
 import unittest
 from pathlib import Path
@@ -40,7 +25,6 @@ URDF_PATHS = {"h1_2": ROBOTS_ROOT / "h1_2" / "h1_2.urdf",
               "g1": ROBOTS_ROOT / "g1" / "g1_29dof_with_hand_lock_waist.urdf"}
 ASSETS_AVAILABLE = all(path.is_file() for path in URDF_PATHS.values())
 PAPER_ROBOTS = ("h1_2", "gr1_t2", "g1")
-#: Hand mount each robot ends at (measured 2026-10-10); gr1_t2 has no wrist link.
 EE_LINKS = {"h1_2": "right_wrist_yaw_link",
             "gr1_t2": "right_hand_pitch_link",
             "g1": "right_wrist_yaw_link"}
@@ -295,8 +279,6 @@ class ThreeRobotArmIkTests(unittest.TestCase):
         self.assertGreater(entry["elbow_span_mm"], 5.0, entry)
         self.assertGreaterEqual(len(entry["shoulder_range_deg"]), 3)
         self.assertLess(entry["elbow_bend_deg"]["min"], 180.0)
-        # The three FK points are the real arm: H1-2 measures 331 mm + 229 mm
-        # (2026-10-12), so a wrong link mapping would show up right here.
         points = adapter.arm_points("right")
         upper = float(np.linalg.norm(np.asarray(points["elbow"]) - np.asarray(points["shoulder"])))
         forearm = float(np.linalg.norm(np.asarray(points["wrist"]) - np.asarray(points["elbow"])))
@@ -415,24 +397,7 @@ class TwoSidedForearmGapTests(unittest.TestCase):
 @unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class ArmTargetSlewTests(unittest.TestCase):
-    """The slew cap has to be real, and the working point has to stay reachable apart.
-
-    ``PyBulletArmIK.solve`` starts from the body's current angles, so a target that
-    arrives in one large step can land the two-pass solver in a bad branch and it keeps
-    solving into that branch every frame.  Measured on this machine 2026-10-13 (gravity
-    -9.81, 60 iterations / 1e-4, the app's own settings):
-
-        one command then hold   h1_2 47.8 mm, forearms  6.0 mm apart (hands on the midline)
-                                gr1_t2 31.6 mm, g1 68.7 mm -- all three over the 30 mm gate
-        20 mm/frame walk-in     h1_2  8.9 mm, forearms 83.5 mm apart
-                                gr1_t2 6.7 mm / 200.0 mm, g1 8.9 mm / 186.8 mm
-        replayed live session   h1_2 steady 45 mm -> 9 mm (frames 105-165)
-
-    The fixture commands every frame like the app does, so here the *cap itself* is the
-    regression (``test_a_single_call_moves_a_target_at_most_the_cap``); the second test
-    then pins the property that matters to the eye: both wrists on their own side of the
-    robot, on target, with the forearms clearly apart.
-    """
+    """The slew cap has to be real, and the working point has to stay reachable apart."""
 
     SLEW_M = 0.02
 
@@ -489,20 +454,7 @@ class ArmTargetSlewTests(unittest.TestCase):
         self.assertEqual(self.driver.describe()["target_slew_mm"], 20.0)
 
     def test_the_cap_makes_way_when_it_would_squash_a_rigid_elbow_pair(self):
-        """2026-10-15 现场「跑一会 GR1-T2 的大臂与小臂夹角反过来」的根因回归。
-
-        ``--arm-map posture`` 的两个命令点是**刚性**的一对（``wrist = elbow + L_f*v``），
-        而斜坡（``_slew_target``）只削腕那一点：肘目标一步跳到新位置、腕每帧最多走
-        ``slew_m``，两点于是被拉近。实测 200 帧回放（``--arm-slew-mm 40``）gr1_t2 左臂
-        命令的前臂段 250.6 -> 51 mm（11 帧），同一批帧里 IK 把前臂折到反方向（7 帧、
-        最大 128.7 度）。
-
-        这里钉护栏的边界（``SLEW_PAIR_FLOOR_RATIO`` / ``slew_pair_floor_ratio``）：① 斜坡不会把
-        这一对压扁时照旧限速、肘目标逐字不动；② 会压扁的那一帧**保持上一帧下发的那一对**
-        （两个点都不动）并计数；③ 未标记 ``elbow_rigid`` 时连护栏都不参与
-        （``--arm-elbow-task`` 那条路逐字不变）；④ 把地板调成 0（现场 ``--arm-slew-pair-floor
-        0``）就是历史行为：照旧限速、照旧压扁。数字与复现命令见 docs/multi-robot-arm.md 8.18。
-        """
+        """Regression coverage for test the cap makes way when it would squash a rigid elbow pair."""
         from teleoperation.simulation.arm_scene_driver import SLEW_PAIR_FLOOR_RATIO
 
         robot = "gr1_t2"
@@ -512,7 +464,6 @@ class ArmTargetSlewTests(unittest.TestCase):
         # ① 一对完好的目标：肘在腕前面 254.6 mm，斜坡生效但不会把它压扁。
         wrist_ok = tuple(origin + np.array([0.05, 0.0, 0.0]))
         elbow_ok = tuple(origin + np.array([0.05, 0.0, 0.0]) + shape)
-        # ② 肘目标离起点只有 50 mm：限速后的腕离肘只剩 51 mm << 0.6*254.6 mm（现场那种压扁）。
         elbow_near = tuple(origin + np.array([0.05, 0.0, 0.0]))
         wrist_near = tuple(origin + np.array([0.05, 0.0, 0.0]) + shape)
         captured = {}
@@ -584,7 +535,6 @@ class ArmTargetSlewTests(unittest.TestCase):
                                                    atol=1e-12)
                         self.assertGreater(pair, 0.6 * float(np.linalg.norm(shape)))
                     elif case == "squash unmarked":
-                        # 不标记就不护栏：肘目标逐字、这一对被压扁（历史行为，不是回归）。
                         np.testing.assert_allclose(
                             fed["elbow"], np.asarray(elbow, dtype=np.float64),
                             atol=1e-12)
@@ -600,7 +550,6 @@ class ArmTargetSlewTests(unittest.TestCase):
                                                    np.asarray(elbow, dtype=np.float64),
                                                    atol=1e-12)
                     else:
-                        # 地板 0 = 关护栏：肘目标逐字、腕照旧限速，这一对被压扁（历史行为）。
                         self.assertEqual(self.driver.slew_pair_skips, 0)
                         np.testing.assert_allclose(fed["elbow"],
                                                    np.asarray(elbow, dtype=np.float64),
@@ -616,20 +565,12 @@ class ArmTargetSlewTests(unittest.TestCase):
             self.driver.slew_pair_floor_ratio = SLEW_PAIR_FLOOR_RATIO
 
     def test_the_speed_form_survives_a_slow_camera_loop(self):
-        """2026-10-13：斜坡改成速率口径（mm/s），每帧按实测间隔换算。
-
-        为什么：现场摄像头循环只有 8-12 fps，写死的 20 mm/帧 = 0.20 m/s，而录制
-        （``outputs/tmp_realtime/live_long_frames.npz``，10.05 fps）里操作者手的每帧位移是
-        中位 37 mm / p90 147 mm —— 斜坡帧帧生效，机器人被按 13% 的手速拖着走，正弦实测
-        横向摆幅传递比只有 0.43（换成 40 mm/帧后 0.80）。数字见 docs/multi-robot-arm.md 8.8。
-        """
+        """Regression coverage for test the speed form survives a slow camera loop."""
         from teleoperation.simulation.arm_scene_driver import (
             SLEW_MAX_STEP_M,
             slew_per_frame,
         )
 
-        # 600 mm/s 在 30 fps 下正好是旧口径的 20 mm/帧；10 fps 下按帧换算成 60 mm/帧、
-        # 被天花板压到 40 mm/帧（实测拐点：再快横摆不再变大而残差变大）。
         self.assertAlmostEqual(slew_per_frame(0.6, 1.0 / 30.0) * 1000.0, 20.0, places=9)
         self.assertAlmostEqual(slew_per_frame(0.6, 1.0 / 10.0) * 1000.0, 40.0, places=9)
         self.assertAlmostEqual(slew_per_frame(0.6, 0.5) * 1000.0,
@@ -698,15 +639,7 @@ class ArmTargetSlewTests(unittest.TestCase):
 
 
 class FieldArmDefaultsTests(unittest.TestCase):
-    """2026-10-14 field defaults: the entry point the operator runs ships the fix.
-
-    ``PyBulletArmIK`` / ``ArmSceneDriver`` keep the historical defaults
-    (``lock_others=False``, anchor key ``"shoulder"`` still reachable) so the
-    ``devtools/verify_*.py`` numbers and the tests above keep matching old records;
-    what the field actually launches (``realtime_teleop.py``, and through it
-    ``devtools/run_realtime_arm_windows.py``) must default to the rigid anchor plus the
-    arm-only solve. See docs/multi-robot-arm.md 8.13.4.
-    """
+    """Regression coverage for FieldArmDefaultsTests."""
 
     def test_realtime_cli_defaults_to_the_rigid_anchor_and_the_arm_only_solve(self):
         from teleoperation.simulation import arm_ik
@@ -734,11 +667,7 @@ class FieldArmDefaultsTests(unittest.TestCase):
         self.assertEqual(args.arm_elbow_recovery_frames, 0)
 
     def test_rest_poses_live_is_reachable_from_the_field_entry(self):
-        """``--arm-rest-poses live``: 入口要能把零空间参考换成「手臂现在的位置」。
-
-        2026-10-14 的现场默认仍是 ``current``（加载姿势），因为它同时是历史行为的口径；
-        换口径要显式给旗子，报告里的 ``ik.rest_poses`` 会记下用的是哪一种。
-        """
+        """``--arm-rest-poses live``: 入口要能把零空间参考换成「手臂现在的位置」。"""
         from teleoperation.simulation.realtime_teleop import build_parser
 
         self.assertEqual(build_parser().parse_args([]).arm_rest_poses, "current")
@@ -746,12 +675,7 @@ class FieldArmDefaultsTests(unittest.TestCase):
             ["--arm-rest-poses", "live"]).arm_rest_poses, "live")
 
     def test_elbow_follow_is_off_by_default_and_reachable_from_the_field_entry(self):
-        """``--arm-elbow-follow operator``: 沿用「默认逐字不变，换口径显式给旗子」的约定。
-
-        上一轮量清了「肘不跟手」的机制（§8.16``restPoses`` 是代价项），这一档就是把参考换成
-        操作者自己的肘弯；但现场默认仍是 ``off``，A/B 靠这一条旗子，报告里
-        ``arm.robots[*].elbow_posture`` 会记下量到的肘关节与斜率。
-        """
+        """``--arm-elbow-follow operator``: 沿用「默认逐字不变，换口径显式给旗子」的约定。"""
         from teleoperation.simulation.realtime_teleop import build_parser
 
         self.assertEqual(build_parser().parse_args([]).arm_elbow_follow, "off")
@@ -759,13 +683,7 @@ class FieldArmDefaultsTests(unittest.TestCase):
             ["--arm-elbow-follow", "operator"]).arm_elbow_follow, "operator")
 
     def test_the_direction_frame_is_per_robot_and_the_entry_default_is_auto(self):
-        """方向口径搬谁的方向：入口默认 ``auto``（逐台按 profile），旗子能整体强制。
-
-        2026-10-15：gr1_t2 的加载姿势让「搬绝对方向」给它叠加一个常数偏移（肘任务残差中位
-        197.5 mm、上臂方向误差 65.8 度），换成相对档后同一份 200 帧降到 25.6 mm / 8.2 度；而
-        h1_2 / g1 换过去反而变差（9.9 -> 45.5 / 18.8 -> 26.1 度）。所以默认值是**每台的**属性
-        —— 见 ``arm_profiles.POSTURE_FRAMES`` 与 docs/multi-robot-arm.md 8.19。
-        """
+        """方向口径搬谁的方向：入口默认 ``auto``（逐台按 profile），旗子能整体强制。"""
         from teleoperation.simulation.realtime_teleop import build_parser
 
         self.assertEqual(build_parser().parse_args([]).arm_posture_frame, "auto")
@@ -781,11 +699,7 @@ class FieldArmDefaultsTests(unittest.TestCase):
             ArmProfile(robot_type="h1_2", posture_frame="relative")
 
     def test_only_the_posture_recipe_is_marked_as_a_rigid_elbow_pair(self):
-        """入口只把「方向口径」那几台标成刚性的一对（斜坡整体平移的作用范围）。
-
-        ``--arm-elbow-task`` 的肘目标是独立位置目标，不能被斜坡拖着走（8.15 的 A/B 要
-        继续逐字有效）；这条钉的是入口那一步的判据。数字见 8.18。
-        """
+        """入口只把「方向口径」那几台标成刚性的一对（斜坡整体平移的作用范围）。"""
         from teleoperation.simulation.realtime_teleop import rigid_elbow_robots
 
         class Fake:
@@ -803,17 +717,7 @@ class FieldArmDefaultsTests(unittest.TestCase):
 @unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class LiveRestPosesTests(unittest.TestCase):
-    """``rest_poses="live"``: 零空间项不许把解从「精确可达」的目标上拽走。
-
-    2026-10-14：现场「大臂抬不起来 / GR1-T2 前臂反」的根因就是这个 ``restPoses``。加载姿势
-    （直臂下垂）不只是起点，它还在代价函数里，于是每一帧都在把解往加载姿势拉。这里拿一对
-    **精确可达**的目标量它：腕 + 肘直接用机器人自己的 FK 点，解对了就该一动不动。
-
-    数字与 ``devtools/probe_arm_segment_rigidity.py`` 的 ``ik_frame_test`` 一致（六个机位
-    两侧）：``current`` 残差 6.6-140.1 mm、手臂被拽动 1.6-35.0 度；``live`` 残差 0.0 mm
-    （一个贴着限位的机位 0.4-0.5 mm）、拽动 0.00 度。现场报告里的同一签名是
-    ``elbow_task_mm`` 中位 28-234 mm 而腕残差只有 13-29 mm（命令的肘位根本没兑现）。
-    """
+    """``rest_poses="live"``: 零空间项不许把解从「精确可达」的目标上拽走。"""
 
     @classmethod
     def setUpClass(cls):
@@ -825,11 +729,7 @@ class LiveRestPosesTests(unittest.TestCase):
         cls.driver.step(5)
 
     def seed_pose(self, adapter, side, elbow_deg=60.0):
-        """一个**离开加载姿势**的手臂姿势：加载角 + 肘关节折 60 度。
-
-        为什么必须先挪开：实验室里「加载姿势」和「当前姿势」恰好重合，而现场每一帧的当前
-        姿势都是跟着操作者跑出来的姿势 —— 这个 bug 只在实机才暴露，就是因为这个重合。
-        """
+        """一个**离开加载姿势**的手臂姿势：加载角 + 肘关节折 60 度。"""
         import math
 
         angles = {int(index): float(adapter.hold[int(index)])
@@ -885,9 +785,7 @@ class LiveRestPosesTests(unittest.TestCase):
             load = self.residual_mm(adapter, "right", seed, "loaded")
             with self.subTest(robot=robot):
                 for name in ("wrist", "elbow"):
-                    # 现场那台贴着限位的机位实测 0.5 mm，所以判据留到 1 mm。
                     self.assertLessEqual(live[name], 1.0, (robot, name, live))
-                # 同一对目标，换加载姿势当参考就被拉走（六个机位实测 6.6-140.1 mm）。
                 self.assertGreater(max(load.values()), max(live.values()) + 1.0,
                                    (robot, load, live))
 
@@ -905,19 +803,7 @@ class LiveRestPosesTests(unittest.TestCase):
 @unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class ElbowPostureTests(unittest.TestCase):
-    """「肘跟手」（``--arm-elbow-follow operator``）：零空间参考跟着操作者的肘弯走。
-
-    2026-10-14 §8.16 已经把机制量清了：``restPoses`` 是**代价项**不是起点 —— 拿加载姿势当
-    参考，一对精确可达的腕 + 肘目标会被解偏 6.6-140.1 mm（现场报告里 ``elbow_task_mm`` 中位
-    28-234 mm 而腕残差只有 12-24 mm，正是「肘不跟手」）。这里把参考换成操作者**这一帧的肘弯**
-    （绝对角，180 = 伸直）：肘处的夹角对肘关节是 1:1 的，但三台的正方向不一样（gr1_t2 实测
-    **-0.9992**、g1 +0.998、h1_2 贴着伸直那一侧只有 0.711），而且加载姿势下各自的夹角也不同
-    （g1 172.9 / gr1_t2 111.2 / h1_2 155.2 度），所以关节名、斜率与基准都是加载时实测的。
-
-    本机实测（``tmp_ik_frame/micro_elbow.py``）：把参考推 -20 度时 g1 的夹角走 -20.02 度、
-    gr1_t2 **-20.00**、h1_2 -23.4（0.711 那段弦的非线性）；推 +1000 度一律封顶在「离伸直的
-    余量」上：g1 只拿到 +6.37（不封顶会越过 180 折返成 -26.2 度，那就变成跟位置任务对着干）。
-    """
+    """「肘跟手」（``--arm-elbow-follow operator``）：零空间参考跟着操作者的肘弯走。"""
 
     @classmethod
     def setUpClass(cls):
@@ -962,7 +848,6 @@ class ElbowPostureTests(unittest.TestCase):
                 with self.subTest(robot=robot, side=side):
                     self.assertIn("elbow", name.lower())
                     self.assertIn(name, [joint for _index, joint in adapter.arm[side]])
-                    # 三台正方向不一样（gr1_t2 实测 -0.9992），所以只断言「量到了」。
                     self.assertGreaterEqual(abs(slope), 0.2)
                     self.assertGreater(bend, 0.0)
                     # 报告里要看得见：量到的是哪个关节、斜率多少。
@@ -988,8 +873,6 @@ class ElbowPostureTests(unittest.TestCase):
                     achieved = self.bend_with(
                         adapter, side,
                         adapter.posture_from_bend(side, bend_at_hold - 20.0)) - before
-                    # 方向必须对（现场那一件事就是方向）；幅度按实测给区间：g1 / gr1_t2 是
-                    # 1:1（-20.02 / -20.00，判据 3 度），h1_2 是 -23.4（那段 0.711 的弦）。
                     self.assertLess(achieved, -10.0, (robot, side, achieved))
                     self.assertGreater(achieved, -35.0, (robot, side, achieved))
                     if robot != "h1_2":     # h1_2 的肘贴在伸直那一侧，斜率只有 0.711
@@ -997,11 +880,7 @@ class ElbowPostureTests(unittest.TestCase):
                                                msg=(robot, side, achieved))
 
     def test_the_reference_never_asks_to_go_past_straight(self):
-        """夹角在伸直处会折返（acos）：参考不许把肘推过那一侧。
-
-        g1 加载姿势离伸直只有 7 度：不封顶时「把肘弯推到 1000 度」会给出 -26.2 度（越过 180
-        之后折返），那正是 §8.16「零空间项跟位置任务对着干」的老毛病。封顶后只在余量内变化。
-        """
+        """夹角在伸直处会折返（acos）：参考不许把肘推过那一侧。"""
         for robot in PAPER_ROBOTS:
             adapter = self.driver.ik[robot]
             for side in SIDES:
@@ -1017,12 +896,7 @@ class ElbowPostureTests(unittest.TestCase):
                     self.assertGreaterEqual(achieved, -2.0, (robot, side, achieved))
 
     def test_apply_each_hands_the_reference_to_the_adapter_and_reports_it(self):
-        """接线：司机把这一帧的参考交给 ``solve``，报告里留着（不给这一项 = 历史行为）。
-
-        用的是**同一个**操作者数（现场那条录制里操作者的中性肘弯就在 138.9 度，§8.17），三台
-        各自换算成自己的关节角与参考角 —— 这正是把绝对角、而不是「相对你中性的增量」交给司机
-        的原因（各自加载姿势下的夹角不同，见各台的 ``elbow_posture``）。
-        """
+        """Regression coverage for test apply each hands the reference to the adapter and reports it."""
         self.reset_to_hold()
         share = 138.9
         targets = {robot: adapter.arm_points("right")["wrist"]
@@ -1044,19 +918,14 @@ class ElbowPostureTests(unittest.TestCase):
                 self.assertEqual(self.driver.ik[robot].last_posture["right"], {})
 
     def test_the_reference_baseline_can_be_moved_to_the_operators_neutral(self):
-        """``delta`` 档（gr1_t2 的默认）要把零空间参考的基准换成**你的**中性肘弯。
-
-        两种写法必须逐位等价：``posture_from_bend(side, X, neutral_bend=N)`` 与
-        ``posture_from_bend(side, X - N + 本机加载夹角)``；基准给成这一帧的角时参考就是加载角
-        （变化量 0）。混用两个基准会差一个常数，那正是 §8.17.4 第一次 A/B 翻车的原因。
-        """
+        """``delta`` 档（gr1_t2 的默认）要把零空间参考的基准换成**你的**中性肘弯。"""
         for robot in PAPER_ROBOTS:
             adapter = self.driver.ik[robot]
             for side in SIDES:
                 self.reset_to_hold()
                 name, _slope, bend_at_hold = adapter.elbow_posture[side]
                 hold = float(adapter.hold[adapter.index_of[name]])
-                neutral = 138.9          # 现场那条录制里操作者的中性肘弯（§8.17）
+                neutral = 138.9
                 with self.subTest(robot=robot, side=side, case="neutral is zero change"):
                     moved = adapter.posture_from_bend(side, neutral, neutral_bend=neutral)
                     self.assertEqual(list(moved), [name])
@@ -1069,7 +938,7 @@ class ElbowPostureTests(unittest.TestCase):
                     self.assertAlmostEqual(moved, shifted, places=9)
 
     def test_apply_each_moves_the_baseline_only_for_the_robots_it_is_told_to(self):
-        """接线：``elbow_bend_baseline`` 只对点名的那几台换基，其余保持历史基准。"""
+        """Regression coverage for test apply each moves the baseline only for the robots it is told to."""
         self.reset_to_hold()
         share = 138.9
         baseline = {"gr1_t2": 100.0}
@@ -1097,15 +966,7 @@ class ElbowPostureTests(unittest.TestCase):
 @unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class RigidShoulderAnchorTests(unittest.TestCase):
-    """The shoulder end of the upper arm must be rigid to the elbow (8.13.2).
-
-    ``arm_points()["shoulder"]`` is a name match (the first link whose name contains
-    "shoulder"): on h1_2 / g1 that is the pitch link, on gr1_t2 the upper-arm pitch link.
-    Turning the arm's roll joint moves it 48.5-101.7 mm across the six sides, so a recipe
-    built on it ("shoulder + L_u * direction") asks for an elbow target off the arm's
-    reachable shell -- the GR1-T2 reversed-forearm root cause. The parent link of the
-    elbow joint is rigid instead: 0.00 mm.
-    """
+    """Regression coverage for RigidShoulderAnchorTests."""
 
     @classmethod
     def setUpClass(cls):
@@ -1146,7 +1007,6 @@ class RigidShoulderAnchorTests(unittest.TestCase):
                 before = adapter.arm_points("right")
                 rigid_before = self._span(before, "elbow", "upper")
                 named_before = self._span(before, "elbow", "shoulder")
-                # 1.4 rad = 80 deg of roll: measured drift 39-81 mm, see 8.13.2.
                 pybullet.resetJointState(adapter.body, roll, start + 1.4,
                                          physicsClientId=adapter.cid)
                 after = adapter.arm_points("right")
