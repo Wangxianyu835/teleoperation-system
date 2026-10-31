@@ -1226,6 +1226,12 @@ def run(args) -> int:
     fps = _loop_fps(marks)
     print(f"\nprocessed={processed} frames in {elapsed:.2f} s  fps={fps:.1f}  "
           f"median frame interval {_median_interval(marks) * 1000:.1f} ms")
+    body_worker = (camera._source.worker_summary() if hasattr(camera, '_source')
+                   and hasattr(camera._source, 'worker_summary') else None)
+    if body_worker is not None and body_worker['enabled']:
+        print(f"body worker: results={body_worker['results_received']} "
+              f"valid={body_worker['valid_results']} reasons={body_worker['result_reasons']} "
+              f"fault={body_worker['fault']}", flush=True)
     if scene_summary is not None:
         print(f"scene={scene_summary['scene']} sim_frames={scene_summary['sim_frames']} "
               f"applied={scene_summary['applied_frames']} "
@@ -1285,6 +1291,7 @@ def run(args) -> int:
         "smplerx_checkpoint": None if not arms_wanted or replaying else str(Path(args.smplerx_checkpoint).resolve()),
         "input_body": None if input_body is None else str(input_body),
         "body_source": camera._source.metrics.summary() if hasattr(camera, '_source') else None,
+        "body_worker": body_worker,
         "camera_index": args.camera_index,
         "input_npz": None if args.input_npz is None else str(args.input_npz),
         "headless": bool(args.headless),

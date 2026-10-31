@@ -54,6 +54,27 @@ class FakeClient:
 
 
 class SmplerXCameraSourceTests(unittest.TestCase):
+    def test_worker_result_counts_do_not_count_waiting_polls(self):
+        result = SmplerXResult(BodyFrameId('camera', 1, 1.), 1.1, 's32', 'd' * 64,
+                              {}, {'left': False, 'right': False}, reason='no person detected')
+        source = CameraTeleopSource(FakeCamera(), FakeHands(), FakeClient(result))
+        source.next_teleop_observation()
+        source.next_teleop_observation()
+        summary = source.worker_summary()
+        self.assertEqual(summary['results_received'], 1)
+        self.assertEqual(summary['result_reasons'], {'no person detected': 1})
+        self.assertEqual(summary['valid_results'], {'left': 0, 'right': 0})
+        self.assertEqual(summary['last_result']['sequence'], 1)
+
+    def test_worker_fault_is_retained_in_summary(self):
+        class FailedClient(FakeClient):
+            def poll(self):
+                raise RuntimeError('worker exited: missing asset')
+        source = CameraTeleopSource(FakeCamera(), FakeHands(), FailedClient(None))
+        source.next_teleop_observation()
+        self.assertEqual(source.worker_summary()['fault'], 'worker exited: missing asset')
+        self.assertFalse(source.last_tracked.body.valid['left'])
+
     def test_one_capture_is_shared_by_hands_and_body_worker(self):
         camera, hands = FakeCamera(), FakeHands()
         client = FakeClient(body_result())

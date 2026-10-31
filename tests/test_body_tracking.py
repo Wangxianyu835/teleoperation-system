@@ -27,6 +27,18 @@ def make_result(sequence, capture_time, *, offset=0.0, left=True, right=True, ro
 
 
 class BodyTrackerTests(unittest.TestCase):
+    def test_no_accepted_sample_does_not_invent_expiry(self):
+        tracked = BodyTracker().update(None, now_s=1.)
+        self.assertEqual(tracked.state_by_side['left'], 'calibrating')
+        self.assertEqual(tracked.reason_by_side['left'], 'no new body result')
+
+    def test_model_rejection_reason_survives_before_first_valid_sample(self):
+        result = SmplerXResult(BodyFrameId('session', 1, 1.), 1.1, 's32', 'c' * 64,
+                              {}, {'left': False, 'right': False}, reason='no person detected')
+        tracked = BodyTracker().update(result, now_s=1.1)
+        self.assertEqual(tracked.reason_by_side['left'], 'no person detected')
+        self.assertFalse(tracked.body.valid['left'])
+
     def test_duplicate_tracking_sample_cannot_count_for_calibration(self):
         tracker = BodyTracker()
         result = make_result(1, 1.)

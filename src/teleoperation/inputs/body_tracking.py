@@ -83,9 +83,8 @@ class BodyTracker:
         for side in SIDES:
             stamp = self._accepted_time[side]
             ages[side] = float("inf") if stamp is None else max(0., float(now_s) - stamp)
-            if ages[side] > self.max_age_s:
-                if stamp is not None:
-                    self._recovery_required[side] = True
+            if stamp is not None and ages[side] > self.max_age_s:
+                self._recovery_required[side] = True
                 self._state[side] = "lost_hold"
                 self._reason[side] = "body sample expired"
         body = self._empty_body(timestamp if timestamp is not None else max(
@@ -191,7 +190,7 @@ class BodyTracker:
                 self._candidate_count[side] = 0
                 self._recovery_required[side] = self._accepted_time[side] is not None
                 self._state[side] = "hold" if self._accepted_time[side] is not None else "calibrating"
-                self._reason[side] = "invalid body side"
+                self._reason[side] = result.reason or wrist.reason or "invalid body side"
                 fresh[side] = False
                 continue
             if not self._jump(side, points, wrist) and not self._recovery_required[side]:
