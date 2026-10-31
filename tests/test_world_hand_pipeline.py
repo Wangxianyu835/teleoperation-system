@@ -450,34 +450,37 @@ class WorldHandPipelineTests(unittest.TestCase):
         for side in SIDES:
             np.testing.assert_array_equal(window.hands[side], before[side])
 
-    def test_cpu_native_left_training_reload_and_export(self):
+    def test_cpu_shared_training_reload_and_left_export(self):
         from teleoperation.learning import trainer
         from teleoperation.robots.hand_spec import load_hand_spec
         from teleoperation.retargeting.hand.predictor import build_joint_model
-        from teleoperation.retargeting.hand.checkpoint import load_joint_checkpoint
-        from teleoperation.retargeting.hand.interface import JointNNRetargeter
+        from teleoperation.retargeting.hand.checkpoint import load_shared_joint_checkpoint
+        from teleoperation.retargeting.hand.interface import SharedJointNNRetargeter
         from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
         from tests.test_joint_checkpoints import SMALL
         raw, aligned = self.root/'raw.h5', self.root/'aligned.h5'
-        save_raw(raw,[world_frame(i,right=False) for i in range(30)])
+        save_raw(raw,[world_frame(i) for i in range(30)])
         align_h5(raw,aligned)
-        spec=load_hand_spec('l21','left')
+        spec=load_hand_spec('l21','right')
         model=build_joint_model(spec,SMALL)
         initial={name:value.detach().clone() for name,value in model.named_parameters()}
         torch.set_num_threads(1)
         with patch.object(trainer,'build_joint_model',return_value=model):
             self.assertEqual(main(['hand','train','--input',str(aligned),'--run-name','native',
-                '--hand-model','l21','--hand-side','left','--checkpoint-root',str(self.root/'models'),
+                '--hand-model','l21','--checkpoint-root',str(self.root/'models'),
                 '--device','cpu','--epochs','1','--batch-size','4']),0)
         self.assertTrue(any(not torch.equal(initial[n],v) for n,v in model.named_parameters()))
-        checkpoint=self.root/'models/l21/left/nn'/PALM_LENGTH_PROFILE/'native/model_best.pth'
-        loaded,payload=load_joint_checkpoint(checkpoint,spec,'cpu')
-        self.assertEqual(payload['side'],'left')
+        checkpoint=self.root/'models/l21/shared/nn'/PALM_LENGTH_PROFILE/'native/model_best.pth'
+        loaded,payload=load_shared_joint_checkpoint(checkpoint,spec,'cpu')
+        self.assertEqual(payload['side'],'shared')
         self.assertEqual(payload['units'],'1')
         self.assertTrue(np.isfinite(payload['best_loss']))
         pipeline=MediaPipePalmLocalPipeline('world',input_profile=PALM_LENGTH_PROFILE)
         for i in range(3): window=pipeline.process_window(world_frame(i))
-        result=JointNNRetargeter({spec.key:spec},{spec.key:loaded}).retarget(window)[spec.key]
+        left_spec=load_hand_spec('l21','left')
+        result=SharedJointNNRetargeter(
+            {left_spec.key:left_spec, spec.key:spec}, loaded,
+        ).retarget(window)[left_spec.key]
         self.assertEqual(result.positions.shape,(17,))
         output=self.root/'results.h5'
         self.assertEqual(main(['hand','export','--input',str(aligned),'--output',str(output),

@@ -133,19 +133,19 @@ python -m teleoperation hand align `
 
 ### 2.3 训练共享模型
 
-新 world 流程只训练一份模型。只录左手、只录右手或同时录双手都可以：左右人手先归一到同一个右手表示，所有有效窗口汇入同一批次，模型只通过右侧 L21 FK 和六类几何损失训练，无需机器人角度标签。输入为 `(3,25,3)`，输出为 18 维规范角度。
+新版 camera world 流程按每个 `--hand-model` 只训练一份模型。左右人手先归一到同一个右手表示，所有有效窗口汇入同一批次，模型通过目标手型的右侧 FK 训练，无需机器人角度标签。输入为 `(3,25,3)`，输出维度由目标手型决定：L21 为 17 个独立关节，原生手型为对应的独立关节数。
 
 ```powershell
 python -m teleoperation hand train `
-  --input $aligned --run-name $run --hand-side shared `
+  --input $aligned --run-name $run --hand-model l21 `
   --checkpoint-root $checkpointRoot --device $device `
   --epochs 100 --batch-size 64 --learning-rate 0.0001 `
   --val-ratio 0.2 --early-stopping-patience 20 --seed 1234
 ```
 
-新 world 数据要求 `--hand-side shared`，默认已是 shared。训练不加载左侧 FK；checkpoint 声明 `hand_side=shared`、`training_robot=right`。左手推理使用相同权重，仅四个 MCP roll 输出反号，以匹配本仓库左侧 URDF。左右拇指几何并非严格对称，右侧训练不保证左侧几何误差相同，需要仿真和真人验收。
+新版 camera world 数据保留 `--hand-model` 作为目标手型选择，但不再选择训练手侧。左右有效窗口汇入同一个 shared NN，checkpoint 声明 `hand_side=shared`、`training_robot=right`；左手推理使用相同权重，并按目标手型转换到左侧原生输出。左右拇指几何并非严格对称，需要仿真和真人验收。
 
-默认从头训练，按原始时间划分训练/验证并留出窗口间隔，排除无效窗口。模型目录为 `$checkpointRoot/models/twohand_h5/linker/$run/`，包含 `model_best.pth`、`model_last.pth` 和 `epoch_metrics.csv`；日志位于同根的 `logs/twohand_h5/linker/$run/`。CSV 的 right 指训练机器人侧，left 为零；原始人手样本数在启动日志另列。
+默认从头训练，按原始时间划分训练/验证并留出窗口间隔，排除无效窗口。模型目录为 `$checkpointRoot/<hand_model>/shared/nn/camera_palm_length_window3_v1/$run/`，包含 `model_best.pth`、`model_last.pth`、`config.json`、`dataset.json`、`metrics.jsonl` 和 `training.log`；左右有效窗口数写入数据身份。
 
 `--init-checkpoint` 仅接受同坐标、同角度契约的权重。旧四 MCP world 权重不能初始化新模型。新数据需从原始 world 21 点重新对齐，不能改写旧 H5 或 checkpoint 的契约来冒充新格式。
 

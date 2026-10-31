@@ -12,7 +12,11 @@ import torch
 from teleoperation.cli import main, build_parser
 from teleoperation.applications.hand_align import align_h5
 from teleoperation.retargeting.hand.predictor import build_joint_model
-from teleoperation.retargeting.hand.checkpoint import joint_checkpoint_payload, save_joint_checkpoint
+from teleoperation.retargeting.hand.checkpoint import (
+    joint_checkpoint_payload,
+    save_joint_checkpoint,
+    shared_joint_checkpoint_payload,
+)
 from teleoperation.robots.hand_spec import load_hand_spec
 from tests.test_world_hand_pipeline import world_frame, save_raw
 from tests.test_joint_checkpoints import SMALL
@@ -90,14 +94,28 @@ class HandControlCLITests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(main(['hand','list-models']),0)
         self.assertIn('l21',output.getvalue())
-        args = build_parser().parse_args(['hand','train','--input','human.h5','--run-name','example','--hand-model','l21','g1','--hand-side','both'])
+        args = build_parser().parse_args(['hand','train','--input','human.h5','--run-name','example','--hand-model','l21','g1'])
         self.assertEqual(args.hand_model,['l21','g1'])
-        self.assertEqual(args.hand_side,'both')
+        self.assertFalse(hasattr(args, 'hand_side'))
         configured=build_parser().parse_args(['hand','train','--input','human.h5','--run-name','init',
             '--hand-model','g1','--checkpoint-root','outputs/models','--input-profile','camera_palm_length_window3_v1',
             '--init-checkpoint','target.pth'])
         self.assertEqual(configured.checkpoint_root,Path('outputs/models'))
         self.assertEqual(configured.init_checkpoint,Path('target.pth'))
+
+    def test_shared_new_nn_checkpoint_is_selected_once_for_both_sides(self):
+        from teleoperation.applications.hand_control import _selection
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'shared.pth'
+            spec = load_hand_spec('l21', 'right')
+            save_joint_checkpoint(path, shared_joint_checkpoint_payload(build_joint_model(spec, SMALL), spec))
+            args = build_parser().parse_args([
+                'hand', 'control', '--hand-model', 'l21', '--backend', 'nn', '--hand', 'both',
+                '--checkpoint', str(path), '--device', 'cpu',
+            ])
+            specs, retargeter = _selection(args)
+            self.assertEqual(set(specs), {('l21', 'left'), ('l21', 'right')})
+            self.assertEqual(type(retargeter).__name__, 'SharedJointNNRetargeter')
 
     def test_nn_export_generic_schema_and_invalid_checkpoint_fails_before_camera(self):
         torch.set_num_threads(1)

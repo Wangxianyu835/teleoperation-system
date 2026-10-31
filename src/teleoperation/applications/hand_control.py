@@ -37,16 +37,39 @@ def _selection(args):
         from teleoperation.retargeting.hand.geometric import GeometricHandRetargeter
         retargeter = GeometricHandRetargeter()
     elif args.input_profile == PALM_LENGTH_PROFILE:
-        from teleoperation.retargeting.hand.checkpoint import load_joint_checkpoint
-        from teleoperation.retargeting.hand.interface import JointNNRetargeter
+        from teleoperation.retargeting.hand.checkpoint import (
+            load_joint_checkpoint,
+            load_shared_joint_checkpoint,
+        )
+        from teleoperation.retargeting.hand.interface import (
+            JointNNRetargeter,
+            SharedJointNNRetargeter,
+        )
         if args.hand == 'both':
+            if args.checkpoint is not None and args.left_checkpoint is None and args.right_checkpoint is None:
+                device = resolve_device(args.device)
+                canonical_spec = load_hand_spec(args.hand_model, 'right')
+                model, _ = load_shared_joint_checkpoint(args.checkpoint, canonical_spec, device)
+                return specs, SharedJointNNRetargeter(specs, model, device, canonical_spec=canonical_spec)
             if args.checkpoint is not None or args.left_checkpoint is None or args.right_checkpoint is None:
-                raise ValueError('New dual-side NN requires --left-checkpoint and --right-checkpoint')
+                raise ValueError('Dual-side NN requires one shared --checkpoint or both side checkpoints')
             selected = {'left':args.left_checkpoint,'right':args.right_checkpoint}
         else:
             if args.checkpoint is None or args.left_checkpoint is not None or args.right_checkpoint is not None:
                 raise ValueError('Single-side NN requires exactly --checkpoint')
-            selected = {args.hand:args.checkpoint}
+            device = resolve_device(args.device)
+            canonical_spec = load_hand_spec(args.hand_model, 'right')
+            try:
+                model, _ = load_shared_joint_checkpoint(args.checkpoint, canonical_spec, device)
+            except ValueError as shared_error:
+                model, _ = load_joint_checkpoint(args.checkpoint, specs[(args.hand_model, args.hand)], device)
+                return specs, JointNNRetargeter(
+                    specs, {(args.hand_model, args.hand): model}, device,
+                )
+            else:
+                return specs, SharedJointNNRetargeter(
+                    specs, model, device, canonical_spec=canonical_spec,
+                )
         device = resolve_device(args.device)
         models = {key:load_joint_checkpoint(selected[key[1]],spec,device)[0] for key,spec in specs.items()}
         retargeter = JointNNRetargeter(specs,models,device)

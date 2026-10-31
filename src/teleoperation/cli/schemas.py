@@ -74,7 +74,6 @@ def hand_train(parser: argparse.ArgumentParser) -> None:
     from teleoperation.paths import DEFAULT_HAND_MODEL_ROOT
     from teleoperation.contracts.hand_models import HAND_MODELS
     parser.add_argument("--hand-model", choices=HAND_MODELS, nargs='+', required=True)
-    parser.add_argument("--hand-side", choices=("left", "right", "both"), default="right")
     parser.add_argument("--checkpoint-root", type=Path, default=DEFAULT_HAND_MODEL_ROOT)
     from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
     parser.add_argument('--input-profile',choices=(PALM_LENGTH_PROFILE,),default=PALM_LENGTH_PROFILE)

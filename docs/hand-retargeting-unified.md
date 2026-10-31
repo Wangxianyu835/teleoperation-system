@@ -54,16 +54,16 @@ $py = 'D:/Anaconda/envs/teleoperation/python.exe'
 $env:PYTHONPATH = "$pwd/src"
 & $py -m teleoperation hand align --input raw_world.h5 --output aligned_world.h5 --landmark-space world
 & $py -m teleoperation hand train --input aligned_world.h5 `
-  --hand-model l21 g1 --hand-side both --run-name experiment01 `
+  --hand-model l21 g1 --run-name experiment01 `
   --checkpoint-root outputs/hand_retargeting/models --device auto --epochs 100
 ```
 
-同一人体 H5 与数据划分用于所有目标，依次训练，每个目标侧独立权重。当前人体来源侧与目标机器人侧相同，二者写入配置；仅有左手数据时选择 left。默认侧为 right；旧 `--hand-side shared` 已移除；`--checkpoint-root` 指向新版目标目录根，`--input-profile` 明确选择掌长规范。`--init-checkpoint` 只接收同手型、同目标侧、同输入和输出定义的新权重，只初始化参数，不恢复优化器；与 --resume 互斥，架构从 checkpoint 严格重建。输入仅接受机器人无关的 canonical world 米制 H5，旧图像坐标或机器人根坐标文件需要从原始 world 数据重新对齐，不能改标签冒充新格式。
+同一人体 H5 与数据划分用于所有目标，依次训练，每个目标手型生成一份 shared 权重，同时汇合左、右有效窗口。模型在 canonical right 角度语义下训练，运行时为左手转换原生关节方向；`--checkpoint-root` 指向新版目标目录根，`--input-profile` 明确选择掌长规范。`--init-checkpoint` 只接收同手型、shared 输出、同输入和输出定义的新权重，只初始化参数，不恢复优化器；与 `--resume` 互斥，架构从 checkpoint 严格重建。输入仅接受机器人无关的 canonical world 米制 H5，旧图像坐标或机器人根坐标文件需要从原始 world 数据重新对齐，不能改标签冒充新格式。
 
 每个模型路径固定为：
 
 ```text
-outputs/hand_retargeting/models/<hand_model>/<left|right>/nn/
+  outputs/hand_retargeting/models/<hand_model>/shared/nn/
   camera_palm_length_window3_v1/<run_name>/
     model_best.pth
     model_last.pth
@@ -80,9 +80,9 @@ outputs/hand_retargeting/models/<hand_model>/<left|right>/nn/
 断点续训必须是单手型、单目标侧，同目录、同 run/config/data：
 
 ```powershell
-& $py -m teleoperation hand train --input aligned_world.h5 --hand-model l21 --hand-side right `
+& $py -m teleoperation hand train --input aligned_world.h5 --hand-model l21 `
   --run-name experiment01 --epochs 150 `
-  --resume outputs/hand_retargeting/models/l21/right/nn/camera_palm_length_window3_v1/experiment01/model_last.pth
+  --resume outputs/hand_retargeting/models/l21/shared/nn/camera_palm_length_window3_v1/experiment01/model_last.pth
 ```
 
 epochs 表示总轮数，需超过已完成轮数。恢复网络、优化器、调度器、随机状态及早停状态；epoch 排列由 seed 和 epoch 决定。短训练产物只用于流程检查，不能宣称是可用的跨人模型。
@@ -90,8 +90,8 @@ epochs 表示总轮数，需超过已完成轮数。恢复网络、优化器、�
 ## 实时选择方法
 
 ```powershell
-$right = 'outputs/hand_retargeting/models/l21/right/nn/camera_palm_length_window3_v1/experiment01/model_best.pth'
-& $py -m teleoperation hand control --hand-model l21 --backend nn --hand right --checkpoint $right `
+$shared = 'outputs/hand_retargeting/models/l21/shared/nn/camera_palm_length_window3_v1/experiment01/model_best.pth'
+& $py -m teleoperation hand control --hand-model l21 --backend nn --hand both --checkpoint $shared `
   --camera-index 0 --model-asset-path datasets/hand_landmarker.task
 
 # 同一手型改用 dex，无需权重或操作者掌长标定
@@ -99,7 +99,7 @@ $right = 'outputs/hand_retargeting/models/l21/right/nn/camera_palm_length_window
 & $dexPython -m teleoperation hand control --hand-model l21 --backend dex --hand right
 ```
 
-双侧新 NN 使用 `--hand both --left-checkpoint <left.pth> --right-checkpoint <right.pth>`。控制在打开相机/GUI 前校验目标与权重，不回退到另一算法。Ctrl+C 或关闭 PyBullet 窗口停止；`--frames N --headless` 可用于有限运行。可用 `--record-results <new.h5>` 记录原始解与命令。
+双侧新 NN 使用一个 shared `--checkpoint`。控制在打开相机/GUI 前校验目标与权重，不回退到另一算法。Ctrl+C 或关闭 PyBullet 窗口停止；`--frames N --headless` 可用于有限运行。可用 `--record-results <new.h5>` 记录原始解与命令。
 
 所有方法共用独立坐标滤波、有效限位、`min(CLI,URDF折回速度)` 限速，之后展开耦合。L21 上限为 1.0 rad/s，CLI 默认 1.5 不会覆盖该约束。丢手保持接受命令；恢复首步的时间预算不超过 1/30 s，若距上一条保持命令的实际间隔更短，则使用该实际间隔。L21 仿真保留网格路径检查；其他手没有等价运行时检查。默认低通 alpha=0.2；`--joint-filter none` 仍有限速。`--no-collision-guard` 仅用于明确关闭 L21 诊断检查。
 

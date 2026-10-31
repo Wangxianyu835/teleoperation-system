@@ -130,20 +130,20 @@ $run = "camera_$session"
 $modelRoot = 'outputs/hand_retargeting/models'
 
 & $python -m teleoperation hand train `
-  --input $aligned --hand-model l21 --hand-side right --run-name $run `
+  --input $aligned --hand-model l21 --run-name $run `
   --checkpoint-root $modelRoot --device auto `
   --epochs 100 --batch-size 64 --learning-rate 0.0001
 if ($LASTEXITCODE -ne 0) { throw '训练失败，请检查上方输出。' }
 
-$checkpoint = "$modelRoot/l21/right/nn/camera_palm_length_window3_v1/$run/model_best.pth"
+$checkpoint = "$modelRoot/l21/shared/nn/camera_palm_length_window3_v1/$run/model_best.pth"
 ```
 
-将 `--hand-model l21` 改为 `--hand-model l21 h1_2 gr1_t2 g1`，可对同一份人体数据依次训练多个手型；`--hand-side both` 为左右侧分别训练。所选侧必须有有效数据。旧 `--hand-side shared` 已移除。
+将 `--hand-model l21` 改为 `--hand-model l21 h1_2 gr1_t2 g1`，可对同一份人体数据依次训练多个手型。每个手型只生成一份 shared checkpoint，训练同时使用左右手窗口；模型输出采用 canonical right 角度语义，运行时转换到实际左手或右手。所选手型的左右数据都必须有有效窗口。
 
 保存路径固定为：
 
 ```text
-outputs/hand_retargeting/models/<hand_model>/<left|right>/nn/
+outputs/hand_retargeting/models/<hand_model>/shared/nn/
   camera_palm_length_window3_v1/<run_name>/
     model_best.pth
     model_last.pth
@@ -153,7 +153,7 @@ outputs/hand_retargeting/models/<hand_model>/<left|right>/nn/
     training.log
 ```
 
-已有目录拒绝覆盖。`--resume <model_last.pth>` 在同一目标、运行配置与数据下恢复训练；`--epochs` 表示总轮数。`--init-checkpoint` 仅初始化严格匹配的新模型参数，与 `--resume` 互斥。详细约束见[训练与保存路径](docs/hand-retargeting-unified.md#训练与保存路径)。
+已有目录拒绝覆盖。`--resume <model_last.pth>` 在同一目标、运行配置与数据下恢复训练；`--epochs` 表示总轮数。`--init-checkpoint` 仅初始化严格匹配的新 shared 模型参数，与 `--resume` 互斥。详细约束见[训练与保存路径](docs/hand-retargeting-unified.md#训练与保存路径)。
 
 短训练只能检查流程。跨操作者效果需要按人划分数据并做独立验收。
 
@@ -176,7 +176,7 @@ if ($LASTEXITCODE -ne 0) { throw '关节角导出失败，请检查上方输出�
 
 导出不打开摄像头。结果保留完整时间线，包括前两帧预热及缺手帧。回放验证手型、关节顺序、限位与耦合后直接执行已接受命令，不再次滤波。结果文件独占创建，不覆盖已有路径。
 
-导出双侧 NN 时使用 `--hand both --left-checkpoint <left.pth> --right-checkpoint <right.pth>`，回放也选 `--hand both`。新版结果不交给旧 `replay l21-hand`、`native-hand` 或 `mounted-hand`。
+导出双侧 NN 时使用 shared `--hand both --checkpoint <shared.pth>`，回放也选 `--hand both`。新版结果不交给旧 `replay l21-hand`、`native-hand` 或 `mounted-hand`。
 
 ## 5. 实时控制目标手
 
@@ -186,12 +186,12 @@ if ($LASTEXITCODE -ne 0) { throw '关节角导出失败，请检查上方输出�
 
 ```powershell
 & $python -m teleoperation hand control `
-  --hand-model l21 --backend nn --hand right --checkpoint $checkpoint `
+  --hand-model l21 --backend nn --hand both --checkpoint $checkpoint `
   --camera-index $camera --model-asset-path $handAsset `
   --record-results "outputs/hand_retargeting/live_$session.h5"
 ```
 
-双侧 NN 同样使用 `--hand both --left-checkpoint ... --right-checkpoint ...`。程序在打开相机和 GUI 前检查权重身份，不自动寻找最新权重。`Ctrl+C` 或关闭 PyBullet 窗口停止；`--frames N --headless` 可执行有限运行。
+新版 shared NN 左右手使用同一个 `--checkpoint`。程序在打开相机和 GUI 前检查权重身份，不自动寻找最新权重。`Ctrl+C` 或关闭 PyBullet 窗口停止；`--frames N --headless` 可执行有限运行。旧的 side-specific checkpoint 仍可用于兼容调用，但不能作为新版 shared checkpoint 使用。
 
 ### 5.2 dex 控制与离线导出
 

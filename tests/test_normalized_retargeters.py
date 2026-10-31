@@ -7,7 +7,7 @@ import torch
 
 from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
 from teleoperation.contracts.hand import HandWindow
-from teleoperation.retargeting.hand.interface import JointNNRetargeter
+from teleoperation.retargeting.hand.interface import JointNNRetargeter, SharedJointNNRetargeter
 from teleoperation.retargeting.hand.predictor import build_joint_model
 from teleoperation.robots.hand_spec import load_hand_spec
 from tests.test_joint_checkpoints import SMALL
@@ -35,6 +35,44 @@ class NormalizedRetargeterTests(unittest.TestCase):
             spec.expand(result.positions)
         missing = HandWindow({'left':None,'right':window.hands['right']},window.timestamp,window.source,window.metadata)
         self.assertFalse(nn.retarget(missing)[('l21','left')].valid)
+
+    def test_shared_nn_converts_one_canonical_output_to_both_native_sides(self):
+        class FixedModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.register_buffer('values', torch.tensor(
+                    [[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9,
+                      1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7]],
+                    dtype=torch.float32,
+                ))
+
+            def forward(self, inputs):
+                return self.values.expand(inputs.shape[0], -1)
+
+        torch.set_num_threads(1)
+        specs = {('l21', side): load_hand_spec('l21', side) for side in ('left', 'right')}
+        nn = SharedJointNNRetargeter(specs, FixedModel())
+        results = nn.retarget(self.window())
+        np.testing.assert_allclose(results[('l21', 'right')].positions, np.arange(1, 18) / 10)
+        expected_left = np.arange(1, 18, dtype=np.float32) / 10
+        expected_left[[0, 3, 6, 9]] *= -1
+        np.testing.assert_allclose(results[('l21', 'left')].positions, expected_left)
+
+    def test_shared_nn_adapts_registered_native_hand_side_limits(self):
+        class FixedModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.register_buffer('values', torch.full((1, 7), 0.1))
+
+            def forward(self, inputs):
+                return self.values.expand(inputs.shape[0], -1)
+
+        specs = {('g1', side): load_hand_spec('g1', side) for side in ('left', 'right')}
+        results = SharedJointNNRetargeter(specs, FixedModel()).retarget(self.window())
+        expected_left = np.full(7, 0.1, dtype=np.float32)
+        expected_left[[1, 2, 4, 5, 6]] *= -1
+        np.testing.assert_allclose(results[('g1', 'left')].positions, expected_left)
+        np.testing.assert_allclose(results[('g1', 'right')].positions, 0.1)
 
     @unittest.skipUnless(importlib.util.find_spec('dex_retargeting'), 'requires dex environment')
     def test_dex_all_registered_targets_preserve_identity_and_scale_equivalence(self):

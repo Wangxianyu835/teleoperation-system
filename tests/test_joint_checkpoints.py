@@ -9,7 +9,13 @@ import torch
 from teleoperation.paths import training_run_directory
 from teleoperation.robots.hand_spec import load_hand_spec
 from teleoperation.retargeting.hand.predictor import build_joint_model
-from teleoperation.retargeting.hand.checkpoint import joint_checkpoint_payload, load_joint_checkpoint, save_joint_checkpoint
+from teleoperation.retargeting.hand.checkpoint import (
+    joint_checkpoint_payload,
+    load_joint_checkpoint,
+    save_joint_checkpoint,
+    shared_joint_checkpoint_payload,
+    load_shared_joint_checkpoint,
+)
 
 
 SMALL = dict(embed_dim_ratio=8, spatial_depth=1, temporal_depth=1, num_heads=2, drop_path_rate=0.)
@@ -50,9 +56,34 @@ class JointCheckpointTests(unittest.TestCase):
         root = Path("outputs/models")
         path = training_run_directory(root, "l21", "right", "camera_palm_length_window3_v1", "run01")
         self.assertEqual(path, root/"l21/right/nn/camera_palm_length_window3_v1/run01")
+        shared = training_run_directory(root, "l21", "shared", "camera_palm_length_window3_v1", "run01")
+        self.assertEqual(shared, root/"l21/shared/nn/camera_palm_length_window3_v1/run01")
         for run in ("../escape", "a/b", "a\\b", "", ".."):
             with self.assertRaises(ValueError):
                 training_run_directory(root, "l21", "right", "camera_palm_length_window3_v1", run)
+
+    def test_shared_checkpoint_uses_right_canonical_spec_and_loads_once_for_both_sides(self):
+        spec = load_hand_spec("l21", "right")
+        model = build_joint_model(spec, SMALL).eval()
+        payload = shared_joint_checkpoint_payload(model, spec)
+        self.assertEqual(payload["side"], "shared")
+        self.assertEqual(payload["hand_sides"], ["left", "right"])
+        self.assertEqual(payload["training_robot"], "right")
+        self.assertEqual(payload["angle_convention"], "l21_canonical_right_angles_v1")
+        self.assertEqual(payload["output_coordinates"], "canonical_right")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "shared.pth"
+            save_joint_checkpoint(path, payload)
+            loaded, metadata = load_shared_joint_checkpoint(path, spec, "cpu")
+            values = torch.zeros((2, 3, 25, 3))
+            torch.testing.assert_close(model(values), loaded(values), atol=0, rtol=0)
+            self.assertEqual(metadata["side"], "shared")
+            with self.assertRaisesRegex(ValueError, "(?i)shared"):
+                load_shared_joint_checkpoint(
+                    path,
+                    load_hand_spec("l21", "left"),
+                    "cpu",
+                )
 
     def test_checkpoint_cannot_override_declared_effective_output_limits(self):
         spec=load_hand_spec('g1','right')

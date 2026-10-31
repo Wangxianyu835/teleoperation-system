@@ -22,7 +22,7 @@ def training_run_directory(root, hand_model, side, input_profile, run_name):
     for value in (hand_model, side, input_profile, run_name):
         if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
             raise ValueError(f"Invalid model path component: {value!r}")
-    if side not in ("left", "right"):
+    if side not in ("left", "right", "shared"):
         raise ValueError(f"Invalid target side: {side!r}")
     return Path(root) / hand_model / side / "nn" / input_profile / run_name
 

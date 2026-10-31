@@ -38,13 +38,13 @@ command = pipeline.update(results[(hand_model,side)], timestamp=normalized.times
 executor.apply(command)
 ```
 
-新掌长 profile 为 `camera_palm_length_window3_v1`，坐标框架 `hand_canonical_right`，units/length_unit 为 `1`，原始来源仍为 `mediapipe_world_meters`。分母单独记录为 `palm_length_m`。目标 specs 确定 D、关节顺序与 hash，NN/dex 同手型同侧输出语义一致。无效结果 positions=None；缺手保持命令，但不把保持值标记为有效求解。
+新掌长 profile 为 `camera_palm_length_window3_v1`，坐标框架 `hand_canonical_right`，units/length_unit 为 `1`，原始来源仍为 `mediapipe_world_meters`。分母单独记录为 `palm_length_m`。目标 specs 确定 D、关节顺序与 hash；每个 hand_model 的 shared NN 使用右侧 canonical 输出语义，运行时转换为实际 left/right 的原生结果，dex 仍按目标侧独立求解。无效结果 positions=None；缺手保持命令，但不把保持值标记为有效求解。
 
 L21 为 D=17，H1/GR1 为 D=6（展开 12/11），G1 为 D=7。旧 L21 18D 占位布局只由明确文件/FK/权重边界读取；`legacy_l21_dofs` 保留 float64 精度，旧 TRON2A 消费端显式选择 float32。没有旧 L21 和 Native 两套公共结果包装。
 
 新 H5 schema `hand_joint_results_v1` 将 raw_positions[D] 和 command_positions[展开数] 分开；组中记录 hand_model/side/spec_hash 和两个有序关节表，根部保留 timestamps/frame_ids、输入及算法 metadata。回放验证完整身份、有限性、有效界和耦合，不重新滤波。旧 L21 和 `dex_native_results_v1` 仅走明确旧格式读取器；有损旧映射对照文件不能作为原生命令回放。
 
-权重 schema `hand_joint_nn_v1` 严格校验目标与输入契约，不依赖维数相同就认定兼容。路径与字段详见 [统一流程](hand-retargeting-unified.md)。
+权重 schema `hand_joint_nn_v1` 严格校验目标与输入契约，不依赖维数相同就认定兼容。新版 shared checkpoint 声明 `side=shared`、`hand_sides=[left,right]`、`training_robot=right`、`output_coordinates=canonical_right` 和 `angle_convention=l21_canonical_right_angles_v1`，路径为 `<hand_model>/shared/nn/<profile>/<run>/`。旧 side-specific checkpoint 仍保留明确的单侧兼容边界。路径与字段详见 [统一流程](hand-retargeting-unified.md)。
 
 ## 双臂三阶段
 
@@ -165,7 +165,7 @@ world Dataset 不重新对齐、重新缩放或身份重分配；实时窗口独
 world 数据的额外输入缩放、非米制单位和不完整 checkpoint 声明均报错。normalized palm-local 允许历史 checkpoint 缺少来源声明，但拒绝将显式 world 来源配到 normalized 契约。
 训练和导出只认文件声明，初始化模型和实时模型都必须与输入契约匹配；交叉使用在加载权重或调用模型前拒绝。
 
-新 world checkpoint 还声明 `hand_side=shared`、`training_robot=right`、`angle_convention=l21_canonical_right_angles_v1`。只使用右侧 FK 训练；输出时左侧四个 MCP roll 反号，其他角度不变。导出角度声明 `angle_convention=l21_native_angles_v1`，供既有回放使用。
+新 shared checkpoint 还声明 `side=shared`、`hand_sides=[left,right]`、`training_robot=right`、`output_coordinates=canonical_right`、`angle_convention=l21_canonical_right_angles_v1`。左右窗口都参与训练，但使用右侧目标 spec 的 FK 和 canonical 输出语义；运行时按目标手型转换到原生侧角度。L21 左侧四个 MCP roll 反号，其他角度不变；其他登记手型按其左右 URDF 限位方向适配。
 
 checkpoint 必须使用原有严格 state_dict 加载和相同 coordinate_alignment guard；保留参数名称和网络结构。不会通过迁移重新训练或补写历史声明。
 

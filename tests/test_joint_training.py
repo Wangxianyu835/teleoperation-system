@@ -20,14 +20,14 @@ class JointTrainingTests(unittest.TestCase):
         from unittest.mock import patch
         from teleoperation.learning import trainer
         from teleoperation.retargeting.hand.predictor import build_joint_model
-        from teleoperation.retargeting.hand.checkpoint import joint_checkpoint_payload,save_joint_checkpoint
+        from teleoperation.retargeting.hand.checkpoint import shared_joint_checkpoint_payload,save_joint_checkpoint
         from teleoperation.robots.hand_spec import load_hand_spec
         torch.set_num_threads(1)
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); data=root/'aligned.h5'; raw=root/'raw.h5'; weights=root/'init.pth'
             save_raw(raw,[world_frame(i) for i in range(40)]); align_h5(raw,data)
             spec=load_hand_spec('g1','right'); model=build_joint_model(spec,SMALL)
-            save_joint_checkpoint(weights,joint_checkpoint_payload(model,spec))
+            save_joint_checkpoint(weights,shared_joint_checkpoint_payload(model,spec))
             kwargs=dict(input_path=data,root=root/'models',hand_models=['g1'],run_name='init',epochs=1,device='cpu',init_checkpoint=weights)
             seen=[]
             original=trainer._epoch
@@ -43,7 +43,7 @@ class JointTrainingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 train_joint_models(**{**kwargs,'hand_models':['g1','l21'],'run_name':'bad'})
             for name in ('g1','l21'):
-                self.assertFalse(training_run_directory(root/'models',name,'right',PALM_LENGTH_PROFILE,'bad').exists())
+                self.assertFalse(training_run_directory(root/'models',name,'shared',PALM_LENGTH_PROFILE,'bad').exists())
             with self.assertRaises(ValueError):
                 train_joint_models(**{**kwargs,'run_name':'conflict','resume':root/'elsewhere.pth'})
 
@@ -55,21 +55,23 @@ class JointTrainingTests(unittest.TestCase):
             save_raw(raw, [world_frame(i) for i in range(40)])
             align_h5(raw, data)
             before = hashlib.sha256(data.read_bytes()).hexdigest()
-            kwargs = dict(input_path=data, root=root/'models', hand_side='right',
+            kwargs = dict(input_path=data, root=root/'models',
                           batch_size=8, val_ratio=.25, architecture=SMALL, device='cpu')
             train_joint_models(hand_models=['g1', 'l21'], run_name='first', epochs=1, **kwargs)
-            runs = [training_run_directory(kwargs['root'], n, 'right', PALM_LENGTH_PROFILE, 'first') for n in ('g1','l21')]
+            runs = [training_run_directory(kwargs['root'], n, 'shared', PALM_LENGTH_PROFILE, 'first') for n in ('g1','l21')]
             identities = []
             for run in runs:
                 self.assertEqual({p.name for p in run.iterdir()},
                                  {'model_best.pth','model_last.pth','config.json','dataset.json','metrics.jsonl','training.log'})
                 identities.append(json.loads((run/'dataset.json').read_text()))
             self.assertEqual(identities[0], identities[1])
+            self.assertEqual(identities[0]['train_side_counts']['left'], identities[0]['train_side_counts']['right'])
+            self.assertEqual(identities[0]['validation_side_counts']['left'], identities[0]['validation_side_counts']['right'])
             with self.assertRaises(FileExistsError):
                 train_joint_models(hand_models=['g1'], run_name='first', epochs=1, **kwargs)
             train_joint_models(hand_models=['g1'], run_name='first', epochs=2, resume=runs[0]/'model_last.pth', **kwargs)
             train_joint_models(hand_models=['g1'], run_name='full', epochs=2, **kwargs)
-            full = training_run_directory(kwargs['root'], 'g1','right',PALM_LENGTH_PROFILE,'full')
+            full = training_run_directory(kwargs['root'], 'g1','shared',PALM_LENGTH_PROFILE,'full')
             a = torch.load(runs[0]/'model_last.pth', weights_only=True)
             b = torch.load(full/'model_last.pth', weights_only=True)
             for name, value in a['state_dict'].items():

@@ -17,7 +17,11 @@ from teleoperation.paths import training_run_directory
 from teleoperation.robots.hand_spec import load_hand_spec
 from teleoperation.retargeting.hand.predictor import build_joint_model
 from teleoperation.retargeting.hand.hand_model import DifferentiableHandModel, human_target_vectors
-from teleoperation.retargeting.hand.checkpoint import joint_checkpoint_payload, load_joint_checkpoint, save_joint_checkpoint
+from teleoperation.retargeting.hand.checkpoint import (
+    load_shared_joint_checkpoint,
+    save_joint_checkpoint,
+    shared_joint_checkpoint_payload,
+)
 
 
 def _sha256(path):
@@ -33,23 +37,37 @@ def _json(path, value):
         temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
 
 
-def _epoch(model, fk, samples, side, batch_size, device, optimizer=None, seed=0):
-    indices = np.asarray([i for i, row in enumerate(samples) if row[side+'_valid']])
-    if not len(indices):
-        raise ValueError(f'No valid {side} windows in training/validation split')
+def _epoch(model, fk, samples, sides, batch_size, device, optimizer=None, seed=0):
+    if isinstance(sides, str):
+        sides = (sides,)
+    entries = [
+        (i, side)
+        for side in sides
+        for i, row in enumerate(samples)
+        if row[side + '_valid']
+    ]
+    if not entries:
+        raise ValueError(f'No valid windows for sides {tuple(sides)!r}')
     training = optimizer is not None
     model.train(training)
     if training:
-        np.random.RandomState(seed).shuffle(indices)
+        np.random.RandomState(seed).shuffle(entries)
     total, vector_total = 0., 0.
     bounds = torch.as_tensor(fk.spec.bounds, dtype=torch.float32, device=device)
     neutral = torch.as_tensor(fk.spec.q_reference, dtype=torch.float32, device=device)
     movable = bounds[:,1] > bounds[:,0]
     with torch.set_grad_enabled(training):
-        for start in range(0, len(indices), batch_size):
-            rows = [samples[i] for i in indices[start:start+batch_size]]
-            inputs = torch.as_tensor(np.stack([s[side+'_input'] for s in rows]), device=device)
-            human = np.stack([s[side+'_target'][0] for s in rows])
+        for start in range(0, len(entries), batch_size):
+            batch = entries[start:start+batch_size]
+            rows = [samples[i] for i, _ in batch]
+            inputs = torch.as_tensor(
+                np.stack([row[side + '_input'] for row, (_, side) in zip(rows, batch)]),
+                device=device,
+            )
+            human = np.stack([
+                row[side + '_target'][0]
+                for row, (_, side) in zip(rows, batch)
+            ])
             targets = torch.as_tensor(human_target_vectors(human, fk.spec), dtype=torch.float32, device=device)
             q = model(inputs)
             distance = torch.linalg.vector_norm(fk.vectors(q)-targets, dim=-1)
@@ -65,21 +83,21 @@ def _epoch(model, fk, samples, side, batch_size, device, optimizer=None, seed=0)
                 optimizer.step()
             total += float(loss.detach())*len(rows)
             vector_total += float(vector.detach())*len(rows)
-    return {'loss':total/len(indices), 'vector_loss':vector_total/len(indices), 'windows':len(indices)}
+    return {'loss':total/len(entries), 'vector_loss':vector_total/len(entries), 'windows':len(entries)}
 
 
-def train_joint_models(*, input_path, root, hand_models, run_name, hand_side='right',
+def train_joint_models(*, input_path, root, hand_models, run_name,
                        epochs=100, batch_size=64, learning_rate=1e-4, val_ratio=.2,
                        early_stopping_patience=20, seed=1234, device='cpu',
                        architecture=None, resume=None, init_checkpoint=None,
                        input_profile=PALM_LENGTH_PROFILE):
     """Train targets sequentially, preflighting every output before the first run.
 
-    Source side equals target side. Canonical input is shared, while native
-    joint limits, task frame and network weights remain target specific.
+    Train one canonical right-hand output model from both source sides.
+
+    The selected target hand model remains independent, while left and right
+    camera windows share one canonical output checkpoint.
     """
-    if hand_side not in ('left','right','both'):
-        raise ValueError('hand_side must be left, right or both')
     if input_profile != PALM_LENGTH_PROFILE:
         raise ValueError('New training requires the palm-length input profile')
     if resume is not None and init_checkpoint is not None:
@@ -89,28 +107,28 @@ def train_joint_models(*, input_path, root, hand_models, run_name, hand_side='ri
     names = list(hand_models)
     if not names or len(names) != len(set(names)):
         raise ValueError('Select unique target hand models')
-    sides = ('left','right') if hand_side == 'both' else (hand_side,)
-    specs = [load_hand_spec(name, side) for name in names for side in sides]
+    sides = ('left', 'right')
+    specs = [load_hand_spec(name, 'right') for name in names]
     if resume is not None and len(specs) != 1:
-        raise ValueError('Resume requires one target model and one side')
-    runs = [training_run_directory(root,s.hand_model,s.side,PALM_LENGTH_PROFILE,run_name) for s in specs]
+        raise ValueError('Resume requires one target model')
+    runs = [training_run_directory(root,s.hand_model,'shared',PALM_LENGTH_PROFILE,run_name) for s in specs]
     for run in runs:
         if resume is None and run.exists():
             raise FileExistsError(f'Training directory already exists: {run}')
         if resume is not None and Path(resume).resolve() != (run/'model_last.pth').resolve():
-            raise ValueError('Resume must explicitly select this run model_last.pth')
+            raise ValueError('Resume must explicitly select this shared run model_last.pth')
     source = resume if resume is not None else init_checkpoint
     loaded_sources = {}
     if source is not None:
         # A later target mismatch must fail before the first output directory.
         for spec in specs:
-            loaded, payload = load_joint_checkpoint(source,spec,'cpu')
+            loaded, payload = load_shared_joint_checkpoint(source,spec,'cpu')
             if architecture is not None and build_joint_model(spec,architecture).model_kwargs != loaded.model_kwargs:
                 raise ValueError('Initialization/resume architecture mismatch')
-            loaded_sources[spec.key] = (loaded,payload)
+            loaded_sources[spec.hand_model] = (loaded,payload)
     initialization = None if init_checkpoint is None else {'path':str(Path(init_checkpoint).resolve()),'sha256':_sha256(init_checkpoint)}
     if resume is not None:
-        initialization = loaded_sources[specs[0].key][1].get('training_config',{}).get('initialization')
+        initialization = loaded_sources[specs[0].hand_model][1].get('training_config',{}).get('initialization')
     frames = len(load_twohand_h5(input_path)[0])
     train_end = int(frames*(1-val_ratio))
     val_start = train_end+2
@@ -132,11 +150,11 @@ def train_joint_models(*, input_path, root, hand_models, run_name, hand_side='ri
             torch.cuda.manual_seed_all(seed)
         selected_architecture = architecture
         if selected_architecture is None and source is not None:
-            selected_architecture = loaded_sources[spec.key][0].model_kwargs
+            selected_architecture = loaded_sources[spec.hand_model][0].model_kwargs
         model = build_joint_model(spec, selected_architecture).to(device)
         if init_checkpoint is not None:
-            model.load_state_dict(loaded_sources[spec.key][0].state_dict(),strict=True)
-        config = {'hand_model':spec.hand_model, 'target_side':spec.side, 'source_sides':[spec.side],
+            model.load_state_dict(loaded_sources[spec.hand_model][0].state_dict(),strict=True)
+        config = {'hand_model':spec.hand_model, 'target_side':'shared', 'source_sides':list(sides),
                   'spec_hash':spec.spec_hash, 'joint_names':list(spec.independent_joint_names),
                   'run_name':run_name, 'batch_size':batch_size, 'learning_rate':learning_rate,
                   'seed':seed, 'early_stopping_patience':early_stopping_patience,
@@ -151,7 +169,7 @@ def train_joint_models(*, input_path, root, hand_models, run_name, hand_side='ri
         if resume is not None:
             if json.loads((run/'config.json').read_text(encoding='utf-8')) != config or json.loads((run/'dataset.json').read_text(encoding='utf-8')) != identity:
                 raise ValueError('Resume configuration or dataset identity mismatch')
-            loaded, state = loaded_sources[spec.key]
+            loaded, state = loaded_sources[spec.hand_model]
             if state.get('training_config') != config or state.get('dataset_identity') != identity:
                 raise ValueError('Resume checkpoint configuration/data identity mismatch')
             model.load_state_dict(loaded.state_dict())
@@ -176,8 +194,8 @@ def train_joint_models(*, input_path, root, hand_models, run_name, hand_side='ri
             for epoch in range(first,epochs):
                 if stale >= early_stopping_patience:
                     break
-                training = _epoch(model,fk,train.samples,spec.side,batch_size,device,optimizer,seed+epoch)
-                valid = _epoch(model,fk,validation.samples,spec.side,batch_size,device)
+                training = _epoch(model,fk,train.samples,sides,batch_size,device,optimizer,seed+epoch)
+                valid = _epoch(model,fk,validation.samples,sides,batch_size,device)
                 scheduler.step(valid['loss'])
                 improved = valid['loss'] < best
                 best, stale = (valid['loss'],0) if improved else (best,stale+1)
@@ -185,7 +203,7 @@ def train_joint_models(*, input_path, root, hand_models, run_name, hand_side='ri
                 line = json.dumps(row)
                 metrics.write(line+'\n'); metrics.flush()
                 log.write(line+'\n'); log.flush()
-                payload = joint_checkpoint_payload(model,spec)
+                payload = shared_joint_checkpoint_payload(model,spec)
                 payload.update(epoch=epoch+1,best_loss=best,stale_epochs=stale,
                                optimizer_state=optimizer.state_dict(),scheduler_state=scheduler.state_dict(),
                                torch_rng=torch.get_rng_state(),python_rng=random.getstate(),
@@ -195,5 +213,5 @@ def train_joint_models(*, input_path, root, hand_models, run_name, hand_side='ri
                 if improved:
                     save_joint_checkpoint(run/'model_best.pth',payload)
                 save_joint_checkpoint(run/'model_last.pth',payload)
-                print(f'{spec.hand_model}/{spec.side} epoch={epoch+1} validation={valid["loss"]:.6f} saved={run}')
+                print(f'{spec.hand_model}/shared epoch={epoch+1} validation={valid["loss"]:.6f} saved={run}')
     return runs
