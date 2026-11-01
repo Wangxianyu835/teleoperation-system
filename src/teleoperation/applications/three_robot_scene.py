@@ -162,7 +162,7 @@ class ThreeRobotHandScene:
         if not self.robots:
             p.disconnect(self.cid)
             raise RuntimeError(
-                "no robot could be loaded; check that assets/robots/from_teleopbench "
+                "no robot could be loaded; check that assets/robots "
                 "contains h1_2 / gr1 / g1"
             )
         self.ground_lift = self._lift_clear_of_ground(ground_clearance)

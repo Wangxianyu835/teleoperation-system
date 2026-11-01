@@ -11,7 +11,7 @@ from typing import Mapping, Sequence
 
 SIDES = ("left", "right")
 
-#: Robots whose URDF ships in ``assets/robots/from_teleopbench`` (local, not in git).
+#: Robots whose URDF ships in ``assets/robots``.
 PAPER_ROBOTS = ("h1_2", "gr1_t2", "g1")
 
 TRON2A = "tron2a"
@@ -169,8 +169,8 @@ ARM_PROFILES: dict = {
         metric_offset=(0.0, 0.0, 0.0),
         expected_arm_dof=7,
         loadable=False,
-        notes="teammate's arm; needs third_party/tron2-robot-description/robot.urdf "
-              "+ a calibration JSON + a hand checkpoint (none of them in this repo).",
+        notes="separate calibrated route; uses assets/robots/tron2a/robot.urdf "
+              "and a calibration JSON; hand control also needs a hand checkpoint.",
     ),
 }
 

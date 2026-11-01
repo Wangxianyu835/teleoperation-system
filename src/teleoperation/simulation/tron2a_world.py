@@ -180,12 +180,13 @@ def _prepare_urdf(urdf_path: str | Path, directory: Path, *, display="full") -> 
         raise FileNotFoundError(f"TRON2A URDF was not found: {source}")
     tree = ET.parse(source)
     root = tree.getroot()
+    package_root = source.parent.parent if source.parent.name.lower() == "urdf" else source.parent
     missing = []
     for mesh in root.findall(".//mesh"):
         filename = mesh.attrib["filename"]
         if filename.startswith("package://"):
             suffix = filename.split("/meshes/", 1)
-            path = source.parent.parent / "meshes" / suffix[1] if len(suffix) == 2 else source.parent / filename[10:]
+            path = package_root / "meshes" / suffix[1] if len(suffix) == 2 else source.parent / filename[10:]
         else:
             path = Path(filename)
             if not path.is_absolute():

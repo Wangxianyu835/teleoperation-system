@@ -1,8 +1,8 @@
 """Repository paths for the supported editable installation."""
 from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-ROBOTS_ROOT = PROJECT_ROOT / "assets" / "robots" / "from_teleopbench"
-L21_ROOT = PROJECT_ROOT / "assets" / "robots" / "l21"
+ROBOTS_ROOT = PROJECT_ROOT / "assets" / "robots"
+L21_ROOT = ROBOTS_ROOT / "l21"
 DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "checkpoint"
 DEFAULT_OUTPUT_H5 = PROJECT_ROOT / "outputs" / "hand_retargeting" / "twohand_angles.h5"
 DEFAULT_REALTIME_SNAPSHOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "mediapipe_realtime.png"
@@ -26,7 +26,7 @@ def training_run_directory(root, hand_model, side, input_profile, run_name):
         raise ValueError(f"Invalid target side: {side!r}")
     return Path(root) / hand_model / side / "nn" / input_profile / run_name
 
-DEFAULT_TRON2A_URDF = PROJECT_ROOT / "third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf"
+DEFAULT_TRON2A_URDF = ROBOTS_ROOT / "tron2a" / "robot.urdf"
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 
 

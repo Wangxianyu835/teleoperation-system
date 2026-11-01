@@ -18,8 +18,9 @@ from teleoperation.simulation.arm_profiles import (
     table,
 )
 
+from teleoperation.paths import ROBOTS_ROOT
+
 ROOT = Path(__file__).resolve().parents[1]
-ROBOTS_ROOT = ROOT / "assets" / "robots" / "from_teleopbench"
 URDF_PATHS = {"h1_2": ROBOTS_ROOT / "h1_2" / "h1_2.urdf",
               "gr1_t2": ROBOTS_ROOT / "gr1" / "urdf" / "robot.urdf",
               "g1": ROBOTS_ROOT / "g1" / "g1_29dof_with_hand_lock_waist.urdf"}
@@ -99,7 +100,7 @@ class ArmProfileTableTests(unittest.TestCase):
 
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots is missing (not in git)")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class ThreeRobotArmIkTests(unittest.TestCase):
     """One shared headless scene: every arm must track, everything else must hold."""
@@ -394,7 +395,7 @@ class TwoSidedForearmGapTests(unittest.TestCase):
         json.dumps(self.driver.summary())      # the report payload stays JSON-able
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots is missing (not in git)")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class ArmTargetSlewTests(unittest.TestCase):
     """The slew cap has to be real, and the working point has to stay reachable apart."""
@@ -714,7 +715,7 @@ class FieldArmDefaultsTests(unittest.TestCase):
         self.assertEqual(rigid_elbow_robots({}), set())
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots is missing (not in git)")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class LiveRestPosesTests(unittest.TestCase):
     """``rest_poses="live"``: 零空间项不许把解从「精确可达」的目标上拽走。"""
@@ -800,7 +801,7 @@ class LiveRestPosesTests(unittest.TestCase):
                           sides=("right",), rest_poses="lively")
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots is missing (not in git)")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class ElbowPostureTests(unittest.TestCase):
     """「肘跟手」（``--arm-elbow-follow operator``）：零空间参考跟着操作者的肘弯走。"""
@@ -963,7 +964,7 @@ class ElbowPostureTests(unittest.TestCase):
                                        places=5)
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots is missing (not in git)")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class RigidShoulderAnchorTests(unittest.TestCase):
     """Regression coverage for RigidShoulderAnchorTests."""
