@@ -41,32 +41,6 @@ def vr_observation(points=None, timestamp=0.):
 
 
 class DexInputTests(unittest.TestCase):
-    def test_old_camera_wrist_fields_are_ignored_without_losing_hand_geometry(self):
-        import h5py
-        from teleoperation.data.hand_recording import RawHandH5Writer, iter_dex_observations
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "old_camera.h5"
-            points = open_points()
-            with RawHandH5Writer(path, landmark_space="world") as writer:
-                writer.append({"left": points, "right": points}, 1.,
-                              world_hands={"left": points, "right": points})
-            first = list(iter_dex_observations(path, "camera"))[0]
-            with h5py.File(path, "r+") as stream:
-                # Retired optional data can even be malformed: it is not input.
-                stream.attrs.update(wrist_observation_version=1,
-                                    wrist_reference_frame="mediapipe_hand_world_axes")
-                for side in ("left", "right"):
-                    stream.create_dataset(side + "_wrist_orientation_xyzw", data=[[np.nan]])
-                    stream.create_dataset(side + "_wrist_orientation_valid", data=[True])
-            before = path.read_bytes()
-            restored = list(iter_dex_observations(path, "camera"))[0]
-            self.assertEqual(path.read_bytes(), before)
-        self.assertIsNone(first.wrists)
-        self.assertIsNone(restored.wrists)
-        for side in ("left", "right"):
-            np.testing.assert_array_equal(restored.world_hands[side], points)
-            np.testing.assert_array_equal(restored.world_hands[side], first.world_hands[side])
-
     def test_native_result_requires_named_finite_coordinates(self):
         valid = HandJointResult("g1", "left", "a"*64, ("a", "b"), np.zeros(2), 0.)
         self.assertEqual(valid.named_positions(), {"a": 0., "b": 0.})

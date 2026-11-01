@@ -11,7 +11,6 @@ import unittest
 from unittest import mock
 
 import numpy as np
-import h5py
 
 from teleoperation.applications import world_landmark_capture
 from teleoperation.cli import build_parser, main as cli_main
@@ -59,9 +58,6 @@ class LegacyWorldRecordingTests(unittest.TestCase):
                 metadata={"camera_index": 1},
             )
             arrays, attributes = read_world_landmark_recording(path)
-            with h5py.File(path, "r") as handle:
-                self.assertFalse(any("wrist_orientation" in key for key in handle))
-                self.assertFalse(any(key.startswith("wrist_") for key in handle.attrs))
 
         self.assertEqual(arrays["left_valid"].tolist(), [True, False])
         self.assertEqual(arrays["right_valid"].tolist(), [False, True])
@@ -69,20 +65,6 @@ class LegacyWorldRecordingTests(unittest.TestCase):
 
 
 class CombinedCaptureTests(unittest.TestCase):
-    def test_hands_only_writer_keeps_both_spaces_without_derived_wrists(self):
-        rows = [{"timestamp": 1., "left_hand_keypoints": points(.2),
-                 "right_hand_keypoints": points(.3),
-                 "left_world_landmarks": points(.01),
-                 "right_world_landmarks": points(.02)}]
-        with tempfile.TemporaryDirectory() as directory:
-            path = write_hand_body_recording(Path(directory) / "hands.h5", rows)
-            with h5py.File(path, "r") as handle:
-                self.assertFalse(any("wrist_orientation" in key for key in handle))
-                self.assertFalse(any(key.startswith("wrist_") for key in handle.attrs))
-                for key in ("left_hand_keypoints", "right_hand_keypoints",
-                            "left_world_landmarks", "right_world_landmarks"):
-                    np.testing.assert_array_equal(handle[key][0], rows[0][key])
-
     def test_combined_round_trip_contains_both_spaces(self):
         from tests.smplerx_fixtures import write
         from teleoperation.data.body_recording import load_body_recording, replay_observation

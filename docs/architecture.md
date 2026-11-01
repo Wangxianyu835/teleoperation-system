@@ -7,12 +7,6 @@ SMPLer-X 工作进程。`inputs/body_tracking` 管理新身体源的时序有效
 `applications/camera_scene_arm` 共用既有映射、腕姿态与 IK 控制。模型依赖只进入独立环境。
 旧 Pose 身体 reader 和 Hands 驱动机械臂的回退已移除。配置见 [SMPLer-X 链路](smplerx-arm.md)。
 
-MediaPipe Hands 仅输出手部关键点，`RawHandFrame.wrists=None`；不再生成、录制或恢复
-`camera_palm` 腕朝向。机械臂读取 `RawTeleopObservation.wrists` 中的 SMPLer-X 腕姿态，
-Vision Pro 继续使用原始腕矩阵。手指局部坐标仍调用 `build_palm_basis` 和
-`align_mediapipe_hand`，与被删除的独立腕观测分支用途不同。
-变更范围及验证见 [MediaPipe 腕观测退役](mediapipe-wrist-removal.md)。
-
 ```mermaid
 flowchart LR
   I[Input] --> O[Observation Contract]
@@ -36,10 +30,6 @@ flowchart LR
 | data | schema、读写、序列化、事务、记录缓存 | 不调用对齐、滤波、推理、IK 或设备采集 |
 | apps | 创建组件、按顺序调用、循环、同步、关闭资源 | 不实现坐标、IK、网络或关节映射公式 |
 | tools | 绘图、显示、报告格式化 | 不独立组织业务流程 |
-
-`retargeting/arm/rotations.py` 保存机械臂共享的 NumPy 矩阵/四元数转换；
-回归测试位于 `tests/test_arm_rotations.py`。旧 `wrist_targets.py` 的手部到末端近似映射
-及其 `devtools/verify_arm_from_capture.py` 入口已退役。
 
 `inputs/replay` 只逐帧读取 NPY；`learning/dataset` 允许调用单帧处理与时间缓冲来构建样本。二者都不调用应用层。
 

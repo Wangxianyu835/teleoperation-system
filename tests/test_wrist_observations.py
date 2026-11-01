@@ -25,30 +25,6 @@ class WristObservationTests(unittest.TestCase):
         for value in (None, np.eye(4), np.full((4, 4), np.nan)):
             self.assertFalse(vr_wrist(value).orientation_valid)
 
-    def test_retired_camera_palm_cannot_align_or_replace_an_active_wrist(self):
-        for source, reference in (("camera_palm", "smplx_camera_axes"),
-                                  ("smplerx", "mediapipe_hand_world_axes")):
-            with self.subTest(source=source, reference=reference):
-                retired = WristObservation(
-                    np.array([0., 0., 0., 1.]), reference, "old_palm", source,
-                    2., orientation_valid=True,
-                )
-                tracker = WristTracker(np.eye(3), calibration_frames=1)
-                tracker.update(retired, .03)
-                self.assertIsNone(tracker.neutral)
-                self.assertEqual(tracker.reason, "unsupported wrist reference frame")
-                active = WristObservation(
-                    np.array([0., 0., 0., 1.]), "smplx_camera_axes",
-                    "smplx_wrist_local", "smplerx", 1., orientation_valid=True,
-                )
-                tracker.update(active, .03)
-                before = tracker.summary()
-                tracker.update(retired, .03)
-                self.assertEqual(tracker.generation, before["generation"])
-                self.assertEqual(tracker.signature, ("smplerx", "smplx_camera_axes", "smplx_wrist_local"))
-                np.testing.assert_array_equal(tracker.delta.as_quat(), before["delta_xyzw"])
-                self.assertEqual(tracker.last_timestamp, 1.)
-
     def test_hold_preserves_delta_and_source_change_realigns(self):
         tracker = WristTracker(np.eye(3), calibration_frames=1)
         tracker.update(vr_wrist(np.diag([1, 1, 1, 1]) + np.array(

@@ -23,10 +23,9 @@
    另外注意一个坑：**没追踪到的那只手也会发数据**，但内容是占位值
    （腕平移为 0、旋转为固定 -90 度、`pinch_distance=0`）。这类帧在
    `*_valid` 里被标成 False，不会被当成有效数据。
-2. **需要肩肘时不能只靠头显。** 当前相机身体输入使用 SMPLer-X，并单独声明来源。
-   Vision Pro 腕位姿与手指处理见 [腕输入说明](wrist-input-and-acceptance.md)。
-   旧 MediaPipe 掌面到机械臂目标的 `wrist_targets.py` 近似路线已退役，
-   不影响 Vision Pro 原始变换或上游 TransHandR 手指流水线。
+2. **需要肩肘时不能只靠头显。** 要么另配摄像头（Pose）或 IMU 并单独声明来源，要么
+   走论文那条只吃"手腕 6D 位姿"的路线（见
+   `src/teleoperation/retargeting/arm/wrist_targets.py` 开头对论文链路的说明）。
 
 ## 1. 前置条件（不需要 Mac）
 

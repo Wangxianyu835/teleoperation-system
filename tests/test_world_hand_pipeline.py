@@ -205,8 +205,6 @@ class WorldHandPipelineTests(unittest.TestCase):
                 self.assertEqual(source["left_world_landmarks"].shape, (4, 21, 3))
                 self.assertFalse(np.any(source["right_world_landmarks"][:]))
                 self.assertFalse(np.any(source["right_hand_keypoints"][:]))
-                self.assertFalse(any("wrist_orientation" in key for key in source))
-                self.assertFalse(any(key.startswith("wrist_") for key in source.attrs))
             dataset = TwoHandH5Dataset(aligned)
             self.assertEqual(dataset.coordinate_alignment, palm_local_metadata(mode)["coordinate_alignment"])
             self.assertEqual(dataset.side_counts()["left"], 2)

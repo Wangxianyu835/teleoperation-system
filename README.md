@@ -299,7 +299,6 @@ $vrRaw = '<Vision Pro 原始录制.h5>'
 | 手部输出与机械臂诊断 | [手部输出处理](docs/hand-command-safety.md)、[双臂诊断](docs/arm-diagnostics.md) |
 | 数据、坐标与模块职责 | [数据契约](docs/contracts.md)、[架构](docs/architecture.md)、[坐标约定](docs/CONVENTIONS.md) |
 | 腕输入和现场验收清单 | [腕输入与验收](docs/wrist-input-and-acceptance.md) |
-| MediaPipe 派生腕观测删除范围与兼容性 | [腕观测退役记录](docs/mediapipe-wrist-removal.md) |
 | 扩展命令与历史工作流 | [工作流参考](docs/workflow-reference.md) |
 | 文献与演示材料 | [文献综述](docs/retargeting-literature-review-2026-10-29.md)、[演示材料](present/README.md) |
 

@@ -20,11 +20,6 @@ InputSource.close() -> None
 
 `RawHandFrame.geometry_encoding` 表达每侧 `landmarks21`、`landmarks25` 或 `transforms25`。一般 landmarks 编码也支持历史 21/25 点。MediaPipe 原始点为 `(21,3)`，Vision Pro 原始变换矩阵为 `(25,4,4)`，Replay 保留文件内的点值。输入不执行轴交换、左右符号变换、归一化或拓扑转换。
 
-MediaPipe 的原始手部观测保持 `wrists=None`，不再通过关键点推算独立腕朝向。
-`RawHandFrame.wrists` 仍为可选公共字段，供 Vision Pro 使用；相机组合观测的
-`RawTeleopObservation.wrists` 来自 SMPLer-X。腕控制不接受旧 `camera_palm` 来源或
-`mediapipe_hand_world_axes` 参考系。
-
 缺失、非有限数据、退化几何分别在设备解析、单帧处理和正式算法入口按原有策略处理；不能将它们伪装成窗口未就绪。
 
 ## 手部结果
@@ -148,14 +143,6 @@ world 字段的 dataset attrs 声明 `source_landmark_space=mediapipe_world_mete
 `record-world` 保留身体字段、NaN 缺失编码和 Unix 毫秒时间戳，只补充默认处理空间 world 的声明。
 
 `hand align --landmark-space world|normalized` 可显式选择来源；省略参数时读取上述 root 声明，旧文件没有声明则选择 normalized。
-
-相机手部录制不再生成 `left/right_wrist_orientation_xyzw`、
-`left/right_wrist_orientation_valid` 及其相机腕版本/坐标元数据。
-旧 H5 中的这些附加字段不作为腕控制输入；手部 reader 继续读取关键点与时间戳。
-对齐复制可以保留旧附加字段，原始文件不被重写。
-组合身体录制在写入和回放时过滤旧 MediaPipe 腕观测，SMPLer-X 与 Vision Pro 腕数据保留。
-Vision Pro 的 `wrist_reference_frame` 等同名声明仍由其专用 reader 校验。
-
 world 对齐要求两套 world dataset 均存在，并声明米制来源；单侧零行、非有限值和退化掌面变为无效零行，整套字段缺失时报错。
 新输出另存为训练 H5：主字段成为所选来源的 `(T,25,3)`；原始 world 21 点及身体字段原样复制。原始文件保持不变，拒绝对已声明 alignment 的输入再次对齐。
 
