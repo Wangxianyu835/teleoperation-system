@@ -142,8 +142,7 @@ remain in MediaPipe's metre-based world space.
             "world_origin": "hand_geometric_center",
             **({"world_invalid_reasons": world_invalid_reasons} if world_invalid_reasons else {}),
         })
-    from teleoperation.inputs.wrist import camera_wrists
-    output["wrists"] = camera_wrists(world_hands, timestamp_ms)
+    output["wrists"] = None
     return output
 
 
@@ -273,7 +272,7 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
             raw.get("metadata", {}),
             {"left": "landmarks21", "right": "landmarks21"},
             world_hands=world_hands,
-            wrists=raw.get("wrists"),
+            wrists=None,
         )
 
     def capture_sample(self):
@@ -318,7 +317,7 @@ shoulder/elbow/wrist subset and its metric pose-world copy.
             "mediapipe_hands", {**raw["metadata"], "timestamp_unit": "monotonic_s"},
             {side: "landmarks21" for side in ("left", "right")},
             world_hands={side: raw[f"world_{side}"] for side in ("left", "right")},
-            wrists=raw.get("wrists"),
+            wrists=None,
         )
 
     def close(self): self.release()

@@ -160,7 +160,7 @@ class CameraFrameSource:
         self._last_capture_time_s = stamp
         if self._start_timestamp is None:
             self._start_timestamp = float(raw.timestamp)
-        raw_frame = {**raw.hands, "timestamp": raw.timestamp, "wrists": raw.wrists,
+        raw_frame = {**raw.hands, "timestamp": raw.timestamp, "wrists": None,
                      "metadata": dict(raw.metadata)}
         self.last_raw_frame = raw_frame
         if raw.world_hands is not None:
@@ -276,9 +276,7 @@ class ReplayFrameSource:
         if world_missing:
             raw_frame["metadata"]["world_invalid_reasons"] = world_missing
         self.last_raw_frame = raw_frame
-        from teleoperation.inputs.wrist import camera_wrists
-        raw_frame["wrists"] = camera_wrists(
-            {side: raw_frame.get("world_" + side) for side in SIDES}, timestamp)
+        raw_frame["wrists"] = None
         diagnostics = getattr(self, "diagnostics", None)
         with (nullcontext() if diagnostics is None else diagnostics.stage("hand_preprocessing")):
             return self.pipeline.process_window(raw_frame)
@@ -547,9 +545,6 @@ def _record_frame(dumped, raw_frame, arms) -> None:
         dumped["world"][side].append(np.full((21, 3), np.nan, dtype=np.float32)
                                      if world is None
                                      else np.asarray(world, dtype=np.float32))
-        wrist = ((raw_frame or {}).get("wrists") or {}).get(side)
-        dumped.setdefault("wrist", {s: [] for s in SIDES})[side].append(
-            wrist.orientation_xyzw if wrist is not None and wrist.orientation_valid else np.full(4, np.nan))
     dumped["timestamps"].append(float(0.0 if raw_frame is None
                                      else raw_frame.get("timestamp", 0.0)))
 

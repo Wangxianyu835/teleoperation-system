@@ -852,7 +852,7 @@ class NeutralOrientationTests(unittest.TestCase):
         self.assertTrue(bridge.summary()["neutral"]["right"]["orientation_recorded"])
 
     def test_rotating_the_forearm_sends_that_relative_rotation(self):
-        from teleoperation.retargeting.arm.wrist_targets import (
+        from teleoperation.retargeting.arm.rotations import (
             rotation_matrix_to_quaternion)
 
         bridge = self._calibrated_on_a_bent_arm()

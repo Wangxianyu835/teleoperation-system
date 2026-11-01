@@ -43,6 +43,7 @@ class RawMediaPipeParsingTests(unittest.TestCase):
         frame = parse_result(result(), 1234, {"frame_index": 0})
         self.assertIsNone(frame["left"])
         self.assertIsNone(frame["right"])
+        self.assertIsNone(frame["wrists"])
         self.assertEqual(frame["timestamp"], 1234)
         self.assertEqual(frame["metadata"], {
             "frame_index": 0, "source_landmark_space": "mediapipe_normalized",
@@ -55,6 +56,7 @@ class RawMediaPipeParsingTests(unittest.TestCase):
                 raw = hand()
                 frame = parse_result(result([label], [raw]), 1234)
                 points = frame[side]
+                self.assertIsNone(frame["wrists"])
                 self.assertEqual(points.shape, (21, 3))
                 self.assertEqual(points.dtype, np.float32)
                 self.assertTrue(np.isfinite(points).all())
@@ -84,6 +86,7 @@ class RawMediaPipeParsingTests(unittest.TestCase):
         self.assertNotIn("world_right", normalized)
 
         frame = parse_result(detected, 1234, include_world=True)
+        self.assertIsNone(frame["wrists"])
         self.assertEqual(frame["world_right"].shape, (21, 3))
         self.assertEqual(frame["world_right"].dtype, np.float32)
         np.testing.assert_array_equal(

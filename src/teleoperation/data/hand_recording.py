@@ -36,10 +36,6 @@ class RawHandH5Writer:
                 "recorded_frames": 0,
             })
             for side in self.hand_counts:
-                for suffix, shape, dtype in (("wrist_orientation_xyzw", (4,), "float64"),
-                                             ("wrist_orientation_valid", (), "bool")):
-                    self._file.create_dataset(f"{side}_{suffix}", shape=(0, *shape),
-                                              maxshape=(None, *shape), dtype=dtype)
                 self._file.create_dataset(
                     f"{side}_hand_keypoints", shape=(0, 21, 3),
                     maxshape=(None, 21, 3), dtype="float32",
@@ -92,11 +88,6 @@ class RawHandH5Writer:
         for side in self.hand_counts:
             self._file[f"{side}_hand_keypoints"][self.count] = points[side]
             self._file[f"{side}_world_landmarks"][self.count] = world_points[side]
-            from teleoperation.inputs.wrist import camera_wrists, CAMERA_REFERENCE, CAMERA_LOCAL
-            wrist = camera_wrists(world_points, timestamp)[side]
-            self._file[f"{side}_wrist_orientation_xyzw"][self.count] = wrist.orientation_xyzw if wrist.orientation_valid else np.full(4, np.nan)
-            self._file[f"{side}_wrist_orientation_valid"][self.count] = wrist.orientation_valid
-            self._file.attrs.update(wrist_observation_version=1, wrist_reference_frame=CAMERA_REFERENCE, wrist_local_frame=CAMERA_LOCAL)
         self._file["frame_ids"][self.count] = self.count
         self._file["timestamps"][self.count] = timestamp
         self.count += 1
@@ -172,28 +163,18 @@ def iter_dex_observations(path, source):
         if any(dataset.shape != shape for dataset in datasets.values()):
             raise ValueError("Raw dex recording topology or frame count mismatch")
         for index, timestamp in enumerate(timestamps):
-            from teleoperation.inputs.wrist import camera_wrists, vr_wrist
+            from teleoperation.inputs.wrist import vr_wrist
             hands = {}
             for side in sides:
                 value = np.asarray(datasets[side][index])
                 valid = stream.get(side + "_valid")
                 hands[side] = value if (valid is None or bool(valid[index])) and np.any(value) else None
-            wrists = (camera_wrists(hands, timestamp) if source == "camera" else {
+            wrists = (None if source == "camera" else {
                 s: vr_wrist(stream[s + "_wrist_transform"][index]
                             if s + "_wrist_transform" in stream else None, timestamp,
                             tracked=bool(stream[s + "_wrist_valid"][index])
                             if s + "_wrist_valid" in stream else
                             (bool(stream[s + "_valid"][index]) if s + "_valid" in stream else True)) for s in sides})
-            if source == "camera" and "wrist_observation_version" in stream.attrs:
-                from teleoperation.inputs.wrist import recorded_camera_wrist
-                for side in sides:
-                    qkey = side + "_wrist_orientation_xyzw"
-                    if qkey in stream:
-                        valid = stream.get(side + "_wrist_orientation_valid")
-                        wrists[side] = recorded_camera_wrist(
-                            stream[qkey][index], timestamp,
-                            stream.attrs["wrist_reference_frame"], stream.attrs["wrist_local_frame"],
-                            valid is None or bool(valid[index]))
             yield RawHandFrame(hands if source == "visionpro" else {s: None for s in sides},
                 timestamp, expected, {**metadata, "frame_id": index},
                 {s: "transforms25" for s in sides} if source == "visionpro" else {},

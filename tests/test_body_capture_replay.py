@@ -9,6 +9,38 @@ from teleoperation.data.body_recording import save_body_recording, load_body_rec
 
 
 class BodyCaptureReplayTests(unittest.TestCase):
+    def test_retired_nested_wrists_are_removed_from_capture_and_legacy_replay(self):
+        from dataclasses import replace
+        from types import SimpleNamespace
+        from tests.smplerx_fixtures import observation
+        from teleoperation.contracts.observations import CameraFrame
+        from teleoperation.contracts.wrist import WristObservation
+        from teleoperation.data.body_recording import capture_sample, replay_observation
+        from teleoperation.inputs.smplerx import decode_packet, encode_packet
+        raw, result = observation(0)
+        retired = WristObservation(np.array([0., 0., 0., 1.]),
+                                   'mediapipe_hand_world_axes', 'old_palm', 'camera_palm',
+                                   raw.hands.timestamp, orientation_valid=True)
+        raw = replace(raw, hands=replace(raw.hands, wrists={'left': retired}))
+        source = SimpleNamespace(last_frame=CameraFrame(np.zeros((4, 5, 3), dtype=np.uint8),
+                                                       raw.hands.timestamp, 0),
+                                 session_id='camera', last_result=result)
+        row = capture_sample(source, raw)
+        packet = decode_packet(row['observation_packet'].tobytes())
+        self.assertIsNone(packet['payload']['hands']['wrists'])
+        self.assertEqual(raw.hands.wrists['left'].source, 'camera_palm')
+        packet['payload']['hands']['wrists'] = {'left': {**vars(retired),
+                                                       'orientation_xyzw': np.array([np.nan])}}
+        row['observation_packet'] = np.frombuffer(encode_packet('observation', packet['payload']), dtype=np.uint8)
+        restored = replay_observation(row)
+        self.assertIsNone(restored.hands.wrists)
+        for side in ('left', 'right'):
+            self.assertEqual(restored.wrists[side].source, 'smplerx')
+            np.testing.assert_array_equal(restored.wrists[side].orientation_xyzw,
+                                          raw.wrists[side].orientation_xyzw)
+            np.testing.assert_array_equal(restored.hands.world_hands[side],
+                                          raw.hands.world_hands[side])
+
     def test_live_and_replay_keep_identical_irregular_capture_intervals(self):
         from dataclasses import replace
         from unittest.mock import Mock

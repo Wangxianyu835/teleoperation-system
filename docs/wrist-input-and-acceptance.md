@@ -3,6 +3,11 @@
 相机腕旋转来自 SMPL-X 完整 FK 链，与身体位置一起经过跟踪器校验。
 MediaPipe Hands 提供手指数据。相机运行和回放见 [SMPLer-X 链路](smplerx-arm.md)。
 
+MediaPipe 不再生成独立掌面/腕四元数，手部观测的 `wrists` 为 `None`。
+旧 `camera_palm` 来源在回放及控制边界被停用。手指坐标对齐仍使用掌部局部基，
+三帧窗口、掌长归一化和左右手规范保持原样。
+删除清单、历史数据兼容与验证见 [退役记录](mediapipe-wrist-removal.md)。
+
 `WristSceneController` 为每侧维护 `WristTracker`，收集稳定中性姿态并计算相对旋转。
 每台机器人记录自己的初始腕姿态，结合基座旋转生成世界坐标中的目标四元数。
 会话或模型身份改变时重置标定；真正失效或过期清空未完成的稳定窗口。

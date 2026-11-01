@@ -5,7 +5,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from teleoperation.contracts.wrist import WristObservation
-from teleoperation.inputs.wrist import camera_wrists, vr_wrist, CAMERA_REFERENCE, CAMERA_LOCAL, VR_REFERENCE
+from teleoperation.inputs.wrist import vr_wrist, VR_REFERENCE
 from teleoperation.inputs.visionpro import VisionProInput
 from teleoperation.retargeting.arm.wrist_orientation import WristTracker
 
@@ -25,21 +25,29 @@ class WristObservationTests(unittest.TestCase):
         for value in (None, np.eye(4), np.full((4, 4), np.nan)):
             self.assertFalse(vr_wrist(value).orientation_valid)
 
-    def test_camera_rotation_is_measured_before_local_normalization(self):
-        points = np.zeros((21, 3))
-        points[5] = [.02, .05, .005]
-        points[9] = [0, .06, 0]
-        rotation = Rotation.from_euler("xyz", [.2, -.3, .4]).as_matrix()
-        original = camera_wrists({"left": points})["left"]
-        moved = camera_wrists({"left": points @ rotation.T + [.1, .2, .3]})["left"]
-        self.assertTrue(moved.orientation_valid)
-        actual = Rotation.from_quat(moved.orientation_xyzw).as_matrix()
-        expected = rotation @ Rotation.from_quat(original.orientation_xyzw).as_matrix()
-        np.testing.assert_allclose(actual, expected, atol=1e-6)
-        self.assertAlmostEqual(np.linalg.det(actual), 1.)
-
-    def test_camera_no_world_data_has_no_orientation(self):
-        self.assertFalse(camera_wrists(None)["left"].orientation_valid)
+    def test_retired_camera_palm_cannot_align_or_replace_an_active_wrist(self):
+        for source, reference in (("camera_palm", "smplx_camera_axes"),
+                                  ("smplerx", "mediapipe_hand_world_axes")):
+            with self.subTest(source=source, reference=reference):
+                retired = WristObservation(
+                    np.array([0., 0., 0., 1.]), reference, "old_palm", source,
+                    2., orientation_valid=True,
+                )
+                tracker = WristTracker(np.eye(3), calibration_frames=1)
+                tracker.update(retired, .03)
+                self.assertIsNone(tracker.neutral)
+                self.assertEqual(tracker.reason, "unsupported wrist reference frame")
+                active = WristObservation(
+                    np.array([0., 0., 0., 1.]), "smplx_camera_axes",
+                    "smplx_wrist_local", "smplerx", 1., orientation_valid=True,
+                )
+                tracker.update(active, .03)
+                before = tracker.summary()
+                tracker.update(retired, .03)
+                self.assertEqual(tracker.generation, before["generation"])
+                self.assertEqual(tracker.signature, ("smplerx", "smplx_camera_axes", "smplx_wrist_local"))
+                np.testing.assert_array_equal(tracker.delta.as_quat(), before["delta_xyzw"])
+                self.assertEqual(tracker.last_timestamp, 1.)
 
     def test_hold_preserves_delta_and_source_change_realigns(self):
         tracker = WristTracker(np.eye(3), calibration_frames=1)
@@ -50,8 +58,8 @@ class WristObservationTests(unittest.TestCase):
         tracker.update(None, .6)
         self.assertEqual(tracker.status, "lost_hold")
         np.testing.assert_array_equal(tracker.delta.as_quat(), before)
-        tracker.update(WristObservation(np.array([0., 0., 0., 1.]), CAMERA_REFERENCE,
-                       CAMERA_LOCAL, "camera_palm", .01, orientation_valid=True), .03)
+        tracker.update(WristObservation(np.array([0., 0., 0., 1.]), "smplx_camera_axes",
+                       "smplx_wrist_local", "smplerx", .01, orientation_valid=True), .03)
         self.assertEqual(tracker.generation, 2)
 
     def test_smplerx_camera_axes_are_supported(self):

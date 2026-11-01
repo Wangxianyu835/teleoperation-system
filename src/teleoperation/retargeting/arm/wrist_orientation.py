@@ -10,7 +10,7 @@ class WristTracker:
     """Per-side alignment and SO(3) smoothing; output is a base-space rotation delta.
 
     delta = C R(t) R(0)^T C^T. Robot target = delta * robot_initial.
-    Source local axes cancel, so SDK wrist axes and camera palm axes need not
+    Source local axes cancel, so SDK wrist axes and SMPL-X wrist axes need not
     match and neither is passed through the hand model's left reflection.
     """
     def __init__(self, camera_to_base, calibration_frames=10):
@@ -47,6 +47,11 @@ class WristTracker:
             if self.neutral is None and not pending_body:
                 self.samples.clear()
             return
+        if (observation.source == 'camera_palm'
+                or observation.reference_frame == 'mediapipe_hand_world_axes'):
+            self.update(None, elapsed)
+            self.reason = "unsupported wrist reference frame"
+            return
         signature = (observation.source, observation.reference_frame, observation.local_frame)
         if signature != self.signature:
             self.signature = signature
@@ -70,7 +75,7 @@ class WristTracker:
             self.elapsed_missing = 0.
         if observation.reference_frame == "visionpro_sdk_zup":
             c = VR_TO_BASE
-        elif observation.reference_frame in ("mediapipe_hand_world_axes", "smplx_camera_axes"):
+        elif observation.reference_frame == "smplx_camera_axes":
             c = self.camera_to_base
         else:
             self.status, self.reason = "uncalibrated", "unsupported wrist reference frame"

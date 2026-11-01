@@ -139,8 +139,6 @@ def write_hand_body_recording(
             h5_file.create_dataset("left_valid", data=left_valid)
             h5_file.create_dataset("right_valid", data=right_valid)
             h5_file.attrs.update(attributes)
-            from teleoperation.inputs.wrist import write_wrist_datasets
-            write_wrist_datasets(h5_file, rows, timestamps)
     return destination
 
 

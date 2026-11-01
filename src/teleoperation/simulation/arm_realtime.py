@@ -1215,7 +1215,7 @@ class RealtimeArmBridge:
         relative = relative_wrist_rotation(data.get("arm"), entry["orientation"])
         if relative is None:
             return None
-        from teleoperation.retargeting.arm.wrist_targets import (
+        from teleoperation.retargeting.arm.rotations import (
             rotation_matrix_to_quaternion)
 
         return tuple(float(value) for value in rotation_matrix_to_quaternion(relative))

@@ -215,11 +215,27 @@ def load_body_recording(path: str | Path) -> BodyRecording:
     return BodyRecording(tuple(rows), {**metadata, "schema_version": schema})
 
 
+def _active_wrists(values):
+    """Ignore retired camera-palm observations in old combined recordings."""
+    if values is None:
+        return None
+
+    def active(value):
+        fields = value if isinstance(value, Mapping) else vars(value)
+        return (fields.get('source') != 'camera_palm'
+                and fields.get('reference_frame') != 'mediapipe_hand_world_axes')
+    return {side: value for side, value in values.items() if active(value)} or None
+
+
 def capture_sample(source, raw):
     """Preserve RGB, independent hand/body times, raw model arrays and output."""
     from teleoperation.inputs.smplerx import encode_packet
     frame = source.last_frame
-    wrist_values = lambda values: None if values is None else {side: vars(value) for side, value in values.items()}
+
+    def wrist_values(values):
+        current = _active_wrists(values)
+        return None if current is None else {side: vars(value) for side, value in current.items()}
+
     packet = encode_packet('observation', {
         'hands': {**vars(raw.hands), 'wrists': wrist_values(raw.hands.wrists)},
         'upper_body': vars(raw.upper_body), 'wrists': wrist_values(raw.wrists)})
@@ -241,7 +257,11 @@ def replay_observation(row):
     if packet['type'] != 'observation':
         raise ValueError('Body recording observation packet has wrong type')
     values = packet['payload']
-    wrists = lambda mapping: None if mapping is None else {side: WristObservation(**value) for side, value in mapping.items()}
+
+    def wrists(mapping):
+        current = _active_wrists(mapping)
+        return None if current is None else {side: WristObservation(**value) for side, value in current.items()}
+
     hands = values['hands']
     hands['wrists'] = wrists(hands.get('wrists'))
     body = UpperBodyObservation(**values['upper_body'])
