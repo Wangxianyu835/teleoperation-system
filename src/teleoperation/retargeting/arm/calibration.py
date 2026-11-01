@@ -119,7 +119,6 @@ class CameraCalibrationConfig:
     workspace_max: np.ndarray
     translation: np.ndarray = field(default_factory=lambda: np.zeros(3))
     sample_count: int = 60
-    min_visibility: float = 0.7
     stability_tolerance: float = 0.015
     min_elbow_bend_degrees: float = 10.0
     max_elbow_bend_degrees: float = 100.0
@@ -135,8 +134,6 @@ class CameraCalibrationConfig:
             raise ValueError("positive scale and ordered workspace bounds required")
         if isinstance(self.sample_count, bool) or not isinstance(self.sample_count, int) or self.sample_count < 3:
             raise ValueError("sample_count must be an integer >= 3")
-        if not np.isfinite(self.min_visibility) or not 0 <= self.min_visibility <= 1:
-            raise ValueError("min_visibility must be in [0,1]")
         for name in ("stability_tolerance", "max_sample_gap", "max_acceleration", "tracking_timeout"):
             _positive(getattr(self, name), name)
         if not (np.isfinite(self.min_elbow_bend_degrees) and np.isfinite(self.max_elbow_bend_degrees)
@@ -187,6 +184,7 @@ class NeutralPoseCollector:
         self._last_time = None
         self._last_frame = None
         self._last_detection = None
+        self._session_id = None
         self.status = "waiting for both arms"
 
     @property
@@ -206,33 +204,46 @@ class NeutralPoseCollector:
             raise ValueError("control time must be finite relative seconds")
         if self._last_time is not None and control_seconds <= self._last_time:
             raise ValueError("control time must increase monotonically")
-        body, metadata = observation.upper_body, observation.hands.metadata
-        frame = metadata.get("frame_index")
-        detection = body.timestamp
-        if (not isinstance(frame, (int, np.integer)) or frame < 0
-                or detection is None or not np.isfinite(detection)
-                or detection != observation.hands.timestamp):
-            raise ValueError("matching raw timestamps and frame index required")
-        if metadata.get("timestamp_unit") != "unix_ms" or metadata.get("arm_world_space") != "mediapipe_pose_world_meters":
-            raise ValueError("Expected MediaPipe Pose world metres and Unix ms detection time")
+        body, hand_metadata = observation.upper_body, observation.hands.metadata
+        body_metadata = dict(body.metadata or {})
+        source = body_metadata.get("source")
+        if source == "smplerx":
+            frame = body_metadata.get("sample_sequence")
+            detection = body.timestamp
+            if frame is None and not any(body.valid.values()):
+                self.status = 'waiting for a fresh SMPL-X sample'
+                return False
+            session_id = body_metadata.get('session_id')
+            if session_id != self._session_id:
+                self._clear('body session changed; restarting')
+                self._last_time = self._last_frame = self._last_detection = None
+                self._session_id = session_id
+            if (not isinstance(frame, (int, np.integer)) or frame < 0
+                    or detection is None or not np.isfinite(detection) or detection < 0):
+                raise ValueError("SMPL-X body requires a finite sample sequence and capture time")
+            if body_metadata.get("source_coordinate_frame") != "smplx_camera_root_relative_m" or body_metadata.get("source_units") != "m":
+                raise ValueError("Expected SMPL-X root-relative metre coordinates")
+            if hand_metadata.get("timestamp_unit") != "monotonic_s":
+                raise ValueError("Expected monotonic camera sample time")
+        else:
+            raise ValueError("Legacy MediaPipe Pose arm calibration is removed; use SMPL-X")
+        if self._last_frame is not None and frame <= self._last_frame:
+            # Cached polls cannot add calibration samples or clear a stable window.
+            return False
+        if self._last_detection is not None and detection <= self._last_detection:
+            self._clear('nonmonotonic body sample time')
+            return False
         if self._last_time is not None and (
             control_seconds - self._last_time > self.config.max_sample_gap
-            or frame != self._last_frame + 1 or detection <= self._last_detection
         ):
             self._clear("capture gap; restarting")
         self._last_time, self._last_frame, self._last_detection = control_seconds, frame, detection
-        visibility = np.asarray(metadata.get("pose_visibility"), dtype=float)
-        if visibility.shape != (6,):
-            self._clear("missing pose visibility")
-            return False
         relative = {}
-        for side, indices in (("left", [0, 2, 4]), ("right", [1, 3, 5])):
+        for side in SIDES:
             points = None if body.world_arms is None else body.world_arms[side]
-            confidence = visibility[indices]
             if (not body.valid[side] or points is None or np.shape(points) != (3, 3)
-                    or not np.isfinite(points).all() or not np.isfinite(confidence).all()
-                    or np.any(confidence < self.config.min_visibility) or np.any(confidence > 1)):
-                self._clear(f"{side} arm invalid/low visibility")
+                    or not np.isfinite(points).all()):
+                self._clear(f"{side} arm invalid")
                 return False
             points = np.asarray(points, dtype=float)
             upper, forearm = points[1] - points[0], points[2] - points[1]
@@ -252,7 +263,7 @@ class NeutralPoseCollector:
                 self._clear("motion exceeds stability tolerance")
                 break
         self.samples.append(relative)
-        self.trace.append({"frame_index": int(frame), "detection_unix_ms": int(detection),
+        self.trace.append({"frame_index": int(frame), "capture_time_s": float(detection),
                            "control_relative_seconds": float(control_seconds)})
         if len(self.samples) > self.config.sample_count:
             self.samples.pop(0)
@@ -286,7 +297,7 @@ class NeutralPoseCollector:
             {side: np.array([0, 0, 0, 0, 0, 0, 1.], dtype=float) for side in SIDES},
             metadata={
                 "robot": "tron2a", "urdf": str(Path(urdf_path).resolve()),
-                "coordinate_source": "mediapipe_pose_world_meters", "units": "m",
+                "coordinate_source": "smplx_camera_root_relative_m", "units": "m",
                 "human_reference": "each_side_own_shoulder",
                 "point_order": ["shoulder", "elbow", "wrist"],
                 "robot_reference_frame": "base_Link",
@@ -296,7 +307,7 @@ class NeutralPoseCollector:
                 "tool_offset_source": "neutral_forearm_alignment_to_reference_FK",
                 "hand_mount_source": "identity_placeholder_not_calibrated",
                 "notice": "Neutral capture estimates reference positions only; camera extrinsics and scale are not automatically calibrated. Shoulder-relative inputs are required before future retargeting.",
-                "sample_count": len(self.samples), "min_visibility": self.config.min_visibility,
+                "sample_count": len(self.samples),
                 "stability_tolerance_m": self.config.stability_tolerance,
                 "elbow_bend_degrees": [self.config.min_elbow_bend_degrees, self.config.max_elbow_bend_degrees],
                 "max_sample_gap_seconds": self.config.max_sample_gap,

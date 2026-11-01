@@ -1,37 +1,13 @@
-"""Drive the arms of the three-robot scene without editing the teammate's file.
+"""Drive selected arms in an existing three-robot PyBullet scene.
 
-``ThreeRobotHandScene`` holds every non-hand joint -- the 7+7 arm joints included --
-at its load angle each frame, which is exactly why the arms look frozen.  That file
-is teammate-owned (CONVENTIONS rule 3), so this wrapper detaches the arm joints from
-``robot["hold_ids"]`` / ``robot["hold_targets"]`` after construction (both are plain
-Python lists) and drives them from per-robot IK instead:
-
-    scene = ThreeRobotHandScene(sides=("right",), gui=False)   # teammate's class
-    driver = ArmSceneDriver(scene, sides=("right",))           # our layers
-    for position in sweep:                                     # base-frame metres
-        driver.apply("right", position, source="base")
-        driver.step()                                          # scene.step()
-    print(driver.summary(), driver.residuals_mm())
-
-``robot_type`` is what selects the arm; nothing in the retargeting interfaces changes:
-
-    ArmProfile      simulation/arm_profiles.py   per-robot tuning, ik_mode, ee link
-      -> PyBulletArmIK  simulation/arm_ik.py      one solver per loaded robot
-      -> ArmSceneDriver this file                 release holds, write motors, step
-
-The hands keep working exactly as before: ``scene.apply(side, angles_18)`` is not
-touched, and finger joints are never in the hold lists to begin with.  Finger
-dynamics do not disturb the arm either -- the arm motors are the stiff ones here.
-
-Why a wrapper instead of two lines in the scene: the scene is in the teammate's
-baseline tree, so editing it would show up as a modified teammate file in
-``devtools/preflight.ps1`` (rule 3).  The two-line version is described in
-``docs/multi-robot-arm.md`` as a patch to hand back to whoever owns that file.
-"""
+ArmSceneDriver releases the selected arm joints from scene holds, applies
+per-robot IK targets and advances the scene. Finger control remains scene-owned."""
 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
+from contextlib import nullcontext
 import json
 import math
 import time
@@ -39,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from teleoperation.simulation.arm_ik import ARM_FORCE, PyBulletArmIK
+from teleoperation.simulation.arm_ik import ARM_FORCE, ELBOW_PASS_ORDERS, PyBulletArmIK
 from teleoperation.simulation.arm_profiles import (
     SIDES,
     describe,
@@ -47,6 +23,19 @@ from teleoperation.simulation.arm_profiles import (
     profile_for,
     table,
 )
+
+#: Hard ceiling for each target step in metres.
+SLEW_MAX_STEP_M = 0.04
+#: Hold the previous rigid elbow/wrist pair if slew would shrink it below this ratio.
+SLEW_PAIR_FLOOR_RATIO = 0.6
+
+
+def slew_per_frame(speed_m_per_s: float, frame_dt: float,
+                   ceiling_m: float = SLEW_MAX_STEP_M) -> float:
+    """Convert metres/second and frame seconds to a step bounded by ceiling_m."""
+    if speed_m_per_s <= 0.0 or frame_dt <= 0.0:
+        return 0.0
+    return min(float(speed_m_per_s) * float(frame_dt), float(ceiling_m))
 
 
 class ArmSceneDriver:
@@ -60,8 +49,15 @@ class ArmSceneDriver:
 
     def __init__(self, scene, sides=("right",), robots=None, arm_force=ARM_FORCE,
                  ik_mode=None, rest_poses: str = "current",
-                 ik_iterations=None, residual_threshold=None):
+                 ik_iterations=None, residual_threshold=None, diagnostics=None,
+                 track_posture: bool = True, slew_m: float = 0.0,
+                 slew_m_per_s: float = 0.0, slew_pair_floor_ratio: float | None = None,
+                 elbow_pass: str = "first",
+                 elbow_recovery_deg=None, elbow_recovery_margin_deg=None,
+                 elbow_recovery_cooldown=None, shoulder_anchors=None,
+                 shoulder_anchor_key: str = "upper", lock_others: bool = False):
         self.scene = scene
+        self.diagnostics = diagnostics
         self.p = scene.p
         self.cid = scene.cid
         self.sides = tuple(sides)
@@ -70,9 +66,48 @@ class ArmSceneDriver:
                 raise ValueError(f"side must be one of {SIDES}, got {side!r}")
         if not scene.robots:
             raise ValueError("the scene has no loaded robot to drive")
+        #: 每帧采一次姿势（肩/肘/腕 + 肩关节角），赛后统计「肩到底动没动」。
+        self.track_posture = bool(track_posture)
         self.ik = {}
         self.released = {}
         self.applied = {side: 0 for side in self.sides}
+        #: 目标速率上限（米/帧）：0 = 关闭（目标一步到位）。见 ``_slew_target``。
+        self.slew_m = max(0.0, float(slew_m))
+        self.slew_m_per_s = max(0.0, float(slew_m_per_s))
+        self.slew_pair_floor_ratio = (
+            SLEW_PAIR_FLOOR_RATIO if slew_pair_floor_ratio is None
+            else max(0.0, float(slew_pair_floor_ratio)))
+        #: 每台每侧最后一次**下发**的基座系目标（斜坡的起点）。
+        self.commanded = {}
+        #: 「肘-腕」这一对最后一次下发的值（``elbow_rigid`` 的护栏在会压扁的帧上保持它）。
+        self.commanded_pair = {}
+        if elbow_pass not in ELBOW_PASS_ORDERS:
+            raise ValueError(
+                f"elbow_pass must be one of {ELBOW_PASS_ORDERS}, got {elbow_pass!r}")
+        self.elbow_pass = str(elbow_pass)
+        self.elbow_recovery_deg = elbow_recovery_deg
+        self.elbow_recovery_margin_deg = elbow_recovery_margin_deg
+        self.elbow_recovery_cooldown = elbow_recovery_cooldown
+        #: 加载时的肩锚点（基座系，米）：``{robot: {side: [x, y, z]}}``。非空时每一帧都把腕/肘
+        #: 两个目标平移「当前肩 - 锚点」，见 ``_shoulder_shift``。
+        self.shoulder_anchors = {str(name): {str(side): [float(value) for value in point]
+                                             for side, point in dict(per_side or {}).items()
+                                             if point is not None}
+                                 for name, per_side in dict(shoulder_anchors or {}).items()}
+        if shoulder_anchor_key not in ("upper", "shoulder"):
+            raise ValueError("shoulder_anchor_key must be 'upper' or 'shoulder', got "
+                             f"{shoulder_anchor_key!r}")
+        self.shoulder_anchor_key = str(shoulder_anchor_key)
+        #: 求解时是否把非本侧手臂的关节锁在当前角度（``arm_ik._locked_arguments``）。
+        lock_others = bool(lock_others)
+        self.lock_others = lock_others
+        #: 每台每侧最后一次的平移量（毫米，报告用）。
+        self.shoulder_shift_mm = {}
+        #: 被斜坡削掉一部分的帧数（报告用：说明这一场有多少帧没一步到位）。
+        self.slew_limited = 0
+        self.slew_pair_skips = 0
+        #: 每帧两只前臂的最近距离（毫米）：左右臂交叉 / 叠中线就是这个量掉下来。
+        self.forearm_gaps = []
         wanted = None if robots is None else {str(name) for name in robots}
         for robot in scene.robots:
             robot_type = robot["type"]
@@ -83,6 +118,13 @@ class ArmSceneDriver:
                 settings["ik_iterations"] = int(ik_iterations)
             if residual_threshold is not None:
                 settings["residual_threshold"] = float(residual_threshold)
+            if self.elbow_recovery_deg is not None:
+                settings["elbow_recovery_deg"] = float(self.elbow_recovery_deg)
+            if self.elbow_recovery_margin_deg is not None:
+                settings["elbow_recovery_margin_deg"] = float(self.elbow_recovery_margin_deg)
+            if self.elbow_recovery_cooldown is not None:
+                settings["elbow_recovery_cooldown"] = int(self.elbow_recovery_cooldown)
+            settings["lock_others"] = self.lock_others
             adapter = PyBulletArmIK(robot["body"], self.cid, robot_type,
                                     sides=self.sides, ik_mode=ik_mode,
                                     arm_force=arm_force, rest_poses=rest_poses,
@@ -124,49 +166,237 @@ class ArmSceneDriver:
 
     # ------------------------------------------------------------------ #
     def apply(self, side: str, position, source: str = "base",
-              orientation=None) -> dict:
+              orientation=None, orientation_frame: str = "absolute") -> dict:
         """One frame for one side with the *same* target for every robot.
 
         ``position`` is in the space named by ``source``; use
         :meth:`apply_each` when each robot needs its own base-frame target.
+        ``orientation_frame`` is forwarded to every adapter: ``"neutral"`` means
+        ``orientation`` is relative to that robot's own build-time wrist pose.
         """
         if side not in self.sides:
             raise ValueError(f"{side!r} is not driven by this driver ({list(self.sides)})")
         return self.apply_each(side, {robot_type: position for robot_type in self.ik},
-                               source=source, orientation=orientation)
+                               source=source, orientation=orientation,
+                               orientation_frame=orientation_frame)
+
+    def set_shoulder_anchors(self, anchors) -> None:
+        """Set per-robot, per-side base-frame shoulder anchors; an empty mapping disables following."""
+        self.shoulder_anchors = {}
+        for name, per_side in dict(anchors or {}).items():
+            entries = {}
+            for side, entry in dict(per_side or {}).items():
+                point = (entry or {}).get("shoulder") if isinstance(entry, dict) else None
+                if point is not None:
+                    entries[str(side)] = [float(value) for value in point]
+            if entries:
+                self.shoulder_anchors[str(name)] = entries
+
+    def _shoulder_shift(self, robot_type, side, adapter):
+        """Return current FK shoulder minus the load-time anchor in base metres.
+
+        Translate elbow and wrist targets together so torso motion preserves their
+        geometry relative to the current shoulder. Return None without an anchor."""
+        anchor = (getattr(self, "shoulder_anchors", {}).get(robot_type) or {}).get(side)
+        if anchor is None:
+            return None
+        current = adapter.to_base(adapter.arm_points(side)[self.shoulder_anchor_key])
+        return tuple(float(current[axis]) - float(anchor[axis]) for axis in range(3))
 
     def apply_each(self, side: str, targets, source: str = "base",
-                   orientation=None) -> dict:
-        """One frame for one side with a target per robot: ``{robot_type: position}``.
+                   orientation=None, orientation_frame: str = "absolute",
+                   elbows=None, elbow_bend_deg=None, elbow_rigid=None,
+                   elbow_bend_baseline=None) -> dict:
+        """Apply one side's per-robot targets in the selected coordinate frame.
 
-        Returns ``{robot_type: {"ee": link, "ik_mode": ..., "joints": {name: angle}}}``
-        so a demo, a test or a report can state exactly which arm was driven.
-        """
+        Orientations may be shared or keyed by robot. Optional elbow targets use the
+        same frame as wrist positions. For elbow_rigid robots, preserve the paired
+        target geometry during slew limiting and hold the previous pair if its
+        length would fall below slew_pair_floor_ratio. Shoulder following translates
+        both targets together. Elbow bend references are converted per robot."""
         if side not in self.sides:
             raise ValueError(f"{side!r} is not driven by this driver ({list(self.sides)})")
         missing = sorted(robot_type for robot_type in self.ik
                          if robot_type not in targets)
         if missing:
             raise ValueError(f"no target given for {missing} (driven: {list(self.ik)})")
+        if isinstance(orientation, Mapping):
+            missing = sorted(name for name in self.ik if name not in orientation)
+            if missing:
+                raise ValueError(f"no orientation given for {missing}")
+        elbows = dict(elbows or {})
         reports = {}
+        diagnostics = getattr(self, "diagnostics", None)
         for robot_type, adapter in self.ik.items():
-            values = adapter.solve(side, targets[robot_type],
-                                   orientation=orientation, source=source)
-            adapter.apply(side, values)
+            if getattr(self, "track_posture", False):
+                # 先采样：现在读到的是上一帧稳定下来的姿势（apply 只写电机目标）。
+                adapter.record_posture(side)
+            wanted = targets[robot_type]
+            elbow = elbows.get(robot_type)
+            rigid = (elbow is not None and elbow_rigid is not None
+                     and str(robot_type) in elbow_rigid)
+            if getattr(self, "slew_m", 0.0) > 0.0 and source == "base":
+                requested = tuple(float(value) for value in wanted)
+                wanted = self._slew_target(robot_type, side, adapter, wanted)
+                if rigid and self.slew_pair_floor_ratio > 0.0:
+                    shape = float(np.linalg.norm(
+                        np.asarray(requested, dtype=np.float64)
+                        - np.asarray(elbow, dtype=np.float64)))
+                    narrowed = float(np.linalg.norm(
+                        np.asarray(wanted, dtype=np.float64)
+                        - np.asarray(elbow, dtype=np.float64)))
+                    if narrowed < self.slew_pair_floor_ratio * shape:
+                        held = self.commanded_pair.get((robot_type, side))
+                        if held is None:
+                            wanted = requested
+                        else:
+                            elbow, wanted = held
+                        self.commanded[(robot_type, side)] = np.asarray(
+                            wanted, dtype=np.float64)
+                        self.slew_pair_skips += 1
+                    else:
+                        # 这一帧照旧限速：记下实际下发的这一对，供下一帧的护栏保持。
+                        self.commanded_pair[(robot_type, side)] = (
+                            elbow, tuple(float(value) for value in wanted))
+            shift = (None if source != "base"
+                     else self._shoulder_shift(robot_type, side, adapter))
+            if shift is not None:
+                # 平移放在斜坡**之后**：斜坡活在锚点系里（上一帧的命令也在锚点系），
+                # 平移只是把这一帧的参考点从锚点换到当前肩。
+                wanted = tuple(float(value) + shift[axis] for axis, value in enumerate(wanted))
+                if elbow is not None:
+                    elbow = tuple(float(value) + shift[axis]
+                                  for axis, value in enumerate(elbow))
+                self.shoulder_shift_mm.setdefault(robot_type, {})[side] = round(
+                    1000.0 * float(np.linalg.norm(np.asarray(shift, dtype=np.float64))), 2)
+            baseline = (None if elbow_bend_baseline is None
+                        else elbow_bend_baseline.get(robot_type))
+            posture = (None if elbow_bend_deg is None
+                       else adapter.posture_from_bend(side, elbow_bend_deg,
+                                                      neutral_bend=baseline))
+            solve_options = {}
+            if orientation_frame != "absolute":
+                solve_options["orientation_frame"] = orientation_frame
+            if elbow is not None:
+                solve_options.update(elbow=elbow, elbow_pass=self.elbow_pass)
+            if posture is not None:
+                solve_options["posture"] = posture
+            with (nullcontext() if diagnostics is None else diagnostics.stage(f"ik.{robot_type}.{side}")):
+                values = adapter.solve(side, wanted,
+                                       orientation=(orientation[robot_type] if isinstance(orientation, Mapping)
+                                                    else orientation),
+                                       source=source, **solve_options)
+            with (nullcontext() if diagnostics is None else diagnostics.stage(f"motor.{robot_type}.{side}")):
+                adapter.apply(side, values)
+            if diagnostics is not None:
+                diagnostics.command(robot_type, side, values)
             reports[robot_type] = {"ee": adapter.ee[side][1],
                                    "ik_mode": adapter.ik_mode,
+                                   "shoulder_shift_mm": getattr(self, "shoulder_shift_mm", {}).get(
+                                       robot_type, {}).get(side, 0.0),
+                                   "posture": {str(name): round(float(value), 5)
+                                               for name, value in (posture or {}).items()},
                                    "joints": values}
         self.applied[side] += 1
         return reports
 
-    def apply_operator(self, side: str, position, orientation=None) -> dict:
+    # ------------------------------------------------------------------ #
+    def update_slew(self, frame_dt: float) -> float:
+        """Convert the capture interval and configured target speed to a per-frame step limit."""
+        if self.slew_m_per_s <= 0.0:
+            return self.slew_m
+        self.slew_m = slew_per_frame(self.slew_m_per_s, frame_dt)
+        return self.slew_m
+
+    def _wrist_in_base(self, adapter, side: str):
+        """That arm's wrist right now, in its **own** base frame (the ramp's start).
+
+        ``PyBulletArmIK`` converts base -> world (``to_world``); the ramp needs the
+        way back, and the base rotation matters (GR1-T2 does not load with an
+        identity base rotation).
+        """
+        world = np.asarray(adapter.arm_points(side)["wrist"], dtype=np.float64)
+        _base, orientation = self.p.getBasePositionAndOrientation(
+            adapter.body, physicsClientId=self.cid)
+        rotation = np.asarray(self.p.getMatrixFromQuaternion(orientation),
+                              dtype=np.float64).reshape(3, 3)
+        return rotation.T @ (world - np.asarray(adapter.base_position(),
+                                               dtype=np.float64))
+
+    def _slew_target(self, robot_type, side, adapter, position):
+        """Limit a base-frame target step to slew_m metres from the previous command.
+
+        Initialize from the current wrist position; a zero limit disables target slew."""
+        key = (robot_type, side)
+        previous = self.commanded.get(key)
+        if previous is None:
+            previous = self._wrist_in_base(adapter, side)
+        wanted = np.asarray(position, dtype=np.float64)
+        offset = wanted - previous
+        distance = float(np.linalg.norm(offset))
+        if distance > self.slew_m:
+            wanted = previous + offset * (self.slew_m / distance)
+            self.slew_limited += 1
+        self.commanded[key] = wanted
+        return tuple(float(value) for value in wanted)
+
+    def apply_operator(self, side: str, position, orientation=None,
+                       orientation_frame: str = "absolute") -> dict:
         """``apply`` with operator-space metres: the profile's scale/offset is applied."""
-        return self.apply(side, position, source="operator", orientation=orientation)
+        return self.apply(side, position, source="operator", orientation=orientation,
+                          orientation_frame=orientation_frame)
 
     def step(self, frames: int = 1) -> None:
-        """Advance the scene by ``frames`` rendered frames (``scene.step`` = 8 substeps)."""
+        """Advance the scene by ``frames`` rendered frames (``scene.step`` = 8 substeps).
+
+        The left/right forearm gap is read *before* the step, i.e. from the pose the
+        just-commanded frame settled into -- the same instant a posture sample covers.
+        """
         for _ in range(max(1, int(frames))):
+            if getattr(self, "track_posture", False):
+                gap = self.forearm_gap_mm()
+                if gap:                       # 单侧驱动时量不出间隙，别记空帧
+                    self.forearm_gaps.append(gap)
             self.scene.step()
+
+    def forearm_gap_mm(self) -> dict:
+        """``{robot: mm}``: distance between that robot's two forearms, right now.
+
+        The forearm is ``elbow -> wrist`` (the segment that was folding onto the
+        midline in the frames this session set out to fix).  Segment-to-segment
+        distance, no collision shapes involved, so it works on any robot here.
+        """
+        if len(self.sides) < 2 or not all(side in adapter.arm for adapter in self.ik.values()
+                                         for side in self.sides):
+            return {}
+        out = {}
+        for robot_type, adapter in self.ik.items():
+            left = adapter.arm_points("left") if "left" in self.sides else None
+            right = adapter.arm_points("right") if "right" in self.sides else None
+            if left is None or right is None:
+                continue
+            out[robot_type] = round(1000.0 * _segment_distance(
+                left["elbow"], left["wrist"], right["elbow"], right["wrist"]), 2)
+        return out
+
+    def forearm_gap_summary(self) -> dict:
+        """Worst (smallest) left/right forearm gap per robot over the session, plus the
+        minimum across robots: the number that says "did the two arms cross"."""
+        per_robot = {}
+        for robot_type in self.ik:
+            values = [entry[robot_type] for entry in self.forearm_gaps
+                      if robot_type in entry]
+            if values:
+                per_robot[robot_type] = round(min(values), 2)
+        worst = min(per_robot.values()) if per_robot else None
+        return {"frames": len(self.forearm_gaps), "min_mm": per_robot,
+                "worst_mm": None if worst is None else round(float(worst), 2)}
+
+    def posture_summary(self, sides=None) -> dict:
+        """``{robot: {side: posture metric}}`` -- see ``PyBulletArmIK.posture_summary``."""
+        wanted = self.sides if sides is None else tuple(sides)
+        return {robot_type: {side: adapter.posture_summary(side) for side in wanted}
+                for robot_type, adapter in self.ik.items()}
 
     def residuals_mm(self, sides=None) -> dict:
         """``{robot: {side: mm}}``: target-to-wrist distance measured right now."""
@@ -176,7 +406,8 @@ class ArmSceneDriver:
     def orientation_errors_deg(self, sides=None) -> dict:
         """``{robot: {side: deg}}``: commanded vs measured wrist orientation."""
         return self._per_side(
-            lambda adapter, side: round(adapter.orientation_error_deg(side), 2), sides)
+            lambda adapter, side: (None if adapter.last_orientation.get(side) is None
+                                   else round(adapter.orientation_error_deg(side), 2)), sides)
 
     def _per_side(self, measure, sides=None) -> dict:
         wanted = self.sides if sides is None else tuple(sides)
@@ -231,6 +462,13 @@ class ArmSceneDriver:
             "sides": list(self.sides),
             "applied_frames": dict(self.applied),
             "released": self.released,
+            "posture_tracking": bool(self.track_posture),
+            "target_slew_mm": round(1000.0 * self.slew_m, 3),
+            "target_slew_mm_per_s": round(1000.0 * self.slew_m_per_s, 3),
+            "target_slew_ceiling_mm": round(1000.0 * SLEW_MAX_STEP_M, 3),
+            "target_slew_limited_frames": self.slew_limited,
+            "target_slew_pair_skips": self.slew_pair_skips,
+            "target_slew_pair_floor_ratio": round(self.slew_pair_floor_ratio, 4),
             "robots": {robot_type: adapter.describe()
                        for robot_type, adapter in self.ik.items()},
         }
@@ -245,10 +483,56 @@ class ArmSceneDriver:
                                     for robot_type, entry in self.released.items()},
             "residual_mm": self.residuals_mm(),
             "orientation_error_deg": self.orientation_errors_deg(),
+            # 姿势：肩/肘/上臂到底有没有参与（论文说肘不用管，这里量它有没有动）；
+            # 前臂间隙：左右两条前臂离多近（叠中线 / 交叉就是这个量掉下来）。
+            "posture": self.posture_summary(),
+            "forearm_gap_mm": self.forearm_gap_summary(),
             "hold_drift": self.hold_drift(),
+            "target_slew_mm": round(1000.0 * self.slew_m, 3),
+            "target_slew_mm_per_s": round(1000.0 * self.slew_m_per_s, 3),
+            "target_slew_ceiling_mm": round(1000.0 * SLEW_MAX_STEP_M, 3),
+            "target_slew_limited_frames": self.slew_limited,
+            "target_slew_pair_skips": self.slew_pair_skips,
+            "target_slew_pair_floor_ratio": round(self.slew_pair_floor_ratio, 4),
             "hands": self.scene.summary(),
             "robots": self.describe()["robots"],
         }
+
+
+def _segment_distance(p1, q1, p2, q2) -> float:
+    """Shortest distance (metres) between segment ``p1-q1`` and segment ``p2-q2``.
+
+    The textbook clamped closest-point solve (Ericson, *Real-Time Collision Detection*,
+    5.1.9), pure numpy: no collision shapes, so it works on the ``elbow -> wrist``
+    segments of any robot here, and on a ``--input-npz`` replay.
+    """
+    p1 = np.asarray(p1, dtype=np.float64).reshape(3)
+    q1 = np.asarray(q1, dtype=np.float64).reshape(3)
+    p2 = np.asarray(p2, dtype=np.float64).reshape(3)
+    q2 = np.asarray(q2, dtype=np.float64).reshape(3)
+    d1, d2, offset = q1 - p1, q2 - p2, p1 - p2
+    a, e = float(d1 @ d1), float(d2 @ d2)
+    epsilon = 1e-12
+    if a <= epsilon and e <= epsilon:
+        return float(np.linalg.norm(offset))
+    if a <= epsilon:
+        s, t = 0.0, float(np.clip(float(d2 @ offset) / e, 0.0, 1.0))
+    else:
+        c = float(d1 @ offset)
+        if e <= epsilon:
+            t, s = 0.0, float(np.clip(-c / a, 0.0, 1.0))
+        else:
+            b, f = float(d1 @ d2), float(d2 @ offset)
+            denominator = a * e - b * b
+            s = 0.0 if denominator <= epsilon else float(
+                np.clip((b * f - c * e) / denominator, 0.0, 1.0))
+            t = (b * s + f) / e
+            if t < 0.0:
+                t, s = 0.0, float(np.clip(-c / a, 0.0, 1.0))
+            elif t > 1.0:
+                t, s = 1.0, float(np.clip((b - c) / a, 0.0, 1.0))
+    closest = (p1 + d1 * s, p2 + d2 * t)
+    return float(np.linalg.norm(closest[0] - closest[1]))
 
 
 def operator_wave(phase: float) -> tuple:
@@ -285,7 +569,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="space of the sweep: robot base frame, or operator metres")
     parser.add_argument("--ik-mode", choices=("pose", "position"), default=None,
                         help="override the profile's ik_mode (A/B comparison)")
-    parser.add_argument("--rest-poses", choices=("current", "zero"), default="current")
+    parser.add_argument("--rest-poses", choices=("current", "zero", "live"),
+                        default="current",
+                        help="IK null-space reference: 'current' = where the arm was at "
+                             "load time (a straight drooped arm -- it also *pulls* every "
+                             "solution back there), 'zero' = all joints at 0, 'live' = "
+                             "where the arm is right now (damps joint change instead of "
+                             "dictating the elbow/upper arm; see arm_ik._live_rest_poses)")
     parser.add_argument("--arm-force", type=float, default=ARM_FORCE)
     parser.add_argument("--settle", type=int, default=15,
                         help="extra frames after the sweep before measuring")
@@ -389,7 +679,5 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
 
 

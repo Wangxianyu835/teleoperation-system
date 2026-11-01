@@ -2,15 +2,14 @@ from pathlib import Path
 import h5py
 import numpy as np
 def _load_arm_observations(path: str | Path):
-    with h5py.File(Path(path), "r") as h5_file:
-        required = ["frame_ids", "timestamps"] + [f"{side}_arm_{suffix}" for side in ("left", "right") for suffix in ("keypoints", "valid")]
-        missing = [name for name in required if name not in h5_file]
-        if missing:
-            raise ValueError(f"Observation H5 is missing datasets: {', '.join(missing)}")
-        frame_ids = np.asarray(h5_file["frame_ids"][:]).reshape(-1)
-        timestamps = np.asarray(h5_file["timestamps"][:], dtype=np.float64).reshape(-1)
-        arms = {side: np.asarray(h5_file[f"{side}_arm_keypoints"][:], dtype=np.float32) for side in ("left", "right")}
-        valid = {side: np.asarray(h5_file[f"{side}_arm_valid"][:], dtype=bool).reshape(-1) for side in ("left", "right")}
+    from .body_recording import load_body_recording, replay_observation
+    recording = load_body_recording(path)
+    bodies = [replay_observation(row).upper_body for row in recording.samples]
+    frame_ids = np.arange(len(bodies), dtype=np.int64)
+    timestamps = np.asarray([row['capture_time_s'] for row in recording.samples])
+    arms = {side: np.asarray([(body.world_arms or {}).get(side) if (body.world_arms or {}).get(side) is not None
+                             else np.full((3, 3), np.nan) for body in bodies]) for side in ('left', 'right')}
+    valid = {side: np.asarray([body.valid[side] for body in bodies]) for side in ('left', 'right')}
     count = frame_ids.shape[0]
     if timestamps.shape != (count,):
         raise ValueError("Observation timestamps do not match frame_ids")

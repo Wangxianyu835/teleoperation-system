@@ -1,19 +1,15 @@
-"""``simulation/arm_preview.py`` 的回归用例：采集窗口的手臂层（只画，不碰算法）。
-
-不需要相机、不需要显示器：用一个假 sink（就是 ``{"frame": ndarray}``）+ ``show_window=False``，
-直接看 ``annotate`` 出来的像素有没有被改过，以及 ``build_arm_preview`` 的开关语义。
-
-判据都是"画没画"而不是"画得像不像"：像素位置依赖 MediaPipe 坐标与机器分辨率，
-断言具体坐标会变成脆测；这里只锁三件真会回归的事 ——
-(1) 合法点能画出来、非法点被当"没有"；(2) ``--no-arm-overlay`` 下逐像素等于基线；
-(3) 没相机 / 不需要窗口时返回 ``None`` 而不是抛异常。
-"""
+"""``simulation/arm_preview.py`` 的回归用例：采集窗口的手臂层（只画，不碰算法）。"""
 
 from __future__ import annotations
 
-import unittest
+import contextlib
+import importlib.util
+import io
+import json
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+import unittest
 
 import numpy as np
 
@@ -141,7 +137,7 @@ class OverlayDrawingTests(unittest.TestCase):
 
 
 class OutsideFrameTests(unittest.TestCase):
-    """真机实测到的现象：人离相机太近时肩/肘/腕会落到画面外，这时必须给提示而不是"看不见线"。"""
+    """Regression coverage for OutsideFrameTests."""
 
     def test_all_points_inside_are_counted_as_zero(self):
         arms = np.asarray([[0.5, 0.5], [0.55, 0.55], [0.6, 0.6]], dtype=np.float64)
@@ -218,6 +214,75 @@ class BuildArmPreviewTests(unittest.TestCase):
         workflow = SimpleNamespace(_input=None)
 
         self.assertIsNone(build_arm_preview(preview_args(headless=False), workflow, SIDES))
+
+
+LAUNCHER = Path(__file__).resolve().parents[1] / "devtools" / "run_realtime_windows.py"
+
+
+def load_launcher():
+    """按路径加载 ``devtools/run_realtime_windows.py``：它不在安装包里，不靠 sys.path。"""
+    spec = importlib.util.spec_from_file_location("run_realtime_windows_under_test", LAUNCHER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def preview_report(directory, **preview):
+    """写一份只有 ``preview`` 块的报告：``summarise_camera_window`` 只读这一块。"""
+    path = Path(directory) / "arm_run_bullet_report.json"
+    path.write_text(json.dumps({"preview": preview}, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def summarise(module, report, want_window=True):
+    stream = io.StringIO()
+    with contextlib.redirect_stdout(stream):
+        module.summarise_camera_window(report, want_window)
+    return stream.getvalue()
+
+
+class CameraWindowSummaryTests(unittest.TestCase):
+    """``devtools/run_realtime_windows.summarise_camera_window``：跑完回的那一句话。"""
+
+    def setUp(self):
+        self.launcher = load_launcher()
+        self.tmp = TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_a_window_that_is_still_open_reports_its_rectangle(self):
+        report = preview_report(self.tmp.name, window=True, window_rect=[28, 91, 640, 480],
+                                mirrored=True, arm_overlay=True, note="")
+
+        text = summarise(self.launcher, report)
+
+        self.assertIn("[OK", text)
+        self.assertIn("[28, 91, 640, 480]", text)
+        self.assertNotIn("did NOT stay open", text)
+
+    def test_quitting_with_q_is_not_reported_as_a_missing_window(self):
+        report = preview_report(self.tmp.name, window=False, window_rect=[28, 91, 640, 480],
+                                mirrored=True, arm_overlay=True, note="")
+
+        text = summarise(self.launcher, report)
+
+        self.assertIn("[OK", text)
+        self.assertIn("was open at [28, 91, 640, 480]", text)
+        self.assertNotIn("did NOT stay open", text)
+
+    def test_a_window_that_never_opened_keeps_the_note_and_a_hint(self):
+        note = "window unavailable here (no HighGUI); preview kept off"
+        report = preview_report(self.tmp.name, window=False, window_rect=None, note=note)
+
+        text = summarise(self.launcher, report)
+
+        self.assertIn("[WARN", text)
+        self.assertIn("no HighGUI", text)
+        self.assertIn("--preview-window-pos 20,60", text)
+
+    def test_no_window_requested_stays_quiet(self):
+        report = preview_report(self.tmp.name, window=False, window_rect=None, note="")
+
+        self.assertEqual(summarise(self.launcher, report, want_window=False), "")
 
 
 if __name__ == "__main__":

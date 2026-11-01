@@ -8,12 +8,16 @@ def configure(parser):
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--ip", help="Vision Pro Tracking Streamer IP or room code")
     source.add_argument("--input-h5", type=Path, help="existing raw Vision Pro transform recording")
-    parser.add_argument("--checkpoint", type=Path, required=True, help="original TransHandR VR model_pos checkpoint")
+    parser.add_argument("--backend", choices=("transhandr", "dex"), default="transhandr")
+    parser.add_argument("--dex-calibration", type=Path, help="fixed dex Vision Pro calibration JSON")
+    parser.add_argument("--checkpoint", type=Path, help="required for the original TransHandR VR backend")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
-    parser.add_argument("--source-hand", choices=("left", "right"), default="left",
-                        help="sensor side (upstream defaults to left_fingers)")
-    parser.add_argument("--hand", choices=("left", "right"), default="right",
+    parser.add_argument("--source-hand", choices=("left", "right", "both"),
+                        help="sensor side (default: left for single-hand, both for dual-hand)")
+    parser.add_argument("--hand", choices=("left", "right", "both"), default="right",
                         help="destination robot hand (upstream L21 URDF is right)")
+    parser.add_argument("--hand-mapping", choices=("same",),
+                        help="explicit same-side routing; required with --hand both")
     parser.add_argument("--scale-factor", type=float, default=1.0)
     parser.add_argument("--scene", choices=("hands", "robots"), default="hands")
     parser.add_argument("--frames", type=int, default=0, help="0 = until stream end or Ctrl+C")
@@ -22,5 +26,7 @@ def configure(parser):
     parser.add_argument("--sim-steps", type=int, default=8)
     parser.add_argument("--view", choices=("full", "front"), default="full")
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--output-h5", type=Path,
+                        help="per-frame raw/native/command angles; default: report path with .h5 suffix")
     add_hand_command_arguments(parser)
     return parser

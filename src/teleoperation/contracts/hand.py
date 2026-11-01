@@ -51,48 +51,6 @@ class HandWindow(_HandMetadataView):
 
 
 @dataclass(frozen=True)
-class L21HandAngles:
-    values: np.ndarray
-
-    def __post_init__(self):
-        if not isinstance(self.values, np.ndarray) or self.values.shape != (18,):
-            raise ValueError("L21HandAngles must have shape (18,)")
-
-    def native_mapping_dofs(self):
-        """Remove only the placeholder; retain float64 replay precision."""
-        return L21HandDOFs(self.values[1:].copy())
-
-
-@dataclass(frozen=True)
-class L21HandDOFs:
-    values: np.ndarray
-
-    def __post_init__(self):
-        if not isinstance(self.values, np.ndarray) or self.values.shape != (17,):
-            raise ValueError("L21HandDOFs must have shape (17,)")
-        if not np.isfinite(self.values).all():
-            raise ValueError("L21HandDOFs must be finite")
-
-
-@dataclass(frozen=True)
-class HandRetargetResult:
-    left_angles: L21HandAngles | None = None
-    right_angles: L21HandAngles | None = None
-    left_valid: bool = False
-    right_valid: bool = False
-    timestamp: float | None = None
-
-
-    def __post_init__(self):
-        for side in ("left", "right"):
-            angles = getattr(self, side + "_angles")
-            if angles is not None and not isinstance(angles, L21HandAngles):
-                raise TypeError(f"{side} model result must be L21HandAngles")
-            if getattr(self, side + "_valid") and angles is None:
-                raise ValueError(f"{side} valid result requires angles")
-
-
-@dataclass(frozen=True)
 class AngleFrame:
     frame_id: int
     timestamp: float

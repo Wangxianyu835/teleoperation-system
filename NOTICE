@@ -25,7 +25,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-本项目 `assets/robots/from_teleopbench/` 下的 H1-2 / GR1-T2 / G1 模型资产
+本项目 `assets/robots/` 下的 H1-2 / GR1-T2 / G1 模型资产
 来自 TeleOpBench，该目录未包含在本仓库中，需自行从上游获取。
 
 TeleOpBench 建立在以下开源代码库之上，请访问链接查看各自的许可证：
@@ -60,6 +60,6 @@ SPDX-License-Identifier: Apache-2.0
 来源：
 https://github.com/limxdynamics/tron2-robot-description
 
-本仓库 `third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf`
+本仓库 `assets/robots/tron2a/robot.urdf`
 来自该项目的 URDF 描述，用于测试双臂关节链读取和 IK。
 完整网格资产未包含在本仓库中，需从上游项目获取。

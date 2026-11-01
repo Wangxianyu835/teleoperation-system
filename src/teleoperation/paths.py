@@ -1,21 +1,32 @@
 """Repository paths for the supported editable installation."""
 from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-ROBOTS_ROOT = PROJECT_ROOT / "assets" / "robots" / "from_teleopbench"
-L21_ROOT = PROJECT_ROOT / "assets" / "robots" / "l21"
+ROBOTS_ROOT = PROJECT_ROOT / "assets" / "robots"
+L21_ROOT = ROBOTS_ROOT / "l21"
 DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "checkpoint"
 DEFAULT_OUTPUT_H5 = PROJECT_ROOT / "outputs" / "hand_retargeting" / "twohand_angles.h5"
 DEFAULT_REALTIME_SNAPSHOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "mediapipe_realtime.png"
 DEFAULT_REALTIME_CHECKPOINT = DEFAULT_CHECKPOINT_ROOT / "models/twohand_h5/linker/palm_three_point_v2/model_best.pth"
 DEFAULT_WORLD_REALTIME_CHECKPOINT = DEFAULT_CHECKPOINT_ROOT / "models/twohand_h5/linker/world_canonical_shared_v1/model_best.pth"
 DEFAULT_MEDIAPIPE_ASSET = PROJECT_ROOT / "datasets" / "hand_landmarker.task"
-DEFAULT_POSE_ASSET = PROJECT_ROOT / "datasets" / "pose_landmarker_lite.task"
 DEFAULT_WORLD_CAPTURE_DIR = PROJECT_ROOT / "outputs" / "hand_body_capture"
 DEFAULT_INPUT_H5 = PROJECT_ROOT / "input" / "visual_hand_data_20260912_112108.h5"
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "checkpoint/models/twohand_h5/linker/coord_aligned_100ep/model_best.pth"
 DEFAULT_WARMSTART_CHECKPOINT = None
+DEFAULT_HAND_MODEL_ROOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "models"
 
-DEFAULT_TRON2A_URDF = PROJECT_ROOT / "third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf"
+
+def training_run_directory(root, hand_model, side, input_profile, run_name):
+    """An explicit target/profile run; never search for an implicit latest model."""
+    import re
+    for value in (hand_model, side, input_profile, run_name):
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
+            raise ValueError(f"Invalid model path component: {value!r}")
+    if side not in ("left", "right", "shared"):
+        raise ValueError(f"Invalid target side: {side!r}")
+    return Path(root) / hand_model / side / "nn" / input_profile / run_name
+
+DEFAULT_TRON2A_URDF = ROBOTS_ROOT / "tron2a" / "robot.urdf"
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 
 

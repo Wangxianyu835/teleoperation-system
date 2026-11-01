@@ -1,31 +1,8 @@
-"""Per-robot arm profiles: pick the arm by ``robot_type``, not by hard-coding TRON2A.
+"""Per-robot arm configuration for H1-2, GR1-T2 and G1.
 
-Why this file exists
---------------------
-The teammate's arm stack hard-codes TRON2A:
-
-* ``robots/specification.py``  -> ``TRON2A_ARM_JOINTS`` / ``TRON2A_EE_LINKS``
-* ``retargeting/arm/ik.py``    -> TRON2A joint order, TRON2A URDF, TRON2A calibration
-
-Both are teammate-owned files (rule 3: do not edit them), so until now the three
-paper robots could only be reached through a block of tuning constants buried in
-``devtools/verify_arm_from_capture.py``.  This module lifts that knowledge into a
-table keyed by ``robot_type``:
-
-    profile = profile_for("h1_2")        # -> ArmProfile
-    profile.ik_mode, profile.metric_scale, profile.metric_offset
-    describe("gr1_t2")                   # -> JSON-able dict, for reports
-
-``simulation/arm_ik.py`` (our PyBullet IK adapter) then solves for whichever robot
-the scene loaded.  TRON2A is still registered here but with ``loadable=False``:
-its URDF, calibration JSON and hand checkpoint live outside this repo, so it is
-reported as unsupported instead of being silently driven with the paper robots'
-convention.
-
-The joint lists of the three paper robots are resolved from the loaded URDF at
-runtime (``arm_joint_names``), so a profile stays valid if an upstream URDF renames
-a joint; only the tuning numbers below are pinned to measured values.
-"""
+Profiles own axis conventions, target offsets, travel bounds and IK modes.
+TRON2A uses its separate calibrated control route. Joint names for the three
+scene robots are resolved from their loaded URDFs."""
 
 from __future__ import annotations
 
@@ -34,12 +11,13 @@ from typing import Mapping, Sequence
 
 SIDES = ("left", "right")
 
-#: Robots whose URDF ships in ``assets/robots/from_teleopbench`` (local, not in git).
+#: Robots whose URDF ships in ``assets/robots``.
 PAPER_ROBOTS = ("h1_2", "gr1_t2", "g1")
 
-#: The teammate's arm as registered in ``retargeting/arm/ik.py``.  Kept visible on
-#: purpose: this is the only place our side names it, and it stays ``loadable=False``.
 TRON2A = "tron2a"
+
+#: Direction frames: mapped uses mapped directions; delta applies neutral-relative rotations.
+POSTURE_FRAMES = ("mapped", "delta")
 
 
 @dataclass(frozen=True)
@@ -58,16 +36,16 @@ class ArmProfile:
     ee_keywords: tuple = ("wrist", "hand")
     #: "pose" = constrain position and orientation, "position" = position only.
     ik_mode: str = "pose"
+    posture_frame: str = "mapped"
     #: Operator metre -> robot base-frame metre.
     metric_scale: float = 1.0
     #: Target centre in the robot's base frame (metres).
     metric_offset: tuple = (0.0, 0.0, 0.0)
-    #: Realtime chain only: per-side travel clamp (metres, each base-frame axis).  Empty =
-    #: fall back to ``sweep_amplitude_m``.  Measured by
-    #: ``devtools/verify_realtime_arm_bridge.py --probe-travel`` (see docs section 7).
+    #: Chain displacement limit per side and base-frame axis, in metres.
+    #: An empty mapping falls back to sweep_amplitude_m.
     realtime_travel_m: Mapping[str, float] = field(default_factory=dict)
-    #: Realtime chain only: per-side neutral working point (metres, base frame).  Empty =
-    #: use ``metric_offset``.  Measured by the same probe's ``--probe-lateral``.
+    #: Chain neutral working point per side in base-frame metres.
+    #: An empty mapping falls back to metric_offset.
     realtime_offset: Mapping[str, tuple] = field(default_factory=dict)
     #: Acceptance thresholds for the headless probe / tests.
     max_residual_mm: float = 30.0
@@ -84,6 +62,10 @@ class ArmProfile:
             raise ValueError(
                 f"{self.robot_type}: ik_mode must be 'pose' or 'position', "
                 f"got {self.ik_mode!r}")
+        if self.posture_frame not in POSTURE_FRAMES:
+            raise ValueError(
+                f"{self.robot_type}: posture_frame must be one of {POSTURE_FRAMES},"
+                f" got {self.posture_frame!r}")
         if self.metric_scale <= 0.0:
             raise ValueError(f"{self.robot_type}: metric_scale must be > 0")
         if len(self.metric_offset) != 3:
@@ -123,22 +105,15 @@ class ArmProfile:
         high = tuple(value + amplitude for value in self.metric_offset)
         return low, high
 
-    # ------------------------------------------------------------------ #
-    # 实时链路的每侧参数（实测覆盖值，不是标定）
-    # ------------------------------------------------------------------ #
     def realtime_neutral(self, side: str) -> tuple:
-        """这一侧的中性工作点（基座系，米）：实测覆盖值，缺省回落到 ``metric_offset``。"""
+        """Return the side-specific base-frame neutral point in metres."""
         if side not in SIDES:
             raise ValueError(f"side must be one of {SIDES}, got {side!r}")
         return tuple(float(value) for value in self.realtime_offset.get(side,
                                                                         self.metric_offset))
 
     def travel_limit(self, side: str) -> float:
-        """这一侧每轴允许的最大位移（米）：实测覆盖值，缺省回落到 ``sweep_amplitude_m``。
-
-        ``sweep_amplitude_m`` 是 ``devtools/verify_arm_multi_robot.py`` 验过的方框，
-        所以在没有实测覆盖值的地方用它当上限是安全的。
-        """
+        """Return the side-specific per-axis displacement limit in metres."""
         if side not in SIDES:
             raise ValueError(f"side must be one of {SIDES}, got {side!r}")
         if side in self.realtime_travel_m:
@@ -146,91 +121,45 @@ class ArmProfile:
         return float(self.sweep_amplitude_m)
 
 
-#: Per-robot profiles.  Two measurement sets, both on this machine:
-#: 2026-10-10 (devtools/verify_arm_from_capture.py: one robot, gravity 0, palm-derived
-#: orientation): h1_2 10-16 mm, gr1_t2 22 mm, g1 18-33 mm; keeping the orientation
-#: constraint helped on h1_2 and hurt on the other two.
-#: 2026-10-12 (applications/three_robot_scene.py + simulation/arm_scene_driver.py, so
-#: gravity -9.81, holds active, a full sweep at the profile amplitude, 40 frames, the
-#: two-pass warm IK in PyBulletArmIK):
-#:     h1_2   pose     steady mean 17.0 / max 23.8 mm, travel  99.5 of 100 mm
-#:     gr1_t2 position steady mean  8.9 / max 13.3 mm, travel  60.5 of  60 mm
-#:     g1     position steady mean  7.7 / max 14.9 mm, travel  59.6 of  60 mm
-#:     arm force 200 / 500 / 1000 made no difference; non-driven joints drifted
-#:     0.0003-0.0017 rad; the first frames after a cold start are 32-55 mm (the arm is
-#:     still servoing in), hence the thresholds below describe steady state.
-#: These are tuning values, not a hand-eye calibration; see docs/multi-robot-arm.md.
+#: Per-robot control profiles.
 ARM_PROFILES: dict = {
     "h1_2": ArmProfile(
         robot_type="h1_2",
         ik_mode="pose",
         metric_scale=0.7,
         metric_offset=(0.24, 0.0, 0.19),
-        # 2026-10-12 probe (both arms driven, sweep at the listed amplitude, 32 frames,
-        # gravity on): left holds up to 0.10 m (mean 14.3 / max 27.8 mm), right up to
-        # 0.16 m (mean 14.8 / max 29.8 mm); 0.20 m breaks both sides.
         realtime_travel_m={"left": 0.10, "right": 0.15},
-        # 2026-10-12 lateral probe + real-session A/B (docs/multi-robot-arm.md 8.6):
-        # with both hands on the centre line (y=0) both wrists are commanded to the *same*
-        # point, so at rest the forearms converge in front of the chest and look crossed.
-        # The shoulders sit at y=+-0.148.  Steady residual mean on the recorded 2280 frame
-        # session: y=0 -> 16.8 (L) / 27.9 (R) mm, +-0.05 -> 22.7 / 22.7 mm, +-0.10 ->
-        # 30.1 (L, over the ceiling) / 22.4 (R) mm.  +-0.05 leaves 10 cm between the
-        # hands and keeps both sides inside max_residual_mm.
         realtime_offset={"left": (0.24, 0.05, 0.19), "right": (0.24, -0.05, 0.19)},
         max_residual_mm=30.0,
         min_travel_mm=10.0,
         sweep_amplitude_m=0.05,
-        notes="7 DoF per arm; hand mount is right_wrist_yaw_link.  Sweep measured "
-              "mean 17.0 / max 23.8 mm with the orientation constraint kept.",
+        notes='7 DoF per arm; hand mount is right_wrist_yaw_link.',
     ),
     "gr1_t2": ArmProfile(
         robot_type="gr1_t2",
         ik_mode="position",
+        posture_frame="delta",
         metric_scale=0.4,
         metric_offset=(0.16, 0.0, 0.12),
-        # Probe: left up to 0.10 m (mean 13.3 / max 28.2 mm), right up to 0.12 m
-        # (mean 15.9 / max 26.3 mm); 0.16 m breaks both sides.
         realtime_travel_m={"left": 0.10, "right": 0.12},
-        # Same reason as h1_2 (docs/multi-robot-arm.md 8.6): the shoulder line is at
-        # y=+-0.095, so +-0.10 puts each hand under its own shoulder instead of both of
-        # them on the centre line.  Real 2280 frame session: steady residual mean 7.8 ->
-        # 18.4 (L) and 13.0 -> 13.4 (R) mm, both still inside max_residual_mm.
         realtime_offset={"left": (0.16, 0.10, 0.12), "right": (0.16, -0.10, 0.12)},
         max_residual_mm=25.0,
         min_travel_mm=6.0,
         sweep_amplitude_m=0.03,
-        notes="no wrist link: the hand mount is right_hand_pitch_link, so the "
-              "orientation constraint is dropped (ik_mode=position).  Sweep "
-              "measured mean 8.9 / max 13.3 mm.",
+        notes='no wrist link: the hand mount is right_hand_pitch_link, so the orientation constraint is dropped (ik_mode=position).',
     ),
     "g1": ArmProfile(
         robot_type="g1",
         ik_mode="position",
         metric_scale=0.4,
         metric_offset=(0.16, 0.0, 0.10),
-        # 2026-10-13 both-arm travel probe at the current lateral neutral points:
-        # left 0.04 m mean/max 19.52/31.65 mm, right 0.06 m 19.55/30.35 mm.
-        # Left 0.06 m and both sides at 0.08 m fail the probe's residual criteria.
         realtime_travel_m={"left": 0.04, "right": 0.06},
-        # The left arm tracks much better with a lateral working point of +0.10 m: at
-        # 0.04 m the mean drops from 31.2 mm (y=0) to 19.8 mm, and 0.06 m from 28.6 to
-        # 19.9 mm.  The right arm's best point is the centre (18.3 mm), but -0.10 m only
-        # costs +1.3 mm (19.6 mm) and puts the hand under its own shoulder (+-0.100),
-        # which is what stops the right arm reaching across the chest at rest.  Real 2280
-        # frame session: the left is unchanged at 22.5 mm (it already used +0.10) and the
-        # right goes 11.8 -> 18.9 mm, still inside max_residual_mm.
         realtime_offset={"left": (0.16, 0.10, 0.10), "right": (0.16, -0.10, 0.10)},
         max_residual_mm=25.0,
         min_travel_mm=6.0,
         sweep_amplitude_m=0.03,
-        notes="hand links exist but come later than the wrist, so the wrist is "
-              "the clean IK target; position-only tracks better than the "
-              "uncalibrated orientation convention.  Sweep measured mean 7.7 / "
-              "max 14.9 mm.",
+        notes='hand links exist but come later than the wrist, so the wrist is the clean IK target; position-only tracks better than the uncalibrated orientation convention.',
     ),
-    # Registered only: this repo ships neither the TRON2A URDF nor its calibration
-    # JSON nor the hand checkpoint, so the teammate's TRON2A path cannot run here.
     TRON2A: ArmProfile(
         robot_type=TRON2A,
         side_joints={},          # filled from the teammate's constants on demand
@@ -240,8 +169,8 @@ ARM_PROFILES: dict = {
         metric_offset=(0.0, 0.0, 0.0),
         expected_arm_dof=7,
         loadable=False,
-        notes="teammate's arm; needs third_party/tron2-robot-description/robot.urdf "
-              "+ a calibration JSON + a hand checkpoint (none of them in this repo).",
+        notes="separate calibrated route; uses assets/robots/tron2a/robot.urdf "
+              "and a calibration JSON; hand control also needs a hand checkpoint.",
     ),
 }
 
@@ -273,19 +202,14 @@ def profile_for(robot_type: str) -> ArmProfile:
 
 
 def _tron2a_joint_names(side: str) -> tuple:
-    """The teammate's TRON2A joint names, read (never written) from their spec."""
+    """Read TRON2A arm joint names from the robot specification."""
     from teleoperation.robots.specification import TRON2A_ARM_JOINTS
 
     return tuple(TRON2A_ARM_JOINTS[side])
 
 
 def resolve_joint_names(profile: ArmProfile, body, cid, side: str) -> tuple:
-    """Arm joint names of one side, in URDF order, resolved from the loaded body.
-
-    Preference order: the profile's explicit list (TRON2A), else the teammate's
-    ``_is_arm_joint`` naming rule applied to this body -- so one code path covers
-    all three paper robots without a second hard-coded table.
-    """
+    """Resolve one side's arm joint names in URDF order from the loaded body."""
     if side not in SIDES:
         raise ValueError(f"side must be one of {SIDES}, got {side!r}")
     explicit = profile.side_joints.get(side) if profile.side_joints else None
@@ -334,6 +258,7 @@ def describe(robot_type: str) -> dict:
         "robot_type": profile.robot_type,
         "loadable": profile.loadable,
         "ik_mode": profile.ik_mode,
+        "posture_frame": profile.posture_frame,
         "metric_scale": profile.metric_scale,
         "metric_offset": list(profile.metric_offset),
         "realtime_offset": {side: list(profile.realtime_neutral(side)) for side in SIDES},

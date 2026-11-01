@@ -11,9 +11,12 @@ CANONICAL_HAND_FRAME = "hand_canonical_right"
 CANONICAL_ANGLE_CONVENTION = "l21_canonical_right_angles_v1"
 NORMALIZED_LANDMARK_SPACE = "mediapipe_normalized"
 WORLD_LANDMARK_SPACE = "mediapipe_world_meters"
+PALM_LENGTH_PROFILE = "camera_palm_length_window3_v1"
+PALM_LENGTH_ALIGNMENT = "mediapipe_world_wrist_index_middle_canonical_right_palm_length_window3_v1"
 SUPPORTED_COORDINATE_ALIGNMENTS = frozenset({
     COORDINATE_ALIGNMENT, PALM_LOCAL_COORDINATE_ALIGNMENT, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
     LEGACY_PALM_LOCAL_ALIGNMENT, LEGACY_WORLD_PALM_LOCAL_ALIGNMENT,
+    PALM_LENGTH_ALIGNMENT,
 })
 
 
@@ -68,7 +71,7 @@ def is_world_alignment(alignment: str) -> bool:
 
 
 def coordinate_frame_for_alignment(alignment: str) -> str:
-    return CANONICAL_HAND_FRAME if alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT else COORDINATE_FRAME
+    return CANONICAL_HAND_FRAME if alignment in (WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, PALM_LENGTH_ALIGNMENT) else COORDINATE_FRAME
 
 
 def landmark_source(landmark_space: str) -> str:
@@ -101,6 +104,9 @@ def validate_world_contract(metadata, context: str) -> None:
 
 
 def validate_landmark_contract(alignment, metadata, context):
+    if alignment == PALM_LENGTH_ALIGNMENT:
+        validate_palm_length_contract(metadata, context)
+        return
     if is_world_alignment(alignment):
         validate_world_contract(metadata, context)
     if alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT:
@@ -116,3 +122,30 @@ def validate_landmark_contract(alignment, metadata, context):
             space = space.decode("utf-8")
         if space not in (None, NORMALIZED_LANDMARK_SPACE):
             raise ValueError(f"{context} normalized alignment requires source_landmark_space={NORMALIZED_LANDMARK_SPACE!r}")
+
+
+def palm_length_metadata():
+    """Static input identity shared by windows, training and checkpoints."""
+    return {
+        "coordinate_alignment": PALM_LENGTH_ALIGNMENT,
+        "coordinate_frame": CANONICAL_HAND_FRAME,
+        "input_profile": PALM_LENGTH_PROFILE,
+        "units": "1", "length_unit": "1",
+        "source_landmark_space": WORLD_LANDMARK_SPACE,
+        "normalization": "palm_length_window_median",
+        "normalization_version": 1, "temporal_window": 3,
+        "palm_reference_indices": [0, 11],
+    }
+
+
+def validate_palm_length_contract(metadata, context):
+    expected = palm_length_metadata()
+    expected.pop("palm_reference_indices")
+    for name, value in expected.items():
+        actual = metadata.get(name)
+        if isinstance(actual, bytes):
+            actual = actual.decode("utf-8")
+        if actual != value:
+            raise ValueError(f"{context} requires {name}={value!r}; got {actual!r}")
+    if tuple(metadata.get("palm_reference_indices", ())) != (0, 11):
+        raise ValueError(f"{context} requires wrist/middle MCP indices (0,11)")

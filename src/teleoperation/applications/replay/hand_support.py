@@ -1,9 +1,9 @@
 """Explicit 18D result → 17DOF → native mapping application boundary."""
 import numpy as np
-from teleoperation.contracts.hand import L21HandAngles
+from teleoperation.retargeting.hand.angles import legacy_l21_dofs
 from teleoperation.robots.native_hand import map_dofs
 
 
 def map_frame(row, mapping, limit_mode="clamp"):
-    dofs = L21HandAngles(np.asarray(row, dtype=np.float64)).native_mapping_dofs()
-    return map_dofs(dofs.values, mapping, limit_mode)
+    dofs = legacy_l21_dofs(np.asarray(row, dtype=np.float64))
+    return map_dofs(dofs, mapping, limit_mode)

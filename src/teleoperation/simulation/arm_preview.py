@@ -1,36 +1,9 @@
-"""实时入口的采集窗口（手 + 手臂）：在基线预览上再叠一层手臂骨架与每侧数据行。
+"""Camera preview with hand and SMPL-X arm overlays.
 
-它和 ``applications/realtime_hand_sim.py`` 的关系
--------------------------------------------------
-基线的 ``CameraPreview`` 只画 **21 点手部骨架**（那个入口不驱动手臂），而
-``realtime_teleop`` 同一帧里还拿到了 pose 的肩/肘/腕。要让"一个窗口看到手和手臂"
-成立，这里**不改基线文件**，而是子类化它的预览、把额外那一层画上去：
-
-    CameraPreview（基线：取画面 / 镜像 / 挪窗口 / 置顶 / 存 PNG / q|Esc 退出）
-      `- ArmCameraPreview.annotate()   <- 本文件：手臂折线 + 每侧数据行 + 图例
-
-数据由调用方（``realtime_teleop``）准备：
-
-``arms``  每侧 (3, 3) 归一化肩/肘/腕（``UpperBodyObservation.arms``，画图时乘图像尺寸）
-``lines`` 每侧已格式化好的一行文字（来源字母、相对中性姿势的三轴位移厘米、肘角）
-
-两者都可以缺：缺哪侧就不画哪侧，窗口其余部分照常，因此丢帧时画面不会前后不一致。
-
-用法（参数都在 ``realtime_teleop``，本文件不新增 CLI）::
-
-    E:\\python3.11.7\\python.exe -m teleoperation.simulation.realtime_teleop
-    ... --no-arm-overlay      # 回到基线那种"只有手"的窗口
-
-约定
-----
-- 本层**只画**：像素不回灌重定向；开不出窗口（没桌面 / 没 HighGUI）时只打印一行 note，
-  主链路与 ``--report`` 不受影响（与基线预览同一套失败策略）。
-- 非有限（NaN / Inf）或形状不对的手臂点一律当"没有这一侧"，不会拿它去 ``cv2.line``；
-  这条与 ``RealtimeArmBridge`` 的"丢帧保持"口径一致 —— 看不见就不画，也不猜。
-- 画的是 pose **归一化坐标**在画面上的投影，不是三维重建：本层没有相机内参、没有手眼标定，
-  所以折线的绝对位置只能当"MediaPipe 到底看没看到这条手臂"的现场证据。
-- ``.py`` 里不出现非 GBK 字符（``->`` 不写箭头，``<=`` 不写数学符号）。
-"""
+UpperBodyObservation.arms contains normalized shoulder/elbow/wrist image
+projections. This layer draws them and caller-provided status lines only;
+it does not feed image coordinates back into arm retargeting. Invalid or
+missing sides are omitted. CameraPreview owns window handling and hand drawing."""
 
 from __future__ import annotations
 
@@ -73,7 +46,7 @@ def finite_arm_points(arms, sides) -> dict:
 
 
 def outside_frame(pixels, width, height) -> int:
-    """``(N, 2)`` 像素里落在画布外的个数 —— 用来提示"手臂没进画面"（实测常见）。"""
+    """Count projected pixel points outside the image canvas."""
     array = np.asarray(pixels, dtype=np.float64).reshape(-1, 2)
     inside = ((array[:, 0] >= 0) & (array[:, 0] < width)
               & (array[:, 1] >= 0) & (array[:, 1] < height))
@@ -122,8 +95,6 @@ class ArmCameraPreview(CameraPreview):
             line = self.arm_lines.get(side)
             if line:
                 self._text(canvas, line, (10, 44 + 20 * index), color, 0.5)
-        # 实测最常见的"看不见手臂"就是肩/肘/腕跑到画面外（人离相机太近）：说清几个点在外，
-        # 用户就知道该往后退，而不是怀疑代码。
         outside = " ".join(f"{side} {count}/{ARM_POINT_COUNT}"
                            for side, count in sorted(offscreen.items()) if count)
         if outside:

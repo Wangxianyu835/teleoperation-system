@@ -1,89 +1,16 @@
-"""实时遥操作入口：摄像头 -> 手（18 维）+ 手臂（相对重定向）-> H1-2 / GR1-T2 / G1。
+"""Live RGB or SMPL-X recording to H1-2 / GR1-T2 / G1 simulation.
 
-它和 ``applications/realtime_hand_sim.py`` 的关系
-------------------------------------------------
-那个入口只驱动**原装手**：三台机器人的手臂被 ``three_robot_scene.py`` 每帧按住
-（``hold_ids`` + HOLD_FORCE=500），所以画面里手会动、手臂不动；而且它取的
-``MediaPipeCameraWorkflow.next_window()`` 只返回手部窗口，同一帧的 pose 肩/肘/腕在那一层
-就被丢掉了。本入口在那条链路旁边补上手臂：
-
-    MediaPipeCameraInput.next_teleop_observation()   # 同一帧：手 21 点 + pose 肩/肘/腕
-      -> 手：MediaPipePalmLocalPipeline（三帧窗口 + 掌面局部对齐）
-             -> GeometricHandRetargeter / 训练检查点 -> 18 维 -> scene.apply(side)
-      -> 臂：RealtimeArmBridge（相对重定向：以中性姿势为原点）
-             -> ArmSceneDriver.apply_each(source="base") -> PyBulletArmIK 两遍热启动 -> 7 关节
-
-**零改动**：``applications/**``、``inputs/**``、``retargeting/**`` 一行都没改，这里只是
-import 它们的公开接口并复用基线入口里那几个纯工具函数；手臂侧三个模块
-（``simulation/arm_profiles.py`` / ``arm_ik.py`` / ``arm_scene_driver.py``）是我们自己的新文件。
-
-用法::
-
-    # PyCharm 一键（推荐）：解释器/PYTHONPATH/工作目录/缓存四项都替你补齐
-    E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py
-
-    # 命令行等价
-    cd F:\\simulation_platform_cs
-    $env:PYTHONPATH = "$pwd\\src"
-    E:\\python3.11.7\\python.exe -m teleoperation.simulation.realtime_teleop
-
-    # 无头自检 + 报告 + 把这一场的原始帧录下来（可以离线复现）
-    E:\\python3.11.7\\python.exe -m teleoperation.simulation.realtime_teleop \\
-        --headless --frames 300 --report outputs\\tmp_realtime\\arm_report.json \\
-        --dump-npz outputs\\tmp_realtime\\frames.npz
-
-    # 回到基线行为：只驱动手
-    E:\\python3.11.7\\python.exe -m teleoperation.simulation.realtime_teleop --no-arms
-
-两个窗口
---------
-1. **采集窗口**（``cv2.imshow``，标题见 ``arm_preview.ARM_PREVIEW_WINDOW``）：原始画面 +
-   手 21 点骨架 + **手臂肩/肘/腕折线**（同色系浅一档）+ 每侧一行数字（来源字母
-   P/H/-、相对中性姿势的三轴位移厘米、臂长、肘角）+ 底部图例。这一层由
-   ``simulation/arm_preview.py`` 在基线预览上**子类化**画出来，基线文件一行未改；
-   ``--no-arm-overlay`` 回到基线那种"只有手"的窗口。
-2. **PyBullet 窗口**：H1-2 / GR1-T2 / G1 并排 —— 原装手由 18 维角度驱动、手臂由
-   ``ArmSceneDriver`` 的 IK 结果驱动。它只看仿真结果，不看摄像头。
-
-采集窗口里那层手臂是**显示投影**（pose 归一化坐标乘图像尺寸），不是三维重建：
-本层没有相机内参、没有手眼标定，折线只能当"MediaPipe 到底看没看到这条手臂"的现场证据。
-
-中性标定（第一次跑必看）
-------------------------
-手臂走的是**相对**重定向：启动后前 ``--arm-calibrate-frames`` 帧要**保持一个中性姿势不动**
-（建议双手抬到胸前、肘略弯，和你平时开始操作前的姿势一致），程序取这些帧的中位数作为
-原点；之后你手腕相对肩的位移（米）按 ``profile.metric_scale``（再按你标定时的臂长归一化）
-搬进机器人基座系。标定期间手臂停在各自的中性工作点，不会乱跑。``--save-neutral FILE``
-可以存下这次的中性姿势，下次 ``--neutral-json FILE`` 直接复用，不用再站一次。
-
-轴向约定（要现场核对一次）
---------------------------
-操作者系（MediaPipe pose world）：x 图像向右、y 向下、z 远离相机为正；机器人基座系：
-X 前、Y 左、Z 上。默认映射见 ``arm_realtime.AxisMap``（``(Z, X, Y)/(-, +, -)``）。
-
-**第一次跑请加 ``--arm-trace``**：每 ``--print-every`` 帧会打印 ``delta_op_cm``（你手腕
-相对肩、相对中性姿势的位移，厘米）。你只往一个方向动手时，只有一个分量明显变化，符号
-也应与画面方向一致；对不上就用 ``--arm-axis-order`` / ``--arm-axis-signs`` 覆盖。
-**这一步没做过之前，"跟手"只是相对自洽，不能称作标定。**
-
-退出码与报告
-------------
-0 = 跑完且至少一侧给出过输出（手角度或手臂目标）；1 = 全程既没有手也没有手臂数据。
-``--report`` 的 ``arm`` 段给出每台机器人的稳态残差、行程、被 hold 的关节漂移；
-``bridge`` 段给出轴向约定、gain、行程上限、中性记录与各来源帧数。
-
-如实声明
---------
-这里**没有**相机内参、没有手眼标定，也**不是**论文的 SMPLer-X + PINK 链路：位置来自
-相对重定向的调参，姿态约定只在 ``ik_mode="pose"`` 的机器人（h1_2）上使用，
-``gr1_t2`` / ``g1`` 只做位置 IK。每台机器人每侧的行程上限 ``profile.realtime_travel_m``
-是实测出来的（``devtools\\verify_realtime_arm_bridge.py --probe-travel``），超出即被夹住。
-
+A single CameraTeleopSource distributes RGB to MediaPipe Hands and an isolated
+SMPLer-X worker. Each retains its own capture timestamp. Live and recorded body
+observations share apply_camera_arm_frame, the existing bridge, wrist controller,
+IK and bounded motor commands. --input-body replays new H5 observations;
+--input-npz is finger-only. See docs/smplerx-arm.md for runnable commands.
 """
 
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
 import sys
@@ -93,6 +20,8 @@ from pathlib import Path
 import numpy as np
 
 from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
+from teleoperation.contracts.hand_control import valid_joint_result
+from teleoperation.retargeting.hand.angles import l21_legacy_values
 from teleoperation.applications.realtime_hand_sim import (
     PREVIEW_HINT_ROBOTS,
     _describe,
@@ -105,58 +34,110 @@ from teleoperation.applications.realtime_hand_sim import (
     resolve_model_asset,
 )
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
-from teleoperation.paths import DEFAULT_POSE_ASSET, realtime_checkpoint
+from teleoperation.inputs.smplerx import SmplerXClient
+from teleoperation.inputs.smplerx_process import SmplerXWorkerTransport
+from teleoperation.applications.camera_teleop_source import CameraTeleopSource
+from teleoperation.paths import realtime_checkpoint
 from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM, RUNTIME
 from teleoperation.simulation.arm_preview import (
     ARM_PREVIEW_WINDOW,
     build_arm_preview,
 )
 from teleoperation.simulation.arm_profiles import loadable_robots, profile_for
+from teleoperation.simulation.arm_ik import (ELBOW_PASS_ORDERS, ELBOW_RECOVERY_COOLDOWN_FRAMES,
+                                             ELBOW_RECOVERY_DEG, ELBOW_RECOVERY_MARGIN_DEG)
 from teleoperation.simulation.arm_realtime import (
+    CALIBRATE_MODES,
+    DEFAULT_LATERAL_GUARD_M,
+    MAP_MODES,
+    MAX_DIRECTION_RATE_DEG_S,
+    TRAVEL_MODES,
     AxisMap,
     RealtimeArmBridge,
     load_neutral,
     save_neutral,
 )
-from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+from teleoperation.simulation.arm_scene_driver import SLEW_MAX_STEP_M, ArmSceneDriver
 from teleoperation.simulation.scene_appearance import apply_appearance
-from teleoperation.simulation.hand_commands import add_hand_command_arguments, build_hand_commands
+from teleoperation.simulation.hand_commands import add_hand_command_arguments, build_hand_commands, apply_legacy_l21_mapping
 
 SIDES = ("left", "right")
 ARM_ENTRY = "realtime_teleop"
+#: 摄像头循环名义帧长（秒）：第一帧还没有"上一帧"可比，斜坡按它换算，
+#: 这样第一帧也是 20 mm/帧（旧口径），不会退化成"一步跳到工作点"。
+NOMINAL_FRAME_DT = 1.0 / 30.0
+#: Default wrist target speed in millimetres/second.
+DEFAULT_ARM_SLEW_MM_PER_S = 600.0
 #: HUD 里把来源缩成一个字母：P = pose 手臂（主），H = 手部兜底，- = 无数据（保持上一帧）。
-SOURCE_SHORT = {"pose": "P", "hand": "H", "none": "-"}
+SOURCE_SHORT = {"smplerx": "S", "hand": "H", "none": "-"}
+
+
+class ArmGainAction(argparse.Action):
+    """Parse a robot name and a finite positive gain before opening devices."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        name, value = values
+        if name not in loadable_robots():
+            raise argparse.ArgumentError(self, f"unknown robot {name!r}")
+        try:
+            gain = float(value)
+        except ValueError:
+            raise argparse.ArgumentError(self, "gain must be a finite positive number") from None
+        if not np.isfinite(gain) or gain <= 0:
+            raise argparse.ArgumentError(self, "gain must be a finite positive number")
+        pairs = list(getattr(namespace, self.dest, None) or [])
+        pairs.append((name, gain))
+        setattr(namespace, self.dest, pairs)
+
+
+class SimulationStepClock:
+    """Match live physics time to elapsed time; keep offline steps deterministic."""
+
+    def __init__(self, fixed_steps=8, realtime=True, clock=time.perf_counter):
+        if fixed_steps < 1:
+            raise ValueError("simulation steps must be positive")
+        self.fixed_steps, self.realtime, self.clock = int(fixed_steps), realtime, clock
+        self.previous = clock()
+        self.fraction = 0.0
+        self.total_steps = self.capped_frames = 0
+
+    def next_steps(self):
+        if self.realtime:
+            now = self.clock()
+            elapsed = max(0.0, now - self.previous)
+            self.previous = now
+            # Do not replay a long freeze as an abrupt burst of physics updates.
+            self.capped_frames += int(elapsed > 0.1)
+            ticks = min(elapsed, 0.1) * 240 + self.fraction
+            steps = max(1, int(ticks))
+            self.fraction = max(0.0, ticks - steps)
+        else:
+            steps = self.fixed_steps
+        self.total_steps += steps
+        return steps
 
 
 class CameraFrameSource:
-    """一帧 = 手部三帧窗口 + pose 肩/肘/腕：把基线工作流丢掉的那一半补回来。
-
-    ``MediaPipeCameraWorkflow.next_window()`` 只把手交给下游（它调的是不含 pose 的
-    ``next_observation``），而 ``inputs/mediapipe.py`` 的 ``next_teleop_observation()``
-    一次采集就同时给出两套数据。基线文件不能改，所以这里复刻那 20 行胶水（同样的相对秒
-    时间戳、同样的 ``MediaPipePalmLocalPipeline`` 与 ``world_*`` 字段），额外把
-    ``upper_body``（pose 手臂）原样带出来给 ``RealtimeArmBridge``。
-
-    没有配 pose 模型时自动退化为基线行为（``next_observation``），手臂链路由上层关掉。
-    """
+    """Shared capture adapter for independent finger and SMPL-X body output."""
 
     def __init__(self, model_asset_path, camera_index: int = 0, width: int = 640,
                  height: int = 480, fps: int = 30, landmark_space: str = "world",
-                 pose_model_asset_path=None, pose_min_visibility=None):
+                 smplerx_client=None, session_id="camera", arms_enabled=False):
         self.model_asset_path = Path(model_asset_path)
         self.landmark_space = landmark_space
         self.pipeline = MediaPipePalmLocalPipeline(landmark_space)
         self.processor = self.pipeline.processor
         self.last_raw_frame = None
         self.last_observation = None
-        self.pose_enabled = pose_model_asset_path is not None
-        extra = ({} if pose_min_visibility is None
-                 else {"pose_min_visibility": float(pose_min_visibility)})
         self._input = MediaPipeCameraInput(
             model_asset_path=model_asset_path, camera_index=camera_index,
-            width=width, height=height, fps=fps, invalid_hand_as_missing=True,
-            pose_model_asset_path=pose_model_asset_path, **extra)
-        self._start_time = time.time()
+            width=width, height=height, fps=fps, invalid_hand_as_missing=True)
+        self._source = CameraTeleopSource(
+            self._input, self._input, smplerx_client, session_id=session_id,
+            arms_enabled=arms_enabled)
+        self.body_enabled = bool(arms_enabled)
+        self._start_timestamp = None
+        self._last_capture_time_s = self._capture_dt = None
 
     def next_frame(self):
         """采集一帧；返回手部三帧窗口（还没攒够就是 ``None``）。
@@ -164,66 +145,100 @@ class CameraFrameSource:
         ``last_raw_frame`` 是这一帧的手部（归一化 + ``world_*``），``last_observation``
         是同一帧的完整观测（含 pose 手臂），两者同源且同一时间戳。
         """
-        if self.pose_enabled:
-            observation = self._input.next_teleop_observation()
-            self.last_observation = observation
-            raw = observation.hands
-        else:
-            raw = self._input.next_observation(include_world=True)
-            self.last_observation = None
-        raw_frame = {**raw.hands, "timestamp": raw.timestamp,
+        try:
+            observation = self._source.next_teleop_observation()
+        except StopIteration:
+            self.exhausted = True
+            return None
+        self.last_observation = observation
+        raw = observation.hands
+        stamp = float(raw.timestamp)
+        previous = getattr(self, '_last_capture_time_s', None)
+        if previous is not None and stamp <= previous:
+            raise ValueError('Camera capture times must increase')
+        self._capture_dt = None if previous is None else stamp - previous
+        self._last_capture_time_s = stamp
+        if self._start_timestamp is None:
+            self._start_timestamp = float(raw.timestamp)
+        raw_frame = {**raw.hands, "timestamp": raw.timestamp, "wrists": None,
                      "metadata": dict(raw.metadata)}
         self.last_raw_frame = raw_frame
         if raw.world_hands is not None:
             raw_frame.update({"world_" + side: raw.world_hands.get(side) for side in SIDES})
         frame = {
             **raw_frame,
-            "timestamp": round(time.time() - self._start_time, 3),
+            "timestamp": float(raw.timestamp) - self._start_timestamp,
             "metadata": {
                 **raw_frame.get("metadata", {}),
-                "raw_timestamp_ms": raw_frame["timestamp"],
+                "capture_time_s": raw_frame["timestamp"],
                 "timestamp_unit": "relative_seconds",
             },
         }
         if raw.world_hands is not None:
             frame.update({"world_" + side: raw.world_hands[side] for side in SIDES})
-        return self.pipeline.process_window(frame)
+        diagnostics = getattr(self, "diagnostics", None)
+        with (nullcontext() if diagnostics is None else diagnostics.stage("hand_preprocessing")):
+            if raw.world_hands is None and all(value is None for value in raw.hands.values()):
+                self.pipeline.reset()
+                return None
+            return self.pipeline.process_window(frame)
+
+    @property
+    def frame_dt(self):
+        return self._capture_dt
 
     def arms(self):
-        """同一帧的 pose 肩/肘/腕（``UpperBodyObservation``）；没有就是 ``None``。"""
+        """The tracked SMPLer-X shoulder/elbow/wrist observation."""
         observation = self.last_observation
-        return None if observation is None else observation.upper_body
+        return None if observation is None or not self.body_enabled else observation.upper_body
+
+    def wrists(self):
+        observation = self.last_observation
+        return None if observation is None or not self.body_enabled else observation.wrists
 
     def release(self, **kwargs):
-        """转发给输入层；``close_landmarker=False`` 可让 42 s 的 TFLite 释放不挡退出。"""
-        return self._input.release(**kwargs)
+        return self._source.release()
 
+
+class BodyReplayFrameSource(CameraFrameSource):
+    """Run a new body recording through the same hand/control adapters as live input."""
+    def __init__(self, path, landmark_space='world'):
+        from teleoperation.applications.body_replay_source import BodyReplaySource
+        self._source = BodyReplaySource(path)
+        self.frames = self._source.frames
+        self.exhausted = False
+        self.landmark_space = landmark_space
+        self.pipeline = MediaPipePalmLocalPipeline(landmark_space)
+        self.processor = self.pipeline.processor
+        self.last_raw_frame = self.last_observation = None
+        self.body_enabled = True
+        self._start_timestamp = None
+        self._last_capture_time_s = self._capture_dt = None
 
 
 class ReplayFrameSource:
-    """把 ``--dump-npz`` 录下来的原始帧当成"摄像头"再放一遍：不需要相机，可复现。
-
-    键名与 ``--dump-npz`` 写出的一致：``left_hand``/``right_hand``（归一化 21x3）、
-    ``world_left_hand``/``world_right_hand``（米制 21x3）、``left_arm``/``right_arm``
-    （pose 米制肩/肘/腕 3x3）、``timestamps``；NaN 表示那一帧没检到（会触发"保持上一帧"）。
-    手部仍然走同一条 ``MediaPipePalmLocalPipeline``，所以三帧窗口语义和实时一致。
-    """
+    """Finger-only NPZ debug input. Legacy arm and wrist fields are rejected."""
 
     def __init__(self, path, landmark_space: str = "world"):
         # 一次性读进内存：np.load 的句柄会锁住文件（Windows 上连删临时目录都不行），
         # 而这里的帧本来就只有几十 MB 级，读完之后不被文件句柄牵着走更安全。
         with np.load(str(path)) as handle:
             self.data = {key: np.asarray(handle[key]) for key in handle.files}
+        legacy = [key for key in self.data if "pose" in key.lower() or key in {
+            "left_arm", "right_arm", "wrist_reference_frame", "wrist_local_frame",
+            "left_wrist_orientation_xyzw", "right_wrist_orientation_xyzw"}]
+        if legacy:
+            raise ValueError(
+                "Legacy MediaPipe Pose arm NPZ is not accepted; replay an SMPL-X body recording"
+            )
         self.frames = int(np.asarray(self.data["timestamps"]).shape[0])
         self.landmark_space = landmark_space
         self.pipeline = MediaPipePalmLocalPipeline(landmark_space)
         self.processor = self.pipeline.processor
         self.last_raw_frame = None
         self.last_observation = None
-        self.pose_enabled = True
         self.exhausted = False
         self.index = 0
-        self._arms = None
 
     def _points(self, key, index, shape):
         if key not in self.data:
@@ -240,11 +255,6 @@ class ReplayFrameSource:
             return None
         index, self.index = self.index, self.index + 1
         timestamp = float(np.asarray(self.data["timestamps"])[index])
-        # 元数据不是装饰：队友的处理器在 world 口径下会校验
-        # ``world_landmark_space`` / ``world_length_unit`` / ``source_scale``
-        # （retargeting/hand/processing.py 的 process_frame），而 --dump-npz 只存数组，
-        # 所以回放时按 inputs/mediapipe.py 的同一口径把这些声明补回来；
-        # 少一项整场在第一帧就 ValueError（这是实测踩到的，见 docs 第 8 节）。
         raw_frame = {"timestamp": timestamp,
                      "metadata": {"source": "npz_replay",
                                   "timestamp_unit": "relative_seconds",
@@ -253,11 +263,9 @@ class ReplayFrameSource:
                                   "world_length_unit": "m",
                                   "world_origin": "hand_geometric_center",
                                   "source_scale": 1.0}}
-        arms = {}
         for side in SIDES:
             raw_frame[side] = self._points(f"{side}_hand", index, (21, 3))
             raw_frame[f"world_{side}"] = self._points(f"world_{side}_hand", index, (21, 3))
-            arms[side] = self._points(f"{side}_arm", index, (3, 3))
         # NaN（= 那帧没检到）照样报个原因，和实时链路 inputs/mediapipe.py 同一套口径。
         missing = {side: "npz replay: hand not detected in this frame"
                    for side in SIDES if raw_frame[side] is None}
@@ -268,21 +276,16 @@ class ReplayFrameSource:
         if world_missing:
             raw_frame["metadata"]["world_invalid_reasons"] = world_missing
         self.last_raw_frame = raw_frame
-        self._arms = arms
-        return self.pipeline.process_window(raw_frame)
+        raw_frame["wrists"] = None
+        diagnostics = getattr(self, "diagnostics", None)
+        with (nullcontext() if diagnostics is None else diagnostics.stage("hand_preprocessing")):
+            return self.pipeline.process_window(raw_frame)
 
     def arms(self):
-        """这一帧的 pose 手臂，包装成 ``UpperBodyObservation``（米制放在 ``world_arms``）。"""
-        if self._arms is None:
-            return None
-        from teleoperation.contracts.observations import UpperBodyObservation
+        return None
 
-        timestamp = float(self.last_raw_frame["timestamp"]) if self.last_raw_frame else None
-        return UpperBodyObservation(
-            {side: None for side in SIDES},
-            {side: self._arms[side] is not None for side in SIDES},
-            timestamp, "mediapipe_pose_normalized", "normalized",
-            world_arms={side: self._arms[side] for side in SIDES})
+    def wrists(self):
+        return None
 
     def release(self, **kwargs):
         """回放没有设备要关；保留接口以便和 ``CameraFrameSource`` 互换。"""
@@ -294,15 +297,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m teleoperation.simulation.realtime_teleop",
         description="Realtime camera -> hand angles + arm targets -> H1-2 / GR1-T2 / G1")
-    parser.add_argument("--backend", choices=("auto", "geometric", "checkpoint"),
+    parser.add_argument("--backend", choices=("auto", "geometric", "checkpoint", "dex"),
                         default="auto")
+    parser.add_argument("--dex-calibration", type=Path, help="fixed camera dex calibration JSON")
+    parser.add_argument("--diagnostics", action="store_true", help="read-only arm timings and state statistics")
+    parser.add_argument("--diagnostic-trace", type=Path, help="stream diagnostic CSV; implies --diagnostics; must be a new file")
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)
     parser.add_argument("--model-asset-path", type=Path, default=None)
-    parser.add_argument("--pose-model-asset-path", type=Path, default=None,
-                        help="pose landmarker .task (default datasets/pose_landmarker_lite.task); "
-                             "when it is missing the arms stay off and only the hands move")
-    parser.add_argument("--pose-min-visibility", type=float, default=None)
+    parser.add_argument("--smplerx-worker-python", type=Path, default=None)
+    parser.add_argument("--smplerx-root", type=Path, default=None)
+    parser.add_argument("--smplerx-checkpoint", type=Path, default=None)
+    parser.add_argument("--smplx-model-dir", type=Path, default=None)
+    parser.add_argument("--smplerx-model", choices=("s32",), default="s32")
+    from teleoperation.cli.smplerx_options import smplerx_defaults
+    parser.set_defaults(**smplerx_defaults())
+    parser.add_argument("--pose-model-asset-path", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--pose-min-visibility", type=float, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--camera-index", type=int, default=0)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
@@ -313,27 +324,81 @@ def build_parser() -> argparse.ArgumentParser:
                         help="drive only these robots (repeatable; default: all three)")
     parser.add_argument("--no-arms", action="store_true",
                         help="baseline behaviour: drive the hands only, arms stay held")
+    # Accepted only so existing launcher argument lists still parse. Wrist
+    # observations now drive orientation automatically; no enable switch.
     parser.add_argument("--arm-orientation", choices=("off", "auto", "on"), default="auto",
-                        help="auto = keep the orientation constraint where the profile has one "
-                             "(h1_2 only)")
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--arm-elbow-follow", choices=("off", "operator"), default="off",
+                        help='IK null-space reference: off uses --arm-rest-poses; operator maps operator elbow bend to each robot elbow joint.')
     parser.add_argument("--arm-axis-order", default=None, metavar="ZXY",
                         help="robot axes taken from operator axes (default from arm_realtime)")
     parser.add_argument("--arm-axis-signs", default=None, metavar="-1,1,-1")
-    parser.add_argument("--arm-gain", type=float, nargs=2, action="append", default=None,
+    parser.add_argument("--arm-gain", nargs=2, action=ArmGainAction, default=None,
                         metavar=("ROBOT", "GAIN"), help="override metric_scale for one robot")
+    parser.add_argument("--arm-map", choices=MAP_MODES, default="posture",
+                        help='Arm mapping: posture (default) maps upper/forearm directions using robot link lengths; chain maps shoulder-to-wrist displacement; segments scales each segment separately. Joint limits and IK constrain reach.')
+    parser.add_argument("--arm-elbow-task", action="store_true",
+                        help='Add an elbow position target for segments mapping. Posture mapping already supplies one. Off by default.')
+    parser.add_argument("--arm-elbow-pass", choices=ELBOW_PASS_ORDERS, default="last",
+                        help='IK pass carrying the elbow position target: first or last (default last).')
+    parser.add_argument("--arm-elbow-gain", type=float, default=1.0, metavar="0-1",
+                        help='Fraction of upper-arm displacement used for the segments elbow target (default 1.0).')
+    parser.add_argument("--arm-posture-gain", type=float, default=1.0, metavar="0-1",
+                        help='Direction interpolation gain for posture mapping: 1 follows mapped directions, 0 stays at robot neutral (default 1).')
+    parser.add_argument("--arm-posture-frame", choices=("auto", "mapped", "delta"),
+                        default="auto",
+                        help='Posture direction frame: auto uses mapped for h1_2/g1 and delta for gr1_t2; mapped uses axis-mapped directions; delta applies operator neutral-relative rotations to robot neutral directions.')
+    parser.add_argument("--arm-ik-scope", choices=("arm", "body"), default="arm",
+                        help='IK variables: arm (default) pins non-driven joints; body includes all movable joints.')
+    parser.add_argument("--arm-rest-poses", choices=("current", "zero", "live", "loaded"),
+                        default="current",
+                        help='IK null-space reference: current (default) reads actual joint angles; live is an alias; loaded uses the build-time pose; zero uses zero angles.')
+    parser.add_argument("--arm-anchor", choices=("upper", "shoulder"), default="upper",
+                        help='Upper-arm shoulder anchor: upper (default) is the elbow parent-link origin; shoulder is the name-matched shoulder link.')
+    parser.add_argument("--arm-no-shoulder-follow", action="store_true",
+                        help='Disable translating elbow/wrist targets with the current FK shoulder relative to its loaded anchor.')
+    parser.add_argument("--arm-direction-rate-deg-s", type=float,
+                        default=MAX_DIRECTION_RATE_DEG_S, metavar="DEG/S",
+                        help='Maximum operator direction rate in degrees/second (default 600); hold rejected jumps for a bounded number of frames. 0 disables the guard.')
+    parser.add_argument("--arm-elbow-recovery-deg", type=float, default=ELBOW_RECOVERY_DEG,
+                        metavar="DEG",
+                        help='Direction-error threshold for retrying IK from the loaded pose (default 25 degrees, 0 disables recovery).')
+    parser.add_argument("--arm-elbow-recovery-margin-deg", type=float,
+                        default=ELBOW_RECOVERY_MARGIN_DEG, metavar="DEG",
+                        help='Required direction-error improvement before switching IK branch (default 8 degrees).')
+    parser.add_argument("--arm-elbow-recovery-frames", type=int,
+                        default=ELBOW_RECOVERY_COOLDOWN_FRAMES, metavar="N",
+                        help='Frames to wait after each branch recovery attempt (default 12, 0 retries every frame).')
+
     parser.add_argument("--arm-travel-mm", type=float, default=None,
                         help="override the per-axis travel clamp for every robot (mm)")
+    parser.add_argument("--arm-travel-mode", choices=TRAVEL_MODES, default="clip",
+                        help='Displacement travel limiting: clip clamps each axis independently; scale shrinks the complete displacement to fit. Does not apply to posture mapping.')
+    parser.add_argument("--arm-lateral-guard-mm", type=float,
+                        default=1000.0 * DEFAULT_LATERAL_GUARD_M, metavar="MM",
+                        help='Keep wrist targets on their own side: left y >= MM, right y <= -MM (default 0 disables the guard).')
+    parser.add_argument("--no-arm-gain-quality-guard", action="store_true",
+                        help='Disable plausibility and side-symmetry checks for calibrated operator arm lengths.')
+    parser.add_argument("--arm-slew-mm-s", type=float, default=DEFAULT_ARM_SLEW_MM_PER_S,
+                        metavar="MM/S",
+                        help='Wrist target speed limit in mm/s (default 600), converted using capture intervals and capped at 40 mm per step. 0 disables slew limiting.')
+    parser.add_argument("--arm-slew-mm", type=float, default=None, metavar="MM",
+                        help='Fixed target step limit in mm per frame, overriding --arm-slew-mm-s.')
+    parser.add_argument("--arm-slew-pair-floor", type=float, default=None, metavar="RATIO",
+                        help='Minimum retained length ratio for a rigid elbow/wrist target pair; hold the previous pair below this ratio (default 0.6, 0 disables the guard).')
     parser.add_argument("--arm-ik-iterations", type=int, default=60,
-                        help="PyBullet IK maxNumIterations per pass (default 60: measured "
-                             "2026-10-12, 60/1e-4 beats 200/1e-5 in residual AND speed here)")
+                        help='PyBullet IK maximum iterations per pass (default 60).')
     parser.add_argument("--arm-ik-residual-threshold", type=float, default=1e-4,
                         help="PyBullet IK residualThreshold per pass (default 1e-4)")
-    parser.add_argument("--no-arm-fallback", action="store_true",
-                        help="do not fall back to the 21-point wrist mapping when pose is missing")
     parser.add_argument("--calibration-frames", type=int, default=15,
                         help="open-hand calibration frames for the geometric backend")
     parser.add_argument("--arm-calibrate-frames", type=int, default=30,
-                        help="neutral frames per side before the arms start following (default 30)")
+                        help="neutral frames per side before the neutral is final (default 30). "
+                             "With --arm-calibrate-mode hold the arms also stay on the working "
+                             "point until then; with track (default) they follow from the first "
+                             "frame that sees your arm")
+    parser.add_argument("--arm-calibrate-mode", choices=CALIBRATE_MODES, default="track",
+                        help='Neutral calibration: hold waits for a complete window; track (default) follows using the available sample median while the window converges.')
     parser.add_argument("--neutral-json", type=Path, default=None,
                         help="reuse a neutral pose saved by --save-neutral")
     parser.add_argument("--save-neutral", type=Path, default=None,
@@ -341,11 +406,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--arm-trace", action="store_true",
                         help="print the operator-side delta per axis (use this to check the axes)")
     parser.add_argument("--dump-npz", type=Path, default=None,
-                        help="record the raw frames (hands + pose arms) for offline replay")
+                        help="record hands-only debug frames; it is not an arm replay format")
+    parser.add_argument("--arm-frame-dump", type=Path, default=None,
+                        help="record every frame's arm samples (shoulder/upper/elbow/wrist in the "
+                             "robot base frame plus the command that produced them) to an .npz; "
+                             "devtools/show_arm_direction.py turns two of those into A/B figures")
     parser.add_argument("--input-npz", type=Path, default=None,
                         help="replay a recorded session instead of the camera (no camera needed)")
+    parser.add_argument('--input-body', type=Path, help='replay a new SMPL-X H5 recording, without camera or model')
+    parser.add_argument('--dump-body', type=Path, help='save shared RGB, raw SMPL-X, Hands and control observations')
     parser.add_argument("--sim-steps", type=int, default=8,
-                        help="physics steps per frame (default 8 = about one 30 Hz frame)")
+                        help="physics steps per offline frame or with --fixed-sim-steps (default 8)")
+    parser.add_argument("--fixed-sim-steps", action="store_true",
+                        help="use fixed physics steps for live capture too; default follows elapsed time")
     parser.add_argument("--view", choices=("full", "front"), default="full")
     parser.add_argument("--g1-color", type=float, nargs=3, default=(0.65, 0.80, 0.95),
                         metavar=("R", "G", "B"), help="G1 display RGB, each in [0, 1]")
@@ -375,14 +448,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-
 def arm_hud(bridge, driver, targets) -> str:
     """HUD 里的手臂段：中性标定进度 + 每侧来源（P/H/-）+ 每台机器人的末端残差。"""
     if bridge is None:
         return "arm=off (hands only)"
     per_side = next(iter(targets.values())) if targets else {}
+    trace = bridge.trace()
     sources = " ".join(
-        f"{side[0].upper()}={SOURCE_SHORT.get(getattr(target, 'source', 'none'), '?')}"
+        f"{side[0].upper()}={SOURCE_SHORT.get(getattr(target, 'source', 'none'), '?')}/"
+        f"{trace.get(side, {}).get('tracking_state', 'hold') if target.held else 'tracking'}"
         for side, target in sorted(per_side.items()))
     residuals = ""
     if driver is not None:
@@ -393,7 +467,11 @@ def arm_hud(bridge, driver, targets) -> str:
     clamped = [f"{name}/{side[0].upper()}" for name, entries in sorted(targets.items())
                for side, target in sorted(entries.items()) if target.info.get("clamped")]
     limit_text = "" if not clamped else " CLAMP=" + ",".join(clamped)
-    return f"{bridge.status()} arm {sources}{residuals}{limit_text}"
+
+    pinned = sum((bridge.counts.get("clamped") or {}).values())
+    guarded = sum((bridge.counts.get("guarded") or {}).values())
+    tail = f" sat={pinned}" + ("" if not guarded else f" guard={guarded}")
+    return f"{bridge.status()} arm {sources}{residuals}{limit_text}{tail}"
 
 
 def arm_lines(bridge, sides) -> dict:
@@ -415,7 +493,10 @@ def arm_lines(bridge, sides) -> dict:
         reach = entry.get("operator_reach_m")
         elbow = entry.get("elbow_bend_deg")
         reason = str(entry.get("reason") or "")
+        age = entry.get('age_s')
+        age_text = '--' if age is None else f'{age:.2f}s'
         lines[side] = (f"{side} {letter} d(cm){moved} "
+                       f"{entry.get('tracking_state', 'hold')} age={age_text} "
                        f"reach={'--' if reach is None else f'{float(reach):.3f}'}m "
                        f"elbow={'--' if elbow is None else f'{float(elbow):.0f}'}deg"
                        f"{'' if not reason else ' ' + reason[:44]}")
@@ -423,13 +504,15 @@ def arm_lines(bridge, sides) -> dict:
 
 
 def print_arm_state(processed, bridge, driver, targets, profiles) -> None:
-    """``--arm-trace`` 的现场证据：你动了多少（厘米）以及机器人被要求动到哪（毫米）。"""
+    """Print operator displacement and per-robot arm targets for --arm-trace."""
     trace = bridge.trace()
     for side, entry in sorted(trace.items()):
         delta = entry["delta_op_cm"]
         text = ("n/a" if delta is None
                 else "[" + ", ".join(f"{value:+6.1f}" for value in delta) + "]")
         print(f"  arm trace frame={processed} {side:<5} src={entry['source']:<4} "
+              f"state={entry['tracking_state']} held={entry['held']} fresh={entry['fresh']} "
+              f"age_s={entry['age_s']} sample={entry['sample_id']} "
               f"delta_op_cm={text} reach={entry['operator_reach_m']} "
               f"elbow={entry['elbow_bend_deg']} reason={entry['reason'] or '-'}",
               flush=True)
@@ -448,9 +531,8 @@ def print_arm_state(processed, bridge, driver, targets, profiles) -> None:
         print(f"  arm {robot:>7}: " + "  ".join(fragments), flush=True)
 
 
-
 def _record_frame(dumped, raw_frame, arms) -> None:
-    """记下这一帧的原始输入（没检到的位置填 NaN），供 ``--dump-npz`` 与离线复验。"""
+    """Record hands-only debug frames; arm dumps are not a supported source."""
     for side in SIDES:
         hand = None if raw_frame is None else raw_frame.get(side)
         world = None if raw_frame is None else raw_frame.get(f"world_{side}")
@@ -463,9 +545,6 @@ def _record_frame(dumped, raw_frame, arms) -> None:
         dumped["world"][side].append(np.full((21, 3), np.nan, dtype=np.float32)
                                      if world is None
                                      else np.asarray(world, dtype=np.float32))
-        dumped["arm"][side].append(np.full((3, 3), np.nan, dtype=np.float32)
-                                   if arm is None
-                                   else np.asarray(arm, dtype=np.float32))
     dumped["timestamps"].append(float(0.0 if raw_frame is None
                                      else raw_frame.get("timestamp", 0.0)))
 
@@ -480,33 +559,110 @@ def _save_dump(path, dumped) -> Path:
         left_hand=np.stack(dumped["hand"]["left"]),
         right_hand=np.stack(dumped["hand"]["right"]),
         world_left_hand=np.stack(dumped["world"]["left"]),
-        world_right_hand=np.stack(dumped["world"]["right"]),
-        left_arm=np.stack(dumped["arm"]["left"]),
-        right_arm=np.stack(dumped["arm"]["right"]))
+        world_right_hand=np.stack(dumped["world"]["right"]))
     return target
+
+
+def _collect_arm_frames(driver, robots, sides) -> dict:
+    """Collect base-frame arm FK arrays while the physics client is connected."""
+    arrays = {}
+    for name in robots:
+        adapter = driver.ik.get(name)
+        if adapter is None:
+            continue
+        for side in sides:
+            frames = list(adapter.posture.get(side) or [])
+            points, command_elbows, command_wrists = [], [], []
+            for frame in frames:
+                points.append([adapter.to_base(frame[key])
+                               for key in ("shoulder", "upper", "elbow", "wrist")])
+                for key, sink in (("command_elbow", command_elbows),
+                                  ("command_wrist", command_wrists)):
+                    value = frame.get(key)
+                    sink.append(np.full(3, np.nan, dtype=np.float64) if value is None
+                                else np.asarray(value, dtype=np.float64))
+            arrays[f"{name}_{side}_points"] = np.asarray(
+                points, dtype=np.float64).reshape(-1, 4, 3)
+            arrays[f"{name}_{side}_cmd_elbow"] = np.asarray(
+                command_elbows, dtype=np.float64).reshape(-1, 3)
+            arrays[f"{name}_{side}_cmd_wrist"] = np.asarray(
+                command_wrists, dtype=np.float64).reshape(-1, 3)
+    return arrays
+
+
+def _save_arm_frames(path, arrays) -> Path:
+    """把 ``_collect_arm_frames`` 读到的数组写成 npz（不碰 PyBullet，断连后也能写）。"""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(target, **arrays)
+    return target
+
+
+def rigid_elbow_robots(per_side) -> set:
+    """Select robots whose posture mapping produces a rigid elbow/wrist target pair."""
+    return {name for name, target in per_side.items()
+            if getattr(target, "elbow", None) is not None
+            and (target.info or {}).get("elbow_target") == "posture"}
 
 
 def run(args) -> int:
     """采集 -> 手 + 臂 -> 仿真；0 = 至少一侧给出过输出，1 = 全程没有手也没有臂。"""
     sides = tuple(SIDES if args.side == "both" else (args.side,))
-    asset = resolve_model_asset(args.model_asset_path) if args.input_npz is None else None
-    pose_asset = (Path(args.pose_model_asset_path) if args.pose_model_asset_path
-                  else DEFAULT_POSE_ASSET)
+    diagnostics_enabled = bool(getattr(args, "diagnostics", False) or getattr(args, "diagnostic_trace", None))
+    if diagnostics_enabled:
+        trace_path = getattr(args, "diagnostic_trace", None)
+        protected = [getattr(args, key, None) for key in
+                     ("input_npz", "input_body", "dump_body", "checkpoint", "model_asset_path", "smplerx_checkpoint", "smplx_model_dir", "neutral_json", "dump_npz", "save_neutral")]
+        destinations = [value for value in (trace_path, args.report) if value is not None]
+        if len({Path(path).resolve() for path in destinations}) != len(destinations):
+            raise ValueError("Diagnostic CSV and report paths must differ")
+        if any(Path(out).resolve() == Path(source).resolve() for out in destinations
+               for source in protected if source is not None):
+            raise ValueError("Diagnostic output must not overwrite an input or another output")
+    input_body = getattr(args, 'input_body', None)
+    dump_body = getattr(args, 'dump_body', None)
+    replaying = args.input_npz is not None or input_body is not None
+    outputs = [Path(value).resolve() for value in (dump_body, args.dump_npz, args.report,
+               getattr(args, 'diagnostic_trace', None), args.save_neutral, args.arm_frame_dump) if value is not None]
+    inputs = [Path(value).resolve() for value in (input_body, args.input_npz, args.checkpoint,
+              args.model_asset_path, args.neutral_json, args.smplerx_checkpoint) if value is not None]
+    if len(set(outputs)) != len(outputs) or set(outputs).intersection(inputs):
+        raise ValueError('Output must not overwrite an input or another output')
+    if args.input_npz is not None and input_body is not None:
+        raise ValueError('Choose either --input-body or --input-npz')
+    if dump_body is not None and (replaying or args.no_arms):
+        raise ValueError('--dump-body requires live SMPL-X arm capture')
+    asset = resolve_model_asset(args.model_asset_path) if not replaying else None
     checkpoint = (Path(args.checkpoint) if args.checkpoint
                   else realtime_checkpoint(args.landmark_space))
     robots = tuple(args.robot) if args.robot else loadable_robots()
     profiles = {name: profile_for(name) for name in robots}
     arms_wanted = not args.no_arms
-    if args.input_npz is None and arms_wanted and not pose_asset.is_file():
-        arms_wanted = False
-        print(f"[WARN] pose model not found at {pose_asset}: the arms stay held and only the "
-              f"hands move. Put pose_landmarker_lite.task into datasets/ or pass "
-              f"--pose-model-asset-path (--no-arms silences this).", flush=True)
+    if args.pose_model_asset_path is not None or args.pose_min_visibility is not None:
+        raise ValueError("MediaPipe Pose arm options were removed; configure SMPLer-X")
+    if args.input_npz is not None and arms_wanted:
+        raise ValueError("Legacy NPZ arm replay is removed; replay an SMPL-X body recording")
+    if not replaying and arms_wanted:
+        for name in ("smplerx_worker_python", "smplerx_root", "smplerx_checkpoint", "smplx_model_dir"):
+            value = getattr(args, name, None)
+            if value is None:
+                raise ValueError(f"--{name.replace('_', '-')} is required when arms are enabled")
+            if not Path(value).exists():
+                raise FileNotFoundError(f"{name} not found: {value}")
+    if args.dump_npz is not None and arms_wanted:
+        raise ValueError("--dump-npz is a hands-only debug format; use SMPL-X body recording for arms")
+    dex_options = ({"dex_calibration": args.dex_calibration, "native_sides": sides} if args.backend == "dex" else {})
     retargeter, backend, note = build_retargeter(
         args.backend, checkpoint, args.device, args.calibration_frames,
-        args.smoothing, args.landmark_space)
-    scene = camera = preview = driver = bridge = None
+        args.smoothing, args.landmark_space, **dex_options)
+    scene = camera = preview = driver = bridge = diagnostics = None
+    transport = None
+    wrist_control = None
+    wrist_summary = None
+    fixed_slew_m = None
     arm_failures = {}
+    body_rows = []
+    body_metadata = None
     processed = 0
     started = None
     marks = []
@@ -515,22 +671,87 @@ def run(args) -> int:
     raw_seen = {side: 0 for side in sides}
     dumped = {"hand": {side: [] for side in SIDES},
               "world": {side: [] for side in SIDES},
-              "arm": {side: [] for side in SIDES},
               "timestamps": []}
     targets = {}
     try:
+        if diagnostics_enabled:
+            from teleoperation.simulation.arm_diagnostics import ArmDiagnostics
+            diagnostics = ArmDiagnostics(getattr(args, "diagnostic_trace", None))
         args.scene = "robots"                      # 手臂只存在于机器人场景
         scene = build_scene(args, sides)
-        commands = build_hand_commands(args, scene, sides)
+        if backend == "dex":
+            from teleoperation.applications.dex_native import command_pipeline, apply_native_window, native_sample_mapping
+            commands = command_pipeline(args, retargeter.models)
+        else:
+            commands = build_hand_commands(args, scene, sides)
         appearance = apply_appearance(
             scene, None if args.original_g1_color else args.g1_color,
             args.light_position, args.shadows)
         if hasattr(scene, "frame_scene"):
             scene.frame_scene(args.view)
         if arms_wanted:
+            fixed_slew_m = (None if args.arm_slew_mm is None
+                            else max(0.0, float(args.arm_slew_mm)) / 1000.0)
+            slew_speed_m_per_s = (0.0 if fixed_slew_m is not None
+                                  else max(0.0, float(args.arm_slew_mm_s)) / 1000.0)
             driver = ArmSceneDriver(scene, sides=sides, robots=robots,
                                     ik_iterations=args.arm_ik_iterations,
-                                    residual_threshold=args.arm_ik_residual_threshold)
+                                    residual_threshold=args.arm_ik_residual_threshold,
+                                    rest_poses=args.arm_rest_poses,
+                                    diagnostics=diagnostics,
+                                    slew_m=(0.0 if fixed_slew_m is None else fixed_slew_m),
+                                    slew_m_per_s=slew_speed_m_per_s,
+                                    slew_pair_floor_ratio=args.arm_slew_pair_floor,
+                                    elbow_pass=args.arm_elbow_pass,
+                                    elbow_recovery_deg=args.arm_elbow_recovery_deg,
+                                    elbow_recovery_margin_deg=args.arm_elbow_recovery_margin_deg,
+                                    elbow_recovery_cooldown=args.arm_elbow_recovery_frames,
+                                    shoulder_anchor_key=args.arm_anchor,
+                                    lock_others=(args.arm_ik_scope == "arm"))
+            robot_links, robot_anchors = {}, {}
+            if args.arm_map in ("segments", "posture"):
+                from teleoperation.applications.camera_scene_arm import measure_camera_arm_geometry
+                robot_links, robot_anchors = measure_camera_arm_geometry(driver, args.arm_anchor)
+                if not args.arm_no_shoulder_follow:
+                    # 肘/腕目标按「当前肩 - 加载锚点」平移（见 ArmSceneDriver._shoulder_shift）：
+                    # 躯干被手臂反作用力推着走时，目标仍然落在「离当前肩正好一根上臂」的球面上。
+                    driver.set_shoulder_anchors(robot_anchors)
+                elbow_note = ("elbow task: built by the direction recipe (pass "
+                              f"{args.arm_elbow_pass})"
+                              if args.arm_map == "posture" else
+                              f"elbow task {'on' if args.arm_elbow_task else 'off'}")
+                pass_note = ("" if args.arm_map == "posture" else
+                             (f" (pass {args.arm_elbow_pass})"
+                              if args.arm_elbow_task else ""))
+                frame_note = ("" if args.arm_posture_frame != "auto" else
+                              " (" + ", ".join(f"{name}:{profiles[name].posture_frame}"
+                                               for name in robots) + ")")
+
+                print(f"arm map: {args.arm_map} | shoulder end = {args.arm_anchor} "
+                      f"({'rigid: the elbow parent link' if args.arm_anchor == 'upper' else 'historical name-matched link'})"
+                      f" | ik scope = {args.arm_ik_scope}"
+                      f" | rest poses = {args.arm_rest_poses}"
+                      f" | elbow follow = {args.arm_elbow_follow}"
+                      f" | posture frame = {args.arm_posture_frame}{frame_note}"
+                      f" | measured links (m) "
+                      + " ".join(f"{name}:{side[0]}" +
+                                 f" {robot_links[name][side]['upper']:.3f}"
+                                 f"+{robot_links[name][side]['fore']:.3f}"
+                                 for name in robots for side in sides)
+                      + f" | {elbow_note}"
+                      + pass_note
+                      + (f" | elbow branch recovery: >{args.arm_elbow_recovery_deg:.0f} deg"
+                         f" (margin {args.arm_elbow_recovery_margin_deg:.0f} deg,"
+                         f" retry every {args.arm_elbow_recovery_frames} frames)"
+
+                         if args.arm_elbow_recovery_deg > 0.0 else
+                         " | elbow branch recovery: off"),
+                      flush=True)
+            else:
+                print(f"arm map: chain (no elbow task: a wrist target only) | ik scope = "
+                      f"{args.arm_ik_scope} | in this recipe the upper arm cannot move on its "
+                      f"own and the per-axis travel clamp caps the arm (g1 40 mm); pass "
+                      f"--arm-map posture for the direction recipe", flush=True)
             gains = {str(pair[0]): float(pair[1]) for pair in (args.arm_gain or [])}
             axis_map = AxisMap()
             if args.arm_axis_order and args.arm_axis_signs:
@@ -544,35 +765,79 @@ def run(args) -> int:
             bridge = RealtimeArmBridge(
                 [profiles[name] for name in robots], sides=sides, axis_map=axis_map,
                 calibration_frames=args.arm_calibrate_frames,
-                orientation=args.arm_orientation, gains=gains,
+                calibrate_mode=args.arm_calibrate_mode,
+                orientation="off", gains=gains,
                 max_travel_m=(None if args.arm_travel_mm is None
                               else float(args.arm_travel_mm) / 1000.0),
-                neutral=neutral, fallback_hand=not args.no_arm_fallback)
+                travel_mode=args.arm_travel_mode,
+                lateral_guard_m=max(0.0, float(args.arm_lateral_guard_mm)) / 1000.0,
+                gain_quality_guard=not args.no_arm_gain_quality_guard,
+                neutral=neutral,
+                map_mode=args.arm_map, robot_links=robot_links,
+                elbow_task=args.arm_elbow_task, elbow_gain=args.arm_elbow_gain,
+                posture_gain=args.arm_posture_gain,
+                posture_frame=(None if args.arm_posture_frame == "auto"
+                               else args.arm_posture_frame),
+                max_direction_rate_deg_s=args.arm_direction_rate_deg_s,
+                anchors=robot_anchors)
+            from teleoperation.simulation.wrist_control import WristSceneController
+            wrist_control = WristSceneController(driver, axis_map.matrix())
             print(f"arms: {', '.join(robots)} | ik_mode "
-                  f"{({name: profiles[name].ik_mode for name in robots})} | travel limit "
-                  f"{bridge.travel_limits()} m | "
-                  f"neutral {'reused from ' + str(args.neutral_json) if neutral else str(args.arm_calibrate_frames) + ' frames'}",
+                  f"{({name: profiles[name].ik_mode for name in robots})} | "
+                  f"orientation input wrist (automatic) | travel limit "
+                  f"{bridge.travel_limits()} m ({args.arm_travel_mode}) | "
+                  f"lateral guard {args.arm_lateral_guard_mm} mm | "
+                  f"neutral mode {args.arm_calibrate_mode} | "
+                  f"neutral {'reused from ' + str(args.neutral_json) if neutral else str(args.arm_calibrate_frames) + ' frames'} | "
+                  + (f"target slew {fixed_slew_m * 1000.0:.1f} mm/frame (fixed)"
+                     if fixed_slew_m is not None else
+                     f"target slew {args.arm_slew_mm_s:.0f} mm/s "
+                     f"(ceiling {SLEW_MAX_STEP_M * 1000.0:.0f} mm/frame)")
+                  + f" | pair floor {driver.slew_pair_floor_ratio:.2f}"
+                  + ("" if driver.slew_pair_floor_ratio > 0.0 else " (off)"),
                   flush=True)
-        if args.input_npz is not None:
+        if input_body is not None:
+            camera = BodyReplayFrameSource(input_body, args.landmark_space)
+        elif args.input_npz is not None:
             camera = ReplayFrameSource(args.input_npz, args.landmark_space)
             print(f"replay: {args.input_npz} ({camera.frames} frames, "
                   f"landmark_space={args.landmark_space}); no camera is opened", flush=True)
         else:
+            transport = None
+            client = None
+            if arms_wanted:
+                transport = SmplerXWorkerTransport(
+                    worker_python=args.smplerx_worker_python,
+                    smplerx_root=args.smplerx_root,
+                    checkpoint=args.smplerx_checkpoint,
+                    body_model_dir=args.smplx_model_dir,
+                    model=args.smplerx_model,
+                )
+                client = SmplerXClient(transport, session_id=f"realtime-{time.monotonic_ns()}")
             camera = CameraFrameSource(asset, args.camera_index, args.width, args.height,
                                        args.fps, args.landmark_space,
-                                       pose_asset if arms_wanted else None,
-                                       args.pose_min_visibility)
+                                       client, client.session_id if client is not None else "camera",
+                                       arms_wanted)
         preview = build_arm_preview(args, camera, sides)
+        camera.diagnostics = diagnostics
         if not args.headless:
             print(PREVIEW_HINT_ROBOTS, flush=True)
             print(f"camera window {ARM_PREVIEW_WINDOW!r}: raw frame + 21 hand points + both "
                   f"arms (shoulder/elbow/wrist); the PyBullet window shows the three robots.",
                   flush=True)
         if bridge is not None:
-            print("keep a neutral arm pose (elbows slightly bent, hands in front of the chest) "
-                  f"for about {args.arm_calibrate_frames} frames per side; until then the arms hold "
-                  "their working point.", flush=True)
+            if args.arm_calibrate_mode == "track":
+                print("keep a neutral arm pose (elbows slightly bent, hands in front of the "
+                      f"chest) for about {args.arm_calibrate_frames} frames per side; the arms "
+                      "already follow from the first frame that sees your arm, and the neutral "
+                      "keeps converging while you hold still.", flush=True)
+            else:
+                print("keep a neutral arm pose (elbows slightly bent, hands in front of the "
+                      f"chest) for about {args.arm_calibrate_frames} frames per side; until "
+                      "then the arms hold their working point.", flush=True)
         started = time.perf_counter()
+        simulation_clock = SimulationStepClock(args.sim_steps,
+            realtime=not replaying and not args.fixed_sim_steps)
 
         while True:
             if args.frames and processed >= args.frames:
@@ -580,67 +845,102 @@ def run(args) -> int:
             if not scene.alive():
                 print("PyBullet window closed; stopping.", flush=True)
                 break
+            if diagnostics is not None:
+                diagnostics.begin_frame()
+                capture_started = time.perf_counter()
             window = camera.next_frame()
             if getattr(camera, "exhausted", False):
                 print("replay finished (all recorded frames were replayed).", flush=True)
                 break
             processed += 1
+            if dump_body is not None:
+                from teleoperation.data.body_recording import capture_sample
+                source = camera._source
+                body_rows.append(capture_sample(source, camera.last_observation))
+                if source.last_result is not None:
+                    result = source.last_result
+                    body_metadata = dict(source='smplerx', model_id=result.model_id,
+                                         model_hash=result.model_hash, time_unit='monotonic_s')
+            if diagnostics is not None:
+                capture_ms = (time.perf_counter() - capture_started) * 1000
+                diagnostics.record_ms("capture_detection", max(0., capture_ms - diagnostics.frame_timings.get("hand_preprocessing", 0.)))
+                hand_started = time.perf_counter()
             raw_frame = camera.last_raw_frame
             for side in sides:
                 if raw_frame is not None and raw_frame.get(side) is not None:
                     raw_seen[side] += 1
             latest = {side: None for side in sides}
-            if window is not None:
+            if backend == "dex":
+                command_timestamp = processed * args.sim_steps / 240 if args.input_npz is not None else None
+                latest = apply_native_window(window, retargeter, commands, scene, command_timestamp)
+                for side in sides:
+                    if latest[side] is None:
+                        invalid[side] += 1
+                    else:
+                        samples[side].append(latest[side])
+            elif window is not None:
                 result = retargeter.retarget(window)
                 for side in sides:
-                    angles = getattr(result, side + "_angles")
+                    angles = valid_joint_result(result, "l21", side)
                     if angles is None:
                         invalid[side] += 1
-                        commands.missing(side)
+                        commands.missing(('l21',side))
                         continue
-                    values = np.asarray(angles.values, dtype=np.float64)
-                    if values.shape != (HAND_ANGLE_DIM,) or not np.isfinite(values).all():
-                        raise ValueError(f"invalid {side} angles: shape={values.shape}")
-                    values = commands.update(side, values)
-                    scene.apply(side, values)
+                    command = commands.update(angles)
+                    apply_legacy_l21_mapping(scene, command)
+                    values = command.positions
                     samples[side].append(values)
                     latest[side] = values
             else:
                 for side in sides:
-                    commands.missing(side)
+                    commands.missing(('l21',side))
             targets = {}
+            if diagnostics is not None:
+                diagnostics.record_ms("hand_inference_output", (time.perf_counter() - hand_started) * 1000)
             if bridge is not None:
-                targets = bridge.update(arms_world=camera.arms(), hands=raw_frame)
-                for side in sides:
-                    per_side = {name: entry[side] for name, entry in targets.items()}
-                    positions = {name: target.position for name, target in per_side.items()
-                                 if target.position is not None}
-                    if len(positions) != len(per_side):
-                        continue        # 还有机器人没目标：这一侧整侧跳过（保持上一帧）
-                    orientation = per_side[sorted(per_side)[0]].orientation
-                    try:
-                        driver.apply_each(side, positions, source="base",
-                                          orientation=orientation)
-                    except Exception as error:  # noqa: BLE001 - 一台坏不该拖垮整场
-                        if side not in arm_failures:
-                            arm_failures[side] = f"{type(error).__name__}: {error}"
-                            print(f"[WARN] {side}: arm IK failed, the arms keep their last "
-                                  f"command: {arm_failures[side]}", flush=True)
-                driver.step(1)
+                frame_dt = (args.sim_steps / 240.0 if args.input_npz is not None else
+                            getattr(camera, 'frame_dt', None) or NOMINAL_FRAME_DT)
+                from teleoperation.applications.camera_scene_arm import apply_camera_arm_frame
+                def arm_error(side, error):
+                    if side not in arm_failures:
+                        arm_failures[side] = f'{type(error).__name__}: {error}'
+                        print(f'[WARN] {side}: arm command held: {arm_failures[side]}', flush=True)
+                with (nullcontext() if diagnostics is None else diagnostics.stage('arm_mapping')):
+                    targets = apply_camera_arm_frame(bridge, driver, wrist_control, camera.arms(),
+                        camera.wrists(), frame_dt, elbow_follow=args.arm_elbow_follow, on_error=arm_error)
+                scene.steps_per_frame = simulation_clock.next_steps()
+                with (nullcontext() if diagnostics is None else diagnostics.stage("physics")):
+                    driver.step(1)
+                wrist_control.record()
             else:
-                scene.step()
+                scene.steps_per_frame = simulation_clock.next_steps()
+                with (nullcontext() if diagnostics is None else diagnostics.stage("physics")):
+                    scene.step()
             if args.dump_npz is not None:
                 _record_frame(dumped, raw_frame, camera.arms())
             if preview is not None:
+                preview_started = time.perf_counter() if diagnostics is not None else None
                 body = camera.arms()
                 # 不在这里挑手臂点：arm_preview.update() 自己把形状不对 / 含 NaN 的一侧
                 # 当作"没有"（与桥的丢帧保持同口径），这里只负责把 None 原样传下去。
+                wrist_lines = arm_lines(bridge, sides)
+                if wrist_control is not None:
+                    for side in sides:
+                        wrist_lines[side] = wrist_lines.get(side, "") + " wrist=" + wrist_control.trackers[side].status
                 preview.update(raw_frame, latest, arm_hud(bridge, driver, targets),
                                arms=None if body is None else body.arms,
-                               lines=arm_lines(bridge, sides))
-                if preview.quit_requested:
-                    print("camera window closed; stopping.", flush=True)
-                    break
+                               lines=wrist_lines)
+                if diagnostics is not None:
+                    diagnostics.record_ms("preview", (time.perf_counter() - preview_started) * 1000)
+            if diagnostics is not None:
+                diagnostics.capture(processed - 1, driver, bridge, targets, arms=camera.arms(),
+                    raw_timestamp=None if raw_frame is None else raw_frame.get("timestamp"),
+                    timestamp_unit="monotonic_s" if args.input_npz is None else "relative_seconds",
+                    sample_time_s=(camera._source.last_time_s - camera._start_timestamp if input_body is not None
+                                   else time.perf_counter() - started if args.input_npz is None else None))
+            if preview is not None and preview.quit_requested:
+                print("camera window closed; stopping.", flush=True)
+                break
             marks.append(time.perf_counter())
             if args.print_every and processed % args.print_every == 0:
                 counts = " ".join(f"{side}={len(samples[side])}" for side in sides)
@@ -654,20 +954,49 @@ def run(args) -> int:
         # "Not connected to physics server"。
         arm_residuals = {} if driver is None else driver.residuals_mm()
         arm_hold_drift = {} if driver is None else driver.hold_drift()
+        arm_posture = {} if driver is None else driver.posture_summary()
+        arm_gap = {} if driver is None else driver.forearm_gap_summary()
         arm_summary = None if driver is None else driver.summary()
+        wrist_summary = None if wrist_control is None else wrist_control.summary()
+        # --arm-frame-dump 的数据也必须在这里读（to_base 要查基座位姿）：
+        # 放在 finally 之后就是「断连后再问 PyBullet」，见 _collect_arm_frames 的说明。
+        arm_frames = (None if (args.arm_frame_dump is None or driver is None)
+                      else _collect_arm_frames(driver, robots, sides))
         scene_summary = scene.summary() if hasattr(scene, "summary") else None
         elapsed = time.perf_counter() - started
     finally:
-        if preview is not None:
-            _drain_in_background(preview.close, "camera preview close")
-        if camera is not None:
-            _drain_in_background(camera.release, "camera release")
-        if scene is not None:
-            _drain_in_background(scene.close, "PyBullet disconnect")
+        failure = sys.exc_info()[1]
+        try:
+            if diagnostics is not None:
+                diagnostics.close()
+        finally:
+            if preview is not None:
+                _drain_in_background(preview.close, "camera preview close")
+            if camera is not None:
+                _drain_in_background(camera.release, "camera release")
+            elif transport is not None:
+                transport.close()
+            if scene is not None:
+                _drain_in_background(scene.close, "PyBullet disconnect")
+        if failure is not None and diagnostics is not None and args.report:
+            path = Path(args.report)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"entry": ARM_ENTRY, "exit_reason": "error",
+                "error": f"{type(failure).__name__}: {failure}", "diagnostics": diagnostics.summary()},
+                indent=2, allow_nan=False), encoding="utf-8")
+        if body_rows and body_metadata is not None:
+            from teleoperation.data.body_recording import save_body_recording
+            save_body_recording(dump_body, body_rows, body_metadata)
 
     fps = _loop_fps(marks)
     print(f"\nprocessed={processed} frames in {elapsed:.2f} s  fps={fps:.1f}  "
           f"median frame interval {_median_interval(marks) * 1000:.1f} ms")
+    body_worker = (camera._source.worker_summary() if hasattr(camera, '_source')
+                   and hasattr(camera._source, 'worker_summary') else None)
+    if body_worker is not None and body_worker['enabled']:
+        print(f"body worker: results={body_worker['results_received']} "
+              f"valid={body_worker['valid_results']} reasons={body_worker['result_reasons']} "
+              f"fault={body_worker['fault']}", flush=True)
     if scene_summary is not None:
         print(f"scene={scene_summary['scene']} sim_frames={scene_summary['sim_frames']} "
               f"applied={scene_summary['applied_frames']} "
@@ -676,8 +1005,33 @@ def run(args) -> int:
         if entry:
             text = " ".join(f"{side}={value:.1f}" for side, value in sorted(entry.items()))
             print(f"  arm {robot}: wrist residual mm {text}", flush=True)
+    for robot, per_side in sorted(arm_posture.items()):
+        for side, entry in sorted(per_side.items()):
+            if not entry or entry.get("frames", 0) < 2:
+                continue
+            bend = entry["elbow_bend_deg"]
+            print(f"  arm {robot}/{side}: shoulder travel {entry['shoulder_travel_deg']:.1f} deg, "
+                  f"upper arm swept {entry['upper_arm_dir_travel_deg']:.1f} deg, "
+                  f"elbow moved {entry['elbow_span_mm']:.0f} mm, "
+                  f"elbow bend {bend['min']}-{bend['max']} deg", flush=True)
+    if arm_gap:
+        text = " ".join(f"{robot}={value:.0f}" for robot, value in sorted(
+            (arm_gap.get("min_mm") or {}).items()))
+        print(f"  arm forearm gap (worst): {text} mm "
+              f"[worst {arm_gap.get('worst_mm')} mm over {arm_gap.get('frames')} frames]",
+              flush=True)
     if arm_hold_drift:
         print(f"  arm hold drift: {json.dumps(arm_hold_drift, ensure_ascii=False)}", flush=True)
+    if bridge is not None:
+        for side, entry in sorted((bridge.summary().get("arm_length_trust") or {}).items()):
+            if not entry.get("trusted"):
+                print(f"  arm gain guard [{side}]: {entry.get('reason')}; using "
+                      f"profile.metric_scale instead of arm-length normalisation", flush=True)
+        arm_guarded_total_print = sum((bridge.counts.get("guarded") or {}).values())
+        if arm_guarded_total_print:
+            print(f"  arm lateral guard: {arm_guarded_total_print} frames had a wrist target "
+                  f"pushed back to its own side "
+                  f"(limit {1000.0 * bridge.lateral_guard_m:.0f} mm)", flush=True)
     if preview is not None:
         print(f"camera preview: window={'on' if preview.show else 'off'} "
               f"mirror={'on' if preview.mirror else 'off'} "
@@ -687,6 +1041,9 @@ def run(args) -> int:
               f"{'' if not preview.note else ' note=' + preview.note}", flush=True)
     arm_valid_total = 0 if bridge is None else sum(bridge.counts["valid"].values())
     arm_clamped_total = 0 if bridge is None else sum(bridge.counts["clamped"].values())
+    arm_guarded_total = 0 if bridge is None else sum(bridge.counts["guarded"].values())
+    arm_gain_guarded_total = (0 if bridge is None
+                              else sum(bridge.counts["gain_guarded"].values()))
     report = {
         "entry": ARM_ENTRY,
         "backend": backend,
@@ -695,7 +1052,11 @@ def run(args) -> int:
         "length_unit": "m" if args.landmark_space == "world" else "normalized",
         "backend_note": note,
         "model_asset": None if asset is None else str(asset),
-        "pose_model_asset": None if not arms_wanted else str(pose_asset),
+        "smplerx_model": None if not arms_wanted else args.smplerx_model,
+        "smplerx_checkpoint": None if not arms_wanted or replaying else str(Path(args.smplerx_checkpoint).resolve()),
+        "input_body": None if input_body is None else str(input_body),
+        "body_source": camera._source.metrics.summary() if hasattr(camera, '_source') else None,
+        "body_worker": body_worker,
         "camera_index": args.camera_index,
         "input_npz": None if args.input_npz is None else str(args.input_npz),
         "headless": bool(args.headless),
@@ -705,9 +1066,31 @@ def run(args) -> int:
         "arms_enabled": bool(arms_wanted),
         "robots": list(robots),
         "arm_failures": arm_failures,
+        "simulation_timing": {
+            "mode": "elapsed" if simulation_clock.realtime else "fixed",
+            "physics_steps": simulation_clock.total_steps,
+            "simulated_seconds": simulation_clock.total_steps / 240,
+            "capped_frames": simulation_clock.capped_frames,
+        },
         "arm_targets_valid_frames": arm_valid_total,
         "arm_clamped_frames": arm_clamped_total,
+        "arm_guarded_frames": arm_guarded_total,
+        "arm_gain_guarded_frames": arm_gain_guarded_total,
+        "arm_travel_mode": args.arm_travel_mode,
+        "arm_lateral_guard_mm": float(args.arm_lateral_guard_mm),
+        "arm_slew_mm_per_s": (None if fixed_slew_m is not None
+                              else float(args.arm_slew_mm_s)),
+        "arm_slew_mm_fixed": (None if fixed_slew_m is None else fixed_slew_m * 1000.0),
+        "arm_slew_ceiling_mm": SLEW_MAX_STEP_M * 1000.0,
+        "arm_slew_pair_floor_ratio": (None if driver is None
+                                      else round(driver.slew_pair_floor_ratio, 4)),
+        "arm_posture_frame": args.arm_posture_frame,
+        "arm_slew_mm_last_frame": (None if driver is None
+                                   else round(1000.0 * driver.slew_m, 3)),
         "arm": arm_summary,
+        "wrists": wrist_summary,
+        "arm_posture": arm_posture,
+        "arm_forearm_gap_mm": arm_gap,
         "bridge": (None if bridge is None else bridge.summary()),
         "arm_last_targets": {
             robot: {side: target.describe() for side, target in sorted(per_side.items())}
@@ -733,7 +1116,7 @@ def run(args) -> int:
                 "raw_detected_frames": raw_seen[side],
                 "valid_frames": len(samples[side]),
                 "invalid_frames": invalid[side],
-                "angles": _describe(samples[side]) if samples[side] else None,
+                "angles": _describe(samples[side], native_sample_mapping(retargeter, side) if backend == "dex" else None) if samples[side] else None,
                 "final_joint_values": final.get(side),
             }
             for side in sides
@@ -755,6 +1138,25 @@ def run(args) -> int:
             print(f"  arm  {side}: source={entry['source']} "
                   f"delta_op_cm={entry['delta_op_cm']} reach_m={entry['operator_reach_m']} "
                   f"elbow_deg={entry['elbow_bend_deg']}")
+    if bridge is not None:
+        held_reasons = bridge.counts["held_reason"]
+        if any(sum(kinds.values()) for kinds in held_reasons.values()):
+            shown = []
+            for side, kinds in sorted(held_reasons.items()):
+                counts = ", ".join(f"{kind}={count}" for kind, count in kinds.items() if count)
+                shown.append(f"{side} [{counts or 'none'}]")
+            print("  arm  held frames: " + " | ".join(shown), flush=True)
+        if bridge.calibrating:
+            if args.arm_calibrate_mode == "track":
+                # track 下「中性没攒够」不是故障：手臂已经在跟手，只是基准还是临时中位数。
+                print(f"[WARN] the neutral is still a temporary median ({bridge.status()}): the "
+                      f"arms follow anyway (--arm-calibrate-mode track); keep both arms visible "
+                      f"and hold still to finish it, or rerun with --arm-calibrate-mode hold to "
+                      f"gate on the full neutral.", flush=True)
+            else:
+                print(f"[WARN] the neutral calibration never completed ({bridge.status()}): "
+                      "check the held-frame breakdown above and keep both arms visible in the "
+                      "camera window.", flush=True)
     if args.save_neutral and bridge is not None:
         if bridge.calibrating:
             print("[WARN] --save-neutral skipped: the neutral calibration never completed",
@@ -766,11 +1168,18 @@ def run(args) -> int:
     if args.dump_npz is not None and dumped["timestamps"]:
         print(f"raw frames dumped: {_save_dump(args.dump_npz, dumped)} "
               f"({len(dumped['timestamps'])} frames)", flush=True)
+    if arm_frames is not None:
+        print(f"arm frames dumped: {_save_arm_frames(args.arm_frame_dump, arm_frames)}",
+              flush=True)
     if args.report:
+        if diagnostics is not None:
+            report["diagnostics"] = diagnostics.summary()
         path = Path(args.report)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"report written: {path}")
+    if diagnostics is not None:
+        print(f"diagnostics: {diagnostics.frames} frames, {diagnostics.rows} arm rows; host processing timings only", flush=True)
     if not any(samples[side] for side in sides) and arm_valid_total == 0:
         if any(raw_seen[side] for side in sides):
             print("[FAIL] MediaPipe detected a hand but produced no angles: put the whole hand "
@@ -781,8 +1190,6 @@ def run(args) -> int:
                   "really be visible (lighting, distance, not only at the frame edge).")
         return 1
     return 0
-
-
 
 
 def main(args=None) -> int:
@@ -806,17 +1213,9 @@ def main(args=None) -> int:
 
 
 if __name__ == "__main__":
-    # 与基线入口一致：先跑完 main()（统计/报告都写完），flush 之后直接 os._exit，
-    # 免得卡在 MediaPipe landmarker.close()（本机实测约 42 s）上。
     status = main()
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(status)
-
-
-
-
-
-
 
 

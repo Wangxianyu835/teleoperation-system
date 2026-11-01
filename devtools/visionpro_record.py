@@ -18,7 +18,7 @@
     <side>_pinch_distance float     拇指-食指距离（米）
 
 **Vision Pro 不提供肩、肘**（骨架到前臂为止）。所以本文件不写任何"肩肘"数字，
-也不假装团队的 ``left_arm_keypoints (3,3)``（肩/肘/腕三点，MediaPipe Pose 产物）；
+也不假装团队的 ``left_arm_keypoints (3,3)``（肩/肘/腕三点）；
 腕与前臂按原始矩阵如实保存。需要肩肘时只能另配摄像头或 IMU，并单独声明来源。
 
 产出两个层
@@ -158,6 +158,7 @@ def extract_frame(data) -> dict:
     frame = {
         "hands": {},
         "wrists": {},
+        "wrist_valid": {},
         "forearms": {},
         "pinch": {},
         "valid": {},
@@ -176,6 +177,8 @@ def extract_frame(data) -> dict:
             (HAND_JOINTS, 4, 4), np.nan, dtype=np.float32
         )
         wrist = _as_matrix(_field(data, side + "_wrist"))
+        from teleoperation.inputs.wrist import vr_wrist
+        frame["wrist_valid"][side] = vr_wrist(wrist).orientation_valid
         arm_full = _field(data, side + "_arm")
         if arm_full is not None:
             arm_array = np.asarray(arm_full, dtype=np.float32)
@@ -229,6 +232,8 @@ class VisionProH5Writer:
             self._raw[side + "_wrist_transform"] = self._file.create_dataset(
                 side + "_wrist_transform", shape=(0, 4, 4), maxshape=(None, 4, 4),
                 dtype=np.float32, chunks=(1, 4, 4), **kwargs)
+            self._raw[side + "_wrist_valid"] = self._file.create_dataset(
+                side + "_wrist_valid", shape=(0,), maxshape=(None,), dtype=bool)
             self._raw[side + "_hand_keypoints"] = self._file.create_dataset(
                 side + "_hand_keypoints", shape=(0, HAND_JOINTS, 3),
                 maxshape=(None, HAND_JOINTS, 3), dtype=np.float32,
@@ -251,6 +256,9 @@ class VisionProH5Writer:
         self._unix_ms = self._file.create_dataset(
             "unix_ms", shape=(0,), maxshape=(None,), dtype=np.int64, chunks=(1024,))
         self._file.attrs.update({
+            "wrist_observation_version": 1,
+            "wrist_reference_frame": "visionpro_sdk_zup",
+            "wrist_local_frame": "visionpro_wrist",
             "recorder": RECORDER,
             "dataset_format_version": "visionpro_hand_arm_capture_v1",
             "source": SOURCE,
@@ -300,6 +308,7 @@ class VisionProH5Writer:
                 (side + "_pinch_distance", frame["pinch"][side]),
                 (side + "_hand_spread", frame["spread"][side]),
                 (side + "_valid", frame["valid"][side]),
+                (side + "_wrist_valid", frame["wrist_valid"][side]),
             ):
                 dataset = self._raw[name]
                 dataset.resize(index + 1, axis=0)
@@ -503,7 +512,9 @@ def run(args) -> int:
             frame = extract_frame(payload)
             # 冻结检测：与前一帧逐位相同就累计，超过阈值即认定该侧已停止更新。
             for side in SIDES:
-                current = frame["hands"][side]
+                # Fingers are wrist-local: an unchanged grasp with a moving
+                # wrist is still a fresh, valid arm observation.
+                current = np.concatenate((frame["hands"][side].ravel(), frame["wrists"][side].ravel()))
                 if previous_hand[side] is not None and np.array_equal(current, previous_hand[side]):
                     stale_run[side] += 1
                 else:
@@ -511,6 +522,7 @@ def run(args) -> int:
                 previous_hand[side] = current
                 if stale_run[side] >= int(args.stale_limit):
                     frame["valid"][side] = False
+                    frame["wrist_valid"][side] = False
                     frame["derived"][side] = np.zeros((HAND_JOINTS, 3), dtype=np.float32)
                     stale_frames[side] += 1
             unix_ms = int(time.time() * 1000.0)

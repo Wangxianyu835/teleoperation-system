@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 import numpy as np
+from .wrist import WristObservation
 
 
 @dataclass(frozen=True)
@@ -19,8 +20,13 @@ class RawHandFrame:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     geometry_encoding: Mapping[str, str] = field(default_factory=dict)
     world_hands: dict[str, np.ndarray | None] | None = None
+    wrists: dict[str, WristObservation] | None = None
 
     def __post_init__(self):
+        if self.wrists is not None:
+            for side, wrist in self.wrists.items():
+                if side not in ("left", "right") or not isinstance(wrist, WristObservation):
+                    raise ValueError("wrists must map left/right to WristObservation")
         for side in ("left", "right"):
             if side not in self.hands:
                 raise KeyError(f"RawHandFrame missing {side}")
@@ -67,6 +73,7 @@ class UpperBodyObservation:
     coordinate_frame: str = "unknown"
     units: str = "unknown"
     world_arms: dict[str, np.ndarray | None] | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         for side in ("left", "right"):
@@ -104,10 +111,15 @@ class UpperBodyObservation:
 class RawTeleopObservation:
     hands: RawHandFrame
     upper_body: UpperBodyObservation
+    wrists: dict[str, WristObservation] | None = None
 
     def __post_init__(self):
         if not isinstance(self.hands, RawHandFrame) or not isinstance(self.upper_body, UpperBodyObservation):
             raise TypeError("RawTeleopObservation requires raw hands and an upper-body observation")
+        if self.wrists is not None:
+            for side, wrist in self.wrists.items():
+                if side not in ("left", "right") or not isinstance(wrist, WristObservation):
+                    raise ValueError("wrists must map left/right to WristObservation")
 
 
 RawObservation = CameraFrame | RawHandFrame | UpperBodyObservation | RawTeleopObservation

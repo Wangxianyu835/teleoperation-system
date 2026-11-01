@@ -1,6 +1,12 @@
 """Static command routing; importing this registry starts no workflows."""
 
 COMMANDS = (
+    ('hand', 'control', 'hand_control', 'teleoperation.applications.hand_control:run'),
+    ('hand', 'list-models', 'hand_list_models', 'teleoperation.applications.hand_control:list_models'),
+    ('replay', 'hand-joints', 'replay_hand_joints', 'teleoperation.applications.hand_control:replay'),
+    ('hand', 'dex-calibrate', 'hand_dex_calibrate', 'teleoperation.applications.dex_native:calibrate'),
+    ('hand', 'dex-export', 'hand_dex_export', 'teleoperation.applications.dex_native:export'),
+    ('replay', 'dex-native', 'replay_dex_native', 'teleoperation.applications.dex_native:replay'),
     ('dual', 'camera', 'dual_camera', 'teleoperation.applications.mediapipe_tron2a:run_camera'),
     ('dual', 'calibrate-camera', 'dual_calibrate_camera', 'teleoperation.applications.mediapipe_tron2a:run'),
     ('hand', 'record-world', 'hand_record_world', 'teleoperation.applications.world_landmark_capture:run'),
@@ -31,7 +37,6 @@ COMMANDS = (
     ('tools', 'show-all-hands', 'tools_show_all_hands', 'teleoperation.applications.diagnostics.show_hands_all:main'),
     ('tools', 'validate-retarget-input', 'tools_validate_retarget_input', 'teleoperation.applications.diagnostics.validate_retarget_input:main'),
     ('tools', 'verify-hand-pipeline', 'tools_verify_hand_pipeline', 'teleoperation.applications.diagnostics.verify_hand_pipeline:main'),
-    ('tools', 'verify-p0', 'tools_verify_p0', 'teleoperation.applications.diagnostics.verify_p0:main'),
     ('tools', 'visualize-hand-keypoints', 'tools_visualize_hand_keypoints', 'teleoperation.applications.diagnostics.visualize_hand_keypoints:main'),
     ('tools', 'visualize-l21-fk', 'tools_visualize_l21_fk', 'teleoperation.applications.diagnostics.visualize_l21_fk:main'),
 )

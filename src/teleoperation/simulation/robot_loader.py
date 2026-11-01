@@ -63,8 +63,7 @@ class RobotLoader:
         if not os.path.isfile(urdf_path):
             raise FileNotFoundError(
                 f"找不到机器人模型：\n  {urdf_path}\n"
-                f"robots/from_teleopbench/ 未纳入 Git，需从 TeleOpBench 获取"
-                f"或由队友拷贝后再运行。")
+                f"请检查 assets/robots/ 下对应机器人的 URDF 和网格资源。")
 
         self.robot_type = robot_type
         print(f"  加载 {spec['desc']}")

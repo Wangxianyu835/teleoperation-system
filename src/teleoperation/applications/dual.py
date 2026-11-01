@@ -29,19 +29,35 @@ class Tron2ADualArmController:
             spec = solver.specification
             if np.any(self.safe_q[side] < spec.lower) or np.any(self.safe_q[side] > spec.upper):
                 raise ValueError(f"{side} safe reference violates URDF joint limits")
-            if input_mode == "camera_world":
+            if input_mode == "smplerx":
                 errors = _pose_error(_pose_matrix(calibration.robot_neutral_pose[side]), spec.robot.fkine(self.safe_q[side]).A)
                 if errors[0] > 1e-6 or errors[1] > 1e-6:
                     raise ValueError(f"{side} calibration reference does not match this URDF FK")
             self.controllers[side] = ArmSafetyController(spec, self.safe_q[side], calibration.max_acceleration, calibration.tracking_timeout)
         self.diagnostics = {}
+        from teleoperation.retargeting.arm.wrist_orientation import WristTracker
+        self.wrist_trackers = {s: WristTracker(calibration.rotation) for s in self.solvers}
+        self.wrist_initial = {}
+        self.wrist_generations = {}
+        self.wrist_times = {}
 
-    def update_side(self, body, side, timestamp):
+    def update_side(self, body, side, timestamp, wrist=None):
         target = self.arm_retargeter.update(body, side)
         solver, safety = self.solvers[side], self.controllers[side]
+        from scipy.spatial.transform import Rotation
+        tracker = self.wrist_trackers[side]
+        tracker.update(wrist, timestamp - self.wrist_times.get(side, timestamp - 1/30))
+        self.wrist_times[side] = timestamp
+        if tracker.neutral is not None:
+            if self.wrist_generations.get(side) != tracker.generation:
+                self.wrist_initial[side] = Rotation.from_matrix(solver.specification.robot.fkine(safety.q).A[:3, :3])
+                self.wrist_generations[side] = tracker.generation
+            pose = target.pose.copy()
+            pose[3:] = (tracker.delta * self.wrist_initial[side]).as_quat()
+            target = replace(target, pose=pose)
         in_workspace = bool(np.all(target.pose[:3] >= self.calibration.workspace_min)
                             and np.all(target.pose[:3] <= self.calibration.workspace_max))
-        workspace_rejected = self.arm_retargeter.input_mode == "camera_world" and target.valid and not in_workspace
+        workspace_rejected = self.arm_retargeter.input_mode == "smplerx" and target.valid and not in_workspace
         result = solver.solve(target, safety.q, self.safe_q[side]) if target.valid and not workspace_rejected else None
         success = False
         position_error = orientation_error = None
@@ -54,6 +70,7 @@ class Tron2ADualArmController:
                 success = position_error <= solver.position_tolerance and orientation_error <= solver.orientation_tolerance
         safety.update(result.q if success else None, success, timestamp)
         self.diagnostics[side] = dict(
+            wrist=tracker.summary(),
             observation_valid=bool(target.valid), ik_attempted=result is not None, ik_success=bool(success),
             ik_position_error_m=position_error, ik_orientation_error_rad=orientation_error,
             target_pose=target.pose.tolist(), orientation_held=self.arm_retargeter.orientation_held[side],
@@ -62,8 +79,8 @@ class Tron2ADualArmController:
         )
         return bool(success)
 
-    def update(self, body, timestamp):
-        return {side: self.update_side(body, side, timestamp) for side in ("left", "right")}
+    def update(self, body, timestamp, wrists=None):
+        return {side: self.update_side(body, side, timestamp, (wrists or {}).get(side)) for side in ("left", "right")}
 
 
 class DualTeleoperator:
@@ -74,18 +91,19 @@ class DualTeleoperator:
         from teleoperation.retargeting.hand.interface import PoseTransformerRetargeter
         from teleoperation.applications.hand_processing import DualHandPipeline, MediaPipePalmLocalPipeline, hand_coordinate_alignment
         from teleoperation.contracts.coordinates import validate_coordinate_alignment, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
-        if input_mode not in ("legacy", "camera_world"):
+        if input_mode not in ("legacy", "smplerx"):
             raise ValueError("Unknown dual input mode")
-        if input_mode == "camera_world" and hand_preprocessing != "legacy":
-            raise ValueError("camera_world selects world hand preprocessing; do not set hand_preprocessing")
+        if input_mode == "smplerx" and hand_preprocessing != "legacy":
+            raise ValueError(f"{input_mode} selects world hand preprocessing; do not set hand_preprocessing")
         self.input_mode = input_mode
-        expected = (WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT if input_mode == "camera_world"
+        camera_world_hands = input_mode == "smplerx"
+        expected = (WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT if camera_world_hands
                     else hand_coordinate_alignment(hand_preprocessing))
         actual = validate_coordinate_alignment(getattr(hand_retargeter, "coordinate_alignment", None), "Dual hand model")
         if actual != expected:
             raise ValueError(f"Dual hand model coordinate alignment mismatch: preprocessing={expected!r}; model={actual!r}")
         self.hand_retargeter = PoseTransformerRetargeter(hand_retargeter, device)
-        self.hand_pipeline = (MediaPipePalmLocalPipeline("world") if input_mode == "camera_world"
+        self.hand_pipeline = (MediaPipePalmLocalPipeline("world") if camera_world_hands
                               else DualHandPipeline(hand_preprocessing))
         self.device = device
         self.arms = Tron2ADualArmController(calibration_path, urdf_path, input_mode=input_mode,
@@ -99,15 +117,14 @@ class DualTeleoperator:
         self.hand_processing_seconds = 0.
 
     def update(self, observation: RawTeleopObservation | dict, *, control_seconds=None) -> Tron2AL21Command:
-        from teleoperation.retargeting.hand.angles import angle18_to_dofs
-        from teleoperation.contracts.hand import L21HandDOFs
+        from teleoperation.contracts.hand_control import valid_joint_result
         try:
             observation = self._raw_observation(observation)
             # Camera per-side nonfinite/lost Pose is handled by the existing
             # mapper and safety controller, independently of finger inference.
-            if self.input_mode == "legacy":
+            if self.input_mode == 'legacy':
                 observation.upper_body.validate(strict=True)
-            if self.input_mode == "camera_world" or control_seconds is not None:
+            if self.input_mode == "smplerx" or control_seconds is not None:
                 if (isinstance(control_seconds, bool) or not isinstance(control_seconds, Real)
                         or not np.isfinite(control_seconds) or control_seconds < 0
                         or (self.last_timestamp is not None and control_seconds <= self.last_timestamp)):
@@ -119,25 +136,26 @@ class DualTeleoperator:
         self.last_timestamp = timestamp
         self.last_observation = observation
         started = time.perf_counter()
-        if self.input_mode == "camera_world":
+        if self.input_mode == "smplerx":
             hands = replace(observation.hands, timestamp=timestamp, metadata={
-                **observation.hands.metadata, "raw_timestamp_ms": observation.hands.timestamp,
+                **observation.hands.metadata, "capture_time_s": observation.hands.timestamp,
                 "timestamp_unit": "relative_seconds",
             })
             window, canonical = self.hand_pipeline.process_observation(hands)
         else:
             window, canonical = self.hand_pipeline.process_frame(observation.hands)
         result = None if window is None else self.hand_retargeter.retarget(window)
-        hand_output = {side: None if result is None else getattr(result, side + "_angles") for side in ("left", "right")}
+        hand_output = {side: valid_joint_result(result, "l21", side) for side in ("left", "right")}
         self.hand_processing_seconds = time.perf_counter() - started
         arm_valid, hand_valid = {}, {}
         for side in ("left", "right"):
-            arm_valid[side] = self.arms.update_side(observation.upper_body, side, timestamp)
+            wrist_source = observation.wrists if self.input_mode == "smplerx" else observation.hands.wrists
+            arm_valid[side] = self.arms.update_side(observation.upper_body, side, timestamp, (wrist_source or {}).get(side))
             predicted = hand_output[side]
             hand_valid[side] = predicted is not None
             if hand_valid[side]:
-                self.hand_q[side] = L21HandDOFs(angle18_to_dofs(predicted.values)).values
-            if self.input_mode == "camera_world":
+                self.hand_q[side] = predicted.positions.astype(np.float32)
+            if self.input_mode == "smplerx":
                 self.hand_diagnostics[side] = dict(
                     detected=observation.hands.world_hands[side] is not None,
                     normalized_detected=observation.hands.hands[side] is not None,

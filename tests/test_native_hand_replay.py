@@ -54,7 +54,7 @@ class NativeHandReplayTests(unittest.TestCase):
 
         def map_frame(adapter, dofs):
             result = real_map(adapter, dofs)
-            mapped.append((np.r_[0.0, dofs.values].copy(), result[0].copy(), result[1]))
+            mapped.append((np.r_[0.0, dofs].copy(), result[0].copy(), result[1]))
             return result
 
         def motor(body, index, mode, **kwargs):

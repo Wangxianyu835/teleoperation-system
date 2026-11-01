@@ -8,6 +8,7 @@ from teleoperation.inputs.replay import NpyReplayInput
 from teleoperation.contracts.coordinates import (
     COORDINATE_ALIGNMENT, PALM_LOCAL_COORDINATE_ALIGNMENT,
     validate_coordinate_alignment,
+    PALM_LENGTH_PROFILE,
 )
 from teleoperation.retargeting.hand.processing import MediaPipePalmLocalProcessor
 import numpy as np
@@ -19,7 +20,12 @@ SIDES = ("left", "right")
 class MediaPipePalmLocalPipeline:
     """Shared hand/dual composition; alignment always precedes buffering."""
 
-    def __init__(self, landmark_space="normalized"):
+    def __init__(self, landmark_space="normalized", *, input_profile=None):
+        if input_profile not in (None, PALM_LENGTH_PROFILE):
+            raise ValueError("Unknown camera hand input profile")
+        if input_profile == PALM_LENGTH_PROFILE and landmark_space != "world":
+            raise ValueError("Palm-length normalization requires world metre input")
+        self.input_profile = input_profile
         self.processor = MediaPipePalmLocalProcessor(landmark_space)
         self.buffer = TemporalBuffer()
 
@@ -41,7 +47,20 @@ class MediaPipePalmLocalPipeline:
             if "coordinate_alignment" in raw.metadata or raw.metadata.get("coordinate_frame") == "l21":
                 raise ValueError("MediaPipe palm-local preprocessing requires raw input; refusing to align already declared coordinates")
             canonical = self.processor.process_frame(raw)
-            return self.buffer.append(canonical), canonical
+            if self.input_profile == PALM_LENGTH_PROFILE:
+                from teleoperation.retargeting.hand.normalization import validate_metric_hand_frame
+                canonical = validate_metric_hand_frame(canonical)
+            window = self.buffer.append(canonical)
+            if window is not None and self.input_profile == PALM_LENGTH_PROFILE:
+                from teleoperation.retargeting.hand.normalization import normalize_hand_window
+                ready = {side:window.hands[side] is not None for side in SIDES}
+                window = normalize_hand_window(window)
+                for side in SIDES:
+                    if ready[side] and window.hands[side] is None:
+                        self.buffer.reset_side(side)
+                if all(points is None for points in window.hands.values()):
+                    window = None
+            return window, canonical
         except (TypeError, ValueError, KeyError):
             self.reset()
             raise

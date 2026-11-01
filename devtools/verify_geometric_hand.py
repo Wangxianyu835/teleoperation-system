@@ -148,9 +148,10 @@ def measure_side(side: str, poses: dict[str, dict[int, float]],
             if window is None:
                 continue
             # 与实时循环一致：每帧都要 retarget，零位标定才可能攒够帧数。
-            frame_values = getattr(retargeter.retarget(window), side + "_angles")
-            if frame_values is not None:
-                values = np.asarray(frame_values.values, dtype=np.float64)
+            frame_values = retargeter.retarget(window)[("l21", side)]
+            if frame_values.valid:
+                from teleoperation.retargeting.hand.angles import l21_legacy_values
+                values = np.asarray(l21_legacy_values(frame_values), dtype=np.float64)
         if window is None:
             raise AssertionError(f"{side}:{name} produced no window; the synthetic frame is unusable")
         if values is None:

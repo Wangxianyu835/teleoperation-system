@@ -1,82 +1,10 @@
-"""实时闭环入口：摄像头 -> 手掌局部 25 点 -> 重定向 -> PyBullet 里的机器人灵巧手。
+"""Historical camera L21 model/geometric display and scene utilities.
 
-显示目标由 ``--scene`` 选择（**默认 robots**）::
-
-    robots  三台论文机器人 H1-2 / GR1-T2 / G1 并排，各用出厂自带的【原装手】
-            （``apps/three_robot_scene.py``；画面里是完整机器人，不是单独一只手）
-    hands   只摆 1-2 只 LinkerHand L21 手（旧行为，方便单独看手部关节）
-
-这条链路原本缺一个"入口"：``hand realtime`` 只加载训练出的检查点模型并打印
-角度，``replay l21-hand`` 只回放离线 H5，两者都不能把摄像头画面实时显示到
-仿真里。本模块补上这一环，并且**不改动任何既有模块**：
-
-    MediaPipeCameraInput -> MediaPipeCameraWorkflow（掌面局部对齐 + 三帧窗口）
-    -> GeometricHandRetargeter（零权重，本仓库自带的几何后端）
-    -> PyBullet GUI 里的显示目标（``--scene``：默认三台机器人的原装手）
-
-后端选择（``--backend``）：
-
-    auto       默认。检查点存在就用训练模型，否则自动回落到几何后端并打印原因。
-    geometric  强制几何后端（零权重，不需要任何 .pth）。
-    checkpoint 强制训练后端（需要 palm_local 检查点）。
-
-模型文件（``hand_landmarker.task``，约 7.5 MB）默认按以下顺序查找：
-``--model-asset-path`` > 仓库根 ``hand_landmarker.task`` > ``outputs/hand_landmarker.task``。
-
-用法::
-
-    # 两个窗口：PyBullet 里三台机器人并排 + 摄像头画面（叠加 21 点骨架）
-    python -m teleoperation.applications.realtime_hand_sim --backend auto
-
-    # 只摆一只手（旧行为）
-    python -m teleoperation.applications.realtime_hand_sim --scene hands
-
-    # 正面视角看三台机器人
-    python -m teleoperation.applications.realtime_hand_sim --view front
-
-    # 只要 PyBullet 窗口，不显示摄像头画面
-    python -m teleoperation.applications.realtime_hand_sim --no-preview
-
-    # 无头自检（不弹窗，跑 300 帧后打印统计并写报告）
-    python -m teleoperation.applications.realtime_hand_sim --headless --frames 300 \
-        --report outputs/tmp_probe/realtime_report.json
-
-摄像头窗口（``cv2.imshow``）：原始画面 + MediaPipe 21 点骨架（``COLORS``：浅色
-left、深色 right），左上角一行是帧数/帧率/有效角度帧数/开手标定状态，没有手时
-在左下角写 "no hand detected"。默认左右**镜像**（像照镜子，方便对着屏幕调手势），
-``--preview-no-mirror`` 关掉。默认开窗口；``--headless`` 下自动不开（只跑自检）。
-``--preview-dump-dir DIR --preview-dump-frames N`` 会把前 N 帧带骨架的画面存成 PNG，
-用来在没有显示器的环境里核对（这两个开关在 ``--headless`` 下也能用）。
-
-窗口位置：PyBullet 的窗口先出现、尺寸又大，默认位置的 OpenCV 窗口容易被它整个盖住
-（IDE 里跑尤其常见，"只看见机器人"）。因此第一帧画完就 ``moveWindow`` 到
-``--preview-window-pos``（默认 ``20,60``，``none`` = 保留系统默认）并
-``WND_PROP_TOPMOST`` 置顶，同时打印窗口的**实际屏幕矩形**；矩形落在可见桌面之外时
-再补一行警告并告诉你怎么挪。``--preview-no-topmost`` 关掉置顶。
-
-输入层（``inputs/mediapipe.py``，队友文件）只返回关键点、不暴露 BGR 图像，
-CONVENTIONS 约定 3 又不允许改队友文件，因此这里给它内部的 ``cv2.VideoCapture``
-套了一层**只读代理**（``_PreviewCapture``）取图：``read()`` 原样透传，管线的像素
-路径不变，预览失败也只打印一行提示、不影响重定向与仿真。
-
-显示约定（两套场景都只做可视化，不代表物理接触效果）：
-
-``--scene hands``：用 ``resetJointState`` 直接把角度写进 L21 关节（与 ``replay
-l21-hand`` 的力矩控制不同），画面跟手不抖、不滞后；角度本身与离线管线完全一致
-（同一套 ``L21HandAngles`` 与 ``L21HandAdapter``）。
-
-``--scene robots``（默认）：把同一份 18 维角度经 ``robots/native_hand.py`` 降维
-映射到三台机器人**原装**的灵巧手，用 ``POSITION_CONTROL`` 驱动，每帧推进
-``--sim-steps`` 步物理（默认 8 步 x 1/240 s = 33 ms，约等于一帧实时数据）。
-机器人手臂不参与（重定向不输出手臂关节角），锁定在中性姿态静止。覆盖率、被限位
-截断的次数、仿真帧数都写进 ``--report`` 的 ``scene_summary``。
-
-退出行为：``MediaPipeCameraInput.release()`` 里的 ``landmarker.close()`` 在本机
-实测要 **42.2 s**（TFLite/XNNPACK 释放，``cv2`` 只要 0.3 s），PyBullet 在 GUI 客户端
-已经死掉时 ``disconnect()`` 也会挂住，两者看起来都像卡死。因此本入口把所有收尾动作
-丢到后台守护线程（每个最多等 ``RELEASE_TIMEOUT_SECONDS``），打印完统计并写完
-``--report`` 后由 ``__main__`` 直接 ``os._exit`` 结束进程：Ctrl+C 或关窗口后立刻回到
-命令行，不会再等那 42 s。
+New target-specific NN/dex control is `python -m teleoperation hand control`;
+see docs/hand-retargeting-unified.md. This entry retains declared legacy input
+profiles and the diagnostic L21-to-native multi-robot display mapping. Every
+retargeter returns common independent joint results and uses JointCommandPipeline.
+The optional historical dex route retains its explicit fixed calibration.
 """
 
 from __future__ import annotations
@@ -92,7 +20,9 @@ from pathlib import Path
 
 import numpy as np
 
-from teleoperation.contracts.hand import L21HandAngles
+from teleoperation.retargeting.hand.angles import legacy_l21_dofs
+from teleoperation.contracts.hand_control import valid_joint_result
+from teleoperation.retargeting.hand.angles import l21_legacy_values
 from teleoperation.data.urdf import parse_joint_limits
 from teleoperation.paths import (
     DEFAULT_MEDIAPIPE_ASSET,
@@ -101,7 +31,7 @@ from teleoperation.paths import (
     PROJECT_ROOT,
 )
 from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM, RUNTIME
-from teleoperation.simulation.hand_commands import add_hand_command_arguments, build_hand_commands
+from teleoperation.simulation.hand_commands import add_hand_command_arguments, build_hand_commands, apply_legacy_l21_mapping
 from teleoperation.robots.l21 import L21_JOINT_ORDER, MAPPING_18, L21HandAdapter
 
 SIDES = ("left", "right")
@@ -138,7 +68,7 @@ def resolve_model_asset(path: Path | None) -> Path:
 
 
 def build_retargeter(backend: str, checkpoint: Path, device: str, calibration_frames: int,
-                     smoothing: float, landmark_space="normalized"):
+                     smoothing: float, landmark_space="normalized", dex_calibration=None, native_sides=SIDES):
     """Return ``(retargeter, backend_name, note)`` for the requested backend.
 
     ``auto`` prefers the trained checkpoint and falls back to the geometric
@@ -147,12 +77,20 @@ def build_retargeter(backend: str, checkpoint: Path, device: str, calibration_fr
     """
     from teleoperation.retargeting.hand.geometric import GeometricHandRetargeter
 
+    if backend == "dex":
+        if landmark_space != "world" or dex_calibration is None:
+            raise ValueError("--backend dex requires --landmark-space world and --dex-calibration")
+        from teleoperation.retargeting.hand.dex_native import DexCalibration, DexNativeRetargeter
+        calibration = DexCalibration.load(dex_calibration)
+        if calibration.profile != "dex_camera_world_v1":
+            raise ValueError("Camera dex requires a camera calibration profile")
+        return DexNativeRetargeter(calibration, sides=native_sides), "dex", "native Vector, fixed camera calibration"
     checkpoint = Path(checkpoint)
     if backend == "checkpoint":
         if not checkpoint.is_file():
             experiment = "world_canonical_shared_v1" if landmark_space == "world" else "palm_three_point_v2"
-            raise FileNotFoundError(f"checkpoint not found: {checkpoint}. Train with python -m teleoperation hand train "
-                                    f"--input <aligned_{landmark_space}.h5> --run-name {experiment}")
+            raise FileNotFoundError(f"checkpoint not found: {checkpoint}. Select an existing legacy {experiment} checkpoint. "
+                                    "Use hand control for new target-specific weights; see docs/hand-retargeting-unified.md.")
         return _checkpoint_retargeter(checkpoint, device, landmark_space)
     if backend == "geometric":
         return (
@@ -170,7 +108,7 @@ def build_retargeter(backend: str, checkpoint: Path, device: str, calibration_fr
 
 
 def _checkpoint_retargeter(checkpoint: Path, device: str, landmark_space="normalized"):
-    """Wrap the teammate's trained palm-local model behind ``HandRetargeter``."""
+    """Load a historical palm-local L21 checkpoint behind HandRetargeter."""
     from teleoperation.applications.hand_realtime import load_palm_local_retargeter
     from teleoperation.retargeting.hand.interface import PoseTransformerRetargeter
 
@@ -183,13 +121,22 @@ def _checkpoint_retargeter(checkpoint: Path, device: str, landmark_space="normal
 
 
 class RealtimeL21Scene:
-    """Minimal PyBullet scene holding 1-2 L21 hands, driven by 18D angles.
+    """PyBullet L21 scene; native named commands plus explicit historical layout reader.
 
     Only the joints listed in ``MAPPING_18``/``L21_JOINT_ORDER`` are written; any
     extra URDF joints (if a model ever has them) stay at their loaded state.
     """
 
     def __init__(self, sides, gui: bool = True):
+        self.cid = -1
+        try:
+            self._initialize(sides,gui)
+        except BaseException:
+            if self.cid >= 0 and hasattr(self,'p'):
+                self.close()
+            raise
+
+    def _initialize(self, sides, gui):
         import pybullet as p
 
         if not sides:
@@ -212,6 +159,8 @@ class RealtimeL21Scene:
         self._prepare_physics(p.setGravity, (0, 0, 0))
         p.setTimeStep(1.0 / 240.0, physicsClientId=self.cid)
         self.bodies = {}
+        self.base_positions = {}
+        self.view = "full"
         self.joint_index = {}
         self.adapters = {}
         for side in self.sides:
@@ -221,6 +170,7 @@ class RealtimeL21Scene:
                 raise FileNotFoundError(f"L21 model not found: {urdf}")
             p.setAdditionalSearchPath(str(directory), physicsClientId=self.cid)
             base = list(BASE_POSITIONS[side]) if len(self.sides) > 1 else [0.0, 0.0, 0.3]
+            self.base_positions[side] = base
             body = p.loadURDF(str(urdf), base, useFixedBase=True, physicsClientId=self.cid)
             names = {}
             for index in range(p.getNumJoints(body, physicsClientId=self.cid)):
@@ -236,15 +186,39 @@ class RealtimeL21Scene:
             # MAPPING_18（它内部用 values[index-1] 取值）。传 17 项的
             # L21_JOINT_ORDER 会让所有维度错位一格（探针实测到过）。
             self.adapters[side] = L21HandAdapter(list(MAPPING_18), parse_joint_limits(urdf))
-        if self.gui:
-            # 20 cm 的手在默认视角下几乎看不见，直接把镜头推到手上。
-            p.resetDebugVisualizerCamera(
-                cameraDistance=0.7 if len(self.sides) > 1 else 0.55,
-                cameraYaw=40, cameraPitch=-20,
-                cameraTargetPosition=[0.0, 0.0, 0.3], physicsClientId=self.cid,
-            )
+        self.frame_scene("full")
         self.applied = {side: 0 for side in self.sides}
         self.loss_reported = False
+
+    def frame_scene(self, view="full") -> None:
+        """Front: both palms toward the camera; full: original URDF layout.
+
+        Both native palms face +X. A -90 degree world-Z rotation points them
+        toward a yaw=0 camera on -Y, with the fingers still pointing upward.
+        Only rigid display poses change; native joint angles remain untouched.
+        """
+        if view not in ("full", "front"):
+            raise ValueError(f"Unknown L21 view: {view}")
+        if not self.alive():
+            return
+        if view != self.view:
+            orientation = self.p.getQuaternionFromEuler([0, 0, -np.pi / 2 if view == "front" else 0])
+            for side, body in self.bodies.items():
+                dynamics = self.p.getDynamicsInfo(body, -1, physicsClientId=self.cid)
+                # resetBasePositionAndOrientation expects the inertial/COM pose,
+                # whereas loadURDF takes the root-link pose (different on left).
+                position, rotation = self.p.multiplyTransforms(
+                    self.base_positions[side], orientation, dynamics[3], dynamics[4])
+                self.p.resetBasePositionAndOrientation(body, position, rotation, physicsClientId=self.cid)
+            self.view = view
+        if self.gui:
+            self.p.resetDebugVisualizerCamera(
+                cameraDistance=0.7 if len(self.sides) > 1 else 0.55,
+                cameraYaw=0 if view == "front" else 40,
+                cameraPitch=0 if view == "front" else -20,
+                cameraTargetPosition=[0.0, 0.0, 0.43 if view == "front" else 0.3],
+                physicsClientId=self.cid,
+            )
 
     def _prepare_physics(self, call, positional, timeout: float = 15.0) -> None:
         """Call a PyBullet setup function, retrying until the server answers.
@@ -271,13 +245,28 @@ class RealtimeL21Scene:
         """Write one 18D angle vector into this side's joints (instant, visual)."""
         if side not in self.bodies or not self.alive():
             return
-        dofs = L21HandAngles(np.asarray(angles, dtype=np.float64)).native_mapping_dofs()
+        dofs = legacy_l21_dofs(np.asarray(angles, dtype=np.float64))
         targets = self.adapters[side].map(dofs)
         body = self.bodies[side]
         index = self.joint_index[side]
         for name, value in targets.items():
             self.p.resetJointState(body, index[name], float(value), physicsClientId=self.cid)
         self.applied[side] += 1
+
+    def apply_native(self, command):
+        """Apply expanded named L21 commands without a historical angle layout."""
+        from teleoperation.simulation.hand_executor import HandExecutor
+        from teleoperation.robots.hand_spec import load_hand_spec
+        if not hasattr(self, '_native_executor'):
+            specs = {('l21',side):load_hand_spec('l21',side) for side in self.sides}
+            def write(value):
+                if not self.alive():
+                    raise RuntimeError('L21 simulator connection closed')
+                for name, angle in value.named_positions().items():
+                    self.p.resetJointState(self.bodies[value.side],self.joint_index[value.side][name],angle,physicsClientId=self.cid)
+                self.applied[value.side] += 1
+            self._native_executor = HandExecutor(specs,{key:write for key in specs})
+        self._native_executor.apply(command)
 
     def step(self) -> None:
         """Step physics; a lost connection is reported once and then ignored.
@@ -451,7 +440,7 @@ class CameraPreview:
             self._text(canvas, side, (int(pixels[0][0]) + 8, int(pixels[0][1]) - 8),
                        self._colors[side], 0.6)
             if angles.get(side) is not None:
-                self._text(canvas, f"{side} angles: 18 dims", (10, height - 10 - 20 * index),
+                self._text(canvas, f"{side} angles: {len(angles[side])} dims", (10, height - 10 - 20 * index),
                            self._colors[side], 0.5)
         if all((raw_frame or {}).get(side) is None for side in self.sides):
             self._text(canvas, "no hand detected (keep the hand in frame, well lit)",
@@ -581,14 +570,15 @@ def preview_hud(processed, marks, sides, samples, invalid, retargeter, raw_seen,
             f"source={landmark_space} units={'m' if landmark_space == 'world' else 'normalized'}")
 
 
-def _describe(vectors) -> dict:
+def _describe(vectors, mapping=None) -> dict:
     """Frame count plus per-dimension observed range for one side."""
-    array = np.asarray(vectors, dtype=np.float64).reshape(-1, HAND_ANGLE_DIM)
+    mapping = mapping if mapping is not None else list(L21_JOINT_ORDER)
+    array = np.asarray(vectors, dtype=np.float64).reshape(-1, len(mapping))
     return {
         "frames": int(array.shape[0]),
         "min": [float(value) for value in array.min(axis=0)],
         "max": [float(value) for value in array.max(axis=0)],
-        "mapping": [MAPPING_18[dim] or "placeholder" for dim in range(HAND_ANGLE_DIM)],
+        "mapping": list(mapping),
     }
 
 
@@ -611,12 +601,16 @@ def run(args) -> int:
     """Capture the camera until ``--frames`` or quit, retarget, and show the sim."""
     from teleoperation.applications.hand_realtime import MediaPipeCameraWorkflow
 
+    if args.backend == "dex" and args.scene != "robots":
+        raise ValueError("Native dex requires --scene robots")
     asset = resolve_model_asset(args.model_asset_path)
     checkpoint = args.checkpoint or realtime_checkpoint(args.landmark_space)
     sides = SIDES if args.hand == "both" else (args.hand,)
+    dex_options = ({"dex_calibration": args.dex_calibration, "native_sides": sides} if args.backend == "dex" else {})
     retargeter, backend, note = build_retargeter(
         args.backend, Path(checkpoint), args.device,
         args.calibration_frames, args.smoothing, landmark_space=args.landmark_space,
+        **dex_options,
     )
     print(f"backend={backend} ({note})", flush=True)
     print(f"model_asset={asset}", flush=True)
@@ -636,7 +630,11 @@ def run(args) -> int:
     elapsed, final = 0.0, {}
     try:
         scene = build_scene(args, sides)
-        commands = build_hand_commands(args, scene, sides)
+        if backend == "dex":
+            from teleoperation.applications.dex_native import command_pipeline, apply_native_window, native_sample_mapping
+            commands = command_pipeline(args, retargeter.models)
+        else:
+            commands = build_hand_commands(args, scene, sides)
         if args.scene == "robots":
             print(f"scene=three_robots: H1-2 / GR1-T2 / G1 side by side, native hands, "
                   f"{args.sim_steps} physics steps per frame.", flush=True)
@@ -652,6 +650,9 @@ def run(args) -> int:
         # landmarker.close() 上（实测 42 s，见模块 docstring 的"退出行为"）。
         camera = MediaPipeCameraWorkflow(asset, args.camera_index,
                                         args.width, args.height, args.fps, landmark_space=args.landmark_space)
+        if backend == "dex":
+            from teleoperation.applications.dex_native import LatestCameraInput
+            camera._input = LatestCameraInput(camera._input)
         preview = build_preview(args, camera, sides)
         if not args.headless:
             print(PREVIEW_HINT_ROBOTS if args.scene == "robots" else PREVIEW_HINT_HANDS,
@@ -669,25 +670,30 @@ def run(args) -> int:
             for side in sides:
                 if raw_frame is not None and raw_frame.get(side) is not None:
                     raw_seen[side] += 1
-            if window is None:
+            if backend == "dex":
+                latest = apply_native_window(window, retargeter, commands, scene)
+                for side in sides:
+                    if latest[side] is None:
+                        invalid[side] += 1
+                    else:
+                        samples[side].append(latest[side])
+            elif window is None:
                 # 三帧窗口还没攒够（或刚丢手）：预览里不留上一帧的角度，避免误会。
                 latest = {side: None for side in sides}
                 for side in sides:
-                    commands.missing(side)
+                    commands.missing(('l21',side))
             else:
                 result = retargeter.retarget(window)
                 for side in sides:
-                    angles = getattr(result, side + "_angles")
+                    angles = valid_joint_result(result, "l21", side)
                     if angles is None:
                         invalid[side] += 1
                         latest[side] = None
-                        commands.missing(side)
+                        commands.missing(('l21',side))
                         continue
-                    values = np.asarray(angles.values, dtype=np.float64)
-                    if values.shape != (HAND_ANGLE_DIM,) or not np.isfinite(values).all():
-                        raise ValueError(f"invalid {side} angles: shape={values.shape}")
-                    values = commands.update(side, values)
-                    scene.apply(side, values)
+                    command = commands.update(angles)
+                    apply_legacy_l21_mapping(scene, command)
+                    values = command.positions
                     samples[side].append(values)
                     latest[side] = values
             if preview is not None:
@@ -760,7 +766,7 @@ def run(args) -> int:
                 "raw_detected_frames": raw_seen[side],
                 "valid_frames": len(samples[side]),
                 "invalid_frames": invalid[side],
-                "angles": _describe(samples[side]) if samples[side] else None,
+                "angles": _describe(samples[side], native_sample_mapping(retargeter, side) if backend == "dex" else None) if samples[side] else None,
                 "final_joint_values": final.get(side),
             }
             for side in sides
@@ -852,7 +858,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--backend", choices=("auto", "geometric", "checkpoint"), default="auto")
+    parser.add_argument("--backend", choices=("auto", "geometric", "checkpoint", "dex"), default="auto")
+    parser.add_argument("--dex-calibration", type=Path, help="fixed camera dex calibration JSON")
     parser.add_argument("--landmark-space", choices=("world", "normalized"), default="world")
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)

@@ -107,9 +107,9 @@ class CoordinateContractTests(unittest.TestCase):
         np.testing.assert_array_equal(values.grad.numpy(), canonical_to_native_angles(np.ones(18), "left"))
 
     def test_training_fk_and_human_targets_use_the_same_fixed_axes(self):
-        from teleoperation.applications.training import _create_hand_fks
-        native = _create_hand_fks("cpu", ("right",))["right"]
-        canonical = _create_hand_fks("cpu", ("right",), canonical=True)["right"]
+        from teleoperation.applications.diagnostics.legacy_hand_training import create_legacy_hand_fks
+        native = create_legacy_hand_fks("cpu", ("right",))["right"]
+        canonical = create_legacy_hand_fks("cpu", ("right",), canonical=True)["right"]
         pose = torch.zeros((1, 23))
         raw_positions = native.forward(pose)[2][0].numpy()
         human = np.zeros((21, 3), dtype=np.float32)

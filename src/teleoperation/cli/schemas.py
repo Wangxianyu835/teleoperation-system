@@ -6,6 +6,35 @@ from teleoperation.paths import *
 from teleoperation.retargeting.hand.config import L21, RUNTIME, ANGLE_LIMITS
 from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
 from .checkpoints import add_checkpoint_arguments
+from .smplerx_options import add_smplerx_arguments
+
+
+def hand_dex_calibrate(parser):
+    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--source", choices=("camera", "visionpro"), required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--start", type=float, default=0., help="seconds after first recorded frame")
+    parser.add_argument("--duration", type=float, default=2.)
+    parser.set_defaults(_handler="teleoperation.applications.dex_native:calibrate")
+
+
+def hand_dex_export(parser):
+    from .hand_command_options import add_hand_command_arguments
+    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--source", choices=("camera", "visionpro"), required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--calibration", type=Path, required=True)
+    parser.add_argument("--report", type=Path)
+    add_hand_command_arguments(parser, native=True)
+    parser.set_defaults(_handler="teleoperation.applications.dex_native:export")
+
+
+def replay_dex_native(parser):
+    parser.add_argument("--file", type=Path, required=True)
+    parser.add_argument("--render", action="store_true")
+    parser.add_argument("--fps", type=float, default=30.)
+    parser.add_argument("--frames", type=int, default=0)
+    parser.set_defaults(_handler="teleoperation.applications.dex_native:replay")
 PALM_LOCAL_V2_CHECKPOINT = DEFAULT_REALTIME_CHECKPOINT
 ROOT = str(PROJECT_ROOT)
 
@@ -42,10 +71,14 @@ def hand_align(parser: argparse.ArgumentParser) -> None:
 def hand_train(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--run-name", required=True)
-    parser.add_argument("--hand-side", choices=("left", "right", "shared"), default="shared",
-                        help="canonical world data requires shared; left/right selects dedicated models for old native-root data")
-    parser.add_argument("--checkpoint-root", type=Path, default=DEFAULT_CHECKPOINT_ROOT)
-    parser.add_argument("--init-checkpoint", type=Path, default=DEFAULT_WARMSTART_CHECKPOINT)
+    from teleoperation.paths import DEFAULT_HAND_MODEL_ROOT
+    from teleoperation.contracts.hand_models import HAND_MODELS
+    parser.add_argument("--hand-model", choices=HAND_MODELS, nargs='+', required=True)
+    parser.add_argument("--checkpoint-root", type=Path, default=DEFAULT_HAND_MODEL_ROOT)
+    from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
+    parser.add_argument('--input-profile',choices=(PALM_LENGTH_PROFILE,),default=PALM_LENGTH_PROFILE)
+    parser.add_argument("--resume", type=Path, help="explicit model_last.pth from this target/run")
+    parser.add_argument('--init-checkpoint',type=Path,help='strictly compatible new target weights; does not resume training state')
     parser.add_argument("--epochs", type=int, default=L21.training.epochs)
     parser.add_argument("--batch-size", type=int, default=L21.training.batch_size)
     parser.add_argument("--learning-rate", type=float, default=L21.training.learning_rate)
@@ -57,46 +90,39 @@ def hand_train(parser: argparse.ArgumentParser) -> None:
 
 
 def hand_export(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--input",
-        type=Path,
-        default=DEFAULT_INPUT_H5,
-    )
-    add_checkpoint_arguments(parser)
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=DEFAULT_OUTPUT_H5,
-    )
-    parser.add_argument("--batch-size", type=int, default=RUNTIME.export_batch_size)
-    parser.add_argument(
-        "--scale-factor",
-        type=float,
-        default=L21.training.source_scale,
-    )
-    parser.add_argument(
-        "--disable-identity-tracking",
-        action="store_true",
-        help="trust recorded left/right labels without temporal reassignment",
-    )
-    parser.add_argument(
-        "--max-center-displacement",
-        type=float,
-        default=DEFAULT_MAX_CENTER_DISPLACEMENT,
-        help="maximum normalized palm-center displacement between frames",
-    )
-    parser.add_argument(
-        "--max-shape-rmse",
-        type=float,
-        default=DEFAULT_MAX_SHAPE_RMSE,
-        help="maximum wrist-relative landmark RMSE between frames",
-    )
-    parser.add_argument(
-        "--device",
-        choices=("auto", "cpu", "cuda"),
-        default=RUNTIME.device,
-    )
-    parser.set_defaults(_handler="teleoperation.applications.hand:export")
+    from .hand_joint_options import add_target_arguments
+    from .hand_command_options import add_hand_command_arguments
+    add_target_arguments(parser)
+    add_hand_command_arguments(parser)
+    parser.add_argument('--input', type=Path, required=True, help='canonical world metre human H5')
+    parser.add_argument('--output', type=Path, required=True)
+    parser.set_defaults(_handler='teleoperation.applications.hand_control:export')
+
+
+def hand_control(parser):
+    from .hand_joint_options import add_target_arguments
+    from .hand_command_options import add_hand_command_arguments
+    add_target_arguments(parser)
+    add_hand_command_arguments(parser)
+    parser.add_argument('--model-asset-path',type=Path)
+    parser.add_argument('--camera-index',type=int,default=0)
+    parser.add_argument('--frames',type=int,default=0,help='0 runs until interruption/window close')
+    parser.add_argument('--headless',action='store_true')
+    parser.add_argument('--record-results',type=Path)
+    parser.set_defaults(_handler='teleoperation.applications.hand_control:run')
+
+
+def hand_list_models(parser):
+    parser.set_defaults(_handler='teleoperation.applications.hand_control:list_models')
+
+
+def replay_hand_joints(parser):
+    from teleoperation.contracts.hand_models import HAND_MODELS
+    parser.add_argument('--input',type=Path,required=True)
+    parser.add_argument('--hand-model',choices=HAND_MODELS,required=True)
+    parser.add_argument('--hand',choices=('left','right','both'),default='right')
+    parser.add_argument('--headless',action='store_true')
+    parser.set_defaults(_handler='teleoperation.applications.hand_control:replay')
 
 
 def hand_inspect(parser: argparse.ArgumentParser) -> None:
@@ -124,10 +150,11 @@ def hand_realtime(parser: argparse.ArgumentParser) -> None:
 
 
 def hand_record_world(parser: argparse.ArgumentParser) -> None:
-    parser.description = "Record normalized and metre-based hand and arm landmarks."
+    parser.description = "Record shared RGB, MediaPipe Hands and SMPL-X body observations."
+    add_smplerx_arguments(parser)
+    parser.add_argument('--no-arms', action='store_true', help='record fingers only; do not start SMPLer-X')
+    parser.add_argument('--startup-timeout', type=float, default=120., help='seconds to wait for first body result')
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET)
-    parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET)
-    parser.add_argument("--pose-min-visibility", type=float, default=0.2)
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
     parser.add_argument("--frames", type=int, default=30)
     destination = parser.add_mutually_exclusive_group()
@@ -183,26 +210,25 @@ def sim_demo_joints(parser):
 
 def dual_calibrate_camera(parser):
     parser.description = (
-        "Capture stable bilateral shoulder-relative Pose world neutral wrists and "
+        "Capture stable bilateral shoulder-relative SMPL-X neutral wrists and "
         "TRON2A URDF FK references. Camera preview only; no robot control. "
         "Rotation and scale must be configured; neutral capture does not estimate extrinsics."
     )
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index, help="camera device number")
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET, help="Hands .task model (must exist)")
-    parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET, help="Pose .task model (must exist)")
+    add_smplerx_arguments(parser)
     parser.add_argument("--output", type=Path, required=True, help="new calibration JSON; existing files are never overwritten")
     parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF, help="TRON2A URDF for FK and joint limits; meshes not required")
     for side in ("left", "right"):
         parser.add_argument(f"--safe-q-{side}", type=float, nargs=7, required=True,
                             help=f"{side} reference radians: proximal pitch/roll/yaw, elbow, wrist yaw/pitch/roll; must satisfy URDF limits")
     parser.add_argument("--rotation", type=float, nargs=9, required=True,
-                        help="explicit proper 3x3 rotation from Pose world to base_Link, row-major; not automatically estimated")
+                        help="explicit proper 3x3 rotation from SMPL-X camera axes to base_Link, row-major; not automatically estimated")
     parser.add_argument("--scale", type=float, nargs=3, default=[1., 1., 1.], help="positive x/y/z mapping scales (default 1 1 1; configured, not estimated)")
     parser.add_argument("--translation", type=float, nargs=3, default=[0., 0., 0.], help="extra robot-frame offset in metres (default zero)")
     parser.add_argument("--workspace-min", type=float, nargs=3, required=True, help="minimum base_Link x/y/z in metres")
     parser.add_argument("--workspace-max", type=float, nargs=3, required=True, help="maximum base_Link x/y/z in metres")
     parser.add_argument("--samples", type=int, default=60, help="consecutive stable bilateral valid samples, >=3")
-    parser.add_argument("--pose-min-visibility", type=float, default=0.7, help="minimum visibility of all shoulder/elbow/wrist points, [0,1]")
     parser.add_argument("--stability-tolerance", type=float, default=0.015, help="maximum elbow/wrist distance from window mean, in shoulder-relative metres")
     parser.add_argument("--min-elbow-bend", type=float, default=10., help="minimum bend away from straight, degrees; prevents degenerate forearm plane")
     parser.add_argument("--max-elbow-bend", type=float, default=100., help="maximum allowed neutral elbow bend, degrees")
@@ -219,7 +245,7 @@ def dual_calibrate_camera(parser):
 
 
 def dual_camera(parser):
-    parser.description = "Realtime camera world -> TRON2A simulation: arms only or dual arms and L21 hands. Requires real neutral calibration."
+    parser.description = "Realtime camera SMPLer-X body -> selected robot simulation: arms only or dual arms and L21 hands. Requires real neutral calibration."
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--arms-only", action="store_true", help="arm-only simulation; no hand model required")
     modes.add_argument("--with-hands", action="store_true", help="full control using world hand checkpoints")
@@ -227,7 +253,7 @@ def dual_camera(parser):
     parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET, help="MediaPipe Hands detector .task")
-    parser.add_argument("--pose-model-asset-path", type=Path, default=DEFAULT_POSE_ASSET)
+    add_smplerx_arguments(parser)
     parser.add_argument("--calibration", type=Path, required=True, help="real dual calibrate-camera JSON; synthetic fixtures are rejected")
     parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF)
     parser.add_argument("--orientation-mode", choices=("fixed", "forearm"), default="fixed")
@@ -241,7 +267,6 @@ def dual_camera(parser):
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--pose-min-visibility", type=float, default=None, help="defaults to stored calibration visibility")
     parser.set_defaults(_handler="teleoperation.applications.mediapipe_tron2a:run_camera")
 
 
@@ -474,13 +499,6 @@ def tools_verify_hand_pipeline(parser):
         ROOT, 'datasets', 'raw', 'retarget_twohand_153542.h5'))
     ap.add_argument('--render', action='store_true', help='最后打开 GUI')
     parser.set_defaults(_handler="teleoperation.applications.diagnostics.verify_hand_pipeline:main")
-
-def tools_verify_p0(parser):
-    parser = parser
-    parser.add_argument("--input", type=Path, required=True)
-    add_checkpoint_arguments(parser, required=True)
-    parser.add_argument("--sample-count", type=int, default=3)
-    parser.set_defaults(_handler="teleoperation.applications.diagnostics.verify_p0:main")
 
 def tools_visualize_hand_keypoints(parser):
     parser = parser
