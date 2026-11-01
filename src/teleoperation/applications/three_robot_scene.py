@@ -1,32 +1,7 @@
-"""实时重定向的【三台机器人并排】显示目标（用机器人原装手，不换手）。
+"""Whole-body robot scene executing named native hand commands.
 
-这个场景类给 ``teleoperation.applications.realtime_hand_sim`` 用：实时链路算出来的每一帧
-18 维 L21 角度直接写进 **H1-2 / GR1-T2 / G1** 三台论文机器人**出厂自带**的灵巧手，
-而不是把一只 LinkerHand L21 单独摆在世界原点（那样画面上只有一只"手套"）。
-
-    摄像头 -> MediaPipe 21 点 -> 掌面局部 25 点 -> 几何 / 训练后端 -> 18 维角度
-      -> ThreeRobotHandScene.apply(side, angles)    # 写进三台机器人的原装手
-      -> ThreeRobotHandScene.step()                 # 每帧推进 N 步物理
-
-范围声明（与 ``tools show-all-hands`` 完全一致）
------------------------------------------------
-    手指：由实时角度驱动（18 维 -> 原装手降维映射，见 robots/native_hand.py）
-    手臂：重定向不输出手臂关节角，因此锁定在中性姿态【静止】
-    其余关节（腿 / 腰 / 头）：同样锁定在加载时的角度
-
-实现要点（都是踩过的坑，与 tools show-all-hands 对齐）
-----------------------------------------------------
-1. 摆位：三台 URDF 原点都在 (0, 0) 附近，必须沿 X 横向摆开，否则三台会重叠。
-2. 映射：原装手屈曲方向不一致（H1-2 为正、GR1-T2 / G1 为负），符号与限位交给
-   ``robots/native_hand.build_mapping`` 自动判定，本文件不重复实现一份映射表。
-3. 姿态锁定：映射之外的关节每帧用 POSITION_CONTROL 锁在加载角度（force=500），
-   否则手臂会在重力下下垂，看起来像"机器人散架了"。
-4. 推进步数：实时帧约 30 Hz、物理步长 1/240 s，所以每帧推进 8 步，
-   手指才能在一帧内走到目标角；只推 1 步画面会明显滞后。
-5. DIRECT（无头）也允许：相机、3D 文字、GUI 面板这些可视化调用只在 ``gui`` 下才发。
-
-接口与 ``RealtimeL21Scene`` 一致（apply / step / alive / close / joint_values / summary），
-因此实时入口可以用 ``--scene`` 直接切换，主循环一行都不用改。
+HandSpec defines every movable hand joint, independent coordinates and coupling.
+Non-hand joints remain held until an arm driver explicitly takes control.
 """
 
 from __future__ import annotations
@@ -35,7 +10,6 @@ import time
 
 import numpy as np
 
-from teleoperation.applications.replay.hand_support import map_frame
 
 # 三台机器人的横向摆位（米）与标签色，与 tools show-all-hands 保持一致
 ROBOT_ORDER = ("h1_2", "gr1_t2", "g1")
@@ -65,34 +39,33 @@ def joint_extent(p, body, cid):
 
 
 class ThreeRobotHandScene:
-    """H1-2 / GR1-T2 / G1 并排；每侧的原装手由 18 维角度实时驱动。"""
+    """H1-2 / GR1-T2 / G1 并排；每侧原装手接收带规格校验的原生关节命令。"""
 
     def __init__(self, sides=("left", "right"), gui=True,
-                 steps_per_frame=DEFAULT_STEPS_PER_FRAME, limit_mode="clamp",
+                 steps_per_frame=DEFAULT_STEPS_PER_FRAME,
                  label_every=15, gravity=-9.81, ground_clearance=0.03, robot_types=None):
         self.cid = -1
         try:
-            self._initialize(sides,gui,steps_per_frame,limit_mode,label_every,gravity,ground_clearance,robot_types)
+            self._initialize(sides,gui,steps_per_frame,label_every,gravity,ground_clearance,robot_types)
         except BaseException:
             if self.cid >= 0 and hasattr(self,'p'):
                 self.close()
             raise
 
-    def _initialize(self, sides, gui, steps_per_frame, limit_mode, label_every, gravity, ground_clearance, robot_types):
+    def _initialize(self, sides, gui, steps_per_frame, label_every, gravity, ground_clearance, robot_types):
         import pybullet as p
         import pybullet_data
 
-        from teleoperation.robots.native_hand import N_MOVABLE, build_mapping, coverage
+        from teleoperation.robots.hand_spec import load_hand_spec
         from teleoperation.simulation import RobotLoader
         from teleoperation.simulation.robot_loader import read_joint_ranges
 
-        if not sides:
+        if not sides or len(set(sides)) != len(sides) or set(sides) - {'left', 'right'}:
             raise ValueError("at least one hand side is required")
         self.p = p
         self.sides = tuple(sides)
         self.gui = bool(gui)
         self.steps_per_frame = max(1, int(steps_per_frame))
-        self.limit_mode = limit_mode
         self.label_every = max(1, int(label_every))
         self.gravity = float(gravity)
         self.cid = p.connect(p.GUI if gui else p.DIRECT)
@@ -117,9 +90,8 @@ class ThreeRobotHandScene:
         for robot_type in selected:
             try:
                 body = loader.load_robot(robot_type)["robot"]
-            except Exception as error:  # noqa: BLE001 - 缺一台机器人也要能继续演示
-                print(f"  [FAIL] {robot_type}: {type(error).__name__}: {error}", flush=True)
-                continue
+            except Exception as error:
+                raise RuntimeError(f"Selected robot {robot_type} could not be loaded: {error}") from error
             base, orientation = p.getBasePositionAndOrientation(
                 body, physicsClientId=self.cid)
             p.resetBasePositionAndOrientation(
@@ -128,11 +100,15 @@ class ThreeRobotHandScene:
             ranges, names = read_joint_ranges(body, self.cid)
             plans = {}
             for side in self.sides:
-                mapping = build_mapping(robot_type, side, ranges)
-                if mapping:
-                    plans[side] = (mapping, names)
-            hand_ids = {names[joint] for mapping, _names in plans.values()
-                        for _dim, joint, *_rest in mapping if joint in names}
+                spec = load_hand_spec(robot_type, side)
+                if not set(spec.joint_names) <= set(names):
+                    raise ValueError(f"Loaded robot lacks native hand joints: {robot_type}/{side}")
+                for name, (low, high) in zip(spec.joint_names, spec.joint_limits):
+                    if not np.allclose(ranges[name], (low, high), atol=1e-6, rtol=0):
+                        raise ValueError(f"Loaded hand limits differ from HandSpec: {name}")
+                plans[side] = (spec, names)
+            hand_ids = {names[joint] for spec, names in plans.values()
+                        for joint in spec.joint_names}
             hold_ids, hold_targets = [], []
             for index in range(p.getNumJoints(body, physicsClientId=self.cid)):
                 info = p.getJointInfo(body, index, physicsClientId=self.cid)
@@ -143,9 +119,8 @@ class ThreeRobotHandScene:
                     body, index, physicsClientId=self.cid)[0]))
             low, high = joint_extent(p, body, self.cid)
             text = "  ".join(
-                f"{side[0].upper()} {len(mapping)}/{N_MOVABLE}"
-                f"({coverage(robot_type, side, mapping) * 100:.0f}%)"
-                for side, (mapping, _names) in plans.items())
+                f"{side[0].upper()} {spec.dof} DOF / {len(spec.joint_names)} joints"
+                for side, (spec, _names) in plans.items())
             self.robots.append({
                 "type": robot_type,
                 "body": body,
@@ -155,7 +130,7 @@ class ThreeRobotHandScene:
                 "label_position": [float((low[0] + high[0]) / 2),
                                    float((low[1] + high[1]) / 2),
                                    float(high[2] + 0.30)],
-                "coverage": text or "no mapped hand joint",
+                "hand_description": text,
             })
             print(f"  {robot_type:<8} 摆位 x={LAYOUT_X[robot_type]:+.1f}  原装手 {text}  "
                   f"锁住 {len(hold_ids)} 个非手部关节", flush=True)
@@ -168,7 +143,6 @@ class ThreeRobotHandScene:
         self.ground_lift = self._lift_clear_of_ground(ground_clearance)
 
         self.applied = {side: 0 for side in self.sides}
-        self.clipped = {side: 0 for side in self.sides}
         self.frames = 0
         self.loss_reported = False
         self.camera_target = [0.0, 0.0, 0.0]
@@ -179,7 +153,7 @@ class ThreeRobotHandScene:
         if self.gui:
             for robot in self.robots:
                 self.label_ids.append(p.addUserDebugText(
-                    f"{robot['type'].upper()}\n{robot['coverage']}",
+                    f"{robot['type'].upper()}\n{robot['hand_description']}",
                     robot["label_position"], textSize=1.1,
                     textColorRGB=LABEL_COLOR[robot["type"]], lifeTime=0,
                     physicsClientId=self.cid))
@@ -268,29 +242,9 @@ class ThreeRobotHandScene:
                 physicsClientId=cid)
         return distance
 
-    def apply(self, side: str, angles) -> None:
-        """把一侧的 18 维角度写进三台机器人的原装手（力矩控制，物理里真的会动）。"""
-        if side not in self.sides or not self.alive():
-            return
-        p, cid = self.p, self.cid
-        for robot in self.robots:
-            plan = robot["plans"].get(side)
-            if plan is None:
-                continue
-            mapping, names = plan
-            joints, clipped = map_frame(angles, mapping, self.limit_mode)
-            for joint_name, value in joints.items():
-                p.setJointMotorControl2(
-                    robot["body"], names[joint_name], p.POSITION_CONTROL,
-                    targetPosition=float(value), force=HAND_FORCE,
-                    physicsClientId=cid)
-            self.clipped[side] += int(clipped)
-        self.applied[side] += 1
-
     def apply_native(self, result) -> None:
         """Write one robot/side's named native command, without the L21 adapter."""
         from teleoperation.contracts.hand_control import HandJointCommand
-        from teleoperation.robots.hand_spec import load_hand_spec
         if not isinstance(result, HandJointCommand):
             raise ValueError("Scene requires a valid native command")
         if result.side not in self.sides or not self.alive():
@@ -298,15 +252,7 @@ class ThreeRobotHandScene:
         robot = next((r for r in self.robots if r["type"] == result.hand_model), None)
         if robot is None:
             raise ValueError("Native command robot is not loaded")
-        mapping, names = robot["plans"][result.side]
-        expected = {name for _dim, name, *_ in mapping}
-        if set(result.joint_names) != expected:
-            raise ValueError("Native command must name exactly this hand's movable joints")
-        if not hasattr(self, "_command_specs"):
-            self._command_specs = {}
-        if result.key not in self._command_specs:
-            self._command_specs[result.key] = load_hand_spec(*result.key)
-        spec = self._command_specs[result.key]
+        spec, names = robot["plans"][result.side]
         if result.spec_hash != spec.spec_hash or result.joint_names != spec.joint_names:
             raise ValueError("Command target specification differs from the loaded hand")
         values = result.named_positions()
@@ -314,7 +260,7 @@ class ThreeRobotHandScene:
         expanded = spec.expand(independent)
         if any(abs(values[n]-expanded[n]) > 1e-6 for n in spec.joint_names):
             raise ValueError("Command violates native hand coupling")
-        for _dim, name, _sign, low, high in mapping:
+        for name, (low, high) in zip(spec.joint_names, spec.joint_limits):
             if not low - 1e-6 <= values[name] <= high + 1e-6:
                 raise ValueError(f"Native scene limit exceeded: {name}")
         for name, value in values.items():
@@ -326,6 +272,7 @@ class ThreeRobotHandScene:
         self.native_commands[result.key] = dict(values)
         key = result.hand_model + "/" + result.side
         self.native_applied[key] = self.native_applied.get(key, 0) + 1
+        self.applied[result.side] += 1
 
     def step(self) -> None:
         """锁住非手部关节，然后推进 ``steps_per_frame`` 步物理。"""
@@ -349,13 +296,13 @@ class ThreeRobotHandScene:
             self._refresh_labels()
 
     def _refresh_labels(self) -> None:
-        """每 ``label_every`` 帧刷新头顶 3D 文字（机器人名 + 已写帧数 + 覆盖率）。"""
+        """每 ``label_every`` 帧刷新头顶 3D 文字（机器人名 + 已写命令数 + 原生维度）。"""
         p, cid = self.p, self.cid
         for index, robot in enumerate(self.robots):
             counts = "  ".join(f"{side[0].upper()}{self.applied[side]}"
                                for side in self.sides)
             self.label_ids[index] = p.addUserDebugText(
-                f"{robot['type'].upper()}  {counts}\n{robot['coverage']}",
+                f"{robot['type'].upper()}  {counts}\n{robot['hand_description']}",
                 robot["label_position"], textSize=1.1,
                 textColorRGB=LABEL_COLOR[robot["type"]], lifeTime=0,
                 replaceItemUniqueId=self.label_ids[index], physicsClientId=cid)
@@ -378,8 +325,8 @@ class ThreeRobotHandScene:
             plan = robot["plans"].get(side)
             if plan is None:
                 continue
-            mapping, names = plan
-            for _dim, joint_name, *_rest in mapping:
+            spec, names = plan
+            for joint_name in spec.joint_names:
                 values[f"{robot['type']}.{joint_name}"] = float(
                     p.getJointState(robot["body"], names[joint_name],
                                     physicsClientId=cid)[0])
@@ -394,15 +341,16 @@ class ThreeRobotHandScene:
             "sim_frames": self.frames,
             "applied_frames": dict(self.applied),
             "native_applied_frames": dict(getattr(self, "native_applied", {})),
-            "clipped_dimensions": dict(self.clipped),
             "ground_lift": dict(self.ground_lift),
             "robots": [
                 {"robot": robot["type"],
                  "layout_x": LAYOUT_X[robot["type"]],
-                 "coverage": robot["coverage"],
+                 "native_hands": {side: {"dof": spec.dof, "joint_names": list(spec.joint_names),
+                                          "spec_hash": spec.spec_hash}
+                                  for side, (spec, _names) in robot["plans"].items()},
                  "held_joints": len(robot["hold_ids"]),
-                 "mapped_joints": {side: len(mapping)
-                                   for side, (mapping, _n) in robot["plans"].items()}}
+                 "native_joints": {side: len(spec.joint_names)
+                                   for side, (spec, _n) in robot["plans"].items()}}
                 for robot in self.robots
             ],
         }

@@ -224,6 +224,47 @@ class ArmSolveStateTests(unittest.TestCase):
 
 @unittest.skipUnless(ASSETS_AVAILABLE and PYBULLET_AVAILABLE, "robot assets and PyBullet required")
 class ArmRealtimeLoopTests(unittest.TestCase):
+    def setUp(self):
+        from teleoperation.simulation import realtime_teleop as app
+        from tests.test_native_hand_replay import stub_camera_backend
+        backend = patch.object(app, 'build_camera_retargeter', side_effect=stub_camera_backend)
+        backend.start()
+        self.addCleanup(backend.stop)
+
+    def test_body_replay_commands_use_recorded_irregular_capture_times(self):
+        from dataclasses import replace
+        from types import SimpleNamespace
+        from teleoperation.simulation import realtime_teleop as app
+        from teleoperation.contracts.observations import CameraFrame
+        from teleoperation.data.body_recording import capture_sample, save_body_recording
+        from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
+        from tests.smplerx_fixtures import observation, METADATA
+        timeline = []
+        class AuditedCommands(JointCommandPipeline):
+            def update(self, result, timestamp=None):
+                timeline.append(timestamp)
+                return super().update(result, timestamp)
+            def missing(self, key, timestamp=None):
+                timeline.append(timestamp)
+                return super().missing(key, timestamp)
+        stamps = [10., 10.01, 10.04, 10.05, 10.12]
+        rows = []
+        for index, stamp in enumerate(stamps):
+            raw, result = observation(index)
+            raw = replace(raw, hands=replace(raw.hands, timestamp=stamp))
+            source = SimpleNamespace(session_id='camera', last_result=result,
+                last_frame=CameraFrame(np.zeros((4,5,3), dtype=np.uint8), stamp, index))
+            rows.append(capture_sample(source, raw))
+        with tempfile.TemporaryDirectory() as folder:
+            path = save_body_recording(Path(folder)/'body.h5', rows, METADATA)
+            args = build_parser().parse_args(['--input-body', str(path), '--no-arms',
+                '--robot', 'g1', '--headless', '--no-preview', '--print-every', '0'])
+            with patch.object(app, 'JointCommandPipeline', AuditedCommands), \
+                    patch.object(app, '_drain_in_background', side_effect=lambda action, label: action()), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(app.run(args), 0)
+        np.testing.assert_allclose(sorted(set(timeline)), stamps)
+
     def test_replay_loop_routes_both_wrist_orientations_and_keeps_fixed_physics(self):
         from teleoperation.simulation import realtime_teleop as app
         from tests.test_arm_realtime_bridge import arm, open_hand
@@ -235,7 +276,7 @@ class ArmRealtimeLoopTests(unittest.TestCase):
             write(capture, 18)
             args = build_parser().parse_args([
                 "--input-body", str(capture), "--report", str(report),
-                "--backend", "geometric", "--headless", "--no-preview",
+                "--backend", "dex", "--headless", "--no-preview",
                 "--no-collision-guard", "--arm-calibrate-frames", "1", "--print-every", "0",
                 "--arm-orientation", "auto"])
             with patch.object(app, "_drain_in_background", side_effect=lambda action, label: action()), \

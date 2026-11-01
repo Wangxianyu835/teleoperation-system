@@ -1,65 +1,44 @@
-"""Offline assembly of TRON2A arm IK and existing L21 hand angles."""
+"""Offline assembly of TRON2A arm IK and accepted native L21 hand commands."""
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
-import h5py
 import numpy as np
 
-from teleoperation.retargeting.arm.ik import ARM_DOF, RoboticsToolboxArmIK, load_arm_specification
-from teleoperation.retargeting.arm.calibration import ArmCalibration
-from teleoperation.retargeting.arm.retargeter import ArmRetargeter
-from teleoperation.retargeting.arm.safety import ArmSafetyController
+from teleoperation.retargeting.arm.ik import ARM_DOF
 from teleoperation.contracts.commands import Tron2AL21Command
-from teleoperation.retargeting.hand.angles import angle18_to_dofs
+from teleoperation.applications.dual import Tron2ADualArmController
+from teleoperation.data.command_h5 import _load_arm_observations, _load_hand_commands, write_robot_commands
 
 
-def export_robot_commands(observation_h5: str | Path, angle_h5: str | Path, calibration_path: str | Path, output_path: str | Path, urdf_path: str | Path) -> int:
-    frame_ids, timestamps, arms, arm_valid = _load_arm_observations(observation_h5)
+def export_robot_commands(observation_h5: str | Path, hand_joint_h5: str | Path, calibration_path: str | Path, output_path: str | Path, urdf_path: str | Path) -> int:
+    frame_ids, timestamps, _, _ = _load_arm_observations(observation_h5)
+    if not np.isfinite(timestamps).all() or np.any(np.diff(timestamps) <= 0):
+        raise ValueError("Observation timestamps must be finite strictly increasing seconds")
     from teleoperation.data.body_recording import load_body_recording, replay_observation
     observations = [replay_observation(row) for row in load_body_recording(observation_h5).samples]
-    angle_data = _load_hand_angles(angle_h5, frame_ids, timestamps)
-    for side in ("left", "right"):
-        angle_data[side + "_q"] = np.stack([angle18_to_dofs(angle) for angle in angle_data[side + "_angles"]])
-    calibration = ArmCalibration.load(calibration_path)
-    retargeter = ArmRetargeter(calibration, input_mode='smplerx')
-    solvers = {side: RoboticsToolboxArmIK(load_arm_specification(urdf_path, side)) for side in ("left", "right")}
-    controllers = {
-        side: ArmSafetyController(solvers[side].specification, calibration.safe_q[side], calibration.max_acceleration, calibration.tracking_timeout)
-        for side in ("left", "right")
-    }
-    output = _empty_output(frame_ids.shape[0])
-
+    hands = _load_hand_commands(hand_joint_h5, frame_ids, timestamps)
+    controller = Tron2ADualArmController(calibration_path, urdf_path, input_mode="smplerx")
+    output = _empty_output(len(frame_ids))
     for index, timestamp in enumerate(timestamps):
-        values = {}
-        for side in ("left", "right"):
-            observation = observations[index].upper_body
-            target = retargeter.update(observation, side)
-            ee_pose, observation_valid = target.pose, target.valid
-            result = solvers[side].solve(target, controllers[side].q, calibration.safe_q[side]) if observation_valid else None
-            solved = result is not None and result.success
-            q, command_valid = controllers[side].update(result.q if solved else None, solved, float(timestamp))
-            values[side] = (ee_pose, q, command_valid)
-            output[f"{side}_arm_ee_pose"][index] = ee_pose
-            output[f"{side}_arm_q"][index] = q
-            output[f"{side}_arm_valid"][index] = solved
-
+        raw = observations[index]
+        valid = controller.update(raw.upper_body, float(timestamp), raw.wrists)
         command = Tron2AL21Command(
             timestamp=float(timestamp),
-            left_arm=values["left"][1], left_hand=angle_data["left_q"][index],
-            right_arm=values["right"][1], right_hand=angle_data["right_q"][index],
-            left_arm_valid=values["left"][2], left_hand_valid=bool(angle_data["left_valid"][index]),
-            right_arm_valid=values["right"][2], right_hand_valid=bool(angle_data["right_valid"][index]),
+            left_arm=controller.controllers["left"].q.copy(), left_hand=hands["left_q"][index],
+            right_arm=controller.controllers["right"].q.copy(), right_hand=hands["right_q"][index],
+            left_arm_valid=valid["left"], left_hand_valid=bool(hands["left_valid"][index]),
+            right_arm_valid=valid["right"], right_hand_valid=bool(hands["right_valid"][index]),
         )
         output["robot_command"][index] = command.flatten()
         for side in ("left", "right"):
-            output[f"{side}_hand_q"][index] = getattr(command, f"{side}_hand")
-            output[f"{side}_hand_valid"][index] = getattr(command, f"{side}_hand_valid")
-
+            output[f"{side}_arm_ee_pose"][index] = controller.diagnostics[side]["target_pose"]
+            for kind in ("arm", "hand"):
+                output[f"{side}_{kind}_q"][index] = getattr(command, f"{side}_{kind}")
+                output[f"{side}_{kind}_valid"][index] = getattr(command, f"{side}_{kind}_valid")
     write_robot_commands(output_path, frame_ids, timestamps, output, urdf_path, calibration_path)
-    return frame_ids.shape[0]
+    return len(frame_ids)
 
 
 def _empty_output(frame_count: int) -> dict[str, np.ndarray]:
@@ -71,7 +50,3 @@ def _empty_output(frame_count: int) -> dict[str, np.ndarray]:
         data[f"{side}_arm_valid"] = np.zeros(frame_count, dtype=bool)
         data[f"{side}_hand_valid"] = np.zeros(frame_count, dtype=bool)
     return data
-
-
-from teleoperation.contracts.observations import UpperBodyObservation
-from teleoperation.data.command_h5 import _load_arm_observations, _load_hand_angles, write_robot_commands

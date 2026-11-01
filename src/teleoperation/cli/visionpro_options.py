@@ -19,7 +19,8 @@ def configure(parser):
     parser.add_argument("--hand-mapping", choices=("same",),
                         help="explicit same-side routing; required with --hand both")
     parser.add_argument("--scale-factor", type=float, default=1.0)
-    parser.add_argument("--scene", choices=("hands", "robots"), default="hands")
+    parser.add_argument("--scene", choices=("hands", "robots"), default="hands",
+                        help="TransHandR: hands only; dex: robots only")
     parser.add_argument("--frames", type=int, default=0, help="0 = until stream end or Ctrl+C")
     parser.add_argument("--fps", type=float, default=30., help="polling upper bound; 0 = unthrottled replay")
     parser.add_argument("--headless", action="store_true")
@@ -27,6 +28,6 @@ def configure(parser):
     parser.add_argument("--view", choices=("full", "front"), default="full")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--output-h5", type=Path,
-                        help="per-frame raw/native/command angles; default: report path with .h5 suffix")
+                        help="per-frame upstream raw18 and native17 diagnostics (TransHandR), or native joint results (dex); default: report path with .h5 suffix")
     add_hand_command_arguments(parser)
     return parser

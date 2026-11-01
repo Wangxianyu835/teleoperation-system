@@ -8,8 +8,8 @@
 显示器也能核对画面里到底是不是三台机器人、手指到底动没动"：
 
     1. 建 ``ThreeRobotHandScene``（与 ``--scene robots`` 完全同一个类）
-    2. 用一段合成 18 维角度（全开 -> 握拳）驱动三台机器人的原装手
-    3. 逐帧记录被映射关节的实际角度，检查它们真的转过 >= 0.05 rad
+    2. 用各目标原生独立关节命令驱动三台机器人的原装手
+    3. 逐帧记录原生关节的实际角度，检查它们真的转过 >= 0.05 rad
     4. 第 1 帧与最后一帧各渲染两张 PNG（iso / front），并比较像素差
 
 退出码：0 = 三台机器人全部加载 + 至少一台的原装手真的动了；1 = 否则。
@@ -45,18 +45,13 @@ MOVE_THRESHOLD = 0.05      # rad：判定"这根手指真的转过"
 HOLD_THRESHOLD = 0.05      # rad：被锁住的关节允许的最大漂移（超过就是"机器人自己歪了"）
 
 
-def synthetic_angles(t: float) -> np.ndarray:
-    """合成 18 维角度：t=0 全开，t=1 握拳（每维都落在 L21 限位内）。"""
-    values = np.zeros(18, dtype=np.float64)
-    for base in (1, 4, 7, 10):        # 食指 / 中指 / 无名指 / 小指
-        values[base + 1] = 1.20 * t   # mcp_pitch
-        values[base + 2] = 1.40 * t   # pip
-    values[13] = 0.30 * t             # thumb_cmc_roll
-    values[14] = 0.80 * t             # thumb_cmc_yaw
-    values[15] = 0.60 * t             # thumb_cmc_pitch
-    values[16] = 0.80 * t             # thumb_mcp
-    values[17] = 0.80 * t             # thumb_ip
-    return values
+def synthetic_result(spec, t: float, timestamp: float):
+    """Exercise each target's independent range and native mimic constraints."""
+    from teleoperation.contracts.hand_control import HandJointResult
+    bounds = spec.bounds
+    endpoint = np.where(np.abs(bounds[:, 1]) >= np.abs(bounds[:, 0]), bounds[:, 1], bounds[:, 0])
+    positions = spec.q_reference + 0.75 * t * (endpoint - spec.q_reference)
+    return HandJointResult(*spec.key, spec.spec_hash, spec.independent_joint_names, positions, timestamp)
 
 
 def render(p, scene, path: Path, yaw: float, pitch: float,
@@ -104,6 +99,8 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=540)
     args = parser.parse_args()
 
+    if args.frames < 2:
+        parser.error("--frames must be at least two")
     sides = tuple(part.strip() for part in args.sides.split(",") if part.strip())
     report = {"sides": list(sides), "frames": args.frames,
               "renderer": "ER_TINY_RENDERER", "move_threshold_rad": MOVE_THRESHOLD}
@@ -119,6 +116,9 @@ def main() -> int:
         report["camera"] = {"target": scene.camera_target,
                             "distance": scene.camera_distance}
 
+        from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
+        specs = {spec.key: spec for robot in scene.robots for spec, _names in robot["plans"].values()}
+        commands = JointCommandPipeline(specs, filter_mode="none", max_velocity=10.)
         screenshots = {}
         history = {side: [] for side in sides}
         held_start = {
@@ -129,9 +129,9 @@ def main() -> int:
         }
         last_index = max(args.frames - 1, 0)
         for index in range(args.frames):
-            angles = synthetic_angles(index / max(last_index, 1))
-            for side in sides:
-                scene.apply(side, angles)
+            for spec in specs.values():
+                result = synthetic_result(spec, index / max(last_index, 1), index / 30.)
+                scene.apply_native(commands.update(result, timestamp=index / 30.))
             scene.step()
             if index in (0, last_index):
                 for name, yaw, pitch in VIEWS:
@@ -152,7 +152,7 @@ def main() -> int:
             moving = sorted(name for name, delta in deltas.items()
                             if delta >= MOVE_THRESHOLD)
             movement[side] = {
-                "mapped_joints": len(deltas),
+                "native_joints": len(deltas),
                 "max_delta_rad": round(max(deltas.values()), 4) if deltas else 0.0,
                 "moving_joints": moving,
             }
@@ -177,7 +177,7 @@ def main() -> int:
         print(f"sim frames={scene.frames} elapsed={elapsed:.2f} s", flush=True)
         for side in sides:
             info = movement[side]
-            print(f"  {side}: mapped={info['mapped_joints']} joints  "
+            print(f"  {side}: native={info['native_joints']} joints  "
                   f"max_delta={info['max_delta_rad']:.4f} rad  "
                   f"moving={len(info['moving_joints'])}", flush=True)
             if info["moving_joints"]:

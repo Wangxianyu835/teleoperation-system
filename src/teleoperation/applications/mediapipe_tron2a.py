@@ -311,12 +311,12 @@ class CameraRunReport:
 
 
 def _runtime_configuration(args):
-    from teleoperation.contracts.checkpoints import validate_checkpoint_selection
     with_hands = getattr(args, "with_hands", False)
     if bool(args.arms_only) == bool(with_hands):
         raise ValueError("Select exactly one of --arms-only or --with-hands")
     paths = [getattr(args, name, None) for name in ("checkpoint", "left_checkpoint", "right_checkpoint")]
-    validate_checkpoint_selection(*paths, required=with_hands)
+    if any(path is not None for path in paths[1:]) or (with_hands and paths[0] is None):
+        raise ValueError("Camera hands require one shared --checkpoint; side checkpoints are unsupported")
     if with_hands and args.attach_hands is False:
         raise ValueError("--with-hands conflicts with --no-attach-hands")
     if args.attach_hands is None:
@@ -406,20 +406,19 @@ def run_camera(args):
         report = CameraRunReport(args)
         with_hands = getattr(args, "with_hands", False)
         if with_hands:
-            from .hand_realtime import load_palm_local_retargeter
-            from .hand_checkpoints import checkpoint_options, checkpoint_metadata, checkpoint_description
-            options = checkpoint_options(args)
-            options = {name: None if path is None else str(Path(path).resolve()) for name, path in options.items()}
-            model = load_palm_local_retargeter(device=args.device, landmark_space="world", **options)
+            from .dual import load_camera_hand_retargeter
+            from teleoperation.contracts.coordinates import palm_length_metadata
+            checkpoint = str(Path(args.checkpoint).resolve())
+            model = load_camera_hand_retargeter(checkpoint, args.device)
             teleoperator = DualTeleoperator(model, args.device, calibration, args.urdf,
-                                           input_mode="smplerx", orientation_mode=args.orientation_mode)
-            teleoperator.hand_model_labels = [f"{name}: {'/'.join(Path(path).parts[-4:])}"
-                                              for name, path in checkpoint_metadata(options).items()]
+                                           orientation_mode=args.orientation_mode)
+            teleoperator.hand_model_labels = [f"checkpoint: {'/'.join(Path(checkpoint).parts[-4:])}"]
             controller = teleoperator.arms
             window = "TRON2A camera dual arms and hands simulation"
-            report.data.update(hand_checkpoints=checkpoint_metadata(options), inference_device=str(args.device),
-                               hand_coordinate_alignment=model.coordinate_alignment, hand_landmark_space="world")
-            print(f"World hand model: {checkpoint_description(options)} device={args.device}", flush=True)
+            report.data.update(hand_checkpoints={"checkpoint": checkpoint}, inference_device=str(args.device),
+                               hand_coordinate_alignment=palm_length_metadata()['coordinate_alignment'],
+                               hand_input_profile=palm_length_metadata()['input_profile'], hand_landmark_space="world")
+            print(f"Native shared hand checkpoint: {checkpoint} device={args.device}", flush=True)
         else:
             controller = Tron2ADualArmController(calibration, args.urdf, input_mode="smplerx", orientation_mode=args.orientation_mode)
         report.data.update(orientation_mode=args.orientation_mode, attach_hands=args.attach_hands,

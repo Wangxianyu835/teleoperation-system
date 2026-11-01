@@ -46,7 +46,7 @@
 
 派生层调用 ``retargeting.hand.topology.visionpro_fingers_to_points`` 与
 ``ensure_hand25``，不做任何仓库之外的自创坐标变换，因此与
-``CanonicalHandProcessor`` 对同一帧的处理逐位一致。派生层**尚未做掌面到 L21
+专用 VR 预处理对同一帧的处理保持一致。派生层**尚未做掌面到 L21
 的旋转对齐**，所以不声明 ``coordinate_alignment``；文件名与属性都写明
 "unaligned"，避免被训练链路误读（契约规定未知来源必须报错，不许猜）。
 

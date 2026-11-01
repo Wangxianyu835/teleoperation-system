@@ -155,7 +155,7 @@ class VRInterfaceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "alignment mismatch"):
                     load_transhandr_vr_model(path)
 
-    def test_single_left_target_converts_native_angles_and_keeps_raw_diagnostic(self):
+    def test_single_left_target_converts_native_positions_and_keeps_raw_diagnostic(self):
         from teleoperation.retargeting.hand.angles import canonical_to_native_angles
         pipeline=TransHandRVisionProPipeline()
         for i in range(3): window=pipeline.process_window(observation(i))
@@ -255,13 +255,15 @@ class VRSameSideTests(unittest.TestCase):
                                               [False, False, True, True, True, True, True, True])
                 self.assertFalse(result["left_input_valid"][3])
                 self.assertTrue(result["left_input_valid"][4])  # Visible but still warming up.
+                self.assertEqual(result.attrs["schema"], "transhandr_vr_results_v2")
                 for side in ("left", "right"):
+                    self.assertEqual(result[side + "_command_positions"].shape, (8, 17))
                     valid = result[side + "_model_valid"][:]
                     raw = result[side + "_raw_angles"][:]
-                    native = result[side + "_native_angles"][:]
-                    np.testing.assert_array_equal(native[valid], canonical_to_native_angles(raw[valid], side))
+                    native = result[side + "_native_positions"][:]
+                    np.testing.assert_array_equal(native[valid], canonical_to_native_angles(raw[valid], side)[:, 1:])
                     self.assertTrue(np.isnan(raw[~valid]).all())
-                    self.assertTrue(np.isfinite(result[side + "_command_angles"][:]).all())
+                    self.assertTrue(np.isfinite(result[side + "_command_positions"][:]).all())
                 # Independently compute both routes through the original single-side predictor.
                 pipeline = TransHandRVisionProPipeline()
                 replay = VisionProReplayInput(source, "both")
@@ -277,8 +279,8 @@ class VRSameSideTests(unittest.TestCase):
                 finally:
                     replay.close()
                 self.assertFalse(np.array_equal(result["left_raw_angles"][2], result["right_raw_angles"][2]))
-                held = result["left_command_angles"][2]
-                np.testing.assert_array_equal(result["left_command_angles"][3:6], np.tile(held, (3, 1)))
+                held = result["left_command_positions"][2]
+                np.testing.assert_array_equal(result["left_command_positions"][3:6], np.tile(held, (3, 1)))
 
     def test_recording_clock_makes_both_sides_independent_of_playback_rate(self):
         from teleoperation.applications.visionpro_hand import main
@@ -295,10 +297,10 @@ class VRSameSideTests(unittest.TestCase):
             with h5py.File(folder / "result0.h5") as fast, h5py.File(folder / "result30.h5") as slow:
                 for side in ("left", "right"):
                     for stage in ("raw", "native", "command"):
-                        name = f"{side}_{stage}_angles"
+                        name = f"{side}_raw_angles" if stage == "raw" else f"{side}_{stage}_positions"
                         np.testing.assert_array_equal(fast[name][:], slow[name][:])
-                self.assertGreater(np.max(np.abs(np.diff(fast["right_command_angles"][:], axis=0))), 0)
-                self.assertLessEqual(np.max(np.abs(np.diff(fast["right_command_angles"][:], axis=0))), .05 + 1e-12)
+                self.assertGreater(np.max(np.abs(np.diff(fast["right_command_positions"][:], axis=0))), 0)
+                self.assertLessEqual(np.max(np.abs(np.diff(fast["right_command_positions"][:], axis=0))), .05 + 1e-12)
 
     def test_invalid_routes_and_output_paths_fail_before_model_or_scene(self):
         from teleoperation.applications.visionpro_hand import main
@@ -306,7 +308,7 @@ class VRSameSideTests(unittest.TestCase):
             folder = Path(directory)
             source, report = folder / "input.h5", folder / "result.json"
             self.write_recording(source)
-            variants = (["--hand-mapping", "same", "--hand", "left"],
+            variants = (["--scene", "robots"], ["--hand-mapping", "same", "--hand", "left"],
                         ["--source-hand", "right"], ["--output-h5", str(source)],
                         ["--report", str(source)])
             for options in variants:

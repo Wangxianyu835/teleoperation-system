@@ -30,11 +30,10 @@ def main():
     aligned=args.work_dir/'aligned.h5'
     result=args.work_dir/'joint_results.h5'
     models=args.work_dir/'models'
-    checkpoint=training_run_directory(models,args.hand_model,args.hand,PALM_LENGTH_PROFILE,args.run_name)/'model_best.pth'
+    checkpoint=training_run_directory(models,args.hand_model,'shared',PALM_LENGTH_PROFILE,args.run_name)/'model_best.pth'
     commands=[
         ['hand','align','--input',args.raw,'--output',aligned,'--landmark-space','world'],
-        ['hand','train','--input',aligned,'--hand-model',args.hand_model,'--hand-side',args.hand,
-         '--run-name',args.run_name,'--checkpoint-root',models,'--epochs',args.epochs,
+        ['hand','train','--input',aligned,'--hand-model',args.hand_model,'--run-name',args.run_name,'--checkpoint-root',models,'--epochs',args.epochs,
          '--batch-size',args.batch_size,'--device',args.device],
         ['hand','export','--input',aligned,'--output',result,'--hand-model',args.hand_model,
          '--hand',args.hand,'--backend','nn','--checkpoint',checkpoint,'--device',args.device],

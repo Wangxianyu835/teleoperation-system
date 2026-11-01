@@ -3,8 +3,6 @@ from numbers import Real
 
 COORDINATE_FRAME = "l21"
 COORDINATE_ALIGNMENT = "source_to_l21_xyz"
-LEGACY_PALM_LOCAL_ALIGNMENT = "palm_local_to_l21_v1"
-LEGACY_WORLD_PALM_LOCAL_ALIGNMENT = "mediapipe_world_palm_local_to_l21_v1"
 PALM_LOCAL_COORDINATE_ALIGNMENT = "palm_local_to_l21_v2"
 WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT = "mediapipe_world_wrist_index_middle_canonical_right_v1"
 CANONICAL_HAND_FRAME = "hand_canonical_right"
@@ -15,7 +13,6 @@ PALM_LENGTH_PROFILE = "camera_palm_length_window3_v1"
 PALM_LENGTH_ALIGNMENT = "mediapipe_world_wrist_index_middle_canonical_right_palm_length_window3_v1"
 SUPPORTED_COORDINATE_ALIGNMENTS = frozenset({
     COORDINATE_ALIGNMENT, PALM_LOCAL_COORDINATE_ALIGNMENT, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
-    LEGACY_PALM_LOCAL_ALIGNMENT, LEGACY_WORLD_PALM_LOCAL_ALIGNMENT,
     PALM_LENGTH_ALIGNMENT,
 })
 
@@ -67,7 +64,7 @@ WORLD_PALM_LOCAL_METADATA = {
 
 
 def is_world_alignment(alignment: str) -> bool:
-    return alignment in (WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, LEGACY_WORLD_PALM_LOCAL_ALIGNMENT)
+    return alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
 
 
 def coordinate_frame_for_alignment(alignment: str) -> str:
@@ -115,7 +112,7 @@ def validate_landmark_contract(alignment, metadata, context):
             if isinstance(value, bytes): value = value.decode("utf-8")
             if value != WORLD_PALM_LOCAL_METADATA[name]:
                 raise ValueError(f"{context} must declare {name}={WORLD_PALM_LOCAL_METADATA[name]!r}; got {value!r}")
-    elif alignment in (PALM_LOCAL_COORDINATE_ALIGNMENT, LEGACY_PALM_LOCAL_ALIGNMENT):
+    elif alignment == PALM_LOCAL_COORDINATE_ALIGNMENT:
         # Historical normalized checkpoints may omit provenance.
         space = metadata.get("source_landmark_space", NORMALIZED_LANDMARK_SPACE)
         if isinstance(space, bytes):

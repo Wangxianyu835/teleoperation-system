@@ -1,6 +1,6 @@
 """Vector optimization through the shared target-native result interface.
 
-Camera and VR profiles are explicit. The VR extraction follows the local
+Camera uses palm-length windows; fixed calibration is exclusive to VR. The VR extraction follows the local
 TransHandR reference; its existing model pipeline is never modified here.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from teleoperation.retargeting.hand.interface import HandRetargeter
 from teleoperation.robots.hand_spec import load_hand_spec
 
 SIDES = ("left", "right")
-PROFILES = {"camera": "dex_camera_world_v1", "visionpro": "dex_visionpro_palm_v2"}
+PROFILES = {"visionpro": "dex_visionpro_palm_v2"}
 VECTOR_PARAMETERS = {"upstream_version": "0.5.0", "type": "vector", "scaling": 1.,
     "norm_delta": 0., "huber_delta": .02, "ftol_abs": 1e-6, "xtol_abs": 1e-6,
     "maxeval": 100, "internal_lowpass": False, "native_limit_epsilon": 0.,
@@ -31,11 +31,8 @@ VECTOR_PARAMETERS = {"upstream_version": "0.5.0", "type": "vector", "scaling": 1
 class DexInputAdapter:
     def __init__(self, source):
         if source not in PROFILES:
-            raise ValueError("Dex input must be camera or visionpro")
+            raise ValueError("Fixed-calibration dex input must be visionpro; camera uses palm-length windows")
         self.source = source
-        if source == "camera":
-            from teleoperation.retargeting.hand.processing import MediaPipePalmLocalProcessor
-            self.processor = MediaPipePalmLocalProcessor("world")
 
     def adapt(self, observation):
         if not isinstance(observation, RawHandFrame):
@@ -44,36 +41,30 @@ class DexInputAdapter:
             raise ValueError("Dex timestamps must explicitly be finite seconds")
         if "coordinate_alignment" in observation.metadata:
             raise ValueError("Dex adapter requires raw observations, not aligned points")
-        if self.source == "camera":
-            if observation.source not in ("mediapipe", "mediapipe_approx"):
-                raise ValueError("Camera dex adapter requires MediaPipe observations")
-            result = self.processor.process_frame(observation)
-            hands, reasons = result.hands, dict(result.invalid_reasons)
-        else:
-            from teleoperation.applications.visionpro_processing import transhandr_vr_points
-            if observation.source != "visionpro":
-                raise ValueError("VR dex adapter requires source=visionpro")
-            hands, reasons = {}, {}
-            for side in SIDES:
-                value = observation.hands[side]
-                hands[side], reasons[side] = None, "missing"
-                if value is None:
-                    continue
-                if observation.geometry_encoding.get(side) != "transforms25":
-                    raise ValueError("VR dex requires explicit transforms25 encoding")
-                try:
-                    relative = transhandr_vr_points(value, side)
-                    # Upstream's left-to-right L21 remap has determinant -1.
-                    # The native left URDF needs anatomical handedness restored
-                    # BEFORE fitting a proper palm rotation. This belongs only
-                    # to the new dex profile, never the upstream model route.
-                    if side == "left":
-                        relative = relative @ np.diag([-1., 1., 1.])
-                    basis = build_palm_basis(relative, (0, 6, 11))
-                    hands[side] = (relative @ basis @ OPERATOR_TO_CANONICAL[side]).astype(np.float32)
-                    reasons[side] = None
-                except (ValueError, np.linalg.LinAlgError) as error:
-                    reasons[side] = str(error)
+        from teleoperation.applications.visionpro_processing import transhandr_vr_points
+        if observation.source != "visionpro":
+            raise ValueError("VR dex adapter requires source=visionpro")
+        hands, reasons = {}, {}
+        for side in SIDES:
+            value = observation.hands[side]
+            hands[side], reasons[side] = None, "missing"
+            if value is None:
+                continue
+            if observation.geometry_encoding.get(side) != "transforms25":
+                raise ValueError("VR dex requires explicit transforms25 encoding")
+            try:
+                relative = transhandr_vr_points(value, side)
+                # Upstream's left-to-right L21 remap has determinant -1.
+                # The native left URDF needs anatomical handedness restored
+                # BEFORE fitting a proper palm rotation. This belongs only
+                # to the new dex profile, never the upstream model route.
+                if side == "left":
+                    relative = relative @ np.diag([-1., 1., 1.])
+                basis = build_palm_basis(relative, (0, 6, 11))
+                hands[side] = (relative @ basis @ OPERATOR_TO_CANONICAL[side]).astype(np.float32)
+                reasons[side] = None
+            except (ValueError, np.linalg.LinAlgError) as error:
+                reasons[side] = str(error)
         metadata = {"dex_input_profile": PROFILES[self.source], "units": "m", "origin": "wrist",
                     "coordinate_frame": "dex_canonical_hand", "invalid_reasons": reasons,
                     "timestamp_unit": "seconds"}

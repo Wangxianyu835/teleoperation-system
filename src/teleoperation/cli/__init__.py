@@ -3,7 +3,6 @@ import argparse
 from importlib import import_module
 import sys
 from .registry import COMMANDS
-from .checkpoints import CheckpointArgumentParser
 
 
 def _configure_utf8_stdio():
@@ -19,7 +18,7 @@ def _configure_utf8_stdio():
 
 def build_parser():
     from . import schemas
-    parser = CheckpointArgumentParser(prog="python -m teleoperation")
+    parser = argparse.ArgumentParser(prog="python -m teleoperation")
     groups = parser.add_subparsers(dest="group", required=True)
     commands = {}
     for group, name, configure, handler in COMMANDS:

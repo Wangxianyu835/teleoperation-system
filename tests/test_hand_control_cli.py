@@ -33,7 +33,7 @@ class HandControlCLITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             weights=Path(directory)/'target.pth'
             spec=load_hand_spec('l21','right')
-            save_joint_checkpoint(weights,joint_checkpoint_payload(build_joint_model(spec,SMALL),spec))
+            save_joint_checkpoint(weights,shared_joint_checkpoint_payload(build_joint_model(spec,SMALL),spec))
             scene=MagicMock(); scene.alive.return_value=False
             scene.joint_values.return_value=spec.expand(spec.q_reference)
             with patch('importlib.import_module',side_effect=importing), \
@@ -75,7 +75,7 @@ class HandControlCLITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); weights=root/'target.pth'; output=root/'live.h5'
             spec=load_hand_spec('l21','right')
-            save_joint_checkpoint(weights,joint_checkpoint_payload(build_joint_model(spec,SMALL),spec))
+            save_joint_checkpoint(weights,shared_joint_checkpoint_payload(build_joint_model(spec,SMALL),spec))
             from unittest.mock import MagicMock
             camera=MagicMock()
             camera.__enter__.return_value=camera
@@ -126,7 +126,7 @@ class HandControlCLITests(unittest.TestCase):
             align_h5(raw,data)
             spec = load_hand_spec('l21','right')
             model = build_joint_model(spec,SMALL)
-            save_joint_checkpoint(weights,joint_checkpoint_payload(model,spec))
+            save_joint_checkpoint(weights,shared_joint_checkpoint_payload(model,spec))
             self.assertEqual(main(['hand','export','--input',str(data),'--output',str(output),
                                    '--hand-model','l21','--backend','nn','--hand','right','--checkpoint',str(weights)]),0)
             with h5py.File(output,'r') as stream:

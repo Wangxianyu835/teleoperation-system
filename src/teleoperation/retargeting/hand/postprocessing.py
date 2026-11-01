@@ -610,13 +610,3 @@ def compare_methods(seq, methods, jump_threshold=0.3, fps=None,
         disp = labels.get(name, name) if labels else name
         rows.append((disp, motion_metrics(out, jump_threshold, fps)))
     return rows
-
-
-def hold_angle_frames(frames):
-    """Existing canonical replay validity/hold behavior, after persistence."""
-    from teleoperation.contracts.hand import AngleFrame
-    previous = {side: np.zeros(18, dtype=np.float32) for side in ("left", "right")}
-    for frame in frames:
-        for side in ("left", "right"):
-            if getattr(frame, side + "_valid"): previous[side] = getattr(frame, side).copy()
-        yield AngleFrame(frame.frame_id, frame.timestamp, previous["left"].copy(), previous["right"].copy(), frame.left_valid, frame.right_valid)

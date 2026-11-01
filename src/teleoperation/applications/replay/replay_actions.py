@@ -7,7 +7,7 @@
     python -m teleoperation replay actions --dummy --robot h1_2 --task pushcube --no-render
 
     # ② 导出「契约H 示例文件」给队友A 照着写
-    python -m teleoperation replay actions --dummy --save-actions datasets/samples/actions_demo_h1_2.h5
+    python -m teleoperation replay actions --dummy --save-actions outputs/actions_h1_2.h5
 
     # ③ 回放真实数据
     python -m teleoperation replay actions --file datasets/actions/pushcube_h1_2.h5

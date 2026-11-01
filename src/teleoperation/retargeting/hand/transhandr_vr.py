@@ -6,7 +6,7 @@ import torch
 
 from teleoperation.contracts.coordinates import COORDINATE_ALIGNMENT
 from teleoperation.contracts.hand import HandWindow
-from .angles import canonical_to_native_angles, l21_joint_result
+from .angles import canonical_to_native_angles
 from teleoperation.data.checkpoint import read_checkpoint
 from teleoperation.retargeting.hand.config import L21
 from teleoperation.retargeting.hand.interface import HandRetargeter
@@ -70,4 +70,18 @@ Source and destination are explicit so those two meanings cannot be confused.
                 raise ValueError("VR model must output 18 finite angles")
             self.last_raw_angles = result.copy()
             hands[self.target_side] = canonical_to_native_angles(result, self.target_side)
-        return {("l21", side): l21_joint_result(side, hands[side], window.timestamp) for side in ("left", "right")}
+        return {("l21", side): _upstream_joint_result(side, hands[side], window.timestamp) for side in ("left", "right")}
+
+
+def _upstream_joint_result(side, angles, timestamp):
+    """Adapt TransHandR's fixed-root 18 values at the private VR boundary."""
+    from teleoperation.contracts.hand_control import HandJointResult
+    from teleoperation.robots.hand_spec import load_hand_spec
+    spec = load_hand_spec('l21', side)
+    if angles is not None:
+        angles = np.asarray(angles)
+        if angles.shape != (18,) or not np.isfinite(angles).all():
+            raise ValueError('Upstream VR model requires 18 finite values')
+    return HandJointResult('l21', side, spec.spec_hash, spec.independent_joint_names,
+                           None if angles is None else angles[1:].copy(), timestamp,
+                           angles is not None, 'missing VR window' if angles is None else None)

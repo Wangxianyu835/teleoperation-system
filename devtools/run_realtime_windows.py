@@ -334,8 +334,9 @@ def main(argv: list[str]) -> int:
     if check:
         return run_check(want_window=wants_window(argv))
 
-    from teleoperation.applications.realtime_hand_sim import PREVIEW_WINDOW, build_parser
-    from teleoperation.applications.realtime_hand_sim import main as sim_main
+    from teleoperation.applications.realtime_hand_sim import PREVIEW_WINDOW
+    from teleoperation.simulation.realtime_teleop import build_parser
+    from teleoperation.simulation.realtime_teleop import main as sim_main
 
     log("INFO", f"interpreter : {sys.executable}")
     log("INFO", f"repo root   : {ROOT}")
@@ -346,7 +347,7 @@ def main(argv: list[str]) -> int:
         log("WARN", f"cv2 window support: {gui_detail}")
         log("INFO", "PyBullet 窗口照常显示，但摄像头窗口不会出现：用 E: 的解释器重跑")
 
-    extra = list(argv)
+    extra = ["--no-arms", *argv]
     report: "Path | None" = None
     if not any(item == "--report" or item.startswith("--report=") for item in extra):
         REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -360,10 +361,7 @@ def main(argv: list[str]) -> int:
     if getattr(args, "preview_window_pos", None) is not None:
         log("INFO", f"the camera window is moved to {args.preview_window_pos} and kept "
                     f"on top; look for the window titled {PREVIEW_WINDOW!r}")
-    if getattr(args, "backend", "auto") != "checkpoint":
-        log("INFO", f"backend={getattr(args, 'backend', 'auto')} is weight-free: hold your "
-                    f"hand open for about {getattr(args, 'calibration_frames', 15)} frames "
-                    f"so it can calibrate")
+    log('INFO', f"native target hand backend={args.backend}; each robot uses its own joint specification")
     status = int(sim_main(args))
     if report is not None:
         summarise_camera_window(report, want_window=wants_window(argv))

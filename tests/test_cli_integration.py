@@ -13,13 +13,19 @@ from unittest import mock
 import numpy as np
 
 from teleoperation.cli import build_parser, main
-from teleoperation.paths import DEFAULT_REALTIME_SNAPSHOT, PROJECT_ROOT
-from teleoperation.retargeting.hand.predictor import TwoHandRetargeter
-from tests.test_coordinate_pipeline import CountingModel
-from tests.test_mediapipe_realtime import raw_frame
+from teleoperation.paths import PROJECT_ROOT
 
 
 class CliIntegrationTests(unittest.TestCase):
+    def test_dual_realtime_keeps_the_typed_native_observation_entry(self):
+        args = build_parser().parse_args([
+            'dual', 'realtime', '--adapter', 'module:factory',
+            '--calibration', 'calibration.json', '--checkpoint', 'shared.pth',
+        ])
+        self.assertEqual(args._handler, 'teleoperation.applications.dual_realtime:main')
+        self.assertEqual(args.checkpoint, Path('shared.pth'))
+        self.assertFalse(hasattr(args, 'hand_preprocessing'))
+
     def test_dual_camera_exposes_isolated_smplerx_worker_options(self):
         args = build_parser().parse_args([
             "dual", "camera", "--arms-only", "--calibration", "calibration.json",
@@ -39,7 +45,7 @@ class CliIntegrationTests(unittest.TestCase):
             env={**os.environ, "PYTHONPATH": str(PROJECT_ROOT / "src")},
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        for name in ("train", "export", "inspect", "align", "realtime"):
+        for name in ("train", "export", "inspect", "align", "control", "vr"):
             self.assertIn(name, result.stdout)
 
     def test_selected_command_only_is_configured_and_parser_can_be_reused(self):
@@ -53,99 +59,30 @@ class CliIntegrationTests(unittest.TestCase):
             parser.parse_args(["hand", "inspect", "--angle-h5", "angles.h5"])
             imports.assert_not_called()
 
-    def test_realtime_invalid_options_fail_before_loading_or_capture(self):
-        for options in (
-            ["--frames", "0"], ["--frames", "-1"], ["--headless"],
-            ["--visualize", "--headless", "--frames", "0"],
-            ["--visualize", "--palm-radius", "nan"],
-            ["--visualize", "--robot-radius", "0"],
-            ["--visualize", "--snapshot", "bad.jpg"],
-        ):
-            with self.subTest(options=options), mock.patch("teleoperation.applications.hand_realtime.MediaPipeCameraInput") as capture, \
-                    mock.patch("teleoperation.applications.hand_realtime.load_palm_local_retargeter") as load:
-                with self.assertRaises(ValueError):
-                    main(["hand", "realtime", *options])
-                capture.assert_not_called()
-                load.assert_not_called()
+    def test_removed_commands_fail_during_argument_parsing(self):
+        for route in (("hand", "realtime"), ("replay", "canonical"), ("replay", "npy")):
+            with self.subTest(route=route), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    build_parser().parse_args(list(route))
+                self.assertEqual(error.exception.code, 2)
 
-    def _capture(self):
-        capture = mock.Mock()
-        sequence = [raw_frame(index, left=index != 3) for index in range(7)]
-        for index, frame in enumerate(sequence):
-            frame["timestamp"] = 1_700_000_000_000 + index * 33
-        capture.next_observation.side_effect = [RawHandFrame({side: frame[side] for side in ("left", "right")}, frame["timestamp"], "mediapipe_approx", frame.get("metadata", {})) for frame in sequence]
-        return capture
+    def test_removed_sample_tool_and_normalized_record_route_are_rejected(self):
+        for route in (['tools','make-sample-data'], ['hand','record','--landmark-space','normalized']):
+            with self.subTest(route=route), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    build_parser().parse_args(route)
+                self.assertEqual(error.exception.code,2)
 
-    def test_console_realtime_executes_windows_resets_and_releases_capture(self):
-        capture = self._capture()
-        model = CountingModel()
-        with mock.patch("teleoperation.applications.hand_realtime.MediaPipeCameraInput", return_value=capture), \
-                mock.patch("teleoperation.applications.hand_realtime.load_palm_local_retargeter", return_value=TwoHandRetargeter(model)), \
-                contextlib.redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(main(["hand", "realtime", "--landmark-space", "normalized", "--frames", "7"]), 0)
-        capture.close.assert_called_once()
-        self.assertEqual(capture.next_observation.call_count, 7)
-        self.assertEqual(model.forward_calls, 7)  # left: 2; right: 5
-        self.assertIn("recovery_after_3_valid_frames", output.getvalue())
-        self.assertIn("window=(3, 25, 3)", output.getvalue())
-        self.assertIn("angles=(17,)", output.getvalue())
+    def test_native_routes_require_explicit_target_and_backend(self):
+        parser = build_parser()
+        for command in ("control", "export"):
+            extra = ["--input", "input.h5", "--output", "result.h5"] if command == "export" else []
+            with self.subTest(command=command), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    parser.parse_args(["hand", command, *extra])
+            args = parser.parse_args(["hand", command, "--hand-model", "l21", "--backend", "nn", *extra])
+            self.assertEqual(args.hand_model, "l21")
+            self.assertEqual(args.backend, "nn")
 
-    def test_headless_visualization_uses_shared_plotting_and_saves_png(self):
-        try:
-            import cv2
-            import teleoperation.applications.hand_visualization as visualization
-        except ModuleNotFoundError as error:
-            self.skipTest(f"Optional visualization dependency unavailable: {error}")
-        capture = self._capture()
-        model = CountingModel()
-        with tempfile.TemporaryDirectory() as directory:
-            image = Path(directory) / "snapshot.png"
-            with mock.patch("teleoperation.applications.hand_realtime.MediaPipeCameraInput", return_value=capture), \
-                    mock.patch.object(visualization, "load_palm_local_retargeter", return_value=TwoHandRetargeter(model)), \
-                    mock.patch.object(cv2, "namedWindow", side_effect=AssertionError("headless opened GUI")), \
-                    contextlib.redirect_stdout(io.StringIO()) as output:
-                self.assertEqual(main([
-                    "hand", "realtime", "--landmark-space", "normalized", "--visualize", "--headless", "--frames", "7", "--snapshot", str(image),
-                ]), 0)
-            self.assertTrue(image.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
-            decoded = cv2.imdecode(np.fromfile(str(image), dtype=np.uint8), cv2.IMREAD_COLOR)
-            self.assertEqual(decoded.shape, (740, 1260, 3))
-        capture.close.assert_called_once()
-        self.assertEqual(model.forward_calls, 7)
-        self.assertIn("'left': 2", output.getvalue())
-        self.assertIn("'right': 5", output.getvalue())
-        self.assertEqual(__import__("teleoperation.tools.plotting", fromlist=["project"]).project.__module__, "teleoperation.tools.plotting")
-
-    def test_realtime_capture_failure_returns_failure_and_releases(self):
-        capture = mock.Mock()
-        capture.next_observation.side_effect = RuntimeError("synthetic capture failure")
-        with mock.patch("teleoperation.applications.hand_realtime.MediaPipeCameraInput", return_value=capture), \
-                mock.patch("teleoperation.applications.hand_realtime.load_palm_local_retargeter", return_value=TwoHandRetargeter(CountingModel())), \
-                contextlib.redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(main(["hand", "realtime", "--frames", "1"]), 1)
-        self.assertTrue(capture.close.called)
-        self.assertIn("synthetic capture failure", output.getvalue())
-
-    def test_visualization_s_shortcut_keeps_default_snapshot_after_move(self):
-        try:
-            import cv2
-            import teleoperation.applications.hand_visualization as visualization
-        except ModuleNotFoundError as error:
-            self.skipTest(f"Optional visualization dependency unavailable: {error}")
-        capture = self._capture()
-        with contextlib.ExitStack() as stack:
-            stack.enter_context(mock.patch("teleoperation.applications.hand_realtime.MediaPipeCameraInput", return_value=capture))
-            stack.enter_context(mock.patch.object(visualization, "load_palm_local_retargeter", return_value=TwoHandRetargeter(CountingModel())))
-            for name in ("namedWindow", "resizeWindow", "imshow", "destroyAllWindows"):
-                stack.enter_context(mock.patch.object(cv2, name))
-            stack.enter_context(mock.patch.object(cv2, "waitKey", return_value=ord("s")))
-            stack.enter_context(mock.patch.object(cv2, "getWindowProperty", return_value=1))
-            save = stack.enter_context(mock.patch.object(visualization, "save_png"))
-            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
-            self.assertEqual(main(["hand", "realtime", "--landmark-space", "normalized", "--visualize", "--frames", "1"]), 0)
-            self.assertEqual(save.call_count, 1)
-            self.assertEqual(save.call_args.args[0], DEFAULT_REALTIME_SNAPSHOT)
-            cv2.destroyAllWindows.assert_called_once()
-        capture.close.assert_called_once()
-
-from teleoperation.contracts.observations import RawHandFrame
+if __name__ == "__main__":
+    unittest.main()

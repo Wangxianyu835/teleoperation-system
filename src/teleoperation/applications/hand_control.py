@@ -5,7 +5,6 @@ import time
 
 import numpy as np
 
-from teleoperation.cli.hand_joint_options import LEGACY_WORLD_PROFILE, LEGACY_NORMALIZED_PROFILE
 from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE, palm_length_metadata, palm_local_metadata
 from teleoperation.contracts.hand import HandWindow
 from teleoperation.data.hand_joint_recording import HandJointResultWriter, iter_joint_commands
@@ -19,80 +18,28 @@ def _sides(hand):
 
 
 def _selection(args):
-    """Validate weights and preprocessing before any device or GUI is opened."""
+    """Validate native target weights before opening a device or GUI."""
+    from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
     from teleoperation.retargeting.hand.device import resolve_device
+    if args.input_profile != PALM_LENGTH_PROFILE:
+        raise ValueError('Camera control requires camera_palm_length_window3_v1')
     sides = _sides(args.hand)
-    specs = {(args.hand_model,s):load_hand_spec(args.hand_model,s) for s in sides}
-    paths = (args.checkpoint,args.left_checkpoint,args.right_checkpoint)
-    if args.backend != 'nn' and any(p is not None for p in paths):
-        raise ValueError('Checkpoint arguments only apply to --backend nn')
+    specs = {(args.hand_model, side): load_hand_spec(args.hand_model, side) for side in sides}
     if args.backend == 'dex':
-        if args.input_profile != PALM_LENGTH_PROFILE:
-            raise ValueError('Camera dex requires the palm-length input profile; use hand vr for calibrated VR')
+        if any(getattr(args, name, None) is not None for name in ('checkpoint', 'left_checkpoint', 'right_checkpoint')):
+            raise ValueError('Checkpoint arguments only apply to --backend nn')
         from teleoperation.retargeting.hand.dex_native import NormalizedDexRetargeter
-        retargeter = NormalizedDexRetargeter([args.hand_model],sides)
-    elif args.backend == 'geometric':
-        if args.hand_model != 'l21' or args.input_profile != LEGACY_NORMALIZED_PROFILE:
-            raise ValueError('Geometric supports L21 with --input-profile legacy_l21_normalized')
-        from teleoperation.retargeting.hand.geometric import GeometricHandRetargeter
-        retargeter = GeometricHandRetargeter()
-    elif args.input_profile == PALM_LENGTH_PROFILE:
-        from teleoperation.retargeting.hand.checkpoint import (
-            load_joint_checkpoint,
-            load_shared_joint_checkpoint,
-        )
-        from teleoperation.retargeting.hand.interface import (
-            JointNNRetargeter,
-            SharedJointNNRetargeter,
-        )
-        if args.hand == 'both':
-            if args.checkpoint is not None and args.left_checkpoint is None and args.right_checkpoint is None:
-                device = resolve_device(args.device)
-                canonical_spec = load_hand_spec(args.hand_model, 'right')
-                model, _ = load_shared_joint_checkpoint(args.checkpoint, canonical_spec, device)
-                return specs, SharedJointNNRetargeter(specs, model, device, canonical_spec=canonical_spec)
-            if args.checkpoint is not None or args.left_checkpoint is None or args.right_checkpoint is None:
-                raise ValueError('Dual-side NN requires one shared --checkpoint or both side checkpoints')
-            selected = {'left':args.left_checkpoint,'right':args.right_checkpoint}
-        else:
-            if args.checkpoint is None or args.left_checkpoint is not None or args.right_checkpoint is not None:
-                raise ValueError('Single-side NN requires exactly --checkpoint')
-            device = resolve_device(args.device)
-            canonical_spec = load_hand_spec(args.hand_model, 'right')
-            try:
-                model, _ = load_shared_joint_checkpoint(args.checkpoint, canonical_spec, device)
-            except ValueError as shared_error:
-                model, _ = load_joint_checkpoint(args.checkpoint, specs[(args.hand_model, args.hand)], device)
-                return specs, JointNNRetargeter(
-                    specs, {(args.hand_model, args.hand): model}, device,
-                )
-            else:
-                return specs, SharedJointNNRetargeter(
-                    specs, model, device, canonical_spec=canonical_spec,
-                )
-        device = resolve_device(args.device)
-        models = {key:load_joint_checkpoint(selected[key[1]],spec,device)[0] for key,spec in specs.items()}
-        retargeter = JointNNRetargeter(specs,models,device)
-    else:
-        if args.hand_model != 'l21':
-            raise ValueError('Legacy NN checkpoints only support the L21 target')
-        if not any(p is not None for p in paths):
-            raise ValueError('Legacy NN requires explicit checkpoint selection')
-        if args.hand != 'both' and (args.checkpoint is None or args.left_checkpoint is not None or args.right_checkpoint is not None):
-            raise ValueError('Single-side legacy NN requires exactly --checkpoint')
-        from teleoperation.applications.hand_realtime import load_palm_local_retargeter
-        from teleoperation.retargeting.hand.interface import PoseTransformerRetargeter
-        device = resolve_device(args.device)
-        space = 'world' if args.input_profile == LEGACY_WORLD_PROFILE else 'normalized'
-        model = load_palm_local_retargeter(args.checkpoint,device,left_checkpoint=args.left_checkpoint,
-                                         right_checkpoint=args.right_checkpoint,landmark_space=space)
-        if args.hand == 'both' and args.checkpoint is not None:
-            from teleoperation.data.checkpoint import read_checkpoint
-            metadata = read_checkpoint(args.checkpoint,'cpu')
-            if metadata.get('hand_side') != 'shared':
-                raise ValueError('One checkpoint for both targets requires explicit shared-side metadata')
-        retargeter = PoseTransformerRetargeter(model,device)
-    return specs, retargeter
+        return specs, NormalizedDexRetargeter([args.hand_model], sides)
+    if args.backend != 'nn':
+        raise ValueError('Camera hand backend must be nn or dex')
+    if args.checkpoint is None or any(getattr(args, name, None) is not None for name in ('left_checkpoint', 'right_checkpoint')):
+        raise ValueError('NN requires exactly one shared --checkpoint for the selected target')
+    from teleoperation.retargeting.hand.checkpoint import load_shared_joint_checkpoint
+    from teleoperation.retargeting.hand.interface import SharedJointNNRetargeter
+    device = resolve_device(args.device)
+    canonical_spec = load_hand_spec(args.hand_model, 'right')
+    model, _ = load_shared_joint_checkpoint(args.checkpoint, canonical_spec, device)
+    return specs, SharedJointNNRetargeter(specs, model, device, canonical_spec=canonical_spec)
 
 
 def _commands(args, specs, scene=None):
@@ -124,8 +71,6 @@ def _scene(specs, headless):
 def _metadata(args, commands):
     metadata = {'backend':args.backend,'input_profile':args.input_profile,'hand_model':args.hand_model,
             'checkpoint':None if args.checkpoint is None else str(args.checkpoint),
-            'left_checkpoint':None if args.left_checkpoint is None else str(args.left_checkpoint),
-            'right_checkpoint':None if args.right_checkpoint is None else str(args.right_checkpoint),
             'command_policy':commands.summary()}
     if args.input_profile == PALM_LENGTH_PROFILE:
         metadata['input_contract'] = palm_length_metadata()
@@ -152,9 +97,9 @@ def _process(window, specs, retargeter, commands, *, live=False):
 def export(args):
     from teleoperation.learning.dataset import TwoHandH5Dataset
     specs, retargeter = _selection(args)
-    profile = PALM_LENGTH_PROFILE if args.input_profile == PALM_LENGTH_PROFILE else None
+    profile = PALM_LENGTH_PROFILE
     dataset = TwoHandH5Dataset(args.input,input_profile=profile)
-    expected = palm_length_metadata() if profile else palm_local_metadata('world' if args.input_profile == LEGACY_WORLD_PROFILE else 'normalized')
+    expected = palm_length_metadata()
     if dataset.coordinate_alignment != expected['coordinate_alignment']:
         raise ValueError('Export data and checkpoint input profile differ; explicitly align the source H5')
     samples = {row['frame_index']:row for row in dataset.samples}
@@ -191,8 +136,8 @@ def run(args):
     _commands(args,specs)
     if args.record_results is not None and args.record_results.exists():
         raise FileExistsError(args.record_results)
-    profile = PALM_LENGTH_PROFILE if args.input_profile == PALM_LENGTH_PROFILE else None
-    space = 'normalized' if args.input_profile == LEGACY_NORMALIZED_PROFILE else 'world'
+    profile = PALM_LENGTH_PROFILE
+    space = 'world'
     count = valid = 0
     with ExitStack() as stack:
         scene, executor = _scene(specs,args.headless)
@@ -232,7 +177,7 @@ def list_models(args):
     for name in HAND_MODELS:
         sides = {side:load_hand_spec(name,side) for side in ('left','right')}
         print(json.dumps({'hand_model':name,'sides':{side:{'independent_dof':spec.dof,'expanded_joints':len(spec.joint_names)} for side,spec in sides.items()},
-                          'backends':{'nn':True,'dex':True,'geometric':name=='l21'},
+                          'backends':{'nn':True,'dex':True,'geometric':False},
                           'nn_requires_target_weights':True,'performance_acceptance':'pending'},ensure_ascii=False))
     return 0
 

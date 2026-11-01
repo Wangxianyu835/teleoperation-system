@@ -1,11 +1,4 @@
-"""MediaPipe raw input -> per-frame palm-local alignment -> three-frame windows.
-
-Identity tracking is disabled: MediaPipe handedness is used directly. Each
-invalid side resets immediately and independently; no historical frame or basis
-is reused. World metres are the default; normalized uses palm_local_v2.
-The demo prints 18D outputs without sending
-commands or recording data.
-"""
+"""Raw camera acquisition composed with explicit palm-local window processing."""
 
 from __future__ import annotations
 
@@ -21,10 +14,9 @@ from teleoperation.inputs.mediapipe import MediaPipeCameraInput
 from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
 
 
-from teleoperation.paths import DEFAULT_REALTIME_CHECKPOINT, realtime_checkpoint
-from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM
 
-PALM_LOCAL_V2_CHECKPOINT = DEFAULT_REALTIME_CHECKPOINT
+
+
 SIDES = ("left", "right")
 
 
@@ -33,8 +25,7 @@ class MediaPipeCameraWorkflow:
 
     next_input() retains the optional-window payload and relative seconds
     timestamp. Capture errors propagate after clearing history.
-    The old identity thresholds are accepted for caller compatibility and have
-    no effect. Scale and confidence must retain the raw-input defaults.
+    Scale and confidence retain the raw-input defaults.
     """
 
     def __init__(
@@ -46,8 +37,6 @@ class MediaPipeCameraWorkflow:
         fps: int = 30,
         scale_factor: float = 1.0,
         min_confidence: float = 0.5,
-        max_center_displacement: float = DEFAULT_MAX_CENTER_DISPLACEMENT,
-        max_shape_rmse: float = DEFAULT_MAX_SHAPE_RMSE,
         landmark_space: str = "world",
         input_profile: str | None = None,
     ):
@@ -105,117 +94,4 @@ class MediaPipeCameraWorkflow:
         self.release()
 
 
-def load_palm_local_retargeter(checkpoint_path=None, device="cpu", *, left_checkpoint=None, right_checkpoint=None,
-                               landmark_space="world"):
-    """Load the existing model and enforce the palm-local checkpoint contract."""
-    from teleoperation.retargeting.hand.config import L21
-    from teleoperation.retargeting.hand.predictor import create_twohand_retargeter
-
-    if checkpoint_path is None and left_checkpoint is None and right_checkpoint is None:
-        checkpoint_path = realtime_checkpoint(landmark_space)
-    metadata = palm_local_metadata(landmark_space)
-    try:
-        return create_twohand_retargeter(
-            L21.model_kwargs(), device,
-            checkpoint_path=None if checkpoint_path is None else str(checkpoint_path),
-            left_checkpoint=None if left_checkpoint is None else str(left_checkpoint),
-            right_checkpoint=None if right_checkpoint is None else str(right_checkpoint),
-            expected_coordinate_alignment=metadata["coordinate_alignment"],
-        ).eval()
-    except FileNotFoundError as error:
-        experiment = "world_canonical_shared_v1" if landmark_space == "world" else "palm_three_point_v2"
-        raise FileNotFoundError(f"{error}. This legacy L21 loader requires an existing {experiment} checkpoint. "
-                                "New target training uses hand train --hand-model l21; run those weights with hand control. "
-                                "See docs/hand-retargeting-unified.md.") from error
-
-
-def run(args: argparse.Namespace) -> int:
-    from .hand_checkpoints import checkpoint_options, checkpoint_description
-    mode = args.landmark_space
-    checkpoints = checkpoint_options(args, default=realtime_checkpoint(mode))
-    if args.frames < 0 or (args.frames == 0 and (not args.visualize or args.headless)):
-        raise ValueError("--frames must be positive except for interactive visualization")
-    if not args.visualize and (args.headless or args.snapshot is not None):
-        raise ValueError("--headless and --snapshot require --visualize")
-    for name in ("palm_radius", "robot_radius"):
-        value = getattr(args, name)
-        if not np.isfinite(value) or value <= 0:
-            raise ValueError(f"--{name.replace('_', '-')} must be finite and positive")
-    if args.snapshot is not None and args.snapshot.suffix.lower() != ".png":
-        raise ValueError("--snapshot must end with .png")
-    if args.visualize:
-        from teleoperation.applications.hand_visualization import run as visualize
-        return visualize(args)
-
-    counts = {side: {"raw": 0, "outputs": 0, "resets": 0, "recoveries": 0} for side in SIDES}
-    seen_output = {side: False for side in SIDES}
-    awaiting_recovery = {side: False for side in SIDES}
-    completed = 0
-    started = None
-    try:
-        import torch
-
-        if args.device == "cpu":
-            torch.set_num_threads(1)
-        model = load_palm_local_retargeter(device=args.device, landmark_space=mode, **checkpoints)
-        retargeter = PoseTransformerRetargeter(model, args.device)
-        print(f"{checkpoint_description(checkpoints)} {palm_local_metadata(mode)} identity_tracking=False", flush=True)
-        print("Move hands into view, out of view, then back into view to check reset/recovery.", flush=True)
-        with MediaPipeCameraWorkflow(args.model_asset_path, args.camera_index, landmark_space=mode) as camera:
-            started = time.perf_counter()
-            for _ in range(args.frames):
-                previous_streak = dict(camera.processor.valid_streak)
-                window = camera.next_window()
-                payload = None if window is None else window.to_payload()
-                result = None if window is None else retargeter.retarget(window)
-                predictions = {side: None if valid_joint_result(result, "l21", side) is None else result[("l21", side)].positions for side in SIDES}
-                completed += 1
-                descriptions = []
-                for side in SIDES:
-                    raw = camera.last_raw_frame[side]
-                    palm = camera.processor.current_hands[side]
-                    window = None if payload is None else payload["hands"][side]
-                    angles = predictions[side]
-                    streak = camera.processor.valid_streak[side]
-                    event = ""
-                    counts[side]["raw"] += int(raw is not None)
-                    if streak == 0 and previous_streak[side] > 0:
-                        counts[side]["resets"] += 1
-                        awaiting_recovery[side] = seen_output[side]
-                        event = " reset"
-                    if angles is not None:
-                        if angles.shape != (17,) or not np.isfinite(angles).all():
-                            raise ValueError(f"Invalid {side} model output")
-                        counts[side]["outputs"] += 1
-                        seen_output[side] = True
-                        if awaiting_recovery[side]:
-                            counts[side]["recoveries"] += 1
-                            awaiting_recovery[side] = False
-                            event = " recovery_after_3_valid_frames"
-                    arrays = (raw, palm, window, angles)
-                    shapes = [None if value is None else value.shape for value in arrays]
-                    finite = all(np.isfinite(value).all() for value in arrays if value is not None)
-                    descriptions.append(
-                        f"{side}: raw={shapes[0]} palm={shapes[1]} window={shapes[2]} "
-                        f"angles={shapes[3]} finite={bool(finite)} streak={streak} "
-                        f"invalid={camera.processor.invalid_reasons[side]!r}{event}"
-                    )
-                fps = completed / max(time.perf_counter() - started, 1e-9)
-                print(f"frame={completed} timestamp={camera.last_raw_frame['timestamp']} unix_ms "
-                      f"{' | '.join(descriptions)} FPS={fps:.1f}", flush=True)
-    except KeyboardInterrupt:
-        print("Capture stopped.")
-    except Exception as error:
-        print(f"Realtime smoke failed: {error}", flush=True)
-        return 1
-    elapsed = 0.0 if started is None else time.perf_counter() - started
-    print(f"Captured={completed} counts={counts} FPS={completed / max(elapsed, 1e-9):.1f}; resources released")
-    if not any(counts[side]["outputs"] for side in SIDES):
-        print("Hand windows and real-hand inference were not observed; manual verification is still required.")
-    elif not any(counts[side]["recoveries"] for side in SIDES):
-        print("Real-hand dropout/recovery was not observed; manual verification is still required.")
-    return 0
-
 from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
-
-from teleoperation.retargeting.hand.interface import PoseTransformerRetargeter

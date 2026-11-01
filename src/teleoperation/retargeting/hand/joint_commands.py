@@ -99,8 +99,8 @@ class JointCommandPipeline:
         command = before + fraction*delta
         guard = self.guards.get(key)
         if guard is not None:
-            # Existing L21 mesh queries use the historical fixed-root slot.
-            projected = np.asarray(guard.project(np.r_[0., before], np.r_[0., command]))[1:]
+            # Mesh queries use the same independent native coordinates.
+            projected = np.asarray(guard.project(before, command))
             if not np.allclose(projected, command, atol=1e-9):
                 self.previous[key] = projected.copy()
                 self._seed(key)

@@ -7,8 +7,15 @@ from teleoperation.contracts.coordinates import (
     WORLD_LANDMARK_SPACE, NORMALIZED_LANDMARK_SPACE, palm_local_metadata, validate_landmark_contract,
     coordinate_frame_for_alignment, is_world_alignment,
 )
-from teleoperation.contracts.constants import HAND_SIDES, HAND_ANGLE_DIM
+
 _SIDE_KEYS = {"left": "left_hand_keypoints", "right": "right_hand_keypoints"}
+
+
+def read_attributes(path):
+    """Read provenance without interpreting or adapting the stored schema."""
+    with h5py.File(path, 'r') as stream:
+        return dict(stream.attrs)
+
 def _read_coordinate_alignment(source) -> str:
     alignment = validate_coordinate_alignment(source.attrs.get("coordinate_alignment"), "H5")
     expected_frame = coordinate_frame_for_alignment(alignment)
@@ -62,34 +69,7 @@ def load_twohand_h5(
                 dtype=np.float64,
             )
         else:
-            groups = [
-                key
-                for key in h5_file.keys()
-                if isinstance(h5_file[key], h5py.Group)
-                and "l_glove_pos" in h5_file[key]
-                and "r_glove_pos" in h5_file[key]
-            ]
-            if len(groups) != 1:
-                raise ValueError(
-                    "Expected root datasets "
-                    "'left_hand_keypoints'/'right_hand_keypoints' or "
-                    "exactly one group with 'l_glove_pos'/'r_glove_pos'"
-                )
-            group = h5_file[groups[0]]
-            left = np.asarray(group["l_glove_pos"][:])
-            right = np.asarray(group["r_glove_pos"][:])
-            frame_ids = _read_optional_vector(
-                group,
-                "frame_ids",
-                left.shape[0],
-                dtype=np.int64,
-            )
-            timestamps = _read_optional_vector(
-                group,
-                "timestamps",
-                left.shape[0],
-                dtype=np.float64,
-            )
+            raise ValueError("Expected root datasets 'left_hand_keypoints'/'right_hand_keypoints'; grouped glove recordings are retired")
 
     _validate_hand_array(left, "left")
     _validate_hand_array(right, "right")
@@ -119,7 +99,7 @@ def _read_optional_vector(
     dtype,
 ) -> np.ndarray:
     if name not in container:
-        return np.arange(length, dtype=dtype)
+        raise ValueError(f"Hand H5 must explicitly contain {name}")
     values = np.asarray(container[name][:], dtype=dtype).reshape(-1)
     if values.shape[0] != length:
         raise ValueError(f"{name} length does not match hand data")
@@ -139,44 +119,6 @@ def _validate_hand_array(points: np.ndarray, side: str) -> None:
         )
     if not np.issubdtype(points.dtype, np.number):
         raise TypeError(f"{side} hand data must be numeric")
-
-from teleoperation.contracts.hand import AngleFrame
-from collections.abc import Iterator
-def iter_angle_h5(path: str | Path) -> Iterator[AngleFrame]:
-    with h5py.File(Path(path), "r") as h5_file:
-        required = ("frame_ids", "timestamps") + tuple(
-            f"{side}_{suffix}"
-            for side in HAND_SIDES
-            for suffix in ("angles", "valid")
-        )
-        missing = [name for name in required if name not in h5_file]
-        if missing:
-            raise ValueError(f"Angle H5 is missing datasets: {', '.join(missing)}")
-
-        frame_ids = np.asarray(h5_file["frame_ids"][:]).reshape(-1)
-        timestamps = np.asarray(h5_file["timestamps"][:], dtype=np.float64).reshape(-1)
-        angles = {
-            side: np.asarray(h5_file[f"{side}_angles"][:], dtype=np.float32)
-            for side in HAND_SIDES
-        }
-        valid = {
-            side: np.asarray(h5_file[f"{side}_valid"][:], dtype=bool).reshape(-1)
-            for side in HAND_SIDES
-        }
-
-    frame_count = frame_ids.shape[0]
-    for side in HAND_SIDES:
-        if angles[side].shape != (frame_count, HAND_ANGLE_DIM):
-            raise ValueError(f"{side}_angles must have shape ({frame_count}, 18)")
-        if valid[side].shape != (frame_count,):
-            raise ValueError(f"{side}_valid must have shape ({frame_count},)")
-        if not np.isfinite(angles[side]).all():
-            raise ValueError(f"{side}_angles contains NaN or Inf")
-    if timestamps.shape != (frame_count,):
-        raise ValueError("timestamps length does not match frame_ids")
-
-    for index in range(frame_count):
-        yield AngleFrame(int(frame_ids[index]), float(timestamps[index]), angles["left"][index].copy(), angles["right"][index].copy(), bool(valid["left"][index]), bool(valid["right"][index]))
 
 
 def _validate_coordinate_metadata(source) -> None:
@@ -236,9 +178,6 @@ def read_alignment_input(path, landmark_space=None, *, return_metadata=False):
             for side, points in raw.items():
                 if points.shape != (len(frame_ids), 21, 3):
                     raise ValueError(f"{side} world data must have shape (frames,21,3)")
-        if "left_hand_keypoints" not in source:
-            group = next(source[key] for key in source if isinstance(source[key], h5py.Group) and "l_glove_pos" in source[key] and "r_glove_pos" in source[key])
-            _validate_source_landmark_space(group)
         return (frame_ids, raw, metadata) if return_metadata else (frame_ids, raw)
 
 
@@ -246,13 +185,8 @@ def write_aligned_copy(input_path, temporary_path, aligned, metadata):
     with h5py.File(input_path, "r") as source, h5py.File(temporary_path, "w") as target:
         for key in source: source.copy(key, target)
         target.attrs.update(source.attrs)
-        if "left_hand_keypoints" in source and "right_hand_keypoints" in source:
-            container = target
-            names = ("left_hand_keypoints", "right_hand_keypoints")
-        else:
-            name = next(key for key in source if isinstance(source[key], h5py.Group) and "l_glove_pos" in source[key] and "r_glove_pos" in source[key])
-            container = target[name]
-            names = ("l_glove_pos", "r_glove_pos")
+        container = target
+        names = ("left_hand_keypoints", "right_hand_keypoints")
         for side, name in zip(("left", "right"), names):
             attributes = dict(container[name].attrs)
             del container[name]
@@ -275,51 +209,3 @@ def write_aligned_copy(input_path, temporary_path, aligned, metadata):
                 if key in target.attrs: del target.attrs[key]
         if "source_file" not in target.attrs: target.attrs["source_file"] = str(input_path)
         target.flush()
-
-
-def read_angle_arrays(path):
-    path = Path(path)
-    if not path.is_file(): raise FileNotFoundError(f"Angle H5 was not found: {path}")
-    required = ("frame_ids", "timestamps") + tuple(f"{side}_{suffix}" for side in HAND_SIDES for suffix in ("angles", "valid"))
-    with h5py.File(path, "r") as file:
-        missing = [name for name in required if name not in file]
-        if missing: raise ValueError(f"Angle H5 is missing datasets: {', '.join(missing)}")
-        return {name: np.asarray(file[name][:]) for name in required}, dict(file.attrs)
-
-
-def read_native_angles(path):
-    with h5py.File(path, "r") as file:
-        data = {"left_angles": np.asarray(file["left_angles"][:], dtype=np.float64), "right_angles": np.asarray(file["right_angles"][:], dtype=np.float64), "timestamps": np.asarray(file["timestamps"][:], dtype=np.float64)}
-        for name in ("left_valid", "right_valid"):
-            data[name] = np.asarray(file[name][:]).astype(bool) if name in file else np.ones(len(data["timestamps"]), bool)
-        return data
-
-
-def write_hand_angles(path, frame_ids, timestamps, angles, valid, metadata):
-    with h5py.File(path, "w") as file:
-        file.create_dataset("frame_ids", data=frame_ids)
-        file.create_dataset("timestamps", data=timestamps)
-        for side in HAND_SIDES:
-            file.create_dataset(f"{side}_angles", data=angles[side])
-            file.create_dataset(f"{side}_valid", data=valid[side])
-        file.attrs.update(metadata)
-
-
-def read_attributes(path):
-    with h5py.File(path, "r") as handle: return dict(handle.attrs)
-
-
-def read_pipeline_angles(path):
-    """Diagnostic schema: timestamps may be absent, as in the original tool."""
-    with h5py.File(path, "r") as handle:
-        left = np.asarray(handle["left_angles"][:], dtype=np.float64)
-        right = np.asarray(handle["right_angles"][:], dtype=np.float64)
-        left_valid = np.asarray(handle["left_valid"][:]).astype(bool) if "left_valid" in handle else np.ones(len(left), bool)
-        right_valid = np.asarray(handle["right_valid"][:]).astype(bool) if "right_valid" in handle else np.ones(len(right), bool)
-        timestamps = np.asarray(handle["timestamps"][:], dtype=np.float64) if "timestamps" in handle else np.arange(len(left)) / 30.0
-        return list(handle.keys()), left, right, left_valid, right_valid, timestamps, dict(handle.attrs)
-
-
-def read_required_right_angles(path):
-    with h5py.File(path, "r") as handle:
-        return np.asarray(handle["right_angles"][:], dtype=np.float64), np.asarray(handle["right_valid"][:]).astype(bool)

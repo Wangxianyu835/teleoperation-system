@@ -20,8 +20,9 @@ from pathlib import Path
 import numpy as np
 
 from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
-from teleoperation.contracts.hand_control import valid_joint_result
-from teleoperation.retargeting.hand.angles import l21_legacy_values
+from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
+from teleoperation.applications.hand_backend import build_camera_retargeter
+from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
 from teleoperation.applications.realtime_hand_sim import (
     PREVIEW_HINT_ROBOTS,
     _describe,
@@ -29,16 +30,13 @@ from teleoperation.applications.realtime_hand_sim import (
     _loop_fps,
     _median_interval,
     _window_pos,
-    build_retargeter,
-    build_scene,
     resolve_model_asset,
 )
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
 from teleoperation.inputs.smplerx import SmplerXClient
 from teleoperation.inputs.smplerx_process import SmplerXWorkerTransport
 from teleoperation.applications.camera_teleop_source import CameraTeleopSource
-from teleoperation.paths import realtime_checkpoint
-from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM, RUNTIME
+from teleoperation.retargeting.hand.config import RUNTIME
 from teleoperation.simulation.arm_preview import (
     ARM_PREVIEW_WINDOW,
     build_arm_preview,
@@ -59,7 +57,7 @@ from teleoperation.simulation.arm_realtime import (
 )
 from teleoperation.simulation.arm_scene_driver import SLEW_MAX_STEP_M, ArmSceneDriver
 from teleoperation.simulation.scene_appearance import apply_appearance
-from teleoperation.simulation.hand_commands import add_hand_command_arguments, build_hand_commands, apply_legacy_l21_mapping
+from teleoperation.simulation.hand_commands import add_hand_command_arguments
 
 SIDES = ("left", "right")
 ARM_ENTRY = "realtime_teleop"
@@ -125,7 +123,7 @@ class CameraFrameSource:
                  smplerx_client=None, session_id="camera", arms_enabled=False):
         self.model_asset_path = Path(model_asset_path)
         self.landmark_space = landmark_space
-        self.pipeline = MediaPipePalmLocalPipeline(landmark_space)
+        self.pipeline = MediaPipePalmLocalPipeline(landmark_space, input_profile=PALM_LENGTH_PROFILE)
         self.processor = self.pipeline.processor
         self.last_raw_frame = None
         self.last_observation = None
@@ -208,7 +206,7 @@ class BodyReplayFrameSource(CameraFrameSource):
         self.frames = self._source.frames
         self.exhausted = False
         self.landmark_space = landmark_space
-        self.pipeline = MediaPipePalmLocalPipeline(landmark_space)
+        self.pipeline = MediaPipePalmLocalPipeline(landmark_space, input_profile=PALM_LENGTH_PROFILE)
         self.processor = self.pipeline.processor
         self.last_raw_frame = self.last_observation = None
         self.body_enabled = True
@@ -233,7 +231,7 @@ class ReplayFrameSource:
             )
         self.frames = int(np.asarray(self.data["timestamps"]).shape[0])
         self.landmark_space = landmark_space
-        self.pipeline = MediaPipePalmLocalPipeline(landmark_space)
+        self.pipeline = MediaPipePalmLocalPipeline(landmark_space, input_profile=PALM_LENGTH_PROFILE)
         self.processor = self.pipeline.processor
         self.last_raw_frame = None
         self.last_observation = None
@@ -292,17 +290,23 @@ class ReplayFrameSource:
         return None
 
 
+def build_scene(args, sides):
+    from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+    return ThreeRobotHandScene(sides, gui=not args.headless,
+                               steps_per_frame=args.sim_steps,
+                               robot_types=args.robot)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """所有开关；默认值都往"能直接跑起来"调（world 米制、两侧、三台全上）。"""
     parser = argparse.ArgumentParser(
         prog="python -m teleoperation.simulation.realtime_teleop",
         description="Realtime camera -> hand angles + arm targets -> H1-2 / GR1-T2 / G1")
-    parser.add_argument("--backend", choices=("auto", "geometric", "checkpoint", "dex"),
-                        default="auto")
-    parser.add_argument("--dex-calibration", type=Path, help="fixed camera dex calibration JSON")
+    parser.add_argument("--backend", choices=("nn", "dex"), default="dex")
     parser.add_argument("--diagnostics", action="store_true", help="read-only arm timings and state statistics")
     parser.add_argument("--diagnostic-trace", type=Path, help="stream diagnostic CSV; implies --diagnostics; must be a new file")
-    parser.add_argument("--checkpoint", type=Path, default=None)
+    parser.add_argument("--hand-checkpoint", nargs=2, action="append", default=None,
+                        metavar=("MODEL", "PATH"), help="target-specific NN checkpoint (repeatable)")
     parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)
     parser.add_argument("--model-asset-path", type=Path, default=None)
     parser.add_argument("--smplerx-worker-python", type=Path, default=None)
@@ -318,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--landmark-space", choices=("world", "normalized"), default="world")
+    parser.add_argument("--landmark-space", choices=("world",), default="world")
     parser.add_argument("--side", choices=("left", "right", "both"), default="both")
     parser.add_argument("--robot", action="append", choices=loadable_robots(), default=None,
                         help="drive only these robots (repeatable; default: all three)")
@@ -390,8 +394,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help='PyBullet IK maximum iterations per pass (default 60).')
     parser.add_argument("--arm-ik-residual-threshold", type=float, default=1e-4,
                         help="PyBullet IK residualThreshold per pass (default 1e-4)")
-    parser.add_argument("--calibration-frames", type=int, default=15,
-                        help="open-hand calibration frames for the geometric backend")
     parser.add_argument("--arm-calibrate-frames", type=int, default=30,
                         help="neutral frames per side before the neutral is final (default 30). "
                              "With --arm-calibrate-mode hold the arms also stay on the working "
@@ -431,7 +433,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frames", type=int, default=0,
                         help="stop after N frames; 0 runs until Ctrl+C or window close")
     parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--smoothing", type=float, default=0.0)
     add_hand_command_arguments(parser)
     parser.add_argument("--no-preview", action="store_true")
     parser.add_argument("--preview-no-mirror", action="store_true")
@@ -612,7 +613,8 @@ def run(args) -> int:
     if diagnostics_enabled:
         trace_path = getattr(args, "diagnostic_trace", None)
         protected = [getattr(args, key, None) for key in
-                     ("input_npz", "input_body", "dump_body", "checkpoint", "model_asset_path", "smplerx_checkpoint", "smplx_model_dir", "neutral_json", "dump_npz", "save_neutral")]
+                     ("input_npz", "input_body", "dump_body", "model_asset_path", "smplerx_checkpoint", "smplx_model_dir", "neutral_json", "dump_npz", "save_neutral")]
+        protected.extend(path for _model, path in (args.hand_checkpoint or []))
         destinations = [value for value in (trace_path, args.report) if value is not None]
         if len({Path(path).resolve() for path in destinations}) != len(destinations):
             raise ValueError("Diagnostic CSV and report paths must differ")
@@ -624,8 +626,9 @@ def run(args) -> int:
     replaying = args.input_npz is not None or input_body is not None
     outputs = [Path(value).resolve() for value in (dump_body, args.dump_npz, args.report,
                getattr(args, 'diagnostic_trace', None), args.save_neutral, args.arm_frame_dump) if value is not None]
-    inputs = [Path(value).resolve() for value in (input_body, args.input_npz, args.checkpoint,
+    inputs = [Path(value).resolve() for value in (input_body, args.input_npz,
               args.model_asset_path, args.neutral_json, args.smplerx_checkpoint) if value is not None]
+    inputs.extend(Path(path).resolve() for _model, path in (args.hand_checkpoint or []))
     if len(set(outputs)) != len(outputs) or set(outputs).intersection(inputs):
         raise ValueError('Output must not overwrite an input or another output')
     if args.input_npz is not None and input_body is not None:
@@ -633,8 +636,6 @@ def run(args) -> int:
     if dump_body is not None and (replaying or args.no_arms):
         raise ValueError('--dump-body requires live SMPL-X arm capture')
     asset = resolve_model_asset(args.model_asset_path) if not replaying else None
-    checkpoint = (Path(args.checkpoint) if args.checkpoint
-                  else realtime_checkpoint(args.landmark_space))
     robots = tuple(args.robot) if args.robot else loadable_robots()
     profiles = {name: profile_for(name) for name in robots}
     arms_wanted = not args.no_arms
@@ -651,10 +652,15 @@ def run(args) -> int:
                 raise FileNotFoundError(f"{name} not found: {value}")
     if args.dump_npz is not None and arms_wanted:
         raise ValueError("--dump-npz is a hands-only debug format; use SMPL-X body recording for arms")
-    dex_options = ({"dex_calibration": args.dex_calibration, "native_sides": sides} if args.backend == "dex" else {})
-    retargeter, backend, note = build_retargeter(
-        args.backend, checkpoint, args.device, args.calibration_frames,
-        args.smoothing, args.landmark_space, **dex_options)
+    checkpoints = {}
+    for model, path in args.hand_checkpoint or []:
+        if model not in robots or model in checkpoints:
+            raise ValueError("Each --hand-checkpoint must name a distinct active robot")
+        checkpoints[model] = Path(path)
+    specs, retargeter = build_camera_retargeter(
+        robots, sides, args.backend, checkpoints=checkpoints or None, device=args.device)
+    backend = args.backend
+    note = "target-native independent joints; palm-length normalized camera input"
     scene = camera = preview = driver = bridge = diagnostics = None
     transport = None
     wrist_control = None
@@ -669,6 +675,8 @@ def run(args) -> int:
     samples = {side: [] for side in sides}
     invalid = {side: 0 for side in sides}
     raw_seen = {side: 0 for side in sides}
+    native_samples = {key: [] for key in specs}
+    native_invalid = {key: 0 for key in specs}
     dumped = {"hand": {side: [] for side in SIDES},
               "world": {side: [] for side in SIDES},
               "timestamps": []}
@@ -679,11 +687,8 @@ def run(args) -> int:
             diagnostics = ArmDiagnostics(getattr(args, "diagnostic_trace", None))
         args.scene = "robots"                      # 手臂只存在于机器人场景
         scene = build_scene(args, sides)
-        if backend == "dex":
-            from teleoperation.applications.dex_native import command_pipeline, apply_native_window, native_sample_mapping
-            commands = command_pipeline(args, retargeter.models)
-        else:
-            commands = build_hand_commands(args, scene, sides)
+        commands = JointCommandPipeline(specs, args.joint_filter, args.filter_alpha,
+                                        args.joint_max_velocity, args.kalman_q, args.kalman_r)
         appearance = apply_appearance(
             scene, None if args.original_g1_color else args.g1_color,
             args.light_position, args.shadows)
@@ -870,30 +875,27 @@ def run(args) -> int:
                 if raw_frame is not None and raw_frame.get(side) is not None:
                     raw_seen[side] += 1
             latest = {side: None for side in sides}
-            if backend == "dex":
-                command_timestamp = processed * args.sim_steps / 240 if args.input_npz is not None else None
-                latest = apply_native_window(window, retargeter, commands, scene, command_timestamp)
-                for side in sides:
-                    if latest[side] is None:
-                        invalid[side] += 1
-                    else:
-                        samples[side].append(latest[side])
-            elif window is not None:
-                result = retargeter.retarget(window)
-                for side in sides:
-                    angles = valid_joint_result(result, "l21", side)
-                    if angles is None:
-                        invalid[side] += 1
-                        commands.missing(('l21',side))
-                        continue
-                    command = commands.update(angles)
-                    apply_legacy_l21_mapping(scene, command)
-                    values = command.positions
-                    samples[side].append(values)
-                    latest[side] = values
-            else:
-                for side in sides:
-                    commands.missing(('l21',side))
+            command_timestamp = float(raw_frame['timestamp']) if replaying else None
+            results = {} if window is None else retargeter.retarget(window)
+            side_values = {side: [] for side in sides}
+            side_valid = {side: True for side in sides}
+            for key, spec in specs.items():
+                result = results.get(key)
+                command = (commands.missing(key, timestamp=command_timestamp) if result is None
+                           else commands.update(result, timestamp=command_timestamp))
+                scene.apply_native(command)
+                if result is None or not result.valid:
+                    native_invalid[key] += 1
+                    side_valid[key[1]] = False
+                else:
+                    native_samples[key].append(result.positions.copy())
+                side_values[key[1]].extend(command.positions)
+            for side in sides:
+                if side_valid[side] and side_values[side]:
+                    latest[side] = np.asarray(side_values[side])
+                    samples[side].append(latest[side])
+                else:
+                    invalid[side] += 1
             targets = {}
             if diagnostics is not None:
                 diagnostics.record_ms("hand_inference_output", (time.perf_counter() - hand_started) * 1000)
@@ -999,8 +1001,7 @@ def run(args) -> int:
               f"fault={body_worker['fault']}", flush=True)
     if scene_summary is not None:
         print(f"scene={scene_summary['scene']} sim_frames={scene_summary['sim_frames']} "
-              f"applied={scene_summary['applied_frames']} "
-              f"clipped={scene_summary['clipped_dimensions']}", flush=True)
+              f"applied={scene_summary['applied_frames']}", flush=True)
     for robot, entry in sorted(arm_residuals.items()):
         if entry:
             text = " ".join(f"{side}={value:.1f}" for side, value in sorted(entry.items()))
@@ -1051,6 +1052,13 @@ def run(args) -> int:
         "landmark_space": args.landmark_space,
         "length_unit": "m" if args.landmark_space == "world" else "normalized",
         "backend_note": note,
+        "input_profile": PALM_LENGTH_PROFILE,
+        "hand_targets": {"/".join(key): {
+            "dof": spec.dof, "joint_names": list(spec.independent_joint_names),
+            "movable_joint_names": list(spec.joint_names), "spec_hash": spec.spec_hash,
+            "valid_frames": len(native_samples[key]), "invalid_frames": native_invalid[key],
+            "angles": _describe(native_samples[key], spec.independent_joint_names) if native_samples[key] else None,
+        } for key, spec in specs.items()},
         "model_asset": None if asset is None else str(asset),
         "smplerx_model": None if not arms_wanted else args.smplerx_model,
         "smplerx_checkpoint": None if not arms_wanted or replaying else str(Path(args.smplerx_checkpoint).resolve()),
@@ -1116,7 +1124,8 @@ def run(args) -> int:
                 "raw_detected_frames": raw_seen[side],
                 "valid_frames": len(samples[side]),
                 "invalid_frames": invalid[side],
-                "angles": _describe(samples[side], native_sample_mapping(retargeter, side) if backend == "dex" else None) if samples[side] else None,
+                "angles": _describe(samples[side], [f"{model}.{name}" for (model, target_side), spec in specs.items()
+                                                           if target_side == side for name in spec.joint_names]) if samples[side] else None,
                 "final_joint_values": final.get(side),
             }
             for side in sides
@@ -1131,7 +1140,7 @@ def run(args) -> int:
                   "enough in the color image, with visible fingers and good lighting.", flush=True)
         elif processed >= 30 and entry["valid_frames"] == 0:
             print(f"[WARN] {side} hand was detected but produced no angles: check valid "
-                  "three-frame windows and open-hand calibration.", flush=True)
+                  "valid three-frame windows and metric world landmarks.", flush=True)
     if bridge is not None:
         trace = bridge.trace()
         for side, entry in sorted(trace.items()):
@@ -1183,8 +1192,7 @@ def run(args) -> int:
     if not any(samples[side] for side in sides) and arm_valid_total == 0:
         if any(raw_seen[side] for side in sides):
             print("[FAIL] MediaPipe detected a hand but produced no angles: put the whole hand "
-                  "in the middle of the frame and hold it open for about "
-                  f"{args.calibration_frames} frames to finish calibration.")
+                  "in the middle of the frame with valid metric world landmarks for three frames.")
         else:
             print("[FAIL] no raw hand detection at all: check the camera window - the hand must "
                   "really be visible (lighting, distance, not only at the frame edge).")
@@ -1217,5 +1225,3 @@ if __name__ == "__main__":
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(status)
-
-

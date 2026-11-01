@@ -48,13 +48,3 @@ class HandWindow(_HandMetadataView):
 
     def to_payload(self):
         return build_retarget_input(self.source, self.timestamp, self.hands["left"], self.hands["right"], metadata=dict(self.metadata))
-
-
-@dataclass(frozen=True)
-class AngleFrame:
-    frame_id: int
-    timestamp: float
-    left: np.ndarray
-    right: np.ndarray
-    left_valid: bool
-    right_valid: bool

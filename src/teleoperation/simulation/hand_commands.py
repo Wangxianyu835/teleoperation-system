@@ -12,10 +12,9 @@ import time
 
 import numpy as np
 
-from teleoperation.retargeting.hand.angles import legacy_l21_dofs
 from teleoperation.data.urdf import parse_joint_limits
 from teleoperation.paths import L21_ROOT
-from teleoperation.robots.l21 import MAPPING_18
+from teleoperation.robots.l21 import L21_JOINT_ORDER
 from teleoperation.retargeting.hand.postprocessing import KalmanSmoother
 from teleoperation.cli.hand_command_options import add_hand_command_arguments
 
@@ -35,7 +34,7 @@ recorded 0.1 mm tolerance. New/deeper inter-finger contacts remain forbidden.
         self.p, self.cid, self.body = scene.p, scene.cid, scene.bodies[side]
         self.margin, self.sample_step = float(margin), float(sample_step)
         self.names = scene.joint_index[side]
-        self.indices = [self.names[name] for name in MAPPING_18 if name]
+        self.indices = [self.names[name] for name in L21_JOINT_ORDER]
         self.link_names = {}
         groups = {}
         for index in range(self.p.getNumJoints(self.body, physicsClientId=self.cid)):
@@ -69,7 +68,7 @@ recorded 0.1 mm tolerance. New/deeper inter-finger contacts remain forbidden.
         return min((float(point[8]) for point in points), default=None)
 
     def _set_pose(self, angles):
-        targets = self.scene.adapters[self.side].map(legacy_l21_dofs(angles))
+        targets = self.scene.adapters[self.side].map(angles)
         previous = getattr(self, "_query_targets", None)
         for name, value in targets.items():
             if previous is not None and previous.get(name) == value:
@@ -109,7 +108,7 @@ recorded 0.1 mm tolerance. New/deeper inter-finger contacts remain forbidden.
                 self.last_contact = contact
                 # Preserve feasible flexion rather than freezing the whole hand
                 # when one MCP side-swing blocks the original joint-space ray.
-                for dimension in (2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 16, 17, 1, 4, 7, 10):
+                for dimension in (1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 15, 16, 0, 3, 6, 9):
                     proposal = projected.copy()
                     proposal[dimension] = candidate[dimension]
                     projected, _ = self._segment(projected, proposal)
@@ -173,15 +172,3 @@ def build_hand_commands(args, scene, sides):
     scope = "L21 inter-finger mesh checks" if guards else "no runtime mesh collision guard for this scene"
     print(f"hand commands: filter={args.joint_filter} speed<={args.joint_max_velocity} rad/s; {scope}", flush=True)
     return commands
-
-
-def apply_legacy_l21_mapping(scene, command):
-    """Explicit historical L21-to-other-hand display boundary (lossy mapping)."""
-    from teleoperation.contracts.hand_control import HandJointCommand
-    if not isinstance(command,HandJointCommand) or command.hand_model != 'l21':
-        raise ValueError('Legacy L21 scene mapping requires an accepted L21 command')
-    if hasattr(scene,'bodies') and hasattr(scene,'adapters'):
-        scene.apply_native(command)
-    else:
-        # Old multi-robot display is retained as a diagnostic mapping only.
-        scene.apply(command.side,np.r_[0.,command.positions])

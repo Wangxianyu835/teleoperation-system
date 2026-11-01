@@ -1,161 +1,147 @@
-"""Exercise replay controls with real native URDFs and sentinel joint targets."""
-
+"""Replay target-native commands through real whole-body URDFs."""
+from dataclasses import replace
 import contextlib
-import hashlib
 import io
-from pathlib import Path
-import sys
-import tempfile
 import unittest
-from unittest import mock
 
-import h5py
 import numpy as np
-import pybullet as p
 
-from teleoperation.applications.replay import replay_hand_native as replay
+from teleoperation.contracts.hand_control import HandJointResult
+from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
+from teleoperation.robots.hand_spec import load_hand_spec
+from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
+from tests.test_arm_ik_multi_robot import ASSETS_AVAILABLE, PYBULLET_AVAILABLE
 
 
+def stub_camera_backend(hand_models, sides, backend, checkpoints=None, device='cpu'):
+    """Deterministic native hand outputs isolate arm integration from NN/dex deps."""
+    specs = {(model, side): load_hand_spec(model, side)
+             for model in hand_models for side in sides}
+
+    class Retargeter:
+        def retarget(self, window):
+            assert window.metadata['input_profile'] == PALM_LENGTH_PROFILE
+            return {key: HandJointResult(*key, spec.spec_hash, spec.independent_joint_names,
+                        spec.q_reference, window.timestamp,
+                        valid=window.hands[key[1]] is not None)
+                    for key, spec in specs.items()}
+
+    retargeter = Retargeter()
+    retargeter.specs = specs
+    return specs, retargeter
+
+
+@unittest.skipUnless(ASSETS_AVAILABLE and PYBULLET_AVAILABLE, 'robot assets and PyBullet required')
 class NativeHandReplayTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.path = Path(self.temp.name) / "sentinel.h5"
-        self.angles = np.full((8, 18), 0.3) + np.arange(8)[:, None] * 0.03
-        self.angles[:, 0] = 0
-        self.write_fixture()
-
-    def write_fixture(self, *, invalid=False, collapsed=False):
-        left = self.angles.copy()
-        if collapsed:
-            left[2] = 0
-        with h5py.File(self.path, "w") as f:
-            f["frame_ids"] = np.arange(8)
-            f["timestamps"] = np.arange(8) / 30
-            for side, angles in (("left", left), ("right", self.angles + 0.1)):
-                f[f"{side}_angles"] = angles
-                valid = np.ones(8, dtype=bool)
-                if invalid:
-                    valid[4] = False
-                f[f"{side}_valid"] = valid
-
-    def run_replay(self, *options, interrupt_after=None):
-        """Only GUI connection and wall clock are substituted; mapping stays real."""
-        mapped, motors, cameras, clients = [], [], [], []
-        clock = [0.0]
-        steps = [0]
-        real_connect, real_step = p.connect, p.stepSimulation
-        real_map, real_motor = replay.NativeHandAdapter.map, p.setJointMotorControl2
-
-        def connect(_mode):
-            cid = real_connect(p.DIRECT)
-            clients.append(cid)
+    def test_missing_selected_robot_fails_initialization_and_closes_client(self):
+        from unittest.mock import patch
+        import pybullet as p
+        from teleoperation.simulation.robot_loader import RobotLoader
+        from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+        original = RobotLoader.load_robot
+        connected = []
+        connect = p.connect
+        def tracked_connect(*args, **kwargs):
+            cid = connect(*args, **kwargs)
+            connected.append(cid)
             return cid
+        def load(loader, name, *args, **kwargs):
+            if name == 'gr1_t2':
+                raise FileNotFoundError('missing selected robot asset')
+            return original(loader, name, *args, **kwargs)
+        with patch.object(p, 'connect', side_effect=tracked_connect), \
+                patch.object(RobotLoader, 'load_robot', new=load), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, 'gr1_t2.*missing selected robot asset'):
+                ThreeRobotHandScene(gui=False, robot_types=('h1_2', 'gr1_t2'))
+        self.assertTrue(connected)
+        self.assertFalse(any(p.isConnected(cid) for cid in connected))
 
-        def map_frame(adapter, dofs):
-            result = real_map(adapter, dofs)
-            mapped.append((np.r_[0.0, dofs].copy(), result[0].copy(), result[1]))
-            return result
+    def setUp(self):
+        from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.scene = ThreeRobotHandScene(gui=False)
+        self.addCleanup(self.scene.close)
+        self.specs = {spec.key: spec for robot in self.scene.robots
+                      for spec, _ in robot['plans'].values()}
 
-        def motor(body, index, mode, **kwargs):
-            motors.append((index, kwargs["targetPosition"]))
-            return real_motor(body, index, mode, **kwargs)
+    def test_native_replay_moves_every_target_and_holds_non_hand_joints(self):
+        scene = self.scene
+        pipeline = JointCommandPipeline(self.specs, filter_mode='none', max_velocity=10.)
+        held = {r['type']: list(r['hold_targets']) for r in scene.robots}
+        start = {side: scene.joint_values(side) for side in scene.sides}
+        for frame in range(30):
+            for key, spec in self.specs.items():
+                bounds = spec.bounds
+                endpoint = np.where(abs(bounds[:, 1]) >= abs(bounds[:, 0]), bounds[:, 1], bounds[:, 0])
+                q = spec.q_reference + .6 * frame / 29 * (endpoint - spec.q_reference)
+                result = HandJointResult(*key, spec.spec_hash, spec.independent_joint_names, q, frame / 30)
+                command = pipeline.update(result, timestamp=frame / 30)
+                scene.apply_native(command)
+                self.assertEqual(scene.native_commands[key], command.named_positions())
+            scene.step()
+        for robot in scene.robots:
+            for side in scene.sides:
+                spec, _ = robot['plans'][side]
+                self.assertEqual(len(spec.joint_names), {'h1_2': 12, 'gr1_t2': 11, 'g1': 7}[robot['type']])
+                actual = scene.joint_values(side)
+                self.assertGreater(max(abs(actual[f"{robot['type']}.{n}"] - start[side][f"{robot['type']}.{n}"])
+                                       for n in spec.joint_names), .05)
+            actual = [scene.p.getJointState(robot['body'], i, physicsClientId=scene.cid)[0]
+                      for i in robot['hold_ids']]
+            self.assertLess(max(abs(np.array(actual) - held[robot['type']])), .05)
+        self.assertFalse(hasattr(scene, 'apply'))
 
-        def step(**kwargs):
-            real_step(**kwargs)
-            steps[0] += 1
-            if interrupt_after and steps[0] >= interrupt_after:
-                raise KeyboardInterrupt
+    def test_bad_identity_coupling_and_limits_rejected_before_motors(self):
+        from unittest.mock import patch
+        spec = self.specs['h1_2', 'left']
+        pipeline = JointCommandPipeline({spec.key: spec})
+        command = pipeline.missing(spec.key, timestamp=0.)
+        self.scene.apply_native(command)
+        bad = command.positions.copy()
+        dependent = next(n for n in spec.joint_names if n not in spec.independent_joint_names)
+        bad[spec.joint_names.index(dependent)] += .2
+        for wrong in (replace(command, spec_hash='0' * 64), replace(command, positions=bad),
+                      replace(command, positions=np.full(len(spec.joint_names), 100.))):
+            with self.subTest(wrong=wrong), patch.object(self.scene.p, 'setJointMotorControl2') as motor:
+                with self.assertRaises(ValueError):
+                    self.scene.apply_native(wrong)
+                motor.assert_not_called()
 
-        def sleep(duration):
-            clock[0] += duration
-
-        argv = ["replay_hand_native.py", "--file", str(self.path), "--substeps", "1", *options]
-        try:
-            with mock.patch.object(sys, "argv", argv), \
-                    mock.patch.object(p, "connect", side_effect=connect), \
-                    mock.patch.object(p, "isConnected", return_value=False), \
-                    mock.patch.object(p, "stepSimulation", side_effect=step), \
-                    mock.patch.object(p, "setJointMotorControl2", side_effect=motor), \
-                    mock.patch.object(p, "resetDebugVisualizerCamera", side_effect=lambda **k: cameras.append(k)), \
-                    mock.patch.object(replay.NativeHandAdapter, "map", autospec=True, side_effect=map_frame), \
-                    mock.patch.object(replay.time, "monotonic", side_effect=lambda: clock[0]), \
-                    mock.patch.object(replay.time, "sleep", side_effect=sleep), \
-                    contextlib.redirect_stdout(io.StringIO()):
-                cli_main(["replay", "native-hand", *argv[1:]])
-        finally:
-            for cid in clients:
-                try:
-                    p.disconnect(cid)
-                except p.error:
-                    pass  # Headless replay closes its own connection.
-        return mapped, motors, cameras, clock[0], steps[0]
-
-    def assert_same_targets(self, actual, expected):
-        self.assertEqual(len(actual), len(expected))
-        for got, want in zip(actual, expected):
-            np.testing.assert_array_equal(got[0], want[0])
-            self.assertEqual(got[1:], want[1:])
-
-    def test_view_speed_range_loop_preserve_targets_and_validity_on_all_robots(self):
-        self.write_fixture(invalid=True)
-        digest = hashlib.sha256(self.path.read_bytes()).digest()
-        for robot in ("h1_2", "gr1_t2", "g1"):
-            with self.subTest(robot=robot):
-                baseline = self.run_replay("--robot", robot, "--no-repair")[0]
-                self.assertEqual(len(baseline), 14)  # Invalid original frame 4 is skipped.
-                self.assertEqual(len(baseline[0][1]), {"h1_2": 12, "gr1_t2": 11, "g1": 7}[robot])
-                expected = baseline[4:8]  # Original frames 2,3; end-frame 4 excluded.
-                for view in ("full", "front", "side", "hands", "left-hand", "right-hand"):
-                    with self.subTest(view=view):
-                        mapped, motors, cameras, elapsed, steps = self.run_replay(
-                            "--robot", robot, "--no-repair", "--render", "--view", view,
-                            "--speed", "0.5", "--start-frame", "2", "--end-frame", "4", "--loop", "2")
-                        self.assert_same_targets(mapped, expected * 2)
-                        self.assertEqual(steps, 4)
-                        self.assertAlmostEqual(elapsed, 2 * (1 / 30) / 0.5)
-                        self.assertEqual(len(cameras), 1)
-                        if view.endswith("-hand"):
-                            self.assertLess(cameras[0]["cameraDistance"], 1)
-                        # Confirm actual motor commands contain every mapped target.
-                        for _angle, joints, _clipped in mapped:
-                            for target in joints.values():
-                                self.assertIn(target, [value for _index, value in motors])
-        self.assertEqual(hashlib.sha256(self.path.read_bytes()).digest(), digest)
-
-    def test_default_repair_uses_full_recording_context_at_clip_boundary(self):
-        self.write_fixture(collapsed=True)
-        full = self.run_replay()[0]
-        clip = self.run_replay("--start-frame", "2", "--end-frame", "3")[0]
-        self.assert_same_targets(clip, full[4:6])
-        np.testing.assert_allclose(clip[0][0], self.angles[2])
-        self.assertTrue(np.any(clip[0][0] != 0))
-
-    def test_infinite_loop_repeats_identical_targets_until_interrupt(self):
-        baseline = self.run_replay("--no-repair")[0]
-        result = self.run_replay("--no-repair", "--loop", "0", interrupt_after=16)
-        self.assert_same_targets(result[0], baseline * 2)
-        self.assertEqual(result[4], 16)
-
-    def test_invalid_controls_fail_before_connecting(self):
-        for options in (
-            ["--speed", "0"], ["--speed", "nan"], ["--speed", "inf"],
-            ["--speed", "-1"], ["--loop", "-1"], ["--substeps", "-1"],
-            ["--view", "unknown"], ["--start-frame", "-1"],
-            ["--start-frame", "4", "--end-frame", "4"], ["--end-frame", "9"],
-            ["--hand", "left", "--view", "right-hand"],
-        ):
-            with self.subTest(options=options), \
-                    mock.patch.object(sys, "argv", ["replay", "--file", str(self.path), *options]), \
-                    mock.patch.object(p, "connect") as connect, \
-                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                with self.assertRaises(SystemExit) as error:
-                    cli_main(["replay", "native-hand", *sys.argv[1:]])
-                self.assertEqual(error.exception.code, 2)
-                connect.assert_not_called()
+    def test_nn_and_dex_share_window_commands_and_native_reports(self):
+        import json
+        from pathlib import Path
+        import tempfile
+        from unittest.mock import patch
+        from teleoperation.simulation import realtime_teleop as app
+        from tests.smplerx_fixtures import write
+        reports = []
+        with tempfile.TemporaryDirectory() as folder:
+            capture = Path(folder) / 'body.h5'
+            write(capture, 5)
+            for backend in ('nn', 'dex'):
+                path = Path(folder) / f'{backend}.json'
+                args = app.build_parser().parse_args([
+                    '--input-body', str(capture), '--report', str(path), '--no-arms',
+                    '--backend', backend, '--headless', '--no-preview', '--robot', 'g1',
+                    '--side', 'left', '--print-every', '0'])
+                with patch.object(app, 'build_camera_retargeter', side_effect=stub_camera_backend), \
+                     patch.object(app, '_drain_in_background', side_effect=lambda action, label: action()), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(app.run(args), 0)
+                reports.append(json.loads(path.read_text(encoding='utf-8')))
+        for report in reports:
+            self.assertEqual(set(report['hand_targets']), {'g1/left'})
+            target = report['hand_targets']['g1/left']
+            self.assertEqual(target['dof'], 7)
+            self.assertEqual(len(target['angles']['mapping']), 7)
+            self.assertEqual(target['valid_frames'], 3)
+            self.assertEqual(target['invalid_frames'], 2)
+            self.assertEqual(report['hand_commands']['sides']['g1/left']['held_frames'], 2)
+            self.assertEqual(report['scene_summary']['native_applied_frames'], {'g1/left': 5})
+            self.assertEqual([r['robot'] for r in report['scene_summary']['robots']], ['g1'])
+        self.assertEqual(reports[0]['hand_targets'], reports[1]['hand_targets'])
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
-
-from teleoperation.cli import main as cli_main

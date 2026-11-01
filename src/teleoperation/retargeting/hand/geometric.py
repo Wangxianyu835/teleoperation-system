@@ -105,7 +105,7 @@ from collections import deque
 import numpy as np
 
 from teleoperation.contracts.hand import HandWindow
-from .angles import l21_joint_result
+from teleoperation.contracts.hand_control import HandJointResult
 from teleoperation.retargeting.hand.config import ANGLE_LIMITS, HAND_ANGLE_DIM, L21
 from teleoperation.retargeting.hand.interface import HandRetargeter
 
@@ -427,7 +427,15 @@ class GeometricHandRetargeter(HandRetargeter):
             if values is None:
                 continue
             angles[side] = values if self.smoothing == 0.0 else self._smooth(side, values)
-        return {("l21", side): l21_joint_result(side, angles[side], hand_window.timestamp) for side in SIDES}
+        from teleoperation.robots.hand_spec import load_hand_spec
+        results = {}
+        for side in SIDES:
+            spec = load_hand_spec('l21', side)
+            values = angles[side]
+            results[spec.key] = HandJointResult(*spec.key, spec.spec_hash, spec.independent_joint_names,
+                None if values is None else values[1:].copy(), hand_window.timestamp,
+                values is not None, 'invalid geometry or unfinished calibration' if values is None else None)
+        return results
 
     # ------------------------------------------------------------------ #
     def _side_angles(self, side: str, points: np.ndarray) -> np.ndarray | None:

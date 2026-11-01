@@ -12,7 +12,7 @@ class VRResultWriter:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.file = h5py.File(path, "x")  # Never overwrite a recording or old result.
         try:
-            self.file.attrs.update(schema="transhandr_vr_results_v1", angle_units="rad",
+            self.file.attrs.update(schema="transhandr_vr_results_v2", angle_units="rad",
                                    timestamp_unit="s", routes=json.dumps(routes), **metadata)
             self.rows = 0
             self.datasets = {}
@@ -20,8 +20,9 @@ class VRResultWriter:
             for side in routes:
                 specs.update({f"{side}_{name}": ((), "?")
                               for name in ("input_valid", "model_valid")})
-                specs.update({f"{side}_{name}_angles": ((18,), "f8")
-                              for name in ("raw", "native", "command")})
+                specs[f"{side}_raw_angles"] = ((18,), "f8")
+                specs.update({f"{side}_{name}_positions": ((17,), "f8")
+                              for name in ("native", "command")})
             for name, (shape, dtype) in specs.items():
                 self.datasets[name] = self.file.create_dataset(
                     name, shape=(0, *shape), maxshape=(None, *shape), dtype=dtype, chunks=True)

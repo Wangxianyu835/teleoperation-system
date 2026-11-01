@@ -8,7 +8,6 @@ from typing import Iterator
 import h5py
 import numpy as np
 
-from teleoperation.retargeting.hand.processing import CanonicalHandProcessor
 from teleoperation.retargeting.hand.temporal import TemporalBuffer
 from teleoperation.contracts.observations import RawHandFrame
 from teleoperation.contracts.hand import CanonicalHandFrame
@@ -33,8 +32,8 @@ class TwoHandH5Dataset:
 
     The current camera recorder writes datasets at the H5 root:
     ``left_hand_keypoints`` and ``right_hand_keypoints`` with shape
-    ``(frames, 21, 3)``. The loader also accepts the older grouped schema
-    containing ``l_glove_pos`` and ``r_glove_pos``.
+    ``(frames, 25, 3)`` after explicit world alignment. Grouped glove and
+    image-normalized training recordings are rejected.
     """
 
     def __init__(
@@ -67,7 +66,7 @@ class TwoHandH5Dataset:
         self.coordinate_alignment = read_coordinate_alignment(self.path)
         self.is_world = is_world_alignment(self.coordinate_alignment)
         self.is_canonical = self.coordinate_alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
-        if input_profile == PALM_LENGTH_PROFILE and not self.is_canonical:
+        if not self.is_canonical:
             raise ValueError("Palm-length training requires canonical world metre H5")
         self.source_coordinate_alignment = self.coordinate_alignment
         self.units = "1" if input_profile == PALM_LENGTH_PROFILE else ("m" if self.is_world else "unknown")
@@ -118,13 +117,6 @@ class TwoHandH5Dataset:
     def _build_samples(self) -> list[dict]:
         samples: list[dict] = []
         previous_frame_id = None
-        processor = CanonicalHandProcessor(
-            scale_factor=self.scale_factor,
-            track_identity=self.track_identity,
-            max_center_displacement=self.max_center_displacement,
-            max_shape_rmse=self.max_shape_rmse,
-        )
-
         buffer = TemporalBuffer(self.receptive_field)
         for frame_index in range(self.frame_start, self.frame_end):
             frame_id = _scalar_or_none(self.frame_ids[frame_index])
@@ -134,7 +126,6 @@ class TwoHandH5Dataset:
                 and frame_id is not None
                 and frame_id != previous_frame_id + 1
             ):
-                processor.reset()
                 buffer.reset()
             previous_frame_id = frame_id
 
@@ -143,15 +134,12 @@ class TwoHandH5Dataset:
                 for side in HAND_SIDES
             }
             timestamp = _scalar_or_none(self.timestamps[frame_index])
-            if self.is_world:
-                hands = {}
-                for side, points in raw_hands.items():
-                    if points.shape != (25, 3):
-                        raise ValueError("Aligned world Dataset requires (25,3) hands")
-                    hands[side] = points if np.isfinite(points).all() and np.any(points) else None
-                canonical = CanonicalHandFrame(hands, timestamp, "h5", self.coordinate_metadata)
-            else:
-                canonical = processor.process_frame(RawHandFrame(raw_hands, timestamp, "h5", {"frame_index": frame_index}))
+            hands = {}
+            for side, points in raw_hands.items():
+                if points.shape != (25, 3):
+                    raise ValueError('Aligned world Dataset requires (25,3) hands')
+                hands[side] = points if np.isfinite(points).all() and np.any(points) else None
+            canonical = CanonicalHandFrame(hands, timestamp, 'h5', self.coordinate_metadata)
             if self.input_profile == PALM_LENGTH_PROFILE:
                 from teleoperation.retargeting.hand.normalization import validate_metric_hand_frame
                 canonical = validate_metric_hand_frame(canonical)

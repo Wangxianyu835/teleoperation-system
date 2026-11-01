@@ -1,11 +1,4 @@
-"""Historical camera L21 model/geometric display and scene utilities.
-
-New target-specific NN/dex control is `python -m teleoperation hand control`;
-see docs/hand-retargeting-unified.md. This entry retains declared legacy input
-profiles and the diagnostic L21-to-native multi-robot display mapping. Every
-retargeter returns common independent joint results and uses JointCommandPipeline.
-The optional historical dex route retains its explicit fixed calibration.
-"""
+"""Native L21 simulation and shared camera preview utilities."""
 
 from __future__ import annotations
 
@@ -20,19 +13,15 @@ from pathlib import Path
 
 import numpy as np
 
-from teleoperation.retargeting.hand.angles import legacy_l21_dofs
 from teleoperation.contracts.hand_control import valid_joint_result
-from teleoperation.retargeting.hand.angles import l21_legacy_values
 from teleoperation.data.urdf import parse_joint_limits
 from teleoperation.paths import (
     DEFAULT_MEDIAPIPE_ASSET,
-    realtime_checkpoint,
     L21_ROOT,
     PROJECT_ROOT,
 )
 from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM, RUNTIME
-from teleoperation.simulation.hand_commands import add_hand_command_arguments, build_hand_commands, apply_legacy_l21_mapping
-from teleoperation.robots.l21 import L21_JOINT_ORDER, MAPPING_18, L21HandAdapter
+from teleoperation.robots.l21 import L21_JOINT_ORDER, L21HandAdapter
 
 SIDES = ("left", "right")
 URDF_NAME = "linkerhand_l21_{side}.urdf"
@@ -67,63 +56,14 @@ def resolve_model_asset(path: Path | None) -> Path:
     )
 
 
-def build_retargeter(backend: str, checkpoint: Path, device: str, calibration_frames: int,
-                     smoothing: float, landmark_space="normalized", dex_calibration=None, native_sides=SIDES):
-    """Return ``(retargeter, backend_name, note)`` for the requested backend.
-
-    ``auto`` prefers the trained checkpoint and falls back to the geometric
-    backend when the file is missing, so the realtime loop always starts with a
-    printed reason instead of a stack trace.
-    """
-    from teleoperation.retargeting.hand.geometric import GeometricHandRetargeter
-
-    if backend == "dex":
-        if landmark_space != "world" or dex_calibration is None:
-            raise ValueError("--backend dex requires --landmark-space world and --dex-calibration")
-        from teleoperation.retargeting.hand.dex_native import DexCalibration, DexNativeRetargeter
-        calibration = DexCalibration.load(dex_calibration)
-        if calibration.profile != "dex_camera_world_v1":
-            raise ValueError("Camera dex requires a camera calibration profile")
-        return DexNativeRetargeter(calibration, sides=native_sides), "dex", "native Vector, fixed camera calibration"
-    checkpoint = Path(checkpoint)
-    if backend == "checkpoint":
-        if not checkpoint.is_file():
-            experiment = "world_canonical_shared_v1" if landmark_space == "world" else "palm_three_point_v2"
-            raise FileNotFoundError(f"checkpoint not found: {checkpoint}. Select an existing legacy {experiment} checkpoint. "
-                                    "Use hand control for new target-specific weights; see docs/hand-retargeting-unified.md.")
-        return _checkpoint_retargeter(checkpoint, device, landmark_space)
-    if backend == "geometric":
-        return (
-            GeometricHandRetargeter(calibration_frames=calibration_frames, smoothing=smoothing),
-            "geometric",
-            "forced by --backend geometric",
-        )
-    if checkpoint.is_file():                      # auto + checkpoint available
-        return _checkpoint_retargeter(checkpoint, device, landmark_space)
-    return (
-        GeometricHandRetargeter(calibration_frames=calibration_frames, smoothing=smoothing),
-        "geometric",
-        f"auto fallback: checkpoint missing ({checkpoint}), using the zero-weight backend",
-    )
 
 
-def _checkpoint_retargeter(checkpoint: Path, device: str, landmark_space="normalized"):
-    """Load a historical palm-local L21 checkpoint behind HandRetargeter."""
-    from teleoperation.applications.hand_realtime import load_palm_local_retargeter
-    from teleoperation.retargeting.hand.interface import PoseTransformerRetargeter
-
-    model = load_palm_local_retargeter(checkpoint, device, landmark_space=landmark_space)
-    return (
-        PoseTransformerRetargeter(model, device),
-        "checkpoint",
-        f"palm_local checkpoint {checkpoint}",
-    )
 
 
 class RealtimeL21Scene:
     """PyBullet L21 scene; native named commands plus explicit historical layout reader.
 
-    Only the joints listed in ``MAPPING_18``/``L21_JOINT_ORDER`` are written; any
+    Only the native joints in ``L21_JOINT_ORDER`` are written; any
     extra URDF joints (if a model ever has them) stay at their loaded state.
     """
 
@@ -182,10 +122,7 @@ class RealtimeL21Scene:
                 raise RuntimeError(f"{urdf.name} lacks L21 joints: {missing}")
             self.bodies[side] = body
             self.joint_index[side] = names
-            # L21HandAdapter 的约定：joints_order 必须是 18 项、第 0 项为占位的
-            # MAPPING_18（它内部用 values[index-1] 取值）。传 17 项的
-            # L21_JOINT_ORDER 会让所有维度错位一格（探针实测到过）。
-            self.adapters[side] = L21HandAdapter(list(MAPPING_18), parse_joint_limits(urdf))
+            self.adapters[side] = L21HandAdapter(list(L21_JOINT_ORDER), parse_joint_limits(urdf))
         self.frame_scene("full")
         self.applied = {side: 0 for side in self.sides}
         self.loss_reported = False
@@ -241,17 +178,6 @@ class RealtimeL21Scene:
                     ) from error
                 time.sleep(0.1)
 
-    def apply(self, side: str, angles: np.ndarray) -> None:
-        """Write one 18D angle vector into this side's joints (instant, visual)."""
-        if side not in self.bodies or not self.alive():
-            return
-        dofs = legacy_l21_dofs(np.asarray(angles, dtype=np.float64))
-        targets = self.adapters[side].map(dofs)
-        body = self.bodies[side]
-        index = self.joint_index[side]
-        for name, value in targets.items():
-            self.p.resetJointState(body, index[name], float(value), physicsClientId=self.cid)
-        self.applied[side] += 1
 
     def apply_native(self, command):
         """Apply expanded named L21 commands without a historical angle layout."""
@@ -583,12 +509,7 @@ def _describe(vectors, mapping=None) -> dict:
 
 
 def build_scene(args, sides):
-    """按 ``--scene`` 建显示目标；两套场景接口一致（apply / step / alive / close）。
-
-    ``robots``（默认）把三台论文机器人并排摆开、驱动各自的**原装手**；
-    ``hands`` 是旧行为，只摆 1-2 只 LinkerHand L21 手。两者都由同一份 18 维角度
-    驱动，因此主循环不需要分叉。
-    """
+    """Construct a native hand or whole-robot simulation scene."""
     if args.scene == "hands":
         return RealtimeL21Scene(sides, gui=not args.headless)
     from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
@@ -597,205 +518,6 @@ def build_scene(args, sides):
                                steps_per_frame=args.sim_steps)
 
 
-def run(args) -> int:
-    """Capture the camera until ``--frames`` or quit, retarget, and show the sim."""
-    from teleoperation.applications.hand_realtime import MediaPipeCameraWorkflow
-
-    if args.backend == "dex" and args.scene != "robots":
-        raise ValueError("Native dex requires --scene robots")
-    asset = resolve_model_asset(args.model_asset_path)
-    checkpoint = args.checkpoint or realtime_checkpoint(args.landmark_space)
-    sides = SIDES if args.hand == "both" else (args.hand,)
-    dex_options = ({"dex_calibration": args.dex_calibration, "native_sides": sides} if args.backend == "dex" else {})
-    retargeter, backend, note = build_retargeter(
-        args.backend, Path(checkpoint), args.device,
-        args.calibration_frames, args.smoothing, landmark_space=args.landmark_space,
-        **dex_options,
-    )
-    print(f"backend={backend} ({note})", flush=True)
-    print(f"model_asset={asset}", flush=True)
-    print(f"landmark_space={args.landmark_space} input_units={'m' if args.landmark_space == 'world' else 'normalized'}", flush=True)
-    print(f"camera_index={args.camera_index} hands={','.join(sides)} "
-          f"display={'headless(DIRECT)' if args.headless else 'PyBullet GUI'}", flush=True)
-
-    samples = {side: [] for side in sides}
-    invalid = {side: 0 for side in sides}
-    raw_seen = {side: 0 for side in sides}    # MediaPipe 原始检出帧数（含窗口未攒够的帧）
-    latest = {side: None for side in sides}   # 本帧 18D 角度，只给预览窗口显示用
-    scene = None
-    camera = None
-    preview = None
-    processed = 0
-    marks = []
-    elapsed, final = 0.0, {}
-    try:
-        scene = build_scene(args, sides)
-        if backend == "dex":
-            from teleoperation.applications.dex_native import command_pipeline, apply_native_window, native_sample_mapping
-            commands = command_pipeline(args, retargeter.models)
-        else:
-            commands = build_hand_commands(args, scene, sides)
-        if args.scene == "robots":
-            print(f"scene=three_robots: H1-2 / GR1-T2 / G1 side by side, native hands, "
-                  f"{args.sim_steps} physics steps per frame.", flush=True)
-        else:
-            print(f"scene=hands: L21 models {', '.join(sides)}.", flush=True)
-        if hasattr(scene, "frame_scene"):
-            # 并排三台的镜头默认已框住整机；这里让 --view front / full 生效。
-            scene.frame_scene(args.view)
-        print(f"keep your hands in front of the camera and hold them open for about "
-              f"{args.calibration_frames} frames to finish the open-hand calibration.",
-              flush=True)
-        # 刻意不用 MediaPipeCameraWorkflow 的 with 语句：它的 __exit__ 会阻塞在
-        # landmarker.close() 上（实测 42 s，见模块 docstring 的"退出行为"）。
-        camera = MediaPipeCameraWorkflow(asset, args.camera_index,
-                                        args.width, args.height, args.fps, landmark_space=args.landmark_space)
-        if backend == "dex":
-            from teleoperation.applications.dex_native import LatestCameraInput
-            camera._input = LatestCameraInput(camera._input)
-        preview = build_preview(args, camera, sides)
-        if not args.headless:
-            print(PREVIEW_HINT_ROBOTS if args.scene == "robots" else PREVIEW_HINT_HANDS,
-                  flush=True)
-        started = time.perf_counter()
-        while True:
-            if args.frames and processed >= args.frames:
-                break
-            if not scene.alive():
-                print("PyBullet window closed; stopping.", flush=True)
-                break
-            window = camera.next_window()
-            processed += 1
-            raw_frame = camera.last_raw_frame
-            for side in sides:
-                if raw_frame is not None and raw_frame.get(side) is not None:
-                    raw_seen[side] += 1
-            if backend == "dex":
-                latest = apply_native_window(window, retargeter, commands, scene)
-                for side in sides:
-                    if latest[side] is None:
-                        invalid[side] += 1
-                    else:
-                        samples[side].append(latest[side])
-            elif window is None:
-                # 三帧窗口还没攒够（或刚丢手）：预览里不留上一帧的角度，避免误会。
-                latest = {side: None for side in sides}
-                for side in sides:
-                    commands.missing(('l21',side))
-            else:
-                result = retargeter.retarget(window)
-                for side in sides:
-                    angles = valid_joint_result(result, "l21", side)
-                    if angles is None:
-                        invalid[side] += 1
-                        latest[side] = None
-                        commands.missing(('l21',side))
-                        continue
-                    command = commands.update(angles)
-                    apply_legacy_l21_mapping(scene, command)
-                    values = command.positions
-                    samples[side].append(values)
-                    latest[side] = values
-            if preview is not None:
-                preview.update(camera.last_raw_frame, latest,
-                               preview_hud(processed, marks, sides, samples, invalid,
-                                           retargeter, raw_seen, args.landmark_space))
-                if preview.quit_requested:
-                    print("camera window closed; stopping.", flush=True)
-                    break
-            scene.step()
-            marks.append(time.perf_counter())
-            if args.print_every and processed % args.print_every == 0:
-                counts = " ".join(f"{side}={len(samples[side])}" for side in sides)
-                print(f"frame={processed} fps={_loop_fps(marks):.1f} valid={counts} "
-                      f"invalid={invalid} calibration="
-                      f"{getattr(retargeter, 'calibration_status', None)}", flush=True)
-        elapsed = time.perf_counter() - started
-    finally:
-        if preview is not None:
-            _drain_in_background(preview.close, "camera preview close")
-        if camera is not None:
-            _drain_in_background(camera.release, "camera release")
-        if scene is not None:
-            final = {side: scene.joint_values(side) for side in sides}
-            _drain_in_background(scene.close, "PyBullet disconnect")
-
-    fps = _loop_fps(marks)
-
-    print(f"\nprocessed={processed} frames in {elapsed:.2f} s  fps={fps:.1f}  "
-          f"median frame interval {_median_interval(marks) * 1000:.1f} ms")
-    if hasattr(scene, "summary"):
-        info = scene.summary()
-        print(f"scene={info['scene']} sim_frames={info['sim_frames']} "
-              f"applied={info['applied_frames']} "
-              f"clipped={info['clipped_dimensions']}", flush=True)
-    if preview is not None:
-        print(f"camera preview: window={'on' if preview.show else 'off'} "
-              f"mirror={'on' if preview.mirror else 'off'} dumped_png={preview.dumped}"
-              f"{'' if preview.rect is None else f' rect={preview.rect}'}"
-              f"{'' if not preview.note else ' note=' + preview.note}", flush=True)
-    report = {
-        "backend": backend,
-        "hand_commands": commands.summary(),
-        "landmark_space": args.landmark_space,
-        "length_unit": "m" if args.landmark_space == "world" else "normalized",
-        "backend_note": note,
-        "model_asset": str(asset),
-        "camera_index": args.camera_index,
-        "hand": args.hand,
-        "headless": bool(args.headless),
-        "scene": args.scene,
-        "scene_summary": (scene.summary() if hasattr(scene, "summary") else None),
-        "preview": None if preview is None else {
-            "window": bool(preview.show),
-            "mirrored": bool(preview.mirror),
-            "dumped_png": int(preview.dumped),
-            "dump_dir": None if preview.dump_dir is None else str(preview.dump_dir),
-            "window_name": preview.window_name,
-            "window_pos": None if preview.window_pos is None else list(preview.window_pos),
-            "window_rect": None if preview.rect is None else list(preview.rect),
-            "topmost": bool(preview.topmost),
-            "note": preview.note,
-        },
-        "processed_frames": processed,
-        "elapsed_seconds": round(float(elapsed), 3),
-        "fps": round(float(fps), 2),
-        "median_frame_interval_ms": round(float(_median_interval(marks) * 1000), 2),
-        "sides": {
-            side: {
-                "raw_detected_frames": raw_seen[side],
-                "valid_frames": len(samples[side]),
-                "invalid_frames": invalid[side],
-                "angles": _describe(samples[side], native_sample_mapping(retargeter, side) if backend == "dex" else None) if samples[side] else None,
-                "final_joint_values": final.get(side),
-            }
-            for side in sides
-        },
-    }
-    for side in sides:
-        entry = report["sides"][side]
-        print(f"  {side}: raw={entry['raw_detected_frames']}/{processed} "
-              f"valid={entry['valid_frames']} invalid={entry['invalid_frames']}")
-        if entry["angles"]:
-            print(f"    angle min (18D): {[round(value, 3) for value in entry['angles']['min']]}")
-            print(f"    angle max (18D): {[round(value, 3) for value in entry['angles']['max']]}")
-    if args.report:
-        path = Path(args.report)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"report written: {path}")
-    if not any(samples[side] for side in sides):
-        if any(raw_seen[side] for side in sides):
-            print("[FAIL] MediaPipe detected a hand but produced no angles: put the whole hand "
-                  "in the middle of the frame and hold it open for about "
-                  f"{args.calibration_frames} frames to finish calibration (the camera window "
-                  "shows raw detection and calibration side by side).")
-        else:
-            print("[FAIL] no raw hand detection at all: check the camera window - the hand must "
-                  "really be visible in the image (lighting, distance, not only at the frame "
-                  "edge).")
-        return 1
-    return 0
 
 
 def _loop_fps(marks) -> float:
@@ -846,75 +568,8 @@ def _drain_in_background(action, label: str, timeout: float = RELEASE_TIMEOUT_SE
               f"waiting.", flush=True)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Standalone parser; ``main`` also accepts an already parsed namespace."""
-    parser = argparse.ArgumentParser(
-        prog="python -m teleoperation.applications.realtime_hand_sim",
-        description="camera -> palm-local alignment -> hand retargeting -> L21 PyBullet",
-    )
-    parser.add_argument("--model-asset-path", type=Path, default=None,
-                        help="hand_landmarker.task path (default: datasets/, repo root, then outputs/)")
-    parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
-    parser.add_argument("--width", type=int, default=640)
-    parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--backend", choices=("auto", "geometric", "checkpoint", "dex"), default="auto")
-    parser.add_argument("--dex-calibration", type=Path, help="fixed camera dex calibration JSON")
-    parser.add_argument("--landmark-space", choices=("world", "normalized"), default="world")
-    parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--device", choices=("cpu", "cuda"), default=RUNTIME.camera_device)
-    parser.add_argument("--hand", choices=("left", "right", "both"), default="both")
-    parser.add_argument("--scene", choices=("robots", "hands"), default="robots",
-                        help="robots: H1-2 / GR1-T2 / G1 side by side with their native "
-                             "hands (default); hands: the LinkerHand L21 hands only")
-    parser.add_argument("--sim-steps", type=int, default=8,
-                        help="physics steps per frame for --scene robots (default 8, "
-                             "about one 30 Hz frame at a 1/240 s step)")
-    parser.add_argument("--view", choices=("full", "front"), default="full",
-                        help="camera for --scene robots: full = angled, front = head on")
-    parser.add_argument("--frames", type=int, default=0,
-                        help="stop after N frames; 0 runs until Ctrl+C or window close")
-    parser.add_argument("--headless", action="store_true",
-                        help="PyBullet DIRECT mode: no window, useful for self checks")
-    parser.add_argument("--calibration-frames", type=int, default=15)
-    parser.add_argument("--smoothing", type=float, default=0.0)
-    add_hand_command_arguments(parser)
-    parser.add_argument("--no-preview", action="store_true",
-                        help="do not open the camera window (PyBullet window only)")
-    parser.add_argument("--preview-no-mirror", action="store_true",
-                        help="show the camera image unmirrored (default is mirror-like)")
-    parser.add_argument("--preview-window-pos", type=_window_pos, default=(20, 60),
-                        metavar="X,Y",
-                        help="screen position X,Y for the camera window so PyBullet cannot "
-                             "hide it (default 20,60; pass 'none' to keep the system default)")
-    parser.add_argument("--preview-no-topmost", action="store_true",
-                        help="do not keep the camera window always-on-top (default is on top)")
-    parser.add_argument("--preview-dump-dir", type=Path, default=None,
-                        help="also write the first --preview-dump-frames annotated frames here")
-    parser.add_argument("--preview-dump-frames", type=int, default=5)
-    parser.add_argument("--print-every", type=int, default=15)
-    parser.add_argument("--report", type=Path, default=None,
-                        help="write a JSON summary (frame counts, ranges, fps)")
-    return parser
 
 
-def main(args=None) -> int:
-    if args is None:
-        args = build_parser().parse_args()
-    else:
-        # 若将来把这个入口注册进统一 CLI（cli/** 是队友文件，当前不改），
-        # 这里会补齐它没声明的可选参数，保证两条调用方式行为一致。
-        for name, value in vars(build_parser().parse_args([])).items():
-            if not hasattr(args, name):
-                setattr(args, name, value)
-    try:
-        return run(args)
-    except KeyboardInterrupt:
-        print("\nCapture stopped by user.", flush=True)
-        return 0
-    except Exception as error:  # noqa: BLE001 - CLI boundary reports instead of raising
-        print(f"[FAIL] realtime hand sim stopped: {type(error).__name__}: {error}", flush=True)
-        return 1
 
 
 if __name__ == "__main__":

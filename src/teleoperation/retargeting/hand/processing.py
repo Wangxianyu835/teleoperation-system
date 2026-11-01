@@ -8,40 +8,6 @@ from teleoperation.contracts.coordinates import palm_local_metadata, WORLD_LANDM
 from .coordinates import align_mediapipe_hand, build_l21_reference_basis
 
 
-class CanonicalHandProcessor:
-    def __init__(self, scale_factor=1.0, track_identity=True, max_center_displacement=DEFAULT_MAX_CENTER_DISPLACEMENT, max_shape_rmse=DEFAULT_MAX_SHAPE_RMSE, discard_untrackable=True):
-        self.scale_factor = scale_factor
-        self.track_identity = track_identity
-        self.discard_untrackable = discard_untrackable
-        self._identity_tracker = HandIdentityTracker(max_center_displacement, max_shape_rmse)
-
-    def process_frame(self, frame: RawHandFrame):
-        if not isinstance(frame, RawHandFrame): raise TypeError("Expected RawHandFrame")
-        raw = dict(frame.hands)
-        for side in ("left", "right"):
-            if raw[side] is not None and frame.geometry_encoding.get(side) == "transforms25":
-                raw[side] = visionpro_fingers_to_points(raw[side], side)
-        tracked = self._identity_tracker.update(raw["left"], raw["right"]) if self.track_identity else raw
-        return self._canonical(tracked, frame)
-
-    def _canonical(self, tracked, frame):
-        current = {side: None for side in ("left", "right")}
-        for side, points in tracked.items():
-            if points is not None and (not self.discard_untrackable or _is_trackable_hand(points)):
-                current[side] = ensure_hand25(np.asarray(points, dtype=np.float32), scale_factor=self.scale_factor)
-        return CanonicalHandFrame(current, frame.timestamp, frame.source, frame.metadata)
-
-    def process_detections(self, detections, timestamp=None, source="unknown", metadata=None):
-        if self.track_identity:
-            tracked = self._identity_tracker.update_detections(detections)
-        else:
-            tracked = {"left": None, "right": None}
-            for label, points in detections:
-                if label not in tracked: raise ValueError(f"Invalid hand side: {label}")
-                if tracked[label] is None: tracked[label] = points
-        return self._canonical(tracked, RawHandFrame({"left": None, "right": None}, timestamp, source, metadata or {}))
-
-    def reset(self): self._identity_tracker.reset()
 
 SIDES = ("left", "right")
 class MediaPipePalmLocalProcessor:

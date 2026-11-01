@@ -8,6 +8,3 @@ def export(args):
 def inspect(args):
     from .hand_inspect import run
     return run(args)
-def realtime(args):
-    from .hand_realtime import run
-    return run(args)

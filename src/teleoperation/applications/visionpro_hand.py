@@ -11,10 +11,8 @@ from teleoperation.applications.visionpro_processing import TransHandRVisionProP
 from teleoperation.applications.visionpro_results import VRResultWriter
 from teleoperation.inputs.visionpro import VisionProInput, VisionProReplayInput
 from teleoperation.retargeting.hand.transhandr_vr import load_transhandr_vr_model, TransHandRVRRetargeter
-from teleoperation.retargeting.hand.angles import canonical_to_native_angles
-from teleoperation.retargeting.hand.angles import l21_legacy_values
 from teleoperation.contracts.hand_control import valid_joint_result
-from teleoperation.simulation.hand_commands import build_hand_commands, apply_legacy_l21_mapping
+from teleoperation.simulation.hand_commands import build_hand_commands
 from teleoperation.cli.visionpro_options import configure
 
 
@@ -27,6 +25,8 @@ def run(args):
     if getattr(args, "backend", "transhandr") == "dex":
         from teleoperation.applications.dex_native import visionpro_run
         return visionpro_run(args)
+    if args.scene != "hands":
+        raise ValueError("TransHandR VR requires --scene hands; use native dex for robots")
     if args.checkpoint is None:
         raise ValueError("TransHandR VR requires --checkpoint; native dex uses --backend dex --dex-calibration")
     if args.frames < 0 or not np.isfinite(args.fps) or args.fps < 0:
@@ -114,7 +114,8 @@ def run(args):
                     counts[side]["input_valid_frames"] += int(input_valid)
                     results = None if window is None else retargeters[side].retarget(window)
                     angles = valid_joint_result(results, "l21", side)
-                    raw = native = np.full(18, np.nan)
+                    raw = np.full(18, np.nan)
+                    native = np.full(17, np.nan)
                     if angles is None:
                         counts[side]["missing_or_warmup_frames"] += 1
                         accepted = commands.missing(('l21',side),timestamp=timestamp if args.input_h5 else None)
@@ -123,12 +124,11 @@ def run(args):
                         counts[side]["angle_frames"] += 1
                         raw = np.asarray(retargeters[side].last_raw_angles, dtype=np.float64)
                         # The adapter has already converted to the selected native hand.
-                        native = l21_legacy_values(angles)
+                        native = angles.positions.copy()
                         accepted = commands.update(angles, timestamp=timestamp if args.input_h5 else None)
-                        apply_legacy_l21_mapping(scene, accepted)
-                    command = np.r_[0.,accepted.positions]  # Historical VR diagnostic H5 only.
+                    scene.apply_native(accepted)
                     records[side] = {"input_valid": input_valid, "model_valid": angles is not None,
-                                     "raw_angles": raw, "native_angles": native, "command_angles": command}
+                                     "raw_angles": raw, "native_positions": native, "command_positions": accepted.positions}
                 if writer is not None:
                     frame_id = observation.metadata.get("frame_id", processed) if observation is not None else processed
                     writer.append(frame_id, timestamp, records)
@@ -154,6 +154,7 @@ def run(args):
               "angle_frames": angle_frames, "missing_or_warmup_frames": missing,
               "elapsed_seconds": time.monotonic() - started,
               "input_shape": [1, 3, 25, 3], "output_shape": [18],
+              "native_command_shape": [17],
               "preprocessing": "axis remap -> wrist relative -> chronological three frames -> fixed scale",
               "hand_commands": None if commands is None else commands.summary()}
     if args.report:

@@ -13,6 +13,7 @@ import numpy as np
 from teleoperation.simulation.arm_diagnostics import ArmDiagnostics, sample_seconds
 from teleoperation.simulation import realtime_teleop as app
 from tests.test_arm_ik_multi_robot import ASSETS_AVAILABLE, PYBULLET_AVAILABLE
+from tests.test_native_hand_replay import stub_camera_backend
 
 
 def recording(path, frames=4):
@@ -34,7 +35,7 @@ def recording(path, frames=4):
 
 def arguments(capture, report, *extra):
     return app.build_parser().parse_args(["--input-body", str(capture), "--report", str(report),
-        "--backend", "geometric", "--headless", "--no-preview", "--no-collision-guard",
+        "--backend", "dex", "--headless", "--no-preview", "--no-collision-guard",
         "--arm-calibrate-frames", "1", "--print-every", "0", *extra])
 
 
@@ -76,6 +77,11 @@ class DiagnosticUnitTests(unittest.TestCase):
 
 @unittest.skipUnless(ASSETS_AVAILABLE and PYBULLET_AVAILABLE, "robot assets and PyBullet required")
 class DiagnosticLoopTests(unittest.TestCase):
+    def setUp(self):
+        backend = patch.object(app, 'build_camera_retargeter', side_effect=stub_camera_backend)
+        backend.start()
+        self.addCleanup(backend.stop)
+
     def test_diagnostics_leave_targets_commands_states_and_step_counts_identical(self):
         from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
         from teleoperation.simulation.arm_ik import PyBulletArmIK

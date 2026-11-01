@@ -3,16 +3,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ROBOTS_ROOT = PROJECT_ROOT / "assets" / "robots"
 L21_ROOT = ROBOTS_ROOT / "l21"
-DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "checkpoint"
-DEFAULT_OUTPUT_H5 = PROJECT_ROOT / "outputs" / "hand_retargeting" / "twohand_angles.h5"
-DEFAULT_REALTIME_SNAPSHOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "mediapipe_realtime.png"
-DEFAULT_REALTIME_CHECKPOINT = DEFAULT_CHECKPOINT_ROOT / "models/twohand_h5/linker/palm_three_point_v2/model_best.pth"
-DEFAULT_WORLD_REALTIME_CHECKPOINT = DEFAULT_CHECKPOINT_ROOT / "models/twohand_h5/linker/world_canonical_shared_v1/model_best.pth"
 DEFAULT_MEDIAPIPE_ASSET = PROJECT_ROOT / "datasets" / "hand_landmarker.task"
 DEFAULT_WORLD_CAPTURE_DIR = PROJECT_ROOT / "outputs" / "hand_body_capture"
-DEFAULT_INPUT_H5 = PROJECT_ROOT / "input" / "visual_hand_data_20260912_112108.h5"
-DEFAULT_CHECKPOINT = PROJECT_ROOT / "checkpoint/models/twohand_h5/linker/coord_aligned_100ep/model_best.pth"
-DEFAULT_WARMSTART_CHECKPOINT = None
 DEFAULT_HAND_MODEL_ROOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "models"
 
 
@@ -28,11 +20,3 @@ def training_run_directory(root, hand_model, side, input_profile, run_name):
 
 DEFAULT_TRON2A_URDF = ROBOTS_ROOT / "tron2a" / "robot.urdf"
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
-
-
-def realtime_checkpoint(landmark_space):
-    if landmark_space == "world":
-        return DEFAULT_WORLD_REALTIME_CHECKPOINT
-    if landmark_space == "normalized":
-        return DEFAULT_REALTIME_CHECKPOINT
-    raise ValueError(f"Unsupported landmark space: {landmark_space!r}")

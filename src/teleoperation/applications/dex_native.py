@@ -1,4 +1,4 @@
-"""Native dex application composition: calibration, H5 export/replay and live I/O."""
+"""Native dex application composition and explicit Vision Pro calibration/I/O."""
 from __future__ import annotations
 
 import hashlib
@@ -8,7 +8,8 @@ import time
 
 import numpy as np
 
-from teleoperation.data.hand_recording import iter_dex_observations, LegacyNativeResultWriter, iter_legacy_native_commands
+from teleoperation.data.hand_recording import iter_dex_observations
+from teleoperation.data.hand_joint_recording import HandJointResultWriter
 from teleoperation.retargeting.hand.dex_native import DexInputAdapter, DexCalibration, DexNativeRetargeter, VECTOR_PARAMETERS
 
 
@@ -88,46 +89,17 @@ class LatestCameraInput:
         return self.release(close_landmarker=True)
 
 
-def camera_window_frame(window):
-    from teleoperation.contracts.hand import HandWindow
-    from teleoperation.contracts.coordinates import WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
-    if window.metadata.get("coordinate_alignment") != WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT or window.metadata.get("units") != "m":
-        raise ValueError("Dex window requires the existing canonical world metre profile")
-    return HandWindow({s: window.hands[s]
-        for s in ("left", "right")}, window.timestamp, "camera",
-        {**window.metadata, "dex_input_profile": "dex_camera_world_v1"})
 
 
 def canonical_window(frame):
-    """Legacy single-frame VR/export profiles declare a one-frame hand window."""
+    """Declare the explicit single-frame VR profile as a hand window."""
     from teleoperation.contracts.hand import HandWindow
     return HandWindow({side: None if points is None else points[None]
                        for side, points in frame.hands.items()}, frame.timestamp, frame.source, frame.metadata)
 
 
-def native_sample_mapping(retargeter, side):
-    return [f"{r}.{name}" for (r,s), model in retargeter.models.items() if s == side for name in model.joint_names]
 
 
-def apply_native_window(window, retargeter, commands, scene, timestamp=None):
-    latest = {s: [] for s in scene.sides}
-    complete = {s: True for s in scene.sides}
-    results = None if window is None else retargeter.retarget(camera_window_frame(window))
-    for key, model in retargeter.models.items():
-        if key[1] not in scene.sides:
-            continue
-        if results is None:
-            retargeter.solvers[key].reset()
-            commands.missing(key)
-            complete[key[1]] = False
-            continue
-        result = results[key]
-        accepted = commands.update(result, timestamp=timestamp)
-        scene.apply_native(accepted)
-        complete[key[1]] &= result.valid
-        named = accepted.named_positions()
-        latest[key[1]].extend(named[n] for n in model.joint_names)
-    return {s: np.asarray(values) if complete[s] and values else None for s, values in latest.items()}
 
 
 def file_hash(path):
@@ -144,6 +116,8 @@ def recording_frames(path, source):
 
 
 def calibrate(args):
+    if args.source != "visionpro":
+        raise ValueError("Fixed dex calibration supports source visionpro only")
     frames = recording_frames(args.input, args.source)
     if not frames:
         raise ValueError("Empty calibration recording")
@@ -159,89 +133,6 @@ def command_pipeline(args, models):
     from teleoperation.robots.hand_spec import load_hand_spec
     return JointCommandPipeline({key: load_hand_spec(*key) for key in models}, args.joint_filter, args.filter_alpha,
         args.joint_max_velocity, args.kalman_q, args.kalman_r)
-
-
-def export(args):
-    import torch
-    torch.set_num_threads(1)
-    report_path = Path(getattr(args, "report", None) or args.output.with_suffix(".json"))
-    paths = [args.input.resolve(), args.calibration.resolve(), args.output.resolve(), report_path.resolve()]
-    if len(set(paths)) != len(paths):
-        raise ValueError("Input, calibration, output and report paths must be distinct")
-    if args.output.exists() or report_path.exists():
-        raise FileExistsError("Choose unused native output and report paths")
-    calibration = DexCalibration.load(args.calibration)
-    retargeter = DexNativeRetargeter(calibration)
-    commands = command_pipeline(args, retargeter.models)
-    counts = {"/".join(k): {"input_valid": 0, "solved": 0} for k in retargeter.models}
-    digest = file_hash(args.input)
-    metadata = {"source": args.source, "input": str(args.input.resolve()), "input_sha256": digest,
-                "calibration": vars(calibration), "command_timebase": "recording_seconds",
-                "solver_parameters": VECTOR_PARAMETERS}
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    processed, frame_times = 0, []
-    with LegacyNativeResultWriter(args.output, retargeter.models, metadata, specs=retargeter.specs) as writer:
-        adapter = DexInputAdapter(args.source)
-        for observation in iter_dex_observations(args.input, args.source):
-            frame = adapter.adapt(observation)
-            results = retargeter.retarget(canonical_window(frame))
-            accepted = {k: commands.update(result, frame.timestamp) for k, result in results.items()}
-            targets = {k: retargeter.targets(frame, k) for k in results}
-            writer.append(frame.timestamp, results, accepted, targets,
-                digest == calibration.source_sha256 and calibration.segment[0] <= frame.timestamp <= calibration.segment[1])
-            frame_times.append(sum(r.solve_ms for r in results.values()))
-            for key, result in results.items():
-                row = counts["/".join(key)]
-                row["input_valid"] += int(frame.hands[key[1]] is not None)
-                row["solved"] += int(result.valid)
-            processed += 1
-            if processed % 500 == 0:
-                print(f"Native export frames={processed}",flush=True)
-    report = {"frames": processed, "hands": counts, "commands": commands.summary(),
-              "source": args.source, "input_sha256": digest,
-              "solve_frame_p95_ms": float(np.percentile(frame_times, 95)) if frame_times else None}
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    with report_path.open("x", encoding="utf-8") as stream:
-        json.dump(report, stream, indent=2)
-    print(f"Native dex export: {processed} frames -> {args.output}")
-    return 0 if processed else 1
-
-
-def replay(args):
-    from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
-    from teleoperation.robots.native_hand import NativeHandModel
-    import itertools
-    if not np.isfinite(args.fps) or args.fps < 0 or args.frames < 0:
-        raise ValueError("Replay fps and frame limit must be nonnegative")
-    models = {(r, s): NativeHandModel(r, s) for r in ("h1_2", "gr1_t2", "g1") for s in ("left", "right")}
-    from teleoperation.robots.hand_spec import load_hand_spec
-    iterator = iter_legacy_native_commands(args.file, models, specs={key: load_hand_spec(*key) for key in models})
-    scene, count = None, 0
-    try:
-        first = next(iterator, None)
-        if first is None:
-            raise ValueError("Empty native result recording")
-        scene = ThreeRobotHandScene(gui=args.render)
-        if len(scene.robots) != 3:
-            raise ValueError("Native six-hand replay requires all three robot assets")
-        previous_time = first[0] - 1 / 30
-        for timestamp, results in itertools.chain([first], iterator):
-            if not scene.alive() or (args.frames and count >= args.frames):
-                break
-            started = time.monotonic()
-            for result in results.values():
-                scene.apply_native(result)
-            scene.steps_per_frame = max(1, round(min(timestamp - previous_time, .1) * 240))
-            scene.step()
-            previous_time, count = timestamp, count + 1
-            if args.fps:
-                time.sleep(max(0., 1 / args.fps - (time.monotonic() - started)))
-    finally:
-        iterator.close()
-        if scene is not None:
-            scene.close()
-    print(f"Native replay frames={count}")
-    return 0 if count else 1
 
 
 def visionpro_run(args):
@@ -293,9 +184,11 @@ def visionpro_run(args):
             writer=None
             if output_h5:
                 output_h5.parent.mkdir(parents=True,exist_ok=True)
-                writer=LegacyNativeResultWriter(output_h5,retargeter.models,{"source":"visionpro",
+                writer=HandJointResultWriter(output_h5,retargeter.specs,{"source":"visionpro",
                     "profile":calibration.profile,"solver_parameters":VECTOR_PARAMETERS,
-                    "timebase":"recording_seconds" if args.input_h5 else "live_seconds"}, specs=retargeter.specs)
+                    "calibration":vars(calibration),
+                    "input_sha256":file_hash(args.input_h5) if args.input_h5 else None,
+                    "timebase":"recording_seconds" if args.input_h5 else "live_seconds"})
                 resources.callback(writer.close)
             while scene.alive() and (args.frames==0 or processed<args.frames):
                 tick=time.monotonic()
@@ -321,13 +214,16 @@ def visionpro_run(args):
                 results=retargeter.retarget(canonical_window(frame))
                 timings["solve"].append((time.monotonic()-stamp)*1000)
                 stamp=time.monotonic()
-                accepted={k:commands.update(v,raw.timestamp if args.input_h5 else None) for k,v in results.items()}
+                accepted={k:commands.update(v,raw.timestamp) for k,v in results.items()}
                 for key,named in accepted.items():
                     scene.apply_native(named)
                     counts["/".join(key)]["input_valid"]+=int(frame.hands[key[1]] is not None)
                     counts["/".join(key)]["solved"]+=int(results[key].valid)
                 if writer:
-                    writer.append(raw.timestamp,results,accepted,{k:retargeter.targets(frame,k) for k in results})
+                    from teleoperation.retargeting.hand.hand_model import HandTargets
+                    targets = {k: HandTargets(None, retargeter.targets(frame,k), raw.timestamp)
+                               for k in results}
+                    writer.append(raw.metadata.get("frame_id", processed),raw.timestamp,results,accepted,targets)
                 timings["command"].append((time.monotonic()-stamp)*1000)
                 stamp=time.monotonic()
                 dt=1/30 if previous_time is None else min(.1,raw.timestamp-previous_time)

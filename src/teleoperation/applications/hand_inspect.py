@@ -1,8 +1,6 @@
 import argparse
 from pathlib import Path
 from teleoperation.contracts.constants import HAND_SIDES
-from teleoperation.data.hand_h5 import read_angle_arrays
-from teleoperation.retargeting.hand.diagnostics import summarize_angles
 
 
 def inspect_angle_h5(path):
@@ -27,24 +25,11 @@ def inspect_angle_h5(path):
                 targets['/'.join(key)] = {'raw_shape':list(raw.shape),'command_shape':list(group['command_positions'].shape),
                                          'valid':int(valid.sum()),'invalid':int((~valid).sum()),'spec_hash':spec.spec_hash}
             return {'schema':'hand_joint_results_v1','path':str(path),'frames':len(stream['timestamps']),'targets':targets}
-    arrays, attrs = read_angle_arrays(path)
-    return summarize_angles(path, arrays, attrs)
+    raise ValueError('Retired angle recording: expected hand_joint_results_v1; record/export new data')
+
 
 def run(args: argparse.Namespace) -> int:
     summary = inspect_angle_h5(args.angle_h5)
-    if summary.get('schema') == 'hand_joint_results_v1':
-        import json
-        print(json.dumps(summary,indent=2,ensure_ascii=False))
-        return 0
-    print(f"path={summary['path']}")
-    print(f"frames={summary['frames']}")
-    for side in HAND_SIDES:
-        values = summary[side]
-        print(f"{side}_shape={values['shape']}")
-        print(f"{side}_valid={values['valid']}")
-        print(f"{side}_invalid={values['invalid']}")
-        print(f"{side}_nonfinite={values['nonfinite']}")
-        print(f"{side}_out_of_limits={values['out_of_limits']}")
-    for name, value in sorted(summary["attrs"].items()):
-        print(f"attr.{name}={value}")
+    import json
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 0

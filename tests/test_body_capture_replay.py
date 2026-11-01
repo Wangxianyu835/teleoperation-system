@@ -68,7 +68,9 @@ class BodyCaptureReplayTests(unittest.TestCase):
             save_body_recording(path, [capture_sample(source, raw)],
                                 {'source': 'smplerx', 'model_id': 's32', 'model_hash': 'h', 'time_unit': 'monotonic_s'})
             ids, times, hands = load_twohand_h5(path, require_aligned=False)
-            replay = BodyReplayFrameSource(path, 'normalized')
+            with self.assertRaisesRegex(ValueError, 'world metre'):
+                BodyReplayFrameSource(path, 'normalized')
+            replay = BodyReplayFrameSource(path, 'world')
             replay.next_frame()
             np.testing.assert_array_equal(replay.arms().world_arms['left'], raw.upper_body.world_arms['left'])
             self.assertEqual(replay.wrists()['left'].source, 'smplerx')

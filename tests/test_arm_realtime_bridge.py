@@ -701,10 +701,11 @@ class EntryAndReplayTests(unittest.TestCase):
         import time
         from tests.test_world_hand_pipeline import world_frame, observation
         from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
+        from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
         from teleoperation.simulation.realtime_teleop import CameraFrameSource, _record_frame, _save_dump
 
         source = CameraFrameSource.__new__(CameraFrameSource)
-        source.pipeline = MediaPipePalmLocalPipeline("world")
+        source.pipeline = MediaPipePalmLocalPipeline("world", input_profile=PALM_LENGTH_PROFILE)
         source.pose_enabled = True
         source._start_timestamp = None
         source._source = Mock()
@@ -715,7 +716,7 @@ class EntryAndReplayTests(unittest.TestCase):
         for frame in frames:
             source._source.next_teleop_observation.return_value = SimpleNamespace(
                 hands=observation(frame), upper_body=None)
-            source.next_frame()
+            live_window = source.next_frame()
             _record_frame(dumped, source.last_raw_frame, None)
         with tempfile.TemporaryDirectory() as folder:
             path = _save_dump(Path(folder) / "frames.npz", dumped)
@@ -723,7 +724,9 @@ class EntryAndReplayTests(unittest.TestCase):
             for _ in frames:
                 window = replay.next_frame()
             self.assertIsNotNone(window)
+            self.assertEqual(window.metadata['input_profile'], PALM_LENGTH_PROFILE)
             for side in SIDES:
+                np.testing.assert_array_equal(window.hands[side], live_window.hands[side])
                 np.testing.assert_array_equal(replay.data["world_" + side + "_hand"],
                                               np.stack([frame["world_" + side] for frame in frames]))
 
@@ -735,6 +738,7 @@ class EntryAndReplayTests(unittest.TestCase):
         self.assertEqual(args.arm_calibrate_frames, 30)
         self.assertFalse(args.no_arms)
         self.assertIsNone(args.input_npz)
+        self.assertEqual(args.backend, 'dex')
 
     def test_replay_source_feeds_frames_then_stops(self):
         frames = 3
@@ -749,7 +753,7 @@ class EntryAndReplayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "frames.npz"
             np.savez_compressed(path, **payload)
-            source = ReplayFrameSource(path, "normalized")
+            source = ReplayFrameSource(path, "world")
             self.assertEqual(source.frames, frames)
             for index in range(frames):
                 source.next_frame()            # 手部窗口可能为 None，但不应抛异常
@@ -1401,8 +1405,3 @@ class ElbowFollowLauncherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-
-
-
