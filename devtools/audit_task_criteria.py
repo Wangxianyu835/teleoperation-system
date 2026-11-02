@@ -35,21 +35,6 @@ from teleoperation.simulation.environment import SimulationEnv            # noqa
 from teleoperation.simulation.tasks import list_tasks                    # noqa: E402
 
 
-def _push_direction(task, name: str, meta: dict, sign: float) -> np.ndarray:
-    """算出门/抽屉「该往哪儿推」：回转关节取切向，移动副取轨道方向。"""
-    axis = np.asarray(meta['axis'], dtype=float)
-    axis = axis / max(1e-9, float(np.linalg.norm(axis)))
-    if meta['kind'] == 'prismatic':
-        return sign * axis
-    center = task.get_object_position(name)
-    arm = np.asarray(center, dtype=float) - np.asarray(meta['pivot'], dtype=float)
-    tangent = np.cross(axis, arm)
-    norm = float(np.linalg.norm(tangent))
-    if norm < 1e-9:
-        return sign * axis
-    return sign * tangent / norm
-
-
 def probe_actuation(env, task, max_steps: int = 180, drive_force: float = 200.0) -> dict:
     """驱动门/抽屉的关节，确认「关节真能动」且「动到位能满足判据」。
 
@@ -61,14 +46,14 @@ def probe_actuation(env, task, max_steps: int = 180, drive_force: float = 200.0)
     「机器人推」，只验证机构与判据的可达性。
     """
     results = {}
-    two_pi = float(np.pi / 2.0)
+    quarter_turn = float(np.pi / 2.0)
     for name, meta in list(getattr(task, 'panel_joints', {}).items()):
         body = task.objects[name]
         link = task._links[name]
         if meta['kind'] == 'prismatic':
             targets = [float(meta['limits'][0]), float(meta['limits'][1])]
         else:
-            targets = [two_pi, -two_pi]
+            targets = [quarter_turn, -quarter_turn]
         outcome = {'moved': False, 'success': False, 'steps': 0,
                    'travel_m': 0.0, 'turned_deg': 0.0}
         angle0 = float(p.getJointState(body, link, physicsClientId=env.client)[0])
