@@ -297,6 +297,7 @@ $vrRaw = '<Vision Pro 原始录制.h5>'
 | Vision Pro 录制与上游数值路线 | [头显录制](docs/visionpro-offline-capture.md)、[TransHandR VR](docs/transhandr-vr.md) |
 | 身体与手部采集 | [世界坐标采集](docs/world-landmark-capture.md) |
 | 手部输出与机械臂诊断 | [手部输出处理](docs/hand-command-safety.md)、[双臂诊断](docs/arm-diagnostics.md) |
+| 30 个仿真任务的判据与场景体检 | [仿真评测](docs/SIM_EVALUATION.md)（`devtools/audit_task_criteria.py`） |
 | 数据、坐标与模块职责 | [数据契约](docs/contracts.md)、[架构](docs/architecture.md)、[坐标约定](docs/CONVENTIONS.md) |
 | 腕输入和现场验收清单 | [腕输入与验收](docs/wrist-input-and-acceptance.md) |
 | 扩展命令与历史工作流 | [工作流参考](docs/workflow-reference.md) |

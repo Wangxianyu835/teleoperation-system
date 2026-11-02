@@ -101,9 +101,14 @@ class SimulationEnv:
         self.task.set_robot(self.robot_id)
         self.task.reset()
 
-        # 域随机化
+        # 域随机化（关节体不参与：门/抽屉的位姿由关节决定，硬搬会撕开铰链）
         if randomize:
-            self.randomizer.randomize(self.task.objects, self.client)
+            self.randomizer.randomize(self.task.objects, self.client,
+                                      skip_names=self.task.jointed_objects)
+            # 随机化会带来 ±1 cm 的 z 抖动，可能又把物体压进桌面，
+            # 所以再吸附一次，并把结果记为「初始位姿」（相对判据的基准）
+            self.task.snap_to_supports()
+            self.task.capture_initial_state()
 
         # 重置记录器
         if self.recording is not None: self.recording.reset()
@@ -163,9 +168,8 @@ class SimulationEnv:
             'robot_type': self.robot_type,
         }
         if self.task is not None:
-            for name, obj_id in self.task.objects.items():
-                pos, orn = p.getBasePositionAndOrientation(
-                    obj_id, physicsClientId=self.client)
+            for name in self.task.objects:
+                pos, orn = self.task.get_object_pose(name)
                 obs[f'{name}_pos'] = pos
                 obs[f'{name}_orn'] = orn
         return obs

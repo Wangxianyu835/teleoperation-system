@@ -13,11 +13,18 @@ class DomainRandomizer:
         self.object_color_jitter = 0.15   # RGB颜色抖动范围
         self.position_noise = 0.02        # 初始位置微扰（米）
 
-    def randomize(self, task_objects: dict, client_id: int):
-        """对任务中的所有物体施加随机化"""
+    def randomize(self, task_objects: dict, client_id: int, skip_names=()):
+        """对任务中的所有物体施加随机化
+
+        Args:
+            skip_names: 不参与随机化的物体名。关节体（门/抽屉/压杆）必须跳过 ——
+                        它们的位姿由关节（以及底座的锚点）决定，硬搬会直接把
+                        铰链/滑轨撕裂。
+        """
+        skip = set(skip_names or ())
         for name, obj_id in task_objects.items():
-            if name == 'table':
-                continue  # 操作台不动
+            if name == 'table' or name in skip:
+                continue  # 操作台/关节体不动
 
             # 1. 摩擦系数随机化
             friction = np.random.uniform(*self.friction_range)
