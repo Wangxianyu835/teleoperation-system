@@ -1399,6 +1399,67 @@ class ElbowFollowLauncherTests(unittest.TestCase):
         self.assertEqual(args.arm_elbow_follow, self.launcher.THIS_BUILD)
 
 
+def load_arm_verifier():
+    """按路径加载 ``devtools/verify_realtime_arm_bridge.py``（它不在安装包里）。"""
+    if str(DEVTOOLS) not in sys.path:
+        sys.path.insert(0, str(DEVTOOLS))
+    spec = importlib.util.spec_from_file_location(
+        "verify_realtime_arm_bridge", DEVTOOLS / "verify_realtime_arm_bridge.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ArmVerifierRecipeTests(unittest.TestCase):
+    """离线验收脚本要能复现 §8.17 / §8.19 的口径 A/B。
+
+    ``realtime_teleop --input-npz`` 带手臂会直接 raise，所以 A/B 只能在验收脚本里跑；
+    这两个纯函数（建桥 / 肘跟随三条值）就是那条链路里唯一需要单独钉住的地方。
+    """
+
+    def setUp(self):
+        self.verifier = load_arm_verifier()
+
+    def profiles(self):
+        return {name: profile_for(name) for name in PAPER_ROBOTS}
+
+    def test_defaults_match_the_realtime_entry(self):
+        args = self.verifier.build_parser().parse_args([])
+        self.assertEqual((args.arm_map, args.arm_posture_frame, args.arm_elbow_follow),
+                         ("chain", "auto", "off"))
+
+    def test_auto_keeps_each_robot_profile(self):
+        args = self.verifier.build_parser().parse_args(["--arm-map", "posture"])
+        summary = self.verifier.build_bridge(args, self.profiles(), ("right",)).summary()
+        self.assertEqual(summary["posture_frame"], "profile")
+        self.assertEqual(summary["posture_frame_by_robot"],
+                         {name: profile_for(name).posture_frame for name in PAPER_ROBOTS})
+
+    def test_a_forced_frame_reaches_every_robot(self):
+        args = self.verifier.build_parser().parse_args(
+            ["--arm-map", "posture", "--arm-posture-frame", "mapped"])
+        bridge = self.verifier.build_bridge(args, self.profiles(), ("right",))
+        self.assertEqual(bridge.summary()["posture_frame"], "mapped")
+
+    def test_the_elbow_plan_only_reframes_delta_robots(self):
+        from types import SimpleNamespace
+
+        bridge = SimpleNamespace(elbow_bend_neutral=lambda: {"right": 100.0},
+                                 elbow_bend_target=lambda: {"right": 120.0})
+        per_side = {
+            "h1_2": SimpleNamespace(elbow=(0.1, 0.2, 0.3), info={"posture_frame": "mapped"}),
+            "gr1_t2": SimpleNamespace(elbow=(0.2, 0.2, 0.3), info={"posture_frame": "delta"}),
+        }
+        elbows, baseline, bend = self.verifier.elbow_plan(bridge, per_side, "right", "operator")
+        self.assertEqual(set(elbows), {"h1_2", "gr1_t2"})
+        self.assertEqual(baseline, {"h1_2": None, "gr1_t2": 100.0})
+        self.assertEqual(bend, 120.0)
+
+    def test_elbow_follow_off_passes_nothing(self):
+        self.assertEqual(self.verifier.elbow_plan(object(), {}, "right", "off"),
+                         (None, None, None))
+
+
 if __name__ == "__main__":
     unittest.main()
 
