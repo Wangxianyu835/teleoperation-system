@@ -146,6 +146,21 @@ class ApplicationEntrypointTests(unittest.TestCase):
         self.assertEqual(audit["resets"], len(selected_tasks))
         self.assertEqual(audit["steps"], 5 * len(selected_tasks))
 
+    def test_bounded_episode_records_one_failure_trial(self):
+        """步数用尽的一次试验必须记进 MetricsTracker（否则 --benchmark 是空表）。"""
+        with tempfile.TemporaryDirectory() as temp, contextlib.redirect_stdout(io.StringIO()):
+            env = sessions.create_environment(robot_type="g1", render=False, record=False, data_dir=temp)
+            try:
+                success, elapsed = sessions.run_episode(env, controller=None, max_steps=3, randomize=False)
+                self.assertFalse(success)
+                self.assertEqual(len(env.metrics.results["pushcube"]), 1)
+                self.assertEqual(env.metrics.get_success_rate("pushcube"), 0.0)
+                # 报真实墙钟，不要把 task.max_time 当成完成时间
+                self.assertLess(elapsed, env.task.max_time / 2.0)
+                self.assertIn("pushcube", env.metrics.get_summary())
+            finally:
+                env.close()
+
     def test_conflicting_modes_fail_before_environment_creation(self):
         for options in (("--demo", "--benchmark"), ("--task", "pushcube", "--benchmark")):
             with self.subTest(options=options):
