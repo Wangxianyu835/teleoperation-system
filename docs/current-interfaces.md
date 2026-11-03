@@ -1,49 +1,49 @@
-# 当前接口与旧接口清理
+# 当前接口与后续处理边界
 
-## 2026-11-04：RGB/VR并列输入纠正
+## 正式手部控制
 
-正式手部控制已统一：RGB或Vision Pro经各自适配器进入`hand_palm_length_window3_v1`，均可选择SharedJointNNRetargeter或NormalizedDexRetargeter，然后复用JointCommandPipeline、原生执行和hand_joint_results_v1。入口为`hand control --source camera|visionpro --backend nn|dex`；VR快捷入口默认NN，NN/dex均转发共同应用。
+RGB与Vision Pro经各自设备适配器进入`hand_palm_length_window3_v1`，两者均可选择SharedJointNNRetargeter或NormalizedDexRetargeter，然后共用JointCommandPipeline、原生执行和hand_joint_results_v1。入口是`hand control --source camera|visionpro --backend nn|dex`；VR快捷入口默认NN，NN/dex均转发共同应用。
 
-历史相机profile与新规范的相机窗口逐位相等，既有目标shared权重保持原metadata经严格校验复用；VR来源如实记录。上游TransHandR改为显式`hand vr --backend transhandr`；此次对实际本地源码与权重验证输入/原始输出差异均0，来源hash见下方原表，新报告`outputs/unified_hand/vr_upstream_equivalence.json`。旧固定标定VR dex函数未删除，但正式dex入口不再走该分支。旧分支删除计划暂停。
-
-具体契约与命令见[统一手部输入](unified-hand-input.md)。下文2026-11-01清理内容为历史记录，其中“VR专用”不代表正式NN/dex仍按设备分叉。
-
-本次是明确的接口断开更新，不提供旧数据转换器。旧数据可从 Git checkpoint 查看。
-
-修改前提交：`6e7b35d3c825f65edc16b5bfee99ca3080ac45a1`。
-修改前 annotated tag：`checkpoint-20261101-1852-remove-legacy-demo-data`。
+设备与方法分别选择。VR来源如实记录，不套用相机原始预处理，也不改写权重元数据。契约、命令和输入统一时的验收记录见[统一手部输入](unified-hand-input.md)。
 
 ## 当前接口
 
-- 观测：CameraFrame、RawHandFrame、UpperBodyObservation、RawTeleopObservation、WristObservation。
-- 相机窗口：camera_palm_length_window3_v1，world米制→canonical right掌部→三帧→掌长中位数归一化。
-- 算法结果：HandJointResult，目标手独立原生关节。
-- 执行：HandJointCommand，经有效限位、滤波、限速、可选L21网格检查和耦合展开。
-- 相机NN：每目标手型一份显式shared checkpoint，运行时适配左右侧。
-- 手部结果：hand_joint_results_v1，分离raw与accepted command。回放校验规格、顺序和耦合。
-- 身体记录：smplerx_body_recording_h5_v1，保存RGB、模型包及来源时间。
-- TRON2A：身体观测和原生L21命令组合成48D，臂7+手17，每侧独立。
-- VR：专用TransHandR预处理，内部原始18D，外部原生17D，诊断格式transhandr_vr_results_v2。
+|边界|实际内容|
+|---|---|
+|观测|CameraFrame、RawHandFrame、UpperBodyObservation、RawTeleopObservation、WristObservation|
+|共同手窗口|hand_palm_length_window3_v1；canonical right米制25点→三帧→掌长中位数归一化|
+|相机数值规范|camera_palm_length_window3_v1；训练、三机器人相机、TRON2A和部分导出仍使用|
+|NN权重|每目标手型一份显式shared checkpoint；右手canonical输出，运行时适配左右侧；严格校验规格、关节顺序、数值规范和有效限位|
+|算法结果|HandJointResult，目标手独立原生关节|
+|执行命令|HandJointCommand；有效限位、滤波、限速、可选L21网格检查和耦合展开|
+|手部结果|hand_joint_results_v1；分离raw与accepted command，回放校验规格、顺序和耦合|
+|身体记录|smplerx_body_recording_h5_v1；保存RGB、模型包及来源时间|
+|TRON2A|身体观测和原生L21命令组合成48D，每侧7臂+17手|
+|显式上游复现|hand vr --backend transhandr；内部原始18D、外部原生17D，诊断格式transhandr_vr_results_v2|
 
-## 删除与迁移
+相机原始world、已对齐canonical world和Vision Pro矩阵记录仍由当前入口使用。相机采集保存观测并进行对齐；geometric.py仍供L21几何诊断使用。图像normalized坐标用于检测、预览及现存诊断，不等同于掌长归一化的无量纲后端窗口。
 
-删除全部applications/demo、旧根demo快捷入口、sim demo-joints和旧样例生成工具。
-删除旧相机profile、旧模型加载器、无调用方的成对权重参数兼容层、hand realtime、replay l21-hand/native-hand/mounted-hand、历史18D角度文件读写。
-删除L21到其他原装手的有损映射、旧结果writer/reader、glove分组读取和隐式时间轴。
-删除明确列出的visual_hand_data、aligned_visual_hand_data、palm_local_visual_hand_data和旧demo样例H5。
-当前canonical world、原始camera world和Vision Pro矩阵记录仍由当前入口使用，保留。
-相机采集功能保留，camera_record委托当前world录制与对齐，不再生成18D角度副产物。
-任务基准和物理仿真保留；geometric.py仅为L21几何诊断，不再登记为正式相机控制后端。
-正式相机后端只有NN/dex。原始normalized坐标用于检测预览，不作为旧NN输入profile或执行文件。
+三机器人NN用重复的`--hand-checkpoint MODEL PATH`指定各目标shared权重，dex无需操作者标定。TRON2A导出用`--hand-joints`读取原生命令；DualTeleoperator接受RawTeleopObservation和显式control_seconds。正式手控制使用共同pipeline，但训练和双臂相机消费者尚未全部收敛到UnifiedHandPipeline。
 
-三机器人NN使用重复的--hand-checkpoint MODEL PATH；dex不使用相机操作者标定。
-TRON2A dual export使用--hand-joints读取新版结果，DualTeleoperator只接受RawTeleopObservation和显式control_seconds。
+## 保留并交由后续处理的部分
+
+|剩余部分|当前消费者与边界|
+|---|---|
+|固定VR标定组件|hand dex-calibrate和devtools/dex_native_acceptance.py仍使用DexInputAdapter、DexCalibration、DexNativeRetargeter及相关辅助函数；正式NN/dex控制无需固定标定|
+|相机pipeline与camera profile|MediaPipePalmLocalPipeline供三机器人和TRON2A预处理使用；camera profile还用于训练数据规范，不能直接删除|
+|双臂legacy与normalized诊断分支|仍有旧行为测试或几何验收用途，本次未迁移|
+|模型构造重复|hand_control._selection、hand_backend.build_camera_retargeter、dual.load_camera_hand_retargeter分别服务当前入口|
+|GBK扫描工具|devtools与诊断CLI各有入口，尚未合并|
+|录制与动作验证|活跃H5格式用途不同；PartialLimbVector仍用于拒绝不完整机器人动作|
+|环境工具与路径接口|preflight.ps1仍需维护；training_run_directory当前侧参数行为保留|
+
+本次只清理无消费者代码和混合文件中的闲置部分；以上活跃分支、上游TransHandR、FK、KalmanSmoother、身体跟踪和原生执行/回放继续保留。具体范围和执行记录见[清理计划](superpowers/plans/2026-11-04-unused-code-cleanup.md)。
 
 ## VR 上游证据与边界适配
 
 上游输入和原始网络输出保持不变。18→17转换仅在VR专用模型边界发生。
 设备管理、源/目标手选择、命令处理和记录属于边界适配，不参与上游输入数值计算。
-实际对照脚本devtools/verify_vr_both.py执行真实左分支与相邻注释右分支，各10个连续窗口、scale=1.0和1.7。
+输入统一改动时，devtools/verify_vr_both.py对真实左分支与相邻注释右分支各验证10个连续窗口、scale=1.0和1.7。本次无调用代码清理未重新运行该数值比较。
 左右输入张量最大差异0，原始模型输出最大差异0。右分支不是上游真实右手硬件验收。
 
 源文件SHA-256：
@@ -57,12 +57,4 @@ TRON2A dual export使用--hand-joints读取新版结果，DualTeleoperator只接
 | `D:\2026\code\teleoperation-system-retargeting\assets\robots\l21\left\linkerhand_l21_left.urdf` | `cb265e5cad0e41bd02d9c60fe461c3b83645a7584cce175152328cc34bafc57a` |
 | `D:\2026\code\teleoperation-system-retargeting\assets\robots\l21\right\linkerhand_l21_right.urdf` | `4c7d580b7518cb58277020ca9a1d4ff69dafce694a76617795be4fab64b66ba7` |
 
-本地数值报告：outputs/tmp_legacy_cleanup/vr_upstream_equivalence.json。软件测试、数值等价与仿真探针不代替真实相机、头显或实体硬件验收。
-
-## 本次验证
-
-- teleoperation 环境运行 unittest discover -s tests：549项，547通过，2项因需要dex独立环境跳过。
-- dex独立环境运行 test_normalized_dex 和 test_normalized_retargeters：5项全部通过，覆盖主环境跳过的2项。
-- 三机器人场景原生命令探针：60个手部关节发生运动，非手部保持关节最大漂移0.0225rad，小于0.05rad阈值。
-- VR实际上游源码与真实权重数值比较：左右输入与原始输出最大差异均0。
-- 所有内部模块引用解析和 git diff --check 通过。
+输入统一时的本地数值报告：outputs/unified_hand/vr_upstream_equivalence.json。软件测试、数值等价与仿真探针不代替真实相机、头显或实体硬件验收。

@@ -259,10 +259,10 @@ rg -n 'visionpro_run|LatestCameraInput|applications\.dex_native|canonical_window
 - Consumes: Tasks 1–4的真实删除清单和保留消费者。
 - Produces: 与当前代码一致的使用说明；旧模块不再被介绍为可调用接口；历史设计不再指挥删除活跃分支。
 
-- [ ] **Step 1：建立检查点。** `$cleanupBatch = 'prune-retired-code-docs'`。完整检索已删除文件名、类名、函数名、旧启动命令、旧格式名及旧计划链接；使用符号边界避免将JointNNRetargeter误匹配到SharedJointNNRetargeter。
-- [ ] **Step 2：删除旧说明与旧计划/spec。** 清除README/current-interfaces中的旧删除流水账、过期接口介绍、旧方案执行说明。删除2026-11-03计划和spec，清理引用它们的链接。当前计划/spec的删除清单可保留作为本次工作记录，不保留旧API调用示例。
-- [ ] **Step 3：修正文档的事实边界。** 明确新的共同手控制与仍在用的camera profile/训练/三机器人/TRON2A边界；删除“旧相机profile全部删除”这类与实际不符的泛称，保留准确的当前profile名称。保留dex-calibrate和验收工具仍用旧标定组件的事实，不宣称已全部移除。保留上游VR源码哈希表、数值证据及硬件验收限制；历史549/560测试数字不充作本次结果。
-- [ ] **Step 4：检查链接和提交。** `git diff --check`；逐个检查受影响本地Markdown链接的目标文件是否存在，研究文档有链接时仅修链接。不按legacy/18D/normalized关键词整段删文档。提交`docs: remove retired interface documentation`，记录hash/tag。
+- [x] **Step 1：建立检查点。** `$cleanupBatch = 'prune-retired-code-docs'`。完整检索已删除文件名、类名、函数名、旧启动命令、旧格式名及旧计划链接；使用符号边界避免将JointNNRetargeter误匹配到SharedJointNNRetargeter。
+- [x] **Step 2：删除旧说明与旧计划/spec。** 清除README/current-interfaces中的旧删除流水账、过期接口介绍、旧方案执行说明。删除2026-11-03计划和spec，清理引用它们的链接。当前计划/spec的删除清单可保留作为本次工作记录，不保留旧API调用示例。
+- [x] **Step 3：修正文档的事实边界。** 明确新的共同手控制与仍在用的camera profile/训练/三机器人/TRON2A边界；删除“旧相机profile全部删除”这类与实际不符的泛称，保留准确的当前profile名称。保留dex-calibrate和验收工具仍用旧标定组件的事实，不宣称已全部移除。保留上游VR源码哈希表、数值证据及硬件验收限制；历史549/560测试数字不充作本次结果。
+- [x] **Step 4：检查链接和提交。** `git diff --check`；逐个检查受影响本地Markdown链接的目标文件是否存在，研究文档有链接时仅修链接。不按legacy/18D/normalized关键词整段删文档。提交`docs: remove retired interface documentation`，记录hash/tag。
 
 ## Task 6：最终回归与交接清单
 
@@ -333,3 +333,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 3：检查点 `checkpoint-20261104-0117-remove-unused-side-nn`；修改前 `1554c724011cae700c5defca515c0bc317fedc13`；删除前迁移测试25项（1项跳过），删除后相关38项（2项跳过）；完整560项（557通过、3项dex跳过）；独立dex环境16项全通过。保留shared函数AST完全一致。
 
 - Task 4：检查点 `checkpoint-20261104-0121-remove-idle-vr-and-world-format`；修改前 `8637bfc4134c681716da3f111609e635a8bfa829`；相关63项（1项跳过），完整557项（554通过、3项dex跳过）；dex-calibrate及hand vr帮助可加载；保留标定/验收辅助函数AST完全一致。删除3个仅验证退役实现的测试，当前组合录制与统一VR闭环用例保留。
+
+- Task 5：检查点 `checkpoint-20261104-0123-prune-retired-code-docs`；修改前 `5fb4ef2006674baa6cf7fca0c0e2a32dae7e336b`；删除旧计划/spec，清理README及接口说明；8份Markdown本地链接检查无断链，退役对象未在当前使用文档中残留；保留VR源码哈希和明确标注的历史输入统一验收。

@@ -4,7 +4,7 @@
 
 本项目将摄像头或 Vision Pro 的人体观测转换为机器人关节命令，并在 PyBullet 中显示动作。手部支持 L21、H1-2、GR1-T2 和 G1；摄像头还支持三机器人双臂跟随与 TRON2A 工作流。下列示例用于仿真，不连接实体机器人。
 
-本文包含2026-11-01接口清理和2026-11-04并列输入纠正。手部正式控制使用设备无关契约与目标手原生关节；相机机械臂使用独立SMPLer-X S32工作进程；旧TransHandR复现需显式选择。
+手部正式控制使用设备无关契约与目标手原生关节；相机机械臂使用独立SMPLer-X S32工作进程；TransHandR上游复现需显式选择。当前接口和仍保留的局部分支见[接口说明](docs/current-interfaces.md)。
 
 ## 选择工作流
 
@@ -179,7 +179,7 @@ if ($LASTEXITCODE -ne 0) { throw '关节角导出失败，请检查上方输出�
 
 导出不打开摄像头。结果保留完整时间线，包括前两帧预热及缺手帧。回放验证手型、关节顺序、限位与耦合后直接执行已接受命令，不再次滤波。结果文件独占创建，不覆盖已有路径。
 
-导出双侧 NN 时使用 shared `--hand both --checkpoint <shared.pth>`，回放也选 `--hand both`。结果统一使用 `replay hand-joints`；旧回放命令已移除。
+导出双侧 NN 时使用 shared `--hand both --checkpoint <shared.pth>`，回放也选 `--hand both`。结果统一使用 `replay hand-joints`。
 
 ## 5. 实时控制目标手
 
@@ -258,7 +258,7 @@ $body = "outputs/smplerx/$armSession/body.h5"
 
 `record-world` 等待首个身体结果后开始指定数量的采集；加 `--no-arms` 仅采集 Hands。组合 H5 保存无损压缩 RGB、原始模型包及最终观测。录制器在保存前持有本次数据，长录制会占用内存和磁盘。
 
-三机器人手指已使用各自原生 HandSpec。NN 后端用重复的 `--hand-checkpoint MODEL PATH` 为每种目标指定 shared 权重；dex 使用掌长规范，不再需要相机 dex 标定。旧 MediaPipe Pose 机械臂输入及旧机械臂 NPZ/H5 reader 已移除，需要重新采集；`--input-npz` 仅支持手指调试，不接受旧机械臂或腕字段。
+三机器人手指使用各自原生 HandSpec。NN 后端用重复的 `--hand-checkpoint MODEL PATH` 为每种目标指定 shared 权重；dex 使用掌长规范，无需相机 dex 标定。`--input-npz` 仅支持手指调试，身体与腕观测使用上述身体录制格式。
 
 当前实测的五分钟 S32 单模型静态图片运行得到 1,604 个新结果、5.34 Hz、p95 234 ms，未达到 10 Hz / p95 150 ms 目标。40 个真实模型结果完成 H5 往返和三机器人回放；这些输入是重复静态图片。真实相机、动态动作、遮挡及组合负载连续运行仍待验收，见[回归与验收状态](docs/current-interfaces.md)。
 
@@ -280,9 +280,9 @@ $vrRaw = '<Vision Pro 原始录制.h5>'
 
 实时连接将 `--input-h5 $vrRaw` 换为 `--ip '<头显地址>'`，并安装实时 SDK。数值来源、源码哈希、左右侧边界适配和完整命令见 [TransHandR VR 文档](docs/current-interfaces.md)。VR 手部入口不生成肩肘数据。
 
-旧相机 profile、18D 角度文件、L21 到原装手的有损映射、旧 demo 管线和旧样例数据已删除，不提供转换入口。三机器人手指直接输出目标手原生关节。TransHandR VR 内部18D数值保留在专用模型边界，对外为L21原生17D；TransHandR仅支持 `--scene hands`，VR dex 使用原生机器人场景。
+训练、三机器人相机和TRON2A仍使用`camera_palm_length_window3_v1`；正式RGB/VR手部控制默认使用`hand_palm_length_window3_v1`。三机器人手指直接输出目标手原生关节。TransHandR VR内部18D数值保留在专用模型边界，对外为L21原生17D；TransHandR仅支持`--scene hands`，统一VR控制按目标手选择场景。
 
-TRON2A 的 `dual camera --with-hands` 使用一份新版 L21 shared checkpoint；`dual export --hand-joints <hand_joint_results_v1.h5>` 读取已接受原生命令。旧 `--angle-h5` 导出参数和旧字典观测不再接受。
+TRON2A 的 `dual camera --with-hands` 使用一份新版 L21 shared checkpoint；`dual export --hand-joints <hand_joint_results_v1.h5>` 读取已接受原生命令。双臂实时输入使用`RawTeleopObservation`。
 
 ## 8. 接口与验证
 

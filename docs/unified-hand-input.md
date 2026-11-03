@@ -1,6 +1,6 @@
 # RGB 与 Vision Pro 并列的手部重定向
 
-2026-11-04：按用户示意图纠正“设备决定算法”的组织方式。原底层旧分支删除计划暂停，本次没有执行其A/B/C/D删除。
+RGB与Vision Pro通过各自设备适配器进入共同手部契约，独立选择目标手和NN/dex后端。当前接口与仍保留的局部分支见[接口说明](current-interfaces.md)。
 
 ## 正式链路
 
@@ -64,13 +64,13 @@ python -m teleoperation hand vr --input-h5 datasets/raw/visionpro_hand_arm_20261
 
 ## 上游TransHandR边界
 
-`hand vr --backend transhandr`是显式复现选项，保留原三帧、固定缩放、18D模型、17D边界和专用诊断schema。VR默认不再走它。旧固定标定VR dex函数本次未删除，但正式`hand vr --backend dex`不再调用该分支。
+`hand vr --backend transhandr`是显式复现选项，保留原三帧、固定缩放、18D模型、17D边界和专用诊断schema。VR默认使用共同NN/dex流程。固定标定命令与其验收辅助工具仍单独保留，正式NN/dex控制无需固定标定。
 
 ```powershell
 python -m teleoperation hand vr --backend transhandr --input-h5 datasets/raw/visionpro_hand_arm_20261012_215137_live.h5 --checkpoint D:/2026/code/TransHandR/TransHandR/checkpoint/models/thumb3/linker/model_final.pth --scene hands --headless --frames 120
 ```
 
-实际本地上游源码路径、SHA-256仍记在`docs/current-interfaces.md`的VR上游证据表。此次重新运行`devtools/verify_vr_both.py`对真实源码和权重比较：左右各10窗口，scale=1/1.7，输入/原始输出最大差异均0。右分支来自上游相邻注释，不是右手硬件验收。报告为`outputs/unified_hand/vr_upstream_equivalence.json`。
+实际本地上游源码路径、SHA-256记在[VR上游证据表](current-interfaces.md#vr-上游证据与边界适配)。输入统一改动时运行`devtools/verify_vr_both.py`对真实源码和权重比较：左右各10窗口，scale=1/1.7，输入/原始输出最大差异均0。右分支来自上游相邻注释，不是右手硬件验收。报告为`outputs/unified_hand/vr_upstream_equivalence.json`；本次无调用代码清理未重新生成该数值报告。
 
 ## 验证范围
 
@@ -78,10 +78,11 @@ python -m teleoperation hand vr --backend transhandr --input-h5 datasets/raw/vis
 
 完整unittest还覆盖相机、身体、TRON2A、训练、旧上游复现和任务；dex独立环境补充主环境缺少的优化器依赖。记录与合成姿态的软件验证不代替真实相机/头显动态连续验收，不声称论文任务成绩。
 
-2026-11-04本次验证结果：
+2026-11-04输入统一改动时的验证结果（本次清理前）：
 
 - 主环境`unittest discover -s tests`：560项，557通过，3项因dex依赖跳过；日志`outputs/unified_verified_suite.log`。
 - dex独立环境`tests.test_unified_hand_inputs tests.test_normalized_dex tests.test_normalized_retargeters`：16项全部通过，覆盖主环境跳过的3项；日志`outputs/unified_dex_verified.log`。
 - 真实VR录制`visionpro_hand_arm_20261012_215137_live.h5`经统一dex驱动G1：60帧，每侧预热后58个有效手解，60帧接受命令通过严格reader校验，左右腕各执行51帧；记录`outputs/unified_hand/real_vr_dex_g1.h5`与同名JSON。
 - 实际本地TransHandR上游/真实权重：左右输入与原始输出最大差异均0，来源hash见等价报告。
-- 回归中发现一项旧TRON2A运动测试使用真实宿主时钟但移除了采集/等待。固定时钟可复现其零运动失败，已仅为测试注入30Hz控制时间；保留运动断言与生产限速，固定时钟复验通过。
+
+无调用代码清理后的回归结果单独记录在[当前接口与验收](current-interfaces.md)，以上历史数字不作为本次清理的新验证。
