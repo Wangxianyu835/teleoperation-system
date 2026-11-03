@@ -1,5 +1,7 @@
 # Unused Code Cleanup Implementation Plan
 
+状态：2026-11-04已按六批执行完成。当前源码与验收结果见docs/current-interfaces.md。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 删除源码审阅确认不再使用的旧模块、函数、测试依赖和文档说明；混合文件仅删除无用部分，剩余活跃分支交给用户处理。
@@ -275,8 +277,8 @@ rg -n 'visionpro_run|LatestCameraInput|applications\.dex_native|canonical_window
 - Consumes: 前五批提交和检查点。
 - Produces: 确认删除的对象、仍保留的消费者、实际测试pass/skip/fail、未执行硬件验收、可回退hash/tag。
 
-- [ ] **Step 1：建立最终验收记录检查点。** `$cleanupBatch = 'verify-unused-cleanup'`。确认工作区无不明变更，核查diff没有修改retargeter数值方法、profile约定、控制默认值或路径API。
-- [ ] **Step 2：运行完整主环境回归。**
+- [x] **Step 1：建立最终验收记录检查点。** `$cleanupBatch = 'verify-unused-cleanup'`。确认工作区无不明变更，核查diff没有修改retargeter数值方法、profile约定、控制默认值或路径API。
+- [x] **Step 2：运行完整主环境回归。**
 
 ```powershell
 & $cleanupPython -B -X utf8 -m unittest discover -s tests
@@ -285,7 +287,7 @@ if ($LASTEXITCODE -ne 0) { throw '完整回归失败，不能宣告清理完成�
 
 不写死通过数量；删除旧测试后数量会下降。分别记录测试总数、失败数、跳过数和具体原因。
 
-- [ ] **Step 3：独立dex环境补验当前实际后端。**
+- [x] **Step 3：独立dex环境补验当前实际后端。**
 
 ```powershell
 . ./devtools/dex_native_env.ps1
@@ -296,8 +298,8 @@ if ($LASTEXITCODE -ne 0) { throw 'dex回归失败，不能将主环境skip写为
 
 如果本次确实未动算法/VR预处理和权重，不重新生成昂贵的上游数值报告，只运行test_transhandr_vr等现有回归；不能把旧报告写为本次新验证。如果diff意外触及数值路径，先撤回越界修改，数值迁移留给用户处理。
 
-- [ ] **Step 4：确认删除完整且没有误删。** 将spec中的十个删除文件逐个用Test-Path确认不存在；用rg复查退役符号在src/tests/devtools中没有消费者。当前CLI帮助至少检查hand control/export/vr/dex-calibrate、hand record-world、dual realtime、replay hand-joints；这些仅执行--help，不打开设备。检查保留的Kalman、shared loader、NativeVectorSolver、TransHandR、MediaPipePalmLocalPipeline、camera profile仍有原有消费者。检查文档内无退役用法和断链，允许新计划/spec的删除清单定位名称。
-- [ ] **Step 5：记录并提交验收。** 写明“已删清单”和“剩余交给用户清单”，逐项附具体消费者；勾选完成任务，记录真实验证结果和本批hash/tag。提交`docs: record scoped cleanup verification`。最终报告所有批次提交与检查点；不push。
+- [x] **Step 4：确认删除完整且没有误删。** 将spec中的十个删除文件逐个用Test-Path确认不存在；用rg复查退役符号在src/tests/devtools中没有消费者。当前CLI帮助至少检查hand control/export/vr/dex-calibrate、hand record-world、dual realtime、replay hand-joints；这些仅执行--help，不打开设备。检查保留的Kalman、shared loader、NativeVectorSolver、TransHandR、MediaPipePalmLocalPipeline、camera profile仍有原有消费者。检查文档内无退役用法和断链，允许新计划/spec的删除清单定位名称。
+- [x] **Step 5：记录并提交验收。** 写明“已删清单”和“剩余交给用户清单”，逐项附具体消费者；勾选完成任务，记录真实验证结果和本批hash/tag。提交`docs: record scoped cleanup verification`。最终报告所有批次提交与检查点；不push。
 
 ## 最终应交还给用户的剩余代码
 
@@ -335,3 +337,18 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 4：检查点 `checkpoint-20261104-0121-remove-idle-vr-and-world-format`；修改前 `8637bfc4134c681716da3f111609e635a8bfa829`；相关63项（1项跳过），完整557项（554通过、3项dex跳过）；dex-calibrate及hand vr帮助可加载；保留标定/验收辅助函数AST完全一致。删除3个仅验证退役实现的测试，当前组合录制与统一VR闭环用例保留。
 
 - Task 5：检查点 `checkpoint-20261104-0123-prune-retired-code-docs`；修改前 `5fb4ef2006674baa6cf7fca0c0e2a32dae7e336b`；删除旧计划/spec，清理README及接口说明；8份Markdown本地链接检查无断链，退役对象未在当前使用文档中残留；保留VR源码哈希和明确标注的历史输入统一验收。
+
+- Task 6：检查点 `checkpoint-20261104-0125-verify-unused-cleanup`；修改前 `e13541950069bba44b411ddfdd17612cff6a66aa`；最终完整回归557项（554通过、3项dex依赖跳过），94.143秒；最终独立dex回归16项全部通过、无跳过，7.057秒。10个生产模块和2份旧计划文档均已删除，269份Python文件AST通过，26个注册CLI的目标函数及帮助命令通过；退役符号没有代码引用。15个修改后生产文件的保留函数/类与清理前AST一致（排除docstring及两处约定的提示文本变化）。未改共享预处理、dex算法、TransHandR数值路径、paths.py、AGENTS.md或数据/权重。
+
+### 批次提交与检查点
+
+|批次|结果提交|修改前检查点|
+|---|---|---|
+|1 无调用模块|cb00e4ee3b855e23d7a2f448ede662b7b88db384|checkpoint-20261104-0111-remove-orphan-modules|
+|2 闲置成员|1554c724011cae700c5defca515c0bc317fedc13|checkpoint-20261104-0114-trim-unused-members|
+|3 单侧NN接口|8637bfc4134c681716da3f111609e635a8bfa829|checkpoint-20261104-0117-remove-unused-side-nn|
+|4 闲置VR与旧格式|5fb4ef2006674baa6cf7fca0c0e2a32dae7e336b|checkpoint-20261104-0121-remove-idle-vr-and-world-format|
+|5 文档清理|e13541950069bba44b411ddfdd17612cff6a66aa|checkpoint-20261104-0123-prune-retired-code-docs|
+|6 最终验收|保存本执行记录的提交|checkpoint-20261104-0125-verify-unused-cleanup|
+
+主环境跳过的3项均因缺少dex_retargeting；独立环境已执行同一批可选用例，全部通过。软件/合成输入与离线回放不代表真实相机、头显或实体机器人验收。本次没有运行真实设备，没有重跑上游数值报告，没有推送或合并分支。

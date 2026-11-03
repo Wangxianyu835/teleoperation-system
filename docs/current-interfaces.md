@@ -58,3 +58,19 @@ RGB与Vision Pro经各自设备适配器进入`hand_palm_length_window3_v1`，�
 | `D:\2026\code\teleoperation-system-retargeting\assets\robots\l21\right\linkerhand_l21_right.urdf` | `4c7d580b7518cb58277020ca9a1d4ff69dafce694a76617795be4fab64b66ba7` |
 
 输入统一时的本地数值报告：outputs/unified_hand/vr_upstream_equivalence.json。软件测试、数值等价与仿真探针不代替真实相机、头显或实体硬件验收。
+
+## 2026-11-04无调用代码清理验收
+
+|验证项|本次实际结果|
+|---|---|
+|主环境完整unittest|557项，554通过、3项因缺少dex_retargeting跳过；94.143秒|
+|独立dex环境回归|test_normalized_dex、test_normalized_retargeters、test_unified_hand_inputs共16项全部通过，无跳过；覆盖主环境跳过的3项|
+|CLI入口|26个注册handler均能定位函数，全部--help命令返回0|
+|源码检查|269个Python文件AST解析成功，退役对象无残余代码引用|
+|删除范围|10个源码模块及2份已被替代的计划文档；混合文件中的闲置成员按范围删除|
+|文档|8份Markdown本地链接检查无断链；当前文档不再提供退役接口用法|
+|算法保持|保留函数/类AST对比通过，shared预处理、dex求解器和TransHandR数值路径未改动|
+
+相较清理前560项，减少的3项仅验证已退出的旧最新帧包装器、旧VR控制循环和旧独立录制格式；输出维数、规格身份、限位篡改、左右手转换等校验已保留或迁移到当前shared接口。组合录制、统一VR缺手/恢复、通用结果和严格回放测试继续执行。
+
+各批检查点、提交和剩余消费者见[执行记录](superpowers/plans/2026-11-04-unused-code-cleanup.md#执行记录)。没有启动真实相机、头显或实体机器人；本次未重新生成上游数值等价报告，历史证据在上节单独标注。
