@@ -8,6 +8,7 @@
 #   1 interpreter  2 GBK safety  3 C: zero-write  4 teammate code untouched
 #   5 nothing big staged  6 rule files present  7 architecture boundary
 #   8 (-Full) unittest + CLI smoke
+#   9 (-Full) simulation task audit (30 tasks: criteria not free, joints drivable)
 #
 # NOTE: every literal in this file is ASCII on purpose.  PowerShell 5.1 reads
 # .ps1 files using the machine's ANSI/OEM code page, so non-ASCII literals can
@@ -355,6 +356,34 @@ if ($Full) {
 } else {
     Head '8) full baseline (rule 5) -- SKIPPED'
     Say '[INFO]' 'run with -Full before and after any change (unittest + CLI smoke + env self-check)'
+}
+
+# --- 9. simulation task audit (-Full) -------------------------------------
+# The 30 built-in tasks must stay evaluable: no criterion satisfied at t=0, no
+# criterion satisfied by gravity during a 1 s settle, no object that walks out of
+# its own accord, and every door/drawer joint must actually be drivable.  The
+# audit owns that spec and answers with its exit code, so it is the gate -- never
+# trust the printed PASS count alone (a truncated pipe hides the real exit code).
+# Our tooling, our rules: this check lives here rather than in tests/ (rule 3).
+if ($Full -and $py) {
+    Head '9) simulation task audit: criteria not free, joints drivable'
+    $auditLog = Join-Path $env:TEMP "preflight_sim_audit_$PID.log"
+    & cmd /c "`"$py`" devtools\audit_task_criteria.py > `"$auditLog`" 2>&1"
+    $auditExit = $LASTEXITCODE
+    $auditSum = (Get-Content $auditLog | Select-String '^\[audit\] PASS=' | Select-Object -Last 1)
+    $auditText = if ($auditSum) { $auditSum.Line.Trim() } else { 'no PASS= line' }
+    if ($auditExit -eq 0) {
+        Pass "audit_task_criteria.py -> exit 0  ($auditText)"
+    } else {
+        Fail "audit_task_criteria.py -> exit $auditExit  ($auditText)"
+        Get-Content $auditLog | Select-String '^  - ' | Select-Object -First 12 |
+            ForEach-Object { Write-Host "        $($_.Line.Trim())" }
+        Write-Host "        full log: $auditLog"
+        Write-Host '        fix: docs/SIM_EVALUATION.md section 3 (task authoring rules)'
+    }
+} elseif (-not $Full) {
+    Head '9) simulation task audit -- SKIPPED'
+    Say '[INFO]' 'run with -Full, or directly: python devtools\audit_task_criteria.py'
 }
 
 # --- summary --------------------------------------------------------------

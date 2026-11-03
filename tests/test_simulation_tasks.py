@@ -6,12 +6,16 @@
   3. 门/抽屉焊死                      -> 任务永远做不成
 """
 
+import contextlib
+import io
 import unittest
 
 import numpy as np
 import pybullet as p
 import pybullet_data
 
+from teleoperation.evaluation import MetricsTracker
+from teleoperation.simulation.environment import SimulationEnv
 from teleoperation.simulation.randomization import DomainRandomizer
 from teleoperation.simulation.tasks import get_task, list_tasks
 from teleoperation.simulation.tasks import register_builtin_tasks
@@ -137,6 +141,74 @@ class SimulationTaskSceneTests(unittest.TestCase):
                                      skip_names=task.jointed_objects)
         after = task.get_object_position('drawer')
         np.testing.assert_allclose(after, before, atol=1e-9)
+
+    def test_hold_window_follows_the_simulation_rate(self):
+        """判据要连续成立 0.1 s：240 Hz 是 24 步、30 Hz 是 3 步（不能按帧写死）。"""
+        task = self._make_task('pushcube')
+        self.assertAlmostEqual(task.hold_seconds, 0.10)
+        self.assertEqual(task.hold_steps(1.0 / 240.0), 24)
+        self.assertEqual(task.hold_steps(1.0 / 30.0), 3)
+        self.assertEqual(task.hold_steps(0.0), 1)      # 非法步长退化成 1 步
+        task.hold_seconds = 0.5                        # 任务可以自己加严
+        self.assertEqual(task.hold_steps(1.0 / 10.0), 5)
+
+
+class SimulationEnvEpisodeTests(unittest.TestCase):
+    """环境层：瞬时成功的判据不算成功、完成时间用仿真秒。"""
+
+    def test_transient_criterion_is_not_a_success(self):
+        env = SimulationEnv(robot_type='g1', task_name='pushcube',
+                            render=False, record=False)
+        try:
+            env.reset(randomize=False)
+            hold = env._success_hold_steps
+            self.assertGreater(hold, 1, '判据必须要求连续成立多步')
+            env.task.check_success = lambda: True        # 判据瞬间成立
+            _, success, done, _ = env.step(None)
+            self.assertFalse(success, '成立 1 步就记成功 = 收下瞬时状态')
+            self.assertFalse(done)
+            for _ in range(hold - 1):
+                _, success, done, _elapsed = env.step(None)
+            self.assertTrue(success)
+            self.assertTrue(done)
+
+            record = env.metrics.results['pushcube'][0]
+            self.assertEqual(len(record), 3, '每次试验记 (success, 仿真秒, 墙钟秒)')
+            self.assertAlmostEqual(record[1], env.sim_time, places=6)
+            self.assertAlmostEqual(record[1], hold * env.dt, places=6)
+            self.assertIsNotNone(record[2], '墙钟也要记下来（报表 WallT 列）')
+        finally:
+            env.close()
+
+
+class MetricsTrackerTests(unittest.TestCase):
+    """报表口径：完成时间用仿真秒，墙钟单独一列，没成功就印 '-'。"""
+
+    def test_sim_time_and_wall_time_are_kept_apart(self):
+        tracker = MetricsTracker()
+        tracker.record('pushcube', True, 12.0, wall_time=3.0)
+        tracker.record('pushcube', False, 40.0, wall_time=9.0)
+        self.assertAlmostEqual(tracker.get_success_rate('pushcube'), 0.5)
+        self.assertAlmostEqual(tracker.get_avg_time('pushcube'), 12.0)
+        self.assertAlmostEqual(tracker.get_avg_episode_time('pushcube'), 26.0)
+        self.assertAlmostEqual(tracker.get_avg_wall_time('pushcube'), 6.0)
+        summary = tracker.get_summary()['pushcube']
+        self.assertAlmostEqual(summary['avg_completion_time'], 12.0)
+        self.assertAlmostEqual(summary['avg_wall_time'], 6.0)
+
+    def test_no_success_prints_dash_not_inf(self):
+        tracker = MetricsTracker()
+        tracker.record('liftmug', False, 30.0, wall_time=8.0)
+        self.assertTrue(np.isnan(tracker.get_avg_time('liftmug')))
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            tracker.print_summary()
+        text = buffer.getvalue()
+        self.assertIn('SimT(s)', text)
+        self.assertIn('WallT(s)', text)
+        self.assertNotIn('inf', text)
+        row = [line for line in text.splitlines() if line.startswith('liftmug')][0]
+        self.assertIn('-', row)
 
 
 if __name__ == '__main__':

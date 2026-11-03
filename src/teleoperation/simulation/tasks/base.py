@@ -17,6 +17,8 @@
    -> 新增 load_open_box（5 块薄板拼一个开口壳）。
 """
 
+import math
+
 import numpy as np
 import pybullet as p
 from abc import ABC, abstractmethod
@@ -29,6 +31,10 @@ DEFAULT_TABLE_HALF_EXTENTS = [0.5, 0.8, 0.02]
 
 # 贴面吸附的容差：小于 1 mm 的偏差不算穿模
 SNAP_TOLERANCE = 1e-3
+
+# 判据要连续成立多久（仿真秒）才算成功。只判一步会收下「瞬时状态」：
+# 物体被弹起来从目标区上方飞过、抽屉被撞到位又弹回，都会白送一次成功。
+SUCCESS_HOLD_SECONDS = 0.10
 
 
 def _quat_matrix(orn) -> np.ndarray:
@@ -93,7 +99,9 @@ class BaseTask(ABC):
         self.objects: Dict[str, int] = {}       # {物体名: pybullet ID}
         self.constraints: List[int] = []         # 约束ID列表
         self.success = False
-        self.max_time = 300.0                    # 超时时间（秒）
+        self.max_time = 300.0                    # 超时时间（**仿真**秒，见 environment.step）
+        # 判据要连续成立多久（仿真秒）才算成功，见 hold_steps()
+        self.hold_seconds = SUCCESS_HOLD_SECONDS
 
         # 成功判定阈值
         self.pos_threshold = 0.05    # 位置阈值（米）
@@ -123,6 +131,19 @@ class BaseTask(ABC):
     def set_robot(self, robot_id: int):
         """设置机器人ID"""
         self.robot_id = robot_id
+
+    def hold_steps(self, dt: float) -> int:
+        """判据需要**连续成立**多少步才算成功（按仿真步长换算，至少 1 步）。
+
+        SimulationEnv.step() 用它做「连续成立窗口」。只判一步会被瞬时状态骗过：
+        物体被弹起来从目标区上空飞过、抽屉被撞到位又弹回，都会白送一次成功。
+        0.1 s @ 240 Hz = 24 步；需要更严/更松的任务覆盖 hold_seconds 即可。
+        """
+        if dt is None or dt <= 0:
+            return 1
+        # 减 1e-9 抵掉浮点噪声：0.1 / (1/240) = 24.000000000000004，直接 ceil 会多一步
+        steps = float(self.hold_seconds) / float(dt)
+        return max(1, int(math.ceil(steps - 1e-9)))
 
     def reset(self):
         """重置场景到初始状态"""

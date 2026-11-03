@@ -10,19 +10,22 @@
 | --- | --- | --- |
 | 任务体检 | `E:\python3.11.7\python.exe devtools\audit_task_criteria.py` | `PASS=30 FAIL=0`，退出码 0 |
 | 任务回归 | `E:\python3.11.7\python.exe -m pytest tests\test_simulation_tasks.py -q` | `7 passed` |
-| 端到端报表 | `E:\python3.11.7\python.exe -m teleoperation sim run --benchmark --trials 1 --robot g1 --no-render --no-record` | 5 行 0.0%（演示控制器）、`EpTime(s)` 7.6~8.1 s、退出码 0 |
+| 端到端报表 | `E:\python3.11.7\python.exe -m teleoperation sim run --benchmark --trials 1 --robot g1 --no-render --no-record` | 5 行 0.0%（演示控制器）、`SimT(s)`/`WallT(s)` 两列、退出码 0 |
 | 全量回归 | `E:\python3.11.7\python.exe -m pytest tests -q` | `580 passed, 4 skipped`，退出码 0 |
 | GBK 安全 | `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | `[OK]`，退出码 0 |
+| 体检已进门禁 | `powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full` | 第 9 项跑体检，`PASS=30 FAIL=0` 才算过 |
 
 报表里 0.0% 是**演示控制器（正弦摆动）本来就做不成任务**，不是任务坏了 ——
-0 / 30 的白送率才是检验任务的标准，见下面的体检。`AvgTime(s)` 印 `-` 表示
-没有成功 trial（旧版印 `inf`）；失败 trial 的耗时看 `EpTime(s)`。
+0 / 30 的白送率才是检验任务的标准，见下面的体检。`SimT(s)` 印 `-` 表示
+没有成功 trial（旧版印 `inf`）；`SimT` 是仿真秒（跨机器可比），`WallT` 是真实
+耗时（只看实时因子）。失败的 trial 也记进报表，所以 0% 的行照样有 `WallT`。
 
-体检脚本的三种判定（默认静置 240 步 = 1 s，阈值 20 mm）：
+体检脚本的四种判定（默认静置 240 步 = 1 s，阈值 20 mm）：
 
 - `t0_success`：t=0 时 `check_success()` 就是 True -> 一次 episode 白送成功。
 - `settle_drift`：不给任何动作，物体自己动了 > 20 mm（穿模被弹飞、自由刚体掉落）。
-- `settled_success`：静置后判据自己成立 -> 重力替操作者完成了任务。
+- `gravity_success`：静置期间**任何一步**判据自己成立 -> 重力/弹跳替操作者完成了任务。
+  只在最后一步查会漏掉「被弹起来那一刻成立、落回去又不成立」的闪烁型白送。
 - `joint_stuck`：门/抽屉挂在关节上却驱动不动 -> 任务永远做不成。
 
 修复前（同一脚本，`robot=g1`）：**t=0 成功 3/30**（`liftmug`、`opendrawer`、
@@ -127,20 +130,44 @@
    还没有一个能从观测走到判据的控制器。`sim run --benchmark` 里内置的
    sinusoid 演示控制器在所有任务上都是 0.0%（2026-11-02 实测 5 个任务），
    这属于策略问题，不是任务问题。
-2. `openlaptop` 的水平铰链在本机实测最多转到 24~33 度（再大就顶住，原因未查清），
+2. **物体全在臂展之外（2026-11-02 新发现，比第 1 条更根本）**。体检脚本的
+   `reach` 列（`probe_reach()`）量的是「肩点 -> 最近物体」减去「上臂 + 前臂 + 手」，
+   实测（`robot=g1`，静置场景）：
+
+   | 任务 | 肩点 | 臂展（含手） | 最近物体距离 | 余量 |
+   | --- | --- | --- | --- | --- |
+   | `pushcube` | (0, -0.10, 1.092) | 0.637 m | 0.754 m（target） | **-0.117 m** |
+   | `liftmug` | 同上 | 0.637 m | 0.762 m（lid） | **-0.125 m** |
+
+   h1_2 更糟（肩高 1.423 m，臂展 0.331+0.229+手，物体 1.10 m 远）。原因是桌面
+   0.42 m、物体摆在 x=0.5，而三个机器人都站在 x=0 平地上：手离地 0.6~0.9 m，
+   够不到 0.5 m 外、0.42 m 高的桌面。**任何策略都是 0 分**，所以现在还不能用
+   `--benchmark` 判断策略好坏，只能判断任务判据是否公平。
+3. `openlaptop` 的水平铰链在本机实测最多转到 24~33 度（再大就顶住，原因未查清），
    判据是按这个可达范围定的（15 度 / 3 cm）。换 pybullet 版本要重测。
-3. `rotatehearth` 去掉了「按下」、`drawerbook` 去掉了「关抽屉」，
+4. `rotatehearth` 去掉了「按下」、`drawerbook` 去掉了「关抽屉」，
    这两个子目标在「实心块 + 刚体」的建模下不可达，需要真正的柔性/内腔模型才能加回来。
-4. 域随机化仍会给物体 ±2 cm 的水平抖动；关节体的「关节角」不随机（只随机摩擦/颜色）。
-5. `task.max_time` 是**墙钟** 300 s，和 `max_steps`（10000 步 @240 Hz 约 42 s 仿真时间）
-   不同量纲；耗尽的 episode 现在也会记进 `MetricsTracker`（见提交 4d78359），
-   但 `elapsed` 仍是墙钟，跨机器不可比 —— 建议后续改成固定步数。
-6. 体检脚本只跑 1 s。长时间漂移（例如接触力累积导致的缓慢滑移）还没覆盖。
+5. 域随机化仍会给物体 ±2 cm 的水平抖动；关节体的「关节角」不随机（只随机摩擦/颜色）。
+6. 时间口径（2026-11-02 已统一）：`env.sim_time` 是仿真时间，`task.max_time`（300 s）
+   与报表 `SimT(s)` 都按它算；`env.step()` 返回的 `elapsed` 仍是**墙钟**，只为接口契约
+   与实时因子保留，不要拿它比较策略快慢。
+7. 体检脚本只跑 1 s。长时间漂移（例如接触力累积导致的缓慢滑移）还没覆盖。
+8. 判据要连续成立 0.1 s 仿真时间（24 步 @240 Hz，`BaseTask.hold_seconds`）才记为成功，
+   见 `environment.step()`；单步成立的瞬时状态不算。
 
 ## 5. 下一步
 
-1. 一个能真正走通任务的参考控制器（或回放一段真人遥操作），把「接口 -> 任务」
-   的成功率打出来，作为 30 个任务的上限基准；
-2. 判据加「持续窗口」（连续 N 步为真才算成功），避免一次碰撞的瞬时状态被算作成功；
-3. `elapsed` 换成仿真时间，`--benchmark` 表里同时打印仿真秒与墙钟秒；
-4. 把体检接进 CI（退出码 0/1），任务改动必须过门。
+1. ~~一个能真正走通任务的参考控制器~~ 先修第 4 节第 2 条：**把工作台挪进手臂工作空间**。
+   一个能同时适配三台机器的高度：桌面 ≈ 0.90 m（物体保持 x≈0.5 时 g1 约 +0.04 m、
+   h1_2/gr1_t2 更宽）。注意不是改一行 `DEFAULT_TABLE_POSITION` 就完事：门/抽屉是
+   **独立刚体 + 约束**，`_extra_supports`（内腔底面）用的是绝对 z，整体抬高必须同步
+   平移，否则门会脱开柜体、内腔里的东西会掉进空气里。需要一次「整体提升」实现 +
+   30 个任务重新体检。
+2. 布局修好后，再用参考控制器（或回放真人遥操作）打出非零成功率，作为上限基准。
+3. ~~判据加「持续窗口」（连续 N 步为真才算成功），避免一次碰撞的瞬时状态被算作成功~~
+   已做：`BaseTask.hold_seconds`（默认 0.1 s）+ `environment.step()` 的连续成立窗口；
+4. ~~`elapsed` 换成仿真时间，`--benchmark` 表里同时打印仿真秒与墙钟秒~~
+   已做：`MetricsTracker` 记 `(success, sim, wall)`，报表列 `SimT(s)` / `WallT(s)`；
+5. ~~把体检接进 CI（退出码 0/1），任务改动必须过门~~
+   已做：`devtools\preflight.ps1 -Full` 第 9 项，体检退出码非 0 即 FAIL；
+   臂展不足目前只 WARN（`--reach-strict` 变 FAIL），布局修好后应默认打开。
