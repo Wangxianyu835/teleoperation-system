@@ -39,7 +39,7 @@ def run(args):
     if args.scene != "hands":
         raise ValueError("TransHandR VR requires --scene hands; use native dex for robots")
     if args.checkpoint is None:
-        raise ValueError("TransHandR VR requires --checkpoint; native dex uses --backend dex --dex-calibration")
+        raise ValueError("TransHandR VR requires --checkpoint")
     if args.frames < 0 or not np.isfinite(args.fps) or args.fps < 0:
         raise ValueError("frames and fps must be nonnegative")
     mapping = getattr(args, "hand_mapping", None)

@@ -224,19 +224,19 @@ nn = SharedJointNNRetargeter(
 - Preserved: DexInputAdapter、DexCalibration、DexNativeRetargeter、NormalizedDexRetargeter、NativeVectorSolver；不编辑它们的数值实现。
 - Removed: LatestCameraInput、visionpro_run及其专属command_pipeline；旧world_landmarks_h5_v1独立reader/writer。
 
-- [ ] **Step 1：建立检查点并复核工具依赖。** `$cleanupBatch = 'remove-idle-vr-and-world-format'`。读取dex_native_acceptance.py performance函数，确认recording_frames/canonical_window仍是消费者；读取CLI注册确认calibrate仍登记。
+- [x] **Step 1：建立检查点并复核工具依赖。** `$cleanupBatch = 'remove-idle-vr-and-world-format'`。读取dex_native_acceptance.py performance函数，确认recording_frames/canonical_window仍是消费者；读取CLI注册确认calibrate仍登记。
 
 ```powershell
 rg -n 'visionpro_run|LatestCameraInput|applications\.dex_native|canonical_window|recording_frames|\bcommand_pipeline\b|world_landmark_recording|LegacyWorldRecordingTests' src tests devtools README.md docs
 ```
 
-- [ ] **Step 2：清理闲置VR代码和专属测试。** 删除LatestCameraInput、visionpro_run、command_pipeline；删除只供它们使用的json/time/numpy/HandJointResultWriter/DexNativeRetargeter/VECTOR_PARAMETERS等导入，按剩余引用核对，不删仍供calibrate使用的hashlib/Path/iter_dex_observations/DexInputAdapter/DexCalibration。删除test_latest_source_drops_backlog_and_closes和旧visionpro_run录制用例；保留calibrate拒绝camera、原生模型/命令/场景、当前CLI校验测试。
+- [x] **Step 2：清理闲置VR代码和专属测试。** 删除LatestCameraInput、visionpro_run、command_pipeline；删除只供它们使用的json/time/numpy/HandJointResultWriter/DexNativeRetargeter/VECTOR_PARAMETERS等导入，按剩余引用核对，不删仍供calibrate使用的hashlib/Path/iter_dex_observations/DexInputAdapter/DexCalibration。删除test_latest_source_drops_backlog_and_closes和旧visionpro_run录制用例；保留calibrate拒绝camera、原生模型/命令/场景、当前CLI校验测试。
 
 已有test_unified_hand_inputs.test_vr_h5_uses_existing_shared_nn_and_generic_results覆盖当前VR控制的七帧、缺手、恢复及快捷入口一致性；test_hand_control_h5覆盖raw/accepted分离及严格回放；这些断言必须继续执行，不能只删除旧集成用例而不检查当前链。
 
-- [ ] **Step 3：删除旧格式和混合测试中的专属部分。** 删除world_landmark_recording.py，删除同名测试文件的旧reader/writer导入、LegacyWorldRecordingTests和仅由它使用的frame/points fixture。保留CombinedCaptureTests、CLI命令注册、时间命名、防覆盖和组合H5消费者的所有用例，测试文件不整删。
-- [ ] **Step 4：修正明确失效的提示片段。** visionpro_hand.py的缺权重错误改为`TransHandR VR requires --checkpoint`，删掉建议给当前dex传固定标定的尾句；保留NN/dex对错误传入dex_calibration的拒绝检查及当前CLI选项，不移除活跃标定命令。
-- [ ] **Step 5：验证、同步文档、提交。**
+- [x] **Step 3：删除旧格式和混合测试中的专属部分。** 删除world_landmark_recording.py，删除同名测试文件的旧reader/writer导入、LegacyWorldRecordingTests和仅由它使用的frame/points fixture。保留CombinedCaptureTests、CLI命令注册、时间命名、防覆盖和组合H5消费者的所有用例，测试文件不整删。
+- [x] **Step 4：修正明确失效的提示片段。** visionpro_hand.py的缺权重错误改为`TransHandR VR requires --checkpoint`，删掉建议给当前dex传固定标定的尾句；保留NN/dex对错误传入dex_calibration的拒绝检查及当前CLI选项，不移除活跃标定命令。
+- [x] **Step 5：验证、同步文档、提交。**
 
 ```powershell
 & $cleanupPython -B -X utf8 -m unittest tests.test_dex_native tests.test_world_landmark_recording tests.test_unified_hand_inputs tests.test_hand_control_cli tests.test_hand_control_h5 tests.test_body_capture_replay tests.test_transhandr_vr -v
@@ -331,3 +331,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 2：检查点 `checkpoint-20261104-0114-trim-unused-members`；修改前 `cb00e4ee3b855e23d7a2f448ede662b7b88db384`；相关回归36项全部通过，完整回归560项（557通过、3项dex依赖跳过）。复查发现registry保留旧hand:export字符串，已同步改为实际hand_control:export，避免删除包装后悬空；保留定义AST比较确认算法不变。
 
 - Task 3：检查点 `checkpoint-20261104-0117-remove-unused-side-nn`；修改前 `1554c724011cae700c5defca515c0bc317fedc13`；删除前迁移测试25项（1项跳过），删除后相关38项（2项跳过）；完整560项（557通过、3项dex跳过）；独立dex环境16项全通过。保留shared函数AST完全一致。
+
+- Task 4：检查点 `checkpoint-20261104-0121-remove-idle-vr-and-world-format`；修改前 `8637bfc4134c681716da3f111609e635a8bfa829`；相关63项（1项跳过），完整557项（554通过、3项dex跳过）；dex-calibrate及hand vr帮助可加载；保留标定/验收辅助函数AST完全一致。删除3个仅验证退役实现的测试，当前组合录制与统一VR闭环用例保留。

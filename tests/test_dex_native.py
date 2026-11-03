@@ -217,34 +217,6 @@ class NativeCommandTests(unittest.TestCase):
 
 
 class DexRealtimeTests(unittest.TestCase):
-    def test_latest_source_drops_backlog_and_closes(self):
-        import threading
-        from unittest.mock import Mock
-        from teleoperation.applications.dex_native import LatestCameraInput
-        source=Mock()
-        produced=threading.Event()
-        allow=threading.Event()
-        release=threading.Event()
-        count=[0]
-        def read(**kwargs):
-            count[0]+=1
-            if count[0]==2:
-                allow.wait(2.)
-            if count[0]==5:
-                produced.set()
-                release.wait(2.)
-            return count[0]
-        source.next_observation.side_effect=read
-        source.release.side_effect=lambda **kwargs:release.set()
-        source._cap.release.side_effect=lambda:release.set()
-        wrapper=LatestCameraInput(source)
-        first=wrapper.next_observation(include_world=True)
-        allow.set()
-        self.assertTrue(produced.wait(2.))
-        self.assertEqual(wrapper.next_observation(include_world=True),4)
-        self.assertEqual(first,1)
-        wrapper.close()
-        self.assertFalse(wrapper.thread.is_alive())
 
     def test_dex_cli_and_factory_reject_wrong_profile_without_loading_devices(self):
         from teleoperation.cli import build_parser
@@ -273,50 +245,3 @@ class DexVRRecordingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "visionpro only"):
                 calibrate(SimpleNamespace(source="camera"))
             read.assert_not_called()
-
-    def test_vr_saves_replayable_native_commands_including_missing_frame(self):
-        from unittest.mock import Mock, patch
-        from teleoperation.cli import build_parser
-        from teleoperation.applications.dex_native import visionpro_run
-        from teleoperation.data.hand_joint_recording import iter_joint_commands
-        from teleoperation.retargeting.hand.dex_native import PROFILES
-        specs = {(r,"right"):load_hand_spec(r,"right") for r in ("h1_2","gr1_t2","g1")}
-        from types import SimpleNamespace
-        retargeter = Mock(specs=specs, models=dict.fromkeys(specs))
-        def solve(window):
-            valid = window.hands["right"] is not None
-            return {key:HandJointResult(*key,spec.spec_hash,spec.independent_joint_names,
-                spec.bounds.mean(1) if valid else None,window.timestamp,valid) for key,spec in specs.items()}
-        retargeter.retarget.side_effect = solve
-        retargeter.targets.side_effect = lambda frame,key: None if frame.hands[key[1]] is None else np.zeros((len(specs[key].tip_frames),3))
-        source = Mock()
-        source.next_observation.side_effect = [vr_observation(timestamp=1.),
-            RawHandFrame({"left":None,"right":None},2.,"visionpro"),StopIteration]
-        scene = Mock(robots=[{}, {}, {}])
-        scene.alive.return_value = True
-        wrists = Mock()
-        wrists.summary.return_value = {"applied_frames":{}}
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory)/"native.h5"
-            args = build_parser().parse_args(["hand","vr","--backend","dex","--ip","unused",
-                "--dex-calibration",str(Path(directory)/"fixed.json"),"--scene","robots","--headless",
-                "--fps","0","--output-h5",str(output)])
-            with patch("teleoperation.applications.dex_native.DexCalibration.load",return_value=SimpleNamespace(profile=PROFILES["visionpro"],source_sha256="",segment=(0.,0.))), \
-                 patch("teleoperation.applications.dex_native.DexNativeRetargeter",return_value=retargeter), \
-                 patch("teleoperation.inputs.visionpro.VisionProInput",return_value=source), \
-                 patch("teleoperation.applications.three_robot_scene.ThreeRobotHandScene",return_value=scene), \
-                 patch("teleoperation.simulation.wrist_control.vr_arm_controller",return_value=wrists):
-                self.assertEqual(visionpro_run(args),0)
-            rows = list(iter_joint_commands(output,specs))
-            self.assertEqual([row[0] for row in rows],[1.,2.])
-            for key in specs:
-                np.testing.assert_array_equal(rows[0][1][key].positions,rows[1][1][key].positions)
-            import h5py
-            with h5py.File(output) as stream:
-                self.assertEqual(stream.attrs["schema"],"hand_joint_results_v1")
-                for key in specs:
-                    group=stream["/".join(key)]
-                    np.testing.assert_array_equal(group["valid"][:],[True,False])
-                    self.assertTrue(np.isnan(group["raw_positions"][1]).all())
-            source.close.assert_called_once()
-            scene.close.assert_called_once()
