@@ -116,15 +116,15 @@ parser.add_argument(
 - Consumes: CLI直接使用hand_control:export，SimulationEnv使用validate_native_action，关节处理器使用KalmanSmoother。
 - Produces: 上述接口、PartialLimbVector拒绝语义、Tron2AL21Command.flatten和数据集行为不变。
 
-- [ ] **Step 1：复核并建立检查点。** `$cleanupBatch = 'trim-unused-members'`。核对以下对象只有定义或仅在待删除链内部互相调用。
+- [x] **Step 1：复核并建立检查点。** `$cleanupBatch = 'trim-unused-members'`。核对以下对象只有定义或仅在待删除链内部互相调用。
 
 ```powershell
 rg -n 'hand_export|TwoHandH5ChunkedGenerator|_is_valid_hand_frame|\b_stack\b|\b_mask\b|write_checkpoint|ActionAdapter|pack_tron2a_l21_action|H1JointTargets|GR1JointTargets|G1JointTargets|pack_partial_limb_vector|classify_jumps|detect_bad_frames|hold_last_valid|detect_identity_swaps|repair_stream|repair_bad_frames|moving_average|motion_metrics|compare_methods' src tests devtools README.md docs
 ```
 
-- [ ] **Step 2：按spec精确删除。** 删除hand.py.export及hand_export.py；不改hand.py.align/inspect或CLI handler。删除dataset的旧生成器及_stack/_mask/_is_valid_hand_frame，不动_scalar_or_none。删除write_checkpoint，保留read_checkpoint。删除旧ActionAdapter链及三种专属JointTargets，清理dataclass/Mapping等随之闲置的导入；保留validate_native_action、Tron2AL21Command、PartialLimbVector。postprocessing只保留KalmanSmoother及其所需导入，不改变其实现和默认参数。
-- [ ] **Step 3：移除失效模块启动尾部。** 删除realtime_hand_sim.py末尾`if __name__ == '__main__'`块，不新增main或转发入口；保留RealtimeL21Scene、CameraPreview、build_scene、build_preview及现有活跃辅助函数。删除相关docstring中依赖os._exit/main的过时说明，仅移除确认为尾部专用的导入。
-- [ ] **Step 4：更新本批说明和运行回归。** 清除postprocessing模块说明里调用已删classify_jumps的建议，保留卡尔曼参数说明并与实际gate默认值一致；若文档列出realtime_hand_sim模块启动命令则删去，当前hand control命令保留。
+- [x] **Step 2：按spec精确删除。** 删除hand.py.export及hand_export.py；不改hand.py.align/inspect或CLI handler。删除dataset的旧生成器及_stack/_mask/_is_valid_hand_frame，不动_scalar_or_none。删除write_checkpoint，保留read_checkpoint。删除旧ActionAdapter链及三种专属JointTargets，清理dataclass/Mapping等随之闲置的导入；保留validate_native_action、Tron2AL21Command、PartialLimbVector。postprocessing只保留KalmanSmoother及其所需导入，不改变其实现和默认参数。
+- [x] **Step 3：移除失效模块启动尾部。** 删除realtime_hand_sim.py末尾`if __name__ == '__main__'`块，不新增main或转发入口；保留RealtimeL21Scene、CameraPreview、build_scene、build_preview及现有活跃辅助函数。删除相关docstring中依赖os._exit/main的过时说明，仅移除确认为尾部专用的导入。
+- [x] **Step 4：更新本批说明和运行回归。** 清除postprocessing模块说明里调用已删classify_jumps的建议，保留卡尔曼参数说明并与实际gate默认值一致；若文档列出realtime_hand_sim模块启动命令则删去，当前hand control命令保留。
 
 ```powershell
 & $cleanupPython -B -X utf8 -m unittest tests.test_hand_core_regression tests.test_joint_commands tests.test_shared_human_dataset tests.test_joint_training tests.test_native_hand_replay tests.test_cli_integration tests.test_application_entrypoints -v
@@ -133,7 +133,7 @@ rg -n 'hand_export|TwoHandH5ChunkedGenerator|_is_valid_hand_frame|\b_stack\b|\b_
 
 预期：训练、导出、原生动作验证、场景执行和回放保持原有行为；不以“旧模块帮助不报错”代替正式CLI验收。
 
-- [ ] **Step 5：提交。** 消息`refactor: trim unused helpers from active modules`，记录hash/tag。
+- [x] **Step 5：提交。** 消息`refactor: trim unused helpers from active modules`，记录hash/tag。
 
 ## Task 3：迁移有价值的测试，退出旧单侧NN与权重接口
 
@@ -327,3 +327,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 ## 执行记录
 
 - Task 1：检查点 `checkpoint-20261104-0111-remove-orphan-modules`；修改前 `1bba6551b07c785ddef9d0b4eb86990623c70f7b`；相关回归35项（1项跳过），完整回归560项（557通过、3项dex依赖跳过）；无失败。
+
+- Task 2：检查点 `checkpoint-20261104-0114-trim-unused-members`；修改前 `cb00e4ee3b855e23d7a2f448ede662b7b88db384`；相关回归36项全部通过，完整回归560项（557通过、3项dex依赖跳过）。复查发现registry保留旧hand:export字符串，已同步改为实际hand_control:export，避免删除包装后悬空；保留定义AST比较确认算法不变。

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import statistics
 import sys
 import threading
@@ -26,7 +25,7 @@ from teleoperation.robots.l21 import L21_JOINT_ORDER, L21HandAdapter
 SIDES = ("left", "right")
 URDF_NAME = "linkerhand_l21_{side}.urdf"
 ASSET_NAME = "hand_landmarker.task"
-# 双手并排摆位；单只手时放在原点前方（与 replay l21-hand 保持一致的观感）。
+# 双手并排摆位；单只手时放在原点前方。
 BASE_POSITIONS = {"left": (-0.15, 0.0, 0.3), "right": (0.15, 0.0, 0.3)}
 # 摄像头窗口：标题、指尖下标（复用 tools/plotting 的 COLORS 与 SOURCE_EDGES 连线）。
 PREVIEW_WINDOW = "camera: MediaPipe 21-landmark input (q/Esc quits)"
@@ -549,9 +548,7 @@ def _drain_in_background(action, label: str, timeout: float = RELEASE_TIMEOUT_SE
     ``landmarker.close()`` (TFLite/XNNPACK teardown) on this machine, and
     ``p.disconnect()`` hangs when the PyBullet GUI client already died. Both look
     like a freeze. We wait at most ``timeout`` seconds and then continue;
-    ``__main__`` ends the process with ``os._exit`` right after the summary, so a
-    leftover teardown cannot delay the command prompt (the OS reclaims the camera,
-    the window and the memory anyway).
+    a teardown still running at that point remains in the daemon thread.
     """
 
     def run_action() -> None:
@@ -566,17 +563,3 @@ def _drain_in_background(action, label: str, timeout: float = RELEASE_TIMEOUT_SE
     if thread.is_alive():
         print(f"note: {label} is still running after {timeout:.0f} s; exiting without "
               f"waiting.", flush=True)
-
-
-
-
-
-
-if __name__ == "__main__":
-    # 跳过 MediaPipe 约 42 s 的 TFLite 释放，Ctrl+C / 关窗口后立刻回到命令行。
-    # 统计/报告都在 main() 里打印并写入，所以先跑完 main() 再 flush，最后 os._exit。
-    # main() 本身仍返回退出码，方便被 import 调用（测试、探针）。
-    status = main()
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(status)

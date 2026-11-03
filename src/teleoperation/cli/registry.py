@@ -11,7 +11,7 @@ COMMANDS = (
     ('hand', 'record', 'hand_record', 'teleoperation.applications.offline_h5_record:run'),
     ('hand', 'align', 'hand_align', 'teleoperation.applications.hand:align'),
     ('hand', 'train', 'hand_train', 'teleoperation.applications.training:run'),
-    ('hand', 'export', 'hand_export', 'teleoperation.applications.hand:export'),
+    ('hand', 'export', 'hand_export', 'teleoperation.applications.hand_control:export'),
     ('hand', 'inspect', 'hand_inspect', 'teleoperation.applications.hand:inspect'),
     ('hand', 'vr', 'hand_vr', 'teleoperation.applications.visionpro_hand:main'),
     ('sim', 'run', 'sim_run', 'teleoperation.applications.benchmark:main'),

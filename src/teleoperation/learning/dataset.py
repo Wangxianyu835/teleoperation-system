@@ -203,85 +203,8 @@ class TwoHandH5Dataset:
         yield from self.samples
 
 
-class TwoHandH5ChunkedGenerator:
-    """Batch generator for :class:`TwoHandH5Dataset`."""
-
-    def __init__(
-        self,
-        dataset: TwoHandH5Dataset,
-        batch_size: int,
-        shuffle: bool = True,
-        random_seed: int = 1234,
-        hand_side: str | None = None,
-    ):
-        self.dataset = dataset
-        self.batch_size = int(batch_size)
-        if self.batch_size < 1:
-            raise ValueError("batch_size must be positive")
-        self.shuffle = bool(shuffle)
-        self.random = np.random.RandomState(random_seed)
-        if hand_side is not None and hand_side not in HAND_SIDES:
-            raise ValueError(f"Unknown hand side: {hand_side!r}")
-        self.indices = np.asarray([
-            index for index, sample in enumerate(dataset.samples)
-            if hand_side is None or sample[f"{hand_side}_valid"]
-        ], dtype=np.int64)
-        self.num_batches = (
-            len(self.indices) + self.batch_size - 1
-        ) // self.batch_size
-
-    def num_frames(self) -> int:
-        return len(self.indices)
-
-    def next_epoch(self):
-        indices = self.indices.copy()
-        if self.shuffle:
-            self.random.shuffle(indices)
-
-        for start in range(0, len(indices), self.batch_size):
-            batch_indices = indices[start : start + self.batch_size]
-            samples = [self.dataset.samples[int(i)] for i in batch_indices]
-            yield {
-                "left_input": _stack(samples, "left_input"),
-                "right_input": _stack(samples, "right_input"),
-                "left_target": _stack(samples, "left_target"),
-                "right_target": _stack(samples, "right_target"),
-                "left_valid": _mask(samples, "left_valid"),
-                "right_valid": _mask(samples, "right_valid"),
-                "frame_index": np.asarray(
-                    [sample["frame_index"] for sample in samples],
-                    dtype=np.int64,
-                ),
-                "frame_id": np.asarray(
-                    [sample["frame_id"] for sample in samples],
-                ),
-                "timestamp": np.asarray(
-                    [sample["timestamp"] for sample in samples],
-                    dtype=np.float64,
-                ),
-            }
-
-
-def _is_valid_hand_frame(points: np.ndarray | None) -> bool:
-    if points is None:
-        return False
-    points = np.asarray(points)
-    return bool(np.isfinite(points).all() and not np.all(points == 0))
-
-
 def _scalar_or_none(value):
     if value is None:
         return None
     scalar = np.asarray(value).reshape(-1)
     return None if scalar.size == 0 else scalar[0].item()
-
-
-def _stack(samples: list[dict], key: str) -> np.ndarray:
-    return np.stack([sample[key] for sample in samples], axis=0).astype(
-        np.float32,
-        copy=False,
-    )
-
-
-def _mask(samples: list[dict], key: str) -> np.ndarray:
-    return np.asarray([sample[key] for sample in samples], dtype=bool)
