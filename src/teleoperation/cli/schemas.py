@@ -252,7 +252,8 @@ def dual_export(parser):
 
 def dual_realtime(parser):
     parser = parser
-    parser.add_argument("--adapter", required=True, help="module:factory returning an InputSource or iterable of raw combined observations")
+    parser.add_argument("--adapter", required=True,
+                        help="module:factory returning an object with next_observation() or an iterable of RawTeleopObservation")
     parser.add_argument("--calibration", required=True)
     parser.add_argument("--urdf", default=str(DEFAULT_TRON2A_URDF))
     parser.add_argument("--checkpoint", type=Path, required=True, help="canonical shared native L21 checkpoint")

@@ -75,13 +75,13 @@ Git因所有权限制报错时只使用上述命令级safe.directory；不修改
 - Consumes: 当前MediaPipePalmLocalProcessor和dual realtime的鸭子类型输入协议。
 - Produces: 原有process_frame()/reset()和CLI运行行为；不再导出InputSource及无消费者旧工具。
 
-- [ ] **Step 1：复查消费者并建立本批检查点。** 设置`$cleanupBatch = 'remove-orphan-modules'`，执行公共Git步骤。搜索模块名及导出符号；排除文档删除清单和只定义自身的命中。
+- [x] **Step 1：复查消费者并建立本批检查点。** 设置`$cleanupBatch = 'remove-orphan-modules'`，执行公共Git步骤。搜索模块名及导出符号；排除文档删除清单和只定义自身的命中。
 
 ```powershell
 rg -n 'VisionProWorkflow|summarize_angles|valid_legacy_angle_rows|HandIdentityTracker|_is_trackable_hand|DEFAULT_MAX_CENTER_DISPLACEMENT|DEFAULT_MAX_SHAPE_RMSE|hand_mount|hand_reports|training_hand_pose|learning\.config|\bInputSource\b' src tests devtools README.md docs
 ```
 
-- [ ] **Step 2：删除八个文件和闲置导入。** processing.py删除整条`.tracking`导入，不更改identity_tracking=False或引入替代tracker。schemas.py把adapter帮助替换为以下准确描述，运行时代码不变：
+- [x] **Step 2：删除八个文件和闲置导入。** processing.py删除整条`.tracking`导入，不更改identity_tracking=False或引入替代tracker。schemas.py把adapter帮助替换为以下准确描述，运行时代码不变：
 
 ```python
 parser.add_argument(
@@ -90,8 +90,8 @@ parser.add_argument(
 )
 ```
 
-- [ ] **Step 3：同步本批文档命中。** 删除对应旧模块的用法、路径和功能介绍；仍使用的身体身份锁定不属于HandIdentityTracker，不删除其说明。保存本批实际删除文件清单。
-- [ ] **Step 4：运行已有行为回归和完整套件。**
+- [x] **Step 3：同步本批文档命中。** 删除对应旧模块的用法、路径和功能介绍；仍使用的身体身份锁定不属于HandIdentityTracker，不删除其说明。保存本批实际删除文件清单。
+- [x] **Step 4：运行已有行为回归和完整套件。**
 
 ```powershell
 & $cleanupPython -B -X utf8 -m unittest tests.test_world_hand_pipeline tests.test_shared_human_dataset tests.test_cli_integration tests.test_unified_hand_inputs -v
@@ -100,7 +100,7 @@ parser.add_argument(
 
 预期：无ImportError，RGB/VR共同输入、相机窗口和CLI测试通过；仅已说明的可选依赖用例允许跳过。检索除当前计划/spec中的删除清单外，不再出现退役模块引用。
 
-- [ ] **Step 5：提交。** 提交消息`refactor: remove unused hand tools and input declarations`，记录hash/tag。
+- [x] **Step 5：提交。** 提交消息`refactor: remove unused hand tools and input declarations`，记录hash/tag。
 
 ## Task 2：清理仍在使用文件中的无调用片段
 
@@ -323,3 +323,7 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 ```
 
 不执行reset --hard，不删除tag，不重写历史。
+
+## 执行记录
+
+- Task 1：检查点 `checkpoint-20261104-0111-remove-orphan-modules`；修改前 `1bba6551b07c785ddef9d0b4eb86990623c70f7b`；相关回归35项（1项跳过），完整回归560项（557通过、3项dex依赖跳过）；无失败。

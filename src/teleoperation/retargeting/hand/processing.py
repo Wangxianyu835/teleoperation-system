@@ -2,7 +2,6 @@
 import numpy as np
 from teleoperation.contracts.hand import CanonicalHandFrame
 from teleoperation.contracts.observations import RawHandFrame
-from .tracking import HandIdentityTracker, _is_trackable_hand, DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
 from .topology import ensure_hand25, visionpro_fingers_to_points
 from teleoperation.contracts.coordinates import palm_local_metadata, WORLD_LANDMARK_SPACE
 from .coordinates import align_mediapipe_hand, build_l21_reference_basis
