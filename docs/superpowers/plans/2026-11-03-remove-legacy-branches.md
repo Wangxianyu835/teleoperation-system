@@ -1,5 +1,7 @@
 # 底层旧分支删除 Implementation Plan
 
+> 状态：2026-11-04用户要求优先纠正RGB/VR并列输入，本删除计划暂停且尚未执行。当前架构见`docs/unified-hand-input.md`；恢复前须重新评估“仅相机输入”等假设。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 删除旧臂输入、旧相机 normalized 重定向和侧专用 NN 分支，使当前原生接口成为唯一相机运行路线。

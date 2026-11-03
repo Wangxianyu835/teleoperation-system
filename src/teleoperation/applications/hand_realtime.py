@@ -46,8 +46,13 @@ class MediaPipeCameraWorkflow:
             raise ValueError("MediaPipeCameraInput uses fixed min_confidence=0.5")
         self.model_asset_path = Path(model_asset_path)
         self.landmark_space = landmark_space
-        self.pipeline = MediaPipePalmLocalPipeline(landmark_space, input_profile=input_profile)
-        self.processor = self.pipeline.processor
+        self.input_profile = input_profile
+        from teleoperation.contracts.coordinates import UNIFIED_HAND_PROFILE
+        from teleoperation.applications.hand_processing import UnifiedHandPipeline
+        self.pipeline = (UnifiedHandPipeline() if input_profile == UNIFIED_HAND_PROFILE
+                         else MediaPipePalmLocalPipeline(landmark_space, input_profile=input_profile))
+        self.processor = (self.pipeline.camera if input_profile == UNIFIED_HAND_PROFILE
+                          else self.pipeline.processor)
         self.last_raw_frame = None
         self._input = MediaPipeCameraInput(
             model_asset_path=model_asset_path, camera_index=camera_index,
@@ -73,6 +78,11 @@ class MediaPipeCameraWorkflow:
             }
             if raw.world_hands is not None:
                 frame.update({"world_" + side: raw.world_hands[side] for side in SIDES})
+            from teleoperation.contracts.coordinates import UNIFIED_HAND_PROFILE
+            if self.input_profile == UNIFIED_HAND_PROFILE:
+                from dataclasses import replace
+                return self.pipeline.process_window(replace(
+                    raw, timestamp=frame['timestamp'], metadata=frame['metadata']))
             return self.pipeline.process_window(frame)
         except BaseException:
             self.last_raw_frame = None

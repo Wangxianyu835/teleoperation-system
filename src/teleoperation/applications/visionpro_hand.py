@@ -1,4 +1,4 @@
-"""Upstream TransHandR Vision Pro -> compatible hand result -> existing scene."""
+"""VR shortcut to common NN/dex control, plus explicit upstream compatibility."""
 import argparse
 from contextlib import ExitStack
 import json
@@ -17,14 +17,25 @@ from teleoperation.cli.visionpro_options import configure
 
 
 def build_parser(parser=None):
-    parser = parser or argparse.ArgumentParser(description="TransHandR upstream Vision Pro hand pipeline")
+    parser = parser or argparse.ArgumentParser(description="Vision Pro input with shared NN/dex hand retargeting")
     return configure(parser)
 
 
 def run(args):
-    if getattr(args, "backend", "transhandr") == "dex":
-        from teleoperation.applications.dex_native import visionpro_run
-        return visionpro_run(args)
+    if args.backend in ('nn', 'dex'):
+        from argparse import Namespace
+        from teleoperation.applications.hand_control import run as unified_run
+        if args.dex_calibration is not None or args.scale_factor != 1.:
+            raise ValueError('Unified NN/dex uses shared palm normalization, no fixed VR calibration/scale')
+        if args.source_hand not in (None, args.hand) or args.hand_mapping not in (None, 'same'):
+            raise ValueError('Unified hand control uses anatomical same-side routing')
+        values = vars(args).copy()
+        values['record_results'] = args.output_h5 or (args.report.with_suffix('.h5') if args.report else None)
+        return unified_run(Namespace(**values))
+    if args.hand_model != 'l21':
+        raise ValueError('Upstream TransHandR weights target L21; use shared NN/dex for other hands')
+    if args.scene == 'auto':
+        args.scene = 'hands'
     if args.scene != "hands":
         raise ValueError("TransHandR VR requires --scene hands; use native dex for robots")
     if args.checkpoint is None:

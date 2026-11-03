@@ -199,7 +199,7 @@ class VRInterfaceTests(unittest.TestCase):
             folder = Path(directory)
             source, report = folder / "raw.h5", folder / "report.json"
             self.write_recording(source)
-            args = build_parser().parse_args(["hand", "vr", "--input-h5", str(source),
+            args = build_parser().parse_args(["hand", "vr", "--backend", "transhandr", "--input-h5", str(source),
                 "--checkpoint", str(folder / "checkpoint.pth"), "--headless", "--fps", "0", "--report", str(report)])
             with patch("teleoperation.applications.visionpro_hand.load_transhandr_vr_model", return_value=RecordingModel()), \
                     contextlib.redirect_stdout(io.StringIO()):
@@ -216,7 +216,7 @@ class VRSameSideTests(unittest.TestCase):
     def arguments(self, source, report, *extra):
         from teleoperation.cli import build_parser
         return build_parser().parse_args([
-            "hand", "vr", "--input-h5", str(source), "--checkpoint", "unused.pth",
+            "hand", "vr", "--backend", "transhandr", "--input-h5", str(source), "--checkpoint", "unused.pth",
             "--hand", "both", "--hand-mapping", "same", "--headless", "--fps", "0",
             "--report", str(report), *extra])
 

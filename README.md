@@ -1,8 +1,10 @@
 # 遥操作与运动重定向
 
+手部输入现按“RGB相机 / Vision Pro → 设备适配 → 同一手部契约 → NN或dex → 原生命令”组织。使用 `hand control --source camera|visionpro --backend nn|dex --hand-model ...`，设备与算法独立选择；`hand vr` 的 NN/dex 也复用此入口。完整命令、数值规范与旧权重边界见[统一手部输入](docs/unified-hand-input.md)。
+
 本项目将摄像头或 Vision Pro 的人体观测转换为机器人关节命令，并在 PyBullet 中显示动作。手部支持 L21、H1-2、GR1-T2 和 G1；摄像头还支持三机器人双臂跟随与 TRON2A 工作流。下列示例用于仿真，不连接实体机器人。
 
-本文按 2026-11-01 清理后的代码入口整理。新版相机手部流程使用目标手原生关节角；相机机械臂使用独立 SMPLer-X S32 工作进程；Vision Pro 保持专用 VR 输入路线。
+本文包含2026-11-01接口清理和2026-11-04并列输入纠正。手部正式控制使用设备无关契约与目标手原生关节；相机机械臂使用独立SMPLer-X S32工作进程；旧TransHandR复现需显式选择。
 
 ## 选择工作流
 
@@ -12,7 +14,8 @@
 | 无权重实时驱动目标手 | 相机 world 关键点，dex | [实时控制](#5-实时控制目标手) |
 | 同时训练多种机器人手 | 同一份人体米制 H5，每个手型独立 shared NN | [训练模型](#3-训练目标手模型) |
 | 三机器人双臂与双手仿真 | SMPLer-X 身体和腕姿态、MediaPipe Hands 手指 | [相机机械臂](#6-smpler-x-相机机械臂录制与回放) |
-| 使用上游 TransHandR 权重 | Vision Pro 实时流或 VR H5 | [Vision Pro](#7-vision-pro-专用流程) |
+| RGB / VR 使用相同 NN 或 dex | 统一三帧掌长手部契约 | [统一手部输入](docs/unified-hand-input.md) |
+| 显式复现上游 TransHandR 权重 | Vision Pro 实时流或 VR H5，`--backend transhandr` | [Vision Pro](#7-vision-pro-专用流程) |
 | TRON2A 标定与双臂控制 | SMPLer-X 身体观测与显式安全配置 | [SMPLer-X 配置](docs/current-interfaces.md)、[工作流参考](docs/current-interfaces.md) |
 
 首次使用新版相机 NN，按以下顺序操作：**准备环境 → 录制 world 数据 → 训练目标手模型 → 导出 → 回放**。已有严格匹配的新版权重时，可跳过训练。dex 不需要 NN 权重，但需要独立环境。
@@ -85,11 +88,11 @@ NN 每个目标手型使用一份左右手共享的 canonical right 权重。dex
 | 相机对齐 H5 | canonical right 掌部坐标中的 25 点，仍保存米制数据；供新版训练与导出 |
 | `hand_joint_results_v1` | 目标手原始 D 维解、展开后的命令、有效性与诊断；使用 `replay hand-joints` |
 | `smplerx_body_recording_h5_v1` | RGB、原始模型结果及身体、手指和腕观测；使用 `--input-body` 回放 |
-| 原始 Vision Pro 矩阵 H5 | 使用专用 `hand vr`，不接受旧相机角度文件 |
+| 原始 Vision Pro 矩阵 H5 | `hand control --source visionpro --input-h5`或`hand vr`，不接受旧相机角度文件 |
 
-新版相机输入 profile 是 `camera_palm_length_window3_v1`：先建立掌部坐标、形成三帧窗口，再按该窗口的掌长中位数归一化。训练和控制共用此处理；H5 中人体数据仍保持米制。无需人工掌长标定，但换操作者效果仍需单独验收。
+正式手部控制默认profile为`hand_palm_length_window3_v1`，RGB和VR先各自适配，再建立相同三帧掌长规范。既有相机训练profile`camera_palm_length_window3_v1`数值处理相同，保持严格权重校验与可读取性；人体H5仍为米制。无需人工掌长标定，但换操作者和跨设备效果需单独验收。
 
-不要将图像归一化坐标、机器人根坐标或旧 18D 权重改标签后作为新版输入。VR 使用专用预处理，不应用相机掌长规范。完整定义见[统一手部规范](docs/current-interfaces.md)与[数据契约](docs/current-interfaces.md)。
+不要将图像归一化坐标、机器人根坐标或旧18D权重改标签后作为新版输入。VR正式NN/dex经专用设备适配进入共同掌长规范；显式TransHandR复现仍使用其原始预处理。完整定义见[统一手部输入](docs/unified-hand-input.md)。
 
 ## 2. 录制相机手部数据
 
@@ -213,7 +216,7 @@ $dexResults = "outputs/hand_retargeting/dex_results_$session.h5"
 & $dexPython -m teleoperation replay hand-joints --input $dexResults --hand-model g1 --hand both
 ```
 
-新版相机 dex 无需 NN 权重或人工掌长校准。将 `g1` 换为其他登记手型即可选择对应目标。Vision Pro dex 使用独立的 VR 标定；三机器人相机入口已采用同一掌长规范。
+RGB和Vision Pro的正式dex均无需NN权重或人工掌长标定。将`g1`换为其他登记手型即可；VR用`--source visionpro --ip`或`--input-h5`，后端与命令策略相同。
 
 两种方法共用滤波、URDF 有效限位、关节限速和耦合展开。缺手时保持上一条接受命令，恢复时限制首步时间预算。L21 保留网格路径检查；其他原装手没有等价运行时网格检查。方法比较与指标说明见[统一手部规范](docs/current-interfaces.md)。
 
@@ -261,7 +264,7 @@ $body = "outputs/smplerx/$armSession/body.h5"
 
 ## 7. Vision Pro 专用流程
 
-Vision Pro 使用独立 `hand vr` 入口，保留 TransHandR 上游预处理、时间窗口和权重语义。默认路线是左侧传感器输入到右侧 L21；同侧双手必须显式选择 `--hand both --hand-mapping same`。不要把相机 NN 权重用于 VR。
+Vision Pro 与RGB在正式手部重定向中并列：`hand control --source visionpro`或快捷`hand vr --backend nn|dex`使用共同契约和后端。下面的`--backend transhandr`仅用于显式复现上游权重，其左传感器到右L21、三帧和固定缩放语义保留；该专用权重不能冒充统一shared模型。统一NN可复用数值规范匹配的目标手shared权重，详见[兼容性说明](docs/unified-hand-input.md)。
 
 先配置 `$vrCheckpoint` 为真实上游权重、`$vrRaw` 为已有的 Vision Pro 原始 H5：
 
@@ -269,6 +272,7 @@ Vision Pro 使用独立 `hand vr` 入口，保留 TransHandR 上游预处理、�
 $vrCheckpoint = 'D:/2026/code/TransHandR/TransHandR/checkpoint/models/thumb3/linker/model_final.pth'
 $vrRaw = '<Vision Pro 原始录制.h5>'
 & $python -m teleoperation hand vr `
+  --backend transhandr `
   --input-h5 $vrRaw --checkpoint $vrCheckpoint `
   --source-hand left --hand right --scene hands --device cpu --frames 120 `
   --report "outputs/hand_retargeting/vr_replay_$session.json"

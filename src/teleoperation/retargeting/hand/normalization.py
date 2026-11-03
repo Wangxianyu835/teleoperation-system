@@ -6,6 +6,7 @@ from teleoperation.contracts.coordinates import (
     WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, WORLD_LANDMARK_SPACE, CANONICAL_HAND_FRAME,
     PALM_LENGTH_ALIGNMENT, PALM_LENGTH_PROFILE, validate_landmark_contract,
     palm_length_metadata,
+    UNIFIED_METRIC_ALIGNMENT, UNIFIED_HAND_PROFILE,
 )
 from .coordinates import build_palm_basis
 
@@ -33,9 +34,10 @@ def validate_metric_hand_frame(frame: CanonicalHandFrame) -> CanonicalHandFrame:
     """
     if not isinstance(frame,CanonicalHandFrame):
         raise TypeError('Palm frame validation requires CanonicalHandFrame')
-    if frame.metadata.get('coordinate_alignment') != WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT or frame.units != 'm':
+    alignment = frame.metadata.get('coordinate_alignment')
+    if alignment not in (WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, UNIFIED_METRIC_ALIGNMENT) or frame.units != 'm':
         raise ValueError('Palm frame validation requires canonical world metres')
-    validate_landmark_contract(WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,frame.metadata,'Palm frame validation')
+    validate_landmark_contract(alignment,frame.metadata,'Palm frame validation')
     hands, reasons = dict(frame.hands), dict(frame.invalid_reasons)
     for side, points in hands.items():
         if points is not None:
@@ -50,7 +52,7 @@ def normalize_hand_window(window: HandWindow) -> HandWindow:
     if not isinstance(window, HandWindow):
         raise TypeError("Palm normalization requires HandWindow")
     alignment = window.metadata.get("coordinate_alignment")
-    if alignment != WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT or window.units != "m":
+    if alignment not in (WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, UNIFIED_METRIC_ALIGNMENT) or window.units != "m":
         raise ValueError("Palm normalization requires canonical world metres, exactly once")
     validate_landmark_contract(alignment, window.metadata, "Palm normalization input")
     hands, lengths, reasons = {}, {}, dict(window.metadata.get("invalid_reasons", {}))
@@ -75,7 +77,7 @@ def normalize_hand_window(window: HandWindow) -> HandWindow:
     metadata = dict(window.metadata)
     metadata.pop("source_scale", None)
     metadata.update({
-        **palm_length_metadata(),
+        **palm_length_metadata(UNIFIED_HAND_PROFILE if alignment == UNIFIED_METRIC_ALIGNMENT else PALM_LENGTH_PROFILE),
         "source_length_unit": "m",
         "palm_length_m": lengths, "invalid_reasons": reasons,
     })

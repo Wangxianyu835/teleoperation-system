@@ -328,7 +328,7 @@ class _SpecVectorModel:
 
 
 class NormalizedDexRetargeter(HandRetargeter):
-    """Camera palm-length profile; no per-operator calibration or internal filter."""
+    """Common normalized hand solver; no device or per-operator calibration."""
 
     def __init__(self, hand_models=("l21",), sides=SIDES):
         self.specs = {(name,side):load_hand_spec(name,side) for name in hand_models for side in sides}

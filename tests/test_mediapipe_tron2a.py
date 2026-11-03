@@ -1165,6 +1165,12 @@ class CameraFullRuntimeTests(unittest.TestCase):
         self.args.checkpoint = write_canonical_checkpoint(self.directory / "shared_runtime.pth")
         self.args.left_checkpoint = self.args.right_checkpoint = None
         self.args.frames = 4
+        # This fixture removes capture and sleep. Supply capture cadence instead
+        # of depending on the host timer advancing during four fast iterations.
+        # A constant/coarse host clock otherwise gives nextafter-sized dt and
+        # correctly rate-limits the hands to zero, making the motion test flaky.
+        control_clock = Mock()
+        control_clock.next_seconds.side_effect = [i / 30 for i in range(4)]
         camera = Mock()
         camera.next_teleop_observation.side_effect = [dual_world_observation(i) for i in range(4)]
         worlds, commands, finger_states = [], [], []
@@ -1186,6 +1192,7 @@ class CameraFullRuntimeTests(unittest.TestCase):
             return world
         with patch.object(application, "MediaPipeCameraInput", return_value=camera), \
              patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", side_effect=create_world), \
+             patch.object(application, "RelativeControlClock", return_value=control_clock), \
              patch.object(application.time, "sleep"):
             self.assertEqual(application.run_camera(self.args), 0)
         self.assertEqual(len(commands), 4)

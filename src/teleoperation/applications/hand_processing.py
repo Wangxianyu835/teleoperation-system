@@ -72,3 +72,71 @@ class MediaPipePalmLocalPipeline:
 
     def reset(self):
         self.processor.reset(); self.buffer.reset()
+
+
+class UnifiedHandPipeline:
+    """Parallel sensor adapters -> one metric hand contract -> one window rule.
+
+    Sensor adapters only extract topology/axes. Both NN and dex consume the
+    resulting dimensionless window without knowing which device produced it.
+    TransHandR's original checkpoint preprocessing remains a separate explicit
+    compatibility route; it is never relabelled as this contract.
+    """
+
+    def __init__(self):
+        from teleoperation.inputs.hand_adapters import VisionProMetricAdapter
+        self.camera = MediaPipePalmLocalProcessor('world')
+        self.visionpro = VisionProMetricAdapter()
+        self.buffer = TemporalBuffer()
+        self._source = None
+        self.current_hands = {s: None for s in SIDES}
+        self.invalid_reasons = {s: None for s in SIDES}
+
+    def process_observation(self, raw):
+        from teleoperation.contracts.coordinates import unified_metric_metadata
+        from teleoperation.retargeting.hand.normalization import validate_metric_hand_frame, normalize_hand_window
+        try:
+            if not isinstance(raw, RawHandFrame):
+                raw = RawHandFrame({s: raw[s] for s in SIDES}, raw.get('timestamp'),
+                    'mediapipe_approx', raw.get('metadata', {}),
+                    world_hands={s: raw.get('world_' + s) for s in SIDES})
+            if raw.timestamp is None or not np.isfinite(raw.timestamp):
+                raise ValueError('Hand input requires finite seconds')
+            if 'coordinate_alignment' in raw.metadata:
+                raise ValueError('Unified pipeline requires raw sensor observations')
+            if raw.source not in ('visionpro', 'mediapipe', 'mediapipe_hands', 'mediapipe_approx'):
+                raise ValueError('Unsupported hand input source')
+            device = 'visionpro' if raw.source == 'visionpro' else 'camera'
+            if self._source != device:
+                self.reset()
+                self._source = device
+            adapted = (self.visionpro.adapt(raw) if device == 'visionpro'
+                       else self.camera.process_frame(raw))
+            canonical = CanonicalHandFrame(adapted.hands, raw.timestamp, raw.source, {
+                **unified_metric_metadata(),
+                'observation_source': raw.source,
+                'sensor_metadata': dict(raw.metadata),
+                'sensor_adapter': 'visionpro_anatomical_palm_v1' if device == 'visionpro' else 'mediapipe_world_palm_v1',
+                'invalid_reasons': dict(adapted.invalid_reasons),
+            })
+            canonical = validate_metric_hand_frame(canonical)
+            self.current_hands, self.invalid_reasons = canonical.hands, canonical.invalid_reasons
+            window = self.buffer.append(canonical)
+            if window is not None:
+                window = normalize_hand_window(window)
+                if all(x is None for x in window.hands.values()):
+                    window = None
+            return window, canonical
+        except (TypeError, ValueError, KeyError):
+            self.reset()
+            raise
+
+    def process_window(self, raw):
+        return self.process_observation(raw)[0]
+
+    def reset(self):
+        self.camera.reset()
+        self.buffer.reset()
+        self._source = None
+        self.current_hands = {s: None for s in SIDES}
+        self.invalid_reasons = {s: None for s in SIDES}

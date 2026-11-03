@@ -86,6 +86,15 @@ def hand_control(parser):
     from .hand_command_options import add_hand_command_arguments
     add_target_arguments(parser)
     add_hand_command_arguments(parser)
+    from teleoperation.contracts.coordinates import UNIFIED_HAND_PROFILE
+    parser.set_defaults(input_profile=UNIFIED_HAND_PROFILE)
+    parser.add_argument('--source',choices=('camera','visionpro'),default='camera')
+    vr = parser.add_mutually_exclusive_group()
+    vr.add_argument('--input-h5',type=Path,help='raw Vision Pro transform recording')
+    vr.add_argument('--ip',help='Vision Pro streamer address')
+    parser.add_argument('--fps',type=float,default=0.,help='loop upper bound; 0 is unthrottled')
+    parser.add_argument('--report',type=Path)
+    parser.add_argument('--scene',choices=('auto','hands','robots'),default='auto')
     parser.add_argument('--model-asset-path',type=Path)
     parser.add_argument('--camera-index',type=int,default=0)
     parser.add_argument('--frames',type=int,default=0,help='0 runs until interruption/window close')

@@ -1,5 +1,13 @@
 # 当前接口与旧接口清理
 
+## 2026-11-04：RGB/VR并列输入纠正
+
+正式手部控制已统一：RGB或Vision Pro经各自适配器进入`hand_palm_length_window3_v1`，均可选择SharedJointNNRetargeter或NormalizedDexRetargeter，然后复用JointCommandPipeline、原生执行和hand_joint_results_v1。入口为`hand control --source camera|visionpro --backend nn|dex`；VR快捷入口默认NN，NN/dex均转发共同应用。
+
+历史相机profile与新规范的相机窗口逐位相等，既有目标shared权重保持原metadata经严格校验复用；VR来源如实记录。上游TransHandR改为显式`hand vr --backend transhandr`；此次对实际本地源码与权重验证输入/原始输出差异均0，来源hash见下方原表，新报告`outputs/unified_hand/vr_upstream_equivalence.json`。旧固定标定VR dex函数未删除，但正式dex入口不再走该分支。旧分支删除计划暂停。
+
+具体契约与命令见[统一手部输入](unified-hand-input.md)。下文2026-11-01清理内容为历史记录，其中“VR专用”不代表正式NN/dex仍按设备分叉。
+
 本次是明确的接口断开更新，不提供旧数据转换器。旧数据可从 Git checkpoint 查看。
 
 修改前提交：`6e7b35d3c825f65edc16b5bfee99ca3080ac45a1`。
