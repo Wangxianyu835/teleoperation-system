@@ -67,6 +67,13 @@ class SimulationEnv:
         self.action_joint_names = []
         self.action_joint_indices = []
 
+        # 仿真时钟与「连续成立窗口」的占位值：同上面的理由，reset() 之前访问
+        # 也要有确定值（例如步数用尽时 _finalize_episode() 会读 self.sim_time）。
+        self.dt = DEFAULT_DT
+        self.sim_time = 0.0
+        self._success_streak = 0
+        self._success_hold_steps = 1
+
     def _init_modules(self, data_dir: str):
         """初始化各模块"""
         self.robot_loader = RobotLoader(self.client)
