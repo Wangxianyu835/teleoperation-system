@@ -129,13 +129,14 @@ class CoordinatePipelineTests(unittest.TestCase):
     def test_new_checkpoint_records_actual_dimensionless_input_and_native_output(self):
         from teleoperation.robots.hand_spec import load_hand_spec
         from teleoperation.retargeting.hand.predictor import build_joint_model
-        from teleoperation.retargeting.hand.checkpoint import joint_checkpoint_payload
+        from teleoperation.retargeting.hand.checkpoint import shared_joint_checkpoint_payload
         from tests.test_joint_checkpoints import SMALL
-        spec=load_hand_spec('g1','left')
-        payload=joint_checkpoint_payload(build_joint_model(spec,SMALL),spec)
+        spec=load_hand_spec('g1','right')
+        payload=shared_joint_checkpoint_payload(build_joint_model(spec,SMALL),spec)
         self.assertEqual(payload['units'],'1')
         self.assertEqual(payload['output_units'],'rad')
-        self.assertEqual(payload['side'],'left')
+        self.assertEqual(payload['side'],'shared')
+        self.assertEqual(payload['output_coordinates'],'canonical_right')
         self.assertEqual(payload['model_kwargs']['out_num_joint'],7)
         self.assertNotIn('source_scale',payload)
 

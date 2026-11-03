@@ -7,7 +7,7 @@ import torch
 
 from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
 from teleoperation.contracts.hand import HandWindow
-from teleoperation.retargeting.hand.interface import JointNNRetargeter, SharedJointNNRetargeter
+from teleoperation.retargeting.hand.interface import SharedJointNNRetargeter
 from teleoperation.retargeting.hand.predictor import build_joint_model
 from teleoperation.robots.hand_spec import load_hand_spec
 from tests.test_joint_checkpoints import SMALL
@@ -24,7 +24,7 @@ class NormalizedRetargeterTests(unittest.TestCase):
     def test_native_nn_shapes_sides_and_missing_input(self):
         torch.set_num_threads(1)
         specs = {('l21',s):load_hand_spec('l21',s) for s in ('left','right')}
-        nn = JointNNRetargeter(specs,{k:build_joint_model(s,SMALL) for k,s in specs.items()})
+        nn = SharedJointNNRetargeter(specs,build_joint_model(specs[('l21','right')],SMALL))
         window = self.window()
         results = nn.retarget(window)
         for key,spec in specs.items():

@@ -13,7 +13,6 @@ from teleoperation.cli import main, build_parser
 from teleoperation.applications.hand_align import align_h5
 from teleoperation.retargeting.hand.predictor import build_joint_model
 from teleoperation.retargeting.hand.checkpoint import (
-    joint_checkpoint_payload,
     save_joint_checkpoint,
     shared_joint_checkpoint_payload,
 )

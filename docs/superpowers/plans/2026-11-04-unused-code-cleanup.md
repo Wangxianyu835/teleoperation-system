@@ -146,13 +146,13 @@ rg -n 'hand_export|TwoHandH5ChunkedGenerator|_is_valid_hand_frame|\b_stack\b|\b_
 - Consumes/Produces: `SharedJointNNRetargeter(specs, model, device='cpu', *, canonical_spec=None)`、`shared_joint_checkpoint_payload(model, spec)`、`load_shared_joint_checkpoint(path, spec, device='cpu')`、`save_joint_checkpoint(path, payload)`，签名及实现不变。
 - Removed: JointNNRetargeter、joint_checkpoint_payload、load_joint_checkpoint。未使用旧接口不提供别名。
 
-- [ ] **Step 1：建立检查点并核对测试覆盖。** `$cleanupBatch = 'remove-unused-side-nn'`。列出旧API所有调用；确认生产入口已使用shared版本。
+- [x] **Step 1：建立检查点并核对测试覆盖。** `$cleanupBatch = 'remove-unused-side-nn'`。列出旧API所有调用；确认生产入口已使用shared版本。
 
 ```powershell
 rg -n '\b(JointNNRetargeter|joint_checkpoint_payload|load_joint_checkpoint)\b' src tests devtools
 ```
 
-- [ ] **Step 2：先迁移测试并在删除实现前运行。** `test_joint_checkpoints`的动态维数、身份篡改、限位篡改用例改调用shared payload/loader；保留synthetic21网络头覆盖、shared身份校验以及现有路径函数的原有测试，不改paths.py。坐标元数据测试改为right spec和shared payload，断言side='shared'、output_coordinates='canonical_right'、units='1'和7维输出。hand_control_cli移除闲置旧导入。
+- [x] **Step 2：先迁移测试并在删除实现前运行。** `test_joint_checkpoints`的动态维数、身份篡改、限位篡改用例改调用shared payload/loader；保留synthetic21网络头覆盖、shared身份校验以及现有路径函数的原有测试，不改paths.py。坐标元数据测试改为right spec和shared payload，断言side='shared'、output_coordinates='canonical_right'、units='1'和7维输出。hand_control_cli移除闲置旧导入。
 
 checkpoint测试中的构建与加载统一替换为：
 
@@ -207,9 +207,9 @@ nn = SharedJointNNRetargeter(
 
 预期：新测试在仍保留旧实现时已经通过，证明覆盖迁移本身正确。若shared接口现有行为与旧接口不同，按照shared的公开语义调整测试，不趁清理修改算法。
 
-- [ ] **Step 3：删除旧API。** 删除JointNNRetargeter类及__all__条目；删除两个旧checkpoint函数及其专属闲置导入，保留_reference_geometry和shared的全部严格校验。再次检索，src/tests/devtools不应残留旧API引用。
-- [ ] **Step 4：验证并同步说明。** 运行Step 2测试加test_joint_training、test_unified_hand_inputs，随后完整unittest。独立dex环境补跑test_normalized_dex与test_normalized_retargeters（环境命令见Task 6）。文档仅保留shared权重用法；不删除活跃camera profile或声称所有历史路径已统一。
-- [ ] **Step 5：提交。** 消息`refactor: retire unused side-specific neural interfaces`，记录hash/tag。
+- [x] **Step 3：删除旧API。** 删除JointNNRetargeter类及__all__条目；删除两个旧checkpoint函数及其专属闲置导入，保留_reference_geometry和shared的全部严格校验。再次检索，src/tests/devtools不应残留旧API引用。
+- [x] **Step 4：验证并同步说明。** 运行Step 2测试加test_joint_training、test_unified_hand_inputs，随后完整unittest。独立dex环境补跑test_normalized_dex与test_normalized_retargeters（环境命令见Task 6）。文档仅保留shared权重用法；不删除活跃camera profile或声称所有历史路径已统一。
+- [x] **Step 5：提交。** 消息`refactor: retire unused side-specific neural interfaces`，记录hash/tag。
 
 ## Task 4：删除旧VR闲置控制循环及测试专用旧录制格式
 
@@ -329,3 +329,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 1：检查点 `checkpoint-20261104-0111-remove-orphan-modules`；修改前 `1bba6551b07c785ddef9d0b4eb86990623c70f7b`；相关回归35项（1项跳过），完整回归560项（557通过、3项dex依赖跳过）；无失败。
 
 - Task 2：检查点 `checkpoint-20261104-0114-trim-unused-members`；修改前 `cb00e4ee3b855e23d7a2f448ede662b7b88db384`；相关回归36项全部通过，完整回归560项（557通过、3项dex依赖跳过）。复查发现registry保留旧hand:export字符串，已同步改为实际hand_control:export，避免删除包装后悬空；保留定义AST比较确认算法不变。
+
+- Task 3：检查点 `checkpoint-20261104-0117-remove-unused-side-nn`；修改前 `1554c724011cae700c5defca515c0bc317fedc13`；删除前迁移测试25项（1项跳过），删除后相关38项（2项跳过）；完整560项（557通过、3项dex跳过）；独立dex环境16项全通过。保留shared函数AST完全一致。
