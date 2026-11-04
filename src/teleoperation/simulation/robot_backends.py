@@ -55,3 +55,32 @@ class NativeRobotBackend:
                              for n in part.joint_names]) for key,part in self.spec.parts.items()}
 
     def close(self):pass  # This binding borrows its group's connection.
+
+
+class Tron2AL21Backend:
+    def __init__(self,spec,scene,physics_group,robot,part_bodies,names,world,calibration):
+        self.spec,self.scene,self.physics_group=spec,scene,physics_group
+        self.robot,self.part_bodies,self.names,self.world=robot,part_bodies,names,world
+        self.robot_id=spec.robot_id; self.driver=None; self.arm_controller=None
+        if world is not None:
+            from teleoperation.applications.dual import Tron2ADualArmController
+            self.arm_controller=Tron2ADualArmController(calibration,spec.urdf_path,input_mode='smplerx')
+
+    def validate(self,frame):
+        self.spec.validate_frame(frame)
+        if not self.scene.alive():raise RuntimeError('Simulation connection closed')
+
+    def write(self,frame):
+        p=self.scene.p
+        for key,part in frame.parts.items():
+            body=self.part_bodies[key]
+            for n,q in zip(part.joint_names,part.positions):
+                info=p.getJointInfo(body,self.names[body][n],physicsClientId=self.scene.cid)
+                p.setJointMotorControl2(body,self.names[body][n],p.POSITION_CONTROL,targetPosition=float(q),
+                    force=max(float(info[10]),1.) if key.endswith('_arm') else 200.,physicsClientId=self.scene.cid)
+
+    def read_state(self):
+        return {key:np.array([self.scene.p.getJointState(self.part_bodies[key],self.names[self.part_bodies[key]][n],
+                    physicsClientId=self.scene.cid)[0] for n in part.joint_names]) for key,part in self.spec.parts.items()}
+
+    def close(self):pass

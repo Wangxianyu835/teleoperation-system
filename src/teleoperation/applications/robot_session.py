@@ -60,6 +60,15 @@ class RobotControlSession:
                     updates[name][side+'_hand']=RobotPartCommand(command.joint_names,command.positions,
                         hands.timestamp,hands.metadata.get('timestamp_unit','sensor_seconds'),True,'tracking')
             b=self.backends[name]
+            if name=='tron2a_l21' and b.arm_controller is not None:
+                if not isinstance(raw,RawTeleopObservation):raise ValueError('TRON2A arms require body observations')
+                valid=b.arm_controller.update(raw.upper_body,control_seconds,raw.wrists)
+                for side in ('left','right'):
+                    key=side+'_arm'
+                    if key not in spec.parts:continue
+                    observed=bool(valid[side] and raw.upper_body.valid.get(side,False))
+                    updates[name][key]=RobotPartCommand(spec.parts[key].joint_names,b.arm_controller.controllers[side].q,
+                        raw.upper_body.timestamp,'body_monotonic_s',observed,'tracking' if observed else 'holding')
             if b.driver is None:continue
             if self.source_kind=='visionpro':
                 produced=self.wrists[name].solve_vr(hands,dt)

@@ -171,13 +171,13 @@ with self.assertRaises(ValueError):
 
 **Interfaces:** DualTeleoperator增加`produce_parts(observation, *, control_seconds)`，复用当前手/臂控制后返回通用part命令；现有update保持返回Tron2AL21Command。Tron2AL21Backend完成通用part↔原专用命令映射。场景构造新增可选外部client_id、owns_client、base_pose；默认参数保持已有独立场景行为。
 
-- [ ] 建立four-target-comparison检查点，先比较固定观测/时钟下TRON2A通用命令与旧48D各分组数值相等；不通过改写专用顺序“统一”RobotLoader布局。
-- [ ] TRON2A从calibration获取safe_q、rotation、workspace和安装姿态，正式入口继续使用smplerx模式和原安全控制。初始化L21姿态必须以实际参考命令与spec校验，不将其他手型权重用于L21。
-- [ ] 统一场景只建一个PyBullet连接和地面，负责重力、dt、布局、GUI与最终disconnect。三机器人和TRON2A子场景使用注入连接，不重设全局物理、不再各自step/关闭共享连接；L21多body、约束及手部安装仍由TRON2A后端拥有。
-- [ ] 对比摆位通过机器人base_pose实现；验证IK在各机器人基座坐标下的目标不因横向摆位改变，TRON2A相机标定不被改成带GUI偏移的新标定。每个目标只允许写自己body的关节。
-- [ ] 将部位显示扩展到H1-2、GR1-T2、TRON2A＋L21。TRON2A arms模式不附加L21可见body，hands模式仅装载所选L21手且不要求身体标定；原full/simplified选项属于几何精度，不能冒充arms/hands显示范围。显式多目标parts=hands只显示选中目标的手，不生成整机对比墙。
-- [ ] 测试单目标仅加载1台；显式双目标及四目标共享同一输入frame_id/控制time；关闭一个借用场景不影响其他目标；共同advance次数不随目标数增加。保留每目标独立状态，单臂观测失效只影响对应part。
-- [ ] 运行`python -m unittest tests.test_robot_comparison tests.test_robot_scene_selection tests.test_mediapipe_tron2a tests.test_arm_ik_multi_robot tests.test_robot_output -v`及完整套件；提交`feat: support explicit four-target simulation comparison`。
+- [x] 建立four-target-comparison检查点，先比较固定观测/时钟下TRON2A通用命令与旧48D各分组数值相等；不通过改写专用顺序“统一”RobotLoader布局。
+- [x] TRON2A从calibration获取safe_q、rotation、workspace和安装姿态，正式入口继续使用smplerx模式和原安全控制。初始化L21姿态必须以实际参考命令与spec校验，不将其他手型权重用于L21。
+- [x] 统一场景只建一个PyBullet连接和地面，负责重力、dt、布局、GUI与最终disconnect。三机器人和TRON2A子场景使用注入连接，不重设全局物理、不再各自step/关闭共享连接；L21多body、约束及手部安装仍由TRON2A后端拥有。
+- [x] 对比摆位通过机器人base_pose实现；验证IK在各机器人基座坐标下的目标不因横向摆位改变，TRON2A相机标定不被改成带GUI偏移的新标定。每个目标只允许写自己body的关节。
+- [x] 将部位显示扩展到H1-2、GR1-T2、TRON2A＋L21。TRON2A arms模式不附加L21可见body，hands模式仅装载所选L21手且不要求身体标定；原full/simplified选项属于几何精度，不能冒充arms/hands显示范围。显式多目标parts=hands只显示选中目标的手，不生成整机对比墙。
+- [x] 测试单目标仅加载1台；显式双目标及四目标共享同一输入frame_id/控制time；关闭一个借用场景不影响其他目标；共同advance次数不随目标数增加。保留每目标独立状态，单臂观测失效只影响对应part。
+- [x] 运行`python -m unittest tests.test_robot_comparison tests.test_robot_scene_selection tests.test_mediapipe_tron2a tests.test_arm_ik_multi_robot tests.test_robot_output -v`及完整套件；提交`feat: support explicit four-target simulation comparison`。
 
 ## Task 7：完成目标选择与跨入口运行策略
 
@@ -259,3 +259,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 4：pre e58261d9c39812c6c9d0e3f64400e7e3f430dd1b；tag checkpoint-20261104-1357-unified-robot-dispatch；相关7项通过；完整568项，565通过、3项dex跳过；真实双目标组8步只推进8步，静态错误无电机写入，实际关节运动已验证。
 
 - Task 5：pre 2ca3591b1524ae5437aad9218c7f5d5307f018de；tag checkpoint-20261104-1401-g1-unified-control；相关21项（1跳过），最终新增核心3项通过；完整571项，568通过、3项dex跳过。G1原装整机/右臂/右手真实渲染已查看；录制身体H5经注册CLI完成4帧，无相机/模型推理。TRON2A原装STL缺失已确认，后续显式简化几何用于其控制验证，不冒充原装网格。
+
+- Task 6：pre c1385e6f24ab2cdc727b012134badf36a659c567；tag checkpoint-20261104-1411-four-target-comparison；相关113项通过；完整575项，572通过、3项dex跳过。四目标同连接/8步单次推进、原装三目标部位渲染、L21独立手、借用TRON2A连接关闭不影响公共场景已覆盖。新增显式--geometry simplified只用于TRON2A原网格缺失时的可见控制验证，full仍严格报缺资源。

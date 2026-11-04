@@ -53,10 +53,17 @@ def run(args):
             for name in ('smplerx_worker_python','smplerx_root','smplerx_checkpoint','smplx_model_dir'):
                 if not Path(getattr(args,name)).exists():raise FileNotFoundError(getattr(args,name))
     if args.record_results is not None:raise ValueError('Complete command recording is not connected yet')
+    calibration=None
+    if args.tron2a_calibration is not None:
+        from teleoperation.retargeting.arm.calibration import ArmCalibration
+        calibration=ArmCalibration.load(args.tron2a_calibration)
+        if args.input_body is None and calibration.metadata.get('capture_kind')=='synthetic_validation_only':
+            raise ValueError('Synthetic calibration is for offline validation only')
     with ExitStack() as resources:
         group=SimulationGroup(gui=not args.headless); resources.callback(group.close)
         backends={n:RobotPartSceneBuilder().build(s,group=group,
-                     base_pose=(i*2.2,0.,.8) if len(specs)>1 else None)
+                     base_pose=(i*2.2,0.,.8) if len(specs)>1 else None,
+                     calibration=calibration if n=='tron2a_l21' else None,geometry=args.geometry)
                   for i,(n,s) in enumerate(specs.items())}
         session=RobotControlSession(backends,backend=args.backend,checkpoints=checkpoints,device=args.device,
                     arm_calibrate_frames=args.arm_calibrate_frames,source_kind=args.source,hand_selection=hand_selection,

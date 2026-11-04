@@ -10,6 +10,7 @@ def configure(parser,*,replay=False):
     targets.add_argument('--robot',choices=ROBOT_TARGETS)
     targets.add_argument('--robots',choices=ROBOT_TARGETS,nargs='+')
     parser.add_argument('--headless',action='store_true')
+    parser.add_argument('--geometry',choices=('full','simplified'),default='full',help='TRON2A mesh quality; simplified is explicit only')
     parser.add_argument('--report',type=Path)
     if replay:
         parser.add_argument('--input',type=Path,required=True)

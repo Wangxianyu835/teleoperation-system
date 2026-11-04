@@ -17,23 +17,25 @@ class Tron2ADualArmWorld:
 
     def __init__(self, urdf_path: str | Path, *, hand_mount_pose=None, gui=True,
                  time_step=1.0 / 240.0, display="full", attach_hands=True, safe_q=None,
-                 hand_reference_only=False):
+                 hand_reference_only=False, client_id=None, owns_client=None, base_pose=None, visible_links=None):
         import pybullet as pybullet
         self.p = pybullet
         self.client = -1
+        self._owns_client = client_id is None if owns_client is None else bool(owns_client)
         self._temporary = tempfile.TemporaryDirectory(prefix="tron2a_pybullet_")
         self.time_step = float(time_step)
         if not np.isfinite(time_step) or time_step <= 0:
             self._temporary.cleanup()
             raise ValueError("Simulation time step must be finite and positive")
         try:
-            prepared = _prepare_urdf(urdf_path, Path(self._temporary.name), display=display)
-            self.client = self.p.connect(self.p.GUI if gui else self.p.DIRECT)
+            prepared = _prepare_urdf(urdf_path, Path(self._temporary.name), display=display, visible_links=visible_links)
+            self.client = self.p.connect(self.p.GUI if gui else self.p.DIRECT) if client_id is None else int(client_id)
             if self.client < 0:
                 raise RuntimeError("PyBullet connection failed")
-            self.p.setTimeStep(time_step, physicsClientId=self.client)
-            self.p.setGravity(0, 0, -9.81, physicsClientId=self.client)
-            self.robot = self.p.loadURDF(str(prepared), useFixedBase=True,
+            if self._owns_client:
+                self.p.setTimeStep(time_step, physicsClientId=self.client)
+                self.p.setGravity(0, 0, -9.81, physicsClientId=self.client)
+            self.robot = self.p.loadURDF(str(prepared), useFixedBase=True, basePosition=base_pose or (0,0,0),
                                         flags=self.p.URDF_USE_INERTIA_FROM_FILE, physicsClientId=self.client)
             self.joint_indices, self.link_indices = _joint_and_link_maps(self.p, self.robot, self.client)
             self.arm_indices = {side: _require_indices(self.joint_indices, TRON2A_ARM_JOINTS[side]) for side in ("left", "right")}
@@ -164,13 +166,13 @@ class Tron2ADualArmWorld:
 
     def close(self) -> None:
         try:
-            if self.is_connected():
+            if getattr(self, '_owns_client', True) and self.is_connected():
                 self.p.disconnect(physicsClientId=self.client)
         finally:
             self._temporary.cleanup()
 
 
-def _prepare_urdf(urdf_path: str | Path, directory: Path, *, display="full") -> Path:
+def _prepare_urdf(urdf_path: str | Path, directory: Path, *, display="full", visible_links=None) -> Path:
     import xml.etree.ElementTree as ET
     from scipy.spatial.transform import Rotation
     if display not in ("full", "simplified"):
@@ -180,6 +182,10 @@ def _prepare_urdf(urdf_path: str | Path, directory: Path, *, display="full") -> 
         raise FileNotFoundError(f"TRON2A URDF was not found: {source}")
     tree = ET.parse(source)
     root = tree.getroot()
+    if visible_links is not None:
+        for link in root.findall('link'):
+            if link.get('name') not in visible_links:
+                for node in list(link.findall('visual'))+list(link.findall('collision')):link.remove(node)
     package_root = source.parent.parent if source.parent.name.lower() == "urdf" else source.parent
     missing = []
     for mesh in root.findall(".//mesh"):
@@ -199,6 +205,7 @@ def _prepare_urdf(urdf_path: str | Path, directory: Path, *, display="full") -> 
         raise FileNotFoundError("TRON2A mesh resources missing; install them or explicitly use --display simplified: " + "; ".join(sorted(set(missing))))
     if display == "simplified":
         for link in root.findall("link"):
+            if visible_links is not None and link.get("name") not in visible_links:continue
             # Replace mesh proxies only; keep all original joints and inertias.
             for element in link.findall("visual") + link.findall("collision"):
                 geometry = element.find("geometry")
