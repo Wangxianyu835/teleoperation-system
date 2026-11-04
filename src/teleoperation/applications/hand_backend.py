@@ -58,3 +58,17 @@ def build_camera_retargeter(hand_models, sides, backend, checkpoints=None, devic
         retargeters.append(SharedJointNNRetargeter(selected, model, device,
                                                  canonical_spec=canonical_spec))
     return specs, CameraRetargeters(specs, retargeters)
+
+
+def build_target_hand_retargeters(targets,backend,checkpoints=None,device='cpu'):
+    """Infer hand types/sides from enabled whole-robot parts."""
+    selected={}
+    for target in targets:
+        for side,hand in target.hand_specs.items():
+            selected.setdefault(hand.hand_model,set()).add(side)
+    specs,retargeters={},[]
+    for model,sides in selected.items():
+        per_specs,retargeter=build_camera_retargeter((model,),tuple(sorted(sides)),backend,
+            {model:checkpoints[model]} if backend=='nn' else None,device)
+        specs.update(per_specs); retargeters.append(retargeter)
+    return specs,CameraRetargeters(specs,retargeters)

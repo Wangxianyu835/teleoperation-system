@@ -133,11 +133,11 @@ with self.assertRaises(ValueError):
 
 **Interfaces:** RobotCommandAssembler(specs, initial)；assemble(robot_id, frame_id, timestamp, updates: dict[str, RobotPartCommand | None])→RobotCommandFrame。initial来自场景有效参考姿态，updates只能包含启用部位。各帧完整覆盖启用部位。
 
-- [ ] 建立assemble-robot-commands检查点，先测“左手丢失但左臂继续变化、右侧不受影响”“初始未检测不从全零生成动作”“恢复不重放旧数据”“source时间不被control时间改写”。
-- [ ] 按机器人分开维护状态；手命令直接接收JointCommandPipeline已接受/已展开值，机械臂接收现有有界求解值，不进行第二次滤波、耦合或IK。
-- [ ] 校验同一个target/part的关节集合与顺序；拒绝G1帧混入L21的17维手，重复关节、未知part或倒退frame/time均拒绝且不污染上一帧。
-- [ ] 边界转换保留HandJointCommand接口。新函数`build_target_hand_retargeters(targets, backend, checkpoints, device)`从RobotControlSpec推导hand_model，复用当前NN/dex构造；每目标缺失权重均在相机打开前失败。
-- [ ] 运行`python -m unittest tests.test_robot_command_assembly tests.test_normalized_retargeters tests.test_joint_commands tests.test_unified_hand_inputs -v`及完整套件；提交`feat: assemble target-specific arm and hand command frames`。
+- [x] 建立assemble-robot-commands检查点，先测“左手丢失但左臂继续变化、右侧不受影响”“初始未检测不从全零生成动作”“恢复不重放旧数据”“source时间不被control时间改写”。
+- [x] 按机器人分开维护状态；手命令直接接收JointCommandPipeline已接受/已展开值，机械臂接收现有有界求解值，不进行第二次滤波、耦合或IK。
+- [x] 校验同一个target/part的关节集合与顺序；拒绝G1帧混入L21的17维手，重复关节、未知part或倒退frame/time均拒绝且不污染上一帧。
+- [x] 边界转换保留HandJointCommand接口。新函数`build_target_hand_retargeters(targets, backend, checkpoints, device)`从RobotControlSpec推导hand_model，复用当前NN/dex构造；每目标缺失权重均在相机打开前失败。
+- [x] 运行`python -m unittest tests.test_robot_command_assembly tests.test_normalized_retargeters tests.test_joint_commands tests.test_unified_hand_inputs -v`及完整套件；提交`feat: assemble target-specific arm and hand command frames`。
 
 ## Task 4：统一输出与单次物理调度
 
@@ -253,3 +253,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 1：pre abcf428a352c2ca605e8dc175b87563495d2c441；tag checkpoint-20261104-1341-robot-output-contracts；相关14项通过；完整564项，561通过、3项dex依赖跳过。已复验CLI轻量导入修复。
 
 - Task 2：pre ee93a1dbec9005c76307c860a5fbecca5833c60a；tag checkpoint-20261104-1348-split-arm-production；相关172项通过；完整565项，562通过、3项dex依赖跳过。真实G1验证求解无电机/步进且q/qdot恢复，旧执行包装保留。
+
+- Task 3：pre 4eddbf8c38163a0d037932762f88d0739603a09e；tag checkpoint-20261104-1352-assemble-robot-commands；相关21项（2项跳过）；完整567项，564通过、3项dex跳过；独立保持、来源时基、错误更新不污染状态已覆盖。
