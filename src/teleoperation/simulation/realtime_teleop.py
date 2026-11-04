@@ -298,7 +298,7 @@ def build_scene(args, sides):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """所有开关；默认值都往"能直接跑起来"调（world 米制、两侧、三台全上）。"""
+    """world米制、两侧；机器人必须显式选择，可重复选择进行对比。"""
     parser = argparse.ArgumentParser(
         prog="python -m teleoperation.simulation.realtime_teleop",
         description="Realtime camera -> hand angles + arm targets -> H1-2 / GR1-T2 / G1")
@@ -325,7 +325,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--landmark-space", choices=("world",), default="world")
     parser.add_argument("--side", choices=("left", "right", "both"), default="both")
     parser.add_argument("--robot", action="append", choices=loadable_robots(), default=None,
-                        help="drive only these robots (repeatable; default: all three)")
+                        help="explicit target (required at run time; repeat for comparison)")
     parser.add_argument("--no-arms", action="store_true",
                         help="baseline behaviour: drive the hands only, arms stay held")
     # Accepted only so existing launcher argument lists still parse. Wrist
@@ -608,6 +608,8 @@ def rigid_elbow_robots(per_side) -> set:
 
 def run(args) -> int:
     """采集 -> 手 + 臂 -> 仿真；0 = 至少一侧给出过输出，1 = 全程没有手也没有臂。"""
+    if not args.robot or len(set(args.robot))!=len(args.robot):
+        raise ValueError('Choose distinct targets explicitly with --robot NAME (repeat for comparison)')
     sides = tuple(SIDES if args.side == "both" else (args.side,))
     diagnostics_enabled = bool(getattr(args, "diagnostics", False) or getattr(args, "diagnostic_trace", None))
     if diagnostics_enabled:
@@ -636,7 +638,7 @@ def run(args) -> int:
     if dump_body is not None and (replaying or args.no_arms):
         raise ValueError('--dump-body requires live SMPL-X arm capture')
     asset = resolve_model_asset(args.model_asset_path) if not replaying else None
-    robots = tuple(args.robot) if args.robot else loadable_robots()
+    robots = tuple(args.robot)
     profiles = {name: profile_for(name) for name in robots}
     arms_wanted = not args.no_arms
     if args.pose_model_asset_path is not None or args.pose_min_visibility is not None:
@@ -843,6 +845,8 @@ def run(args) -> int:
         started = time.perf_counter()
         simulation_clock = SimulationStepClock(args.sim_steps,
             realtime=not replaying and not args.fixed_sim_steps)
+        from teleoperation.applications.accepted_robot_output import AcceptedRobotOutput
+        robot_execution=AcceptedRobotOutput.native(scene,robots,args.side,driver)
 
         while True:
             if args.frames and processed >= args.frames:
@@ -879,11 +883,12 @@ def run(args) -> int:
             results = {} if window is None else retargeter.retarget(window)
             side_values = {side: [] for side in sides}
             side_valid = {side: True for side in sides}
+            accepted_hands={}
             for key, spec in specs.items():
                 result = results.get(key)
                 command = (commands.missing(key, timestamp=command_timestamp) if result is None
                            else commands.update(result, timestamp=command_timestamp))
-                scene.apply_native(command)
+                accepted_hands[key]=command
                 if result is None or not result.valid:
                     native_invalid[key] += 1
                     side_valid[key[1]] = False
@@ -897,27 +902,32 @@ def run(args) -> int:
                 else:
                     invalid[side] += 1
             targets = {}
+            accepted_arms={}
             if diagnostics is not None:
                 diagnostics.record_ms("hand_inference_output", (time.perf_counter() - hand_started) * 1000)
             if bridge is not None:
                 frame_dt = (args.sim_steps / 240.0 if args.input_npz is not None else
                             getattr(camera, 'frame_dt', None) or NOMINAL_FRAME_DT)
-                from teleoperation.applications.camera_scene_arm import apply_camera_arm_frame
+                from teleoperation.applications.camera_scene_arm import solve_camera_arm_frame
                 def arm_error(side, error):
                     if side not in arm_failures:
                         arm_failures[side] = f'{type(error).__name__}: {error}'
                         print(f'[WARN] {side}: arm command held: {arm_failures[side]}', flush=True)
                 with (nullcontext() if diagnostics is None else diagnostics.stage('arm_mapping')):
-                    targets = apply_camera_arm_frame(bridge, driver, wrist_control, camera.arms(),
+                    targets,accepted_arms = solve_camera_arm_frame(bridge, driver, wrist_control, camera.arms(),
                         camera.wrists(), frame_dt, elbow_follow=args.arm_elbow_follow, on_error=arm_error)
-                scene.steps_per_frame = simulation_clock.next_steps()
-                with (nullcontext() if diagnostics is None else diagnostics.stage("physics")):
-                    driver.step(1)
-                wrist_control.record()
-            else:
-                scene.steps_per_frame = simulation_clock.next_steps()
-                with (nullcontext() if diagnostics is None else diagnostics.stage("physics")):
-                    scene.step()
+            control_seconds=(processed-1)*args.sim_steps/240. if replaying else time.perf_counter()-started
+            stamp=None if raw_frame is None else float(raw_frame['timestamp'])
+            observed={(model,side+'_hand'):key in results and results[key].valid
+                      for key in specs for model,side in (key,)}
+            body=camera.arms()
+            for model in robots:
+                for side in sides:
+                    observed[model,side+'_arm']=body is not None and body.valid.get(side,False)
+            with (nullcontext() if diagnostics is None else diagnostics.stage('physics')):
+                robot_execution.submit(processed-1,control_seconds,hands=accepted_hands,arms=accepted_arms,
+                    source_timestamp=stamp,observed=observed,steps=simulation_clock.next_steps())
+            if wrist_control is not None:wrist_control.record()
             if args.dump_npz is not None:
                 _record_frame(dumped, raw_frame, camera.arms())
             if preview is not None:

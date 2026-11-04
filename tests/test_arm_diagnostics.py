@@ -34,7 +34,7 @@ def recording(path, frames=4):
 
 
 def arguments(capture, report, *extra):
-    return app.build_parser().parse_args(["--input-body", str(capture), "--report", str(report),
+    return app.build_parser().parse_args(["--robot", "g1", "--robot", "h1_2", "--robot", "gr1_t2", "--input-body", str(capture), "--report", str(report),
         "--backend", "dex", "--headless", "--no-preview", "--no-collision-guard",
         "--arm-calibrate-frames", "1", "--print-every", "0", *extra])
 

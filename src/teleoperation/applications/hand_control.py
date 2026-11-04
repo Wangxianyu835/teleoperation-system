@@ -180,6 +180,12 @@ def run(args):
         if source_kind == 'visionpro':
             from teleoperation.simulation.wrist_control import vr_arm_controller
             wrist_control = vr_arm_controller(scene, {s:s for s in _sides(args.hand)})
+        robot_execution=None
+        if args.hand_model!='l21':
+            from .accepted_robot_output import AcceptedRobotOutput
+            robot_execution=AcceptedRobotOutput.native(scene,(args.hand_model,),args.hand,
+                                                       None if wrist_control is None else wrist_control.driver)
+            stack.callback(robot_execution.close)
         writer = None if args.record_results is None else stack.enter_context(HandJointResultWriter(args.record_results,specs,_metadata(args,commands)))
         try:
             while scene.alive() and (args.frames == 0 or count < args.frames):
@@ -195,16 +201,27 @@ def run(args):
                     window = HandWindow({'left':None,'right':None},timestamp,source_kind,metadata)
                 # The same acquisition time is stored on both result and command.
                 results, accepted, targets = _process(window,specs,retargeter,commands)
-                for command in accepted.values():
-                    executor.apply(command)
+                if robot_execution is None:
+                    for command in accepted.values():executor.apply(command)
                 if writer is not None:
                     writer.append(count,timestamp,results,accepted,targets,window.metadata.get('palm_length_m'))
                 valid += sum(row.valid for row in results.values())
                 count += 1
                 if wrist_control is not None:
                     dt = 1/30 if count == 1 else timestamp - previous_timestamp
-                    wrist_control.apply_vr(camera.last_observation, dt)
-                scene.step()
+                    arm_commands=wrist_control.solve_vr(camera.last_observation, dt)
+                else:arm_commands={}
+                if robot_execution is not None:
+                    if count==1:control_origin=timestamp
+                    observed={(args.hand_model,side+'_hand'):result.valid for (_,side),result in results.items()}
+                    if wrist_control is not None:
+                        for side in _sides(args.hand):
+                            wrist=camera.last_observation.wrists.get(side) if camera.last_observation else None
+                            observed[args.hand_model,side+'_arm']=wrist is not None and wrist.orientation_valid
+                    robot_execution.submit(count-1,timestamp-control_origin,hands=accepted,arms=arm_commands,
+                        source_timestamp=timestamp,source_timebase='source_seconds',observed=observed,
+                        steps=getattr(scene,'steps_per_frame',8))
+                else:scene.step()
                 if wrist_control is not None:
                     wrist_control.record()
                 previous_timestamp = timestamp

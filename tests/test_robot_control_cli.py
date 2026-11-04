@@ -30,3 +30,18 @@ class RobotControlCliTests(unittest.TestCase):
                ['--robot','g1','--backend','dex','--parts','hands','--tron2a-calibration','unused.json']]
         for args in cases:
             with self.subTest(args=args),self.assertRaises(ValueError): preflight(self.parse(*args))
+
+    def test_old_camera_requires_explicit_targets_before_resources(self):
+        from unittest.mock import patch
+        from teleoperation.simulation import realtime_teleop
+        args=realtime_teleop.build_parser().parse_args(['--headless'])
+        with patch.object(realtime_teleop,'resolve_model_asset',side_effect=AssertionError('device/resource opened')):
+            with self.assertRaisesRegex(ValueError,'--robot'):
+                realtime_teleop.run(args)
+
+    def test_shared_command_options_fail_preflight(self):
+        from teleoperation.applications.robot_control import preflight
+        for extra in (['--filter-alpha','2'], ['--joint-max-velocity','nan'], ['--arm-calibrate-frames','0'],
+                      ['--record-results','same.h5','--report','same.h5']):
+            with self.subTest(extra=extra),self.assertRaises(ValueError):
+                preflight(self.parse('--robot','g1','--parts','arms',*extra))

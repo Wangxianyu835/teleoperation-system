@@ -4,7 +4,7 @@ from teleoperation.contracts.hand_control import HandJointCommand
 
 
 class SimulationGroup:
-    def __init__(self,scene=None,*,gui=False):
+    def __init__(self,scene=None,*,gui=False,owns_scene=True,advance_frame=None):
         if scene is None:
             from .robot_part_scene import RobotPartWorld
             scene=RobotPartWorld(gui)
@@ -12,15 +12,17 @@ class SimulationGroup:
         self.group_id=f'pybullet:{scene.cid}'
         self.time_step=1/240.
         self.closed=False
+        self.owns_scene=owns_scene
+        self.advance_frame=advance_frame
 
     def advance(self,steps):
         self.scene.steps_per_frame=steps
-        self.scene.step()
+        (self.advance_frame or self.scene.step)()
 
     def close(self):
         if not self.closed:
             self.closed=True
-            self.scene.close()
+            if self.owns_scene:self.scene.close()
 
 
 class NativeRobotBackend:
@@ -49,6 +51,11 @@ class NativeRobotBackend:
                     part.joint_names,part.positions,frame.timestamp))
             else:
                 self.driver.ik[self.spec.robot_id].apply(side,dict(zip(part.joint_names,part.positions)))
+                diagnostics=getattr(self.driver,'diagnostics',None)
+                if diagnostics is not None:
+                    diagnostics.command(self.spec.robot_id,side,dict(zip(part.joint_names,part.positions)))
+                if self.spec.robot_id==next(iter(self.driver.ik)):
+                    self.driver.applied[side]+=1
 
     def read_state(self):
         return {key:np.array([self.scene.p.getJointState(self.robot['body'],self.names[n],physicsClientId=self.scene.cid)[0]
@@ -76,8 +83,10 @@ class Tron2AL21Backend:
             body=self.part_bodies[key]
             for n,q in zip(part.joint_names,part.positions):
                 info=p.getJointInfo(body,self.names[body][n],physicsClientId=self.scene.cid)
+                options=({'force':max(float(info[10]),1.),'maxVelocity':max(float(info[11]),.01),
+                          'positionGain':.3,'velocityGain':1.} if key.endswith('_arm') else {'force':200.})
                 p.setJointMotorControl2(body,self.names[body][n],p.POSITION_CONTROL,targetPosition=float(q),
-                    force=max(float(info[10]),1.) if key.endswith('_arm') else 200.,physicsClientId=self.scene.cid)
+                    physicsClientId=self.scene.cid,**options)
 
     def read_state(self):
         return {key:np.array([self.scene.p.getJointState(self.part_bodies[key],self.names[self.part_bodies[key]][n],

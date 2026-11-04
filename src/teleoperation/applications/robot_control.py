@@ -7,6 +7,10 @@ from teleoperation.robots.control_spec import resolve_robot_targets
 def preflight(args):
     targets=resolve_robot_targets(args.robot,args.robots)
     if args.frames<0 or not np.isfinite(args.fps) or args.fps<0: raise ValueError('Invalid frames/fps')
+    if args.arm_calibrate_frames<1 or args.width<1 or args.height<1:raise ValueError('Invalid calibration/image dimensions')
+    from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
+    JointCommandPipeline({},filter_mode=args.joint_filter,alpha=args.filter_alpha,
+        max_velocity=args.joint_max_velocity,kalman_q=args.kalman_q,kalman_r=args.kalman_r)
     if args.source=='visionpro':
         if (args.ip is None)==(args.input_h5 is None) or args.input_body is not None:
             raise ValueError('Vision Pro requires exactly one of --ip or --input-h5')
@@ -29,6 +33,12 @@ def preflight(args):
         if path is not None and not path.is_file(): raise FileNotFoundError(path)
     for path in (args.record_results,args.report):
         if path is not None and path.exists(): raise FileExistsError(path)
+    destinations=[p.resolve() for p in (args.record_results,args.report) if p is not None]
+    inputs=[p.resolve() for p in (*checkpoints.values(),args.input_h5,args.input_body,args.tron2a_calibration) if p is not None]
+    if len(destinations)!=len(set(destinations)) or set(destinations).intersection(inputs):
+        raise ValueError('Outputs must differ from inputs and each other')
+    if args.tron2a_urdf is not None and ('tron2a_l21' not in targets or not arms):
+        raise ValueError('TRON2A URDF applies only to selected TRON2A arms')
     return targets,checkpoints
 
 
@@ -93,7 +103,7 @@ def run(args):
                 if args.fps and not (replaying and args.headless):time.sleep(max(0.,1/args.fps-(time.monotonic()-tick)))
         except KeyboardInterrupt:pass
         report={'targets':list(targets),'parts':args.parts,'side':args.side,'source':args.source,
-                'arm_mode':'wrist' if args.source=='visionpro' else 'body','frames':count,
+                'arm_mode':'off' if args.parts=='hands' else 'wrist' if args.source=='visionpro' else 'body','frames':count,
                 'physics_frames':group.scene.frames,'hardware_verified':False}
         if args.report:
             args.report.parent.mkdir(parents=True,exist_ok=True)

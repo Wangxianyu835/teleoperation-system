@@ -275,6 +275,7 @@ class ArmRealtimeLoopTests(unittest.TestCase):
             from tests.smplerx_fixtures import write
             write(capture, 18)
             args = build_parser().parse_args([
+                "--robot", "h1_2", "--robot", "gr1_t2", "--robot", "g1",
                 "--input-body", str(capture), "--report", str(report),
                 "--backend", "dex", "--headless", "--no-preview",
                 "--no-collision-guard", "--arm-calibrate-frames", "1", "--print-every", "0",

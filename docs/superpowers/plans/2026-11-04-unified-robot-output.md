@@ -185,7 +185,7 @@ with self.assertRaises(ValueError):
 
 **Interfaces:** 新主入口robot control/replay正式可用；目标选项互斥，--robots至少两个。旧三机器人模块`--robot`重复形式在边界转换目标集合；不传目标时改为明确提示选择，取消“默认三台”的行为。现有dual camera显式对应tron2a_l21，保留已有参数及arm-only默认。
 
-- [ ] 建立explicit-target-routing检查点，测试以下实际参数行为（不是只比较源码字符串）：
+- [x] 建立explicit-target-routing检查点，测试以下实际参数行为（不是只比较源码字符串）：
 
 ```text
 robot control --robot g1 --source camera --backend dex                => 仅G1
@@ -197,11 +197,11 @@ robot control --robot tron2a_l21 --source visionpro --ip unused --backend dex --
                                                                       => 能力预检失败，不开设备
 ```
 
-- [ ] 旧相机入口把参数转换后调用共同session/输出，图像HUD/诊断作为观察器保留，不再私自电机下发或步进。原hands-only接口、独立L21、训练与显式TransHandR不改输入/结果契约；需写整机时在其执行边界接RobotOutput的hands/wrist模式。
-- [ ] NN每目标通过--hand-checkpoint MODEL PATH传一份shared；dex拒绝NN权重；无arms/hands相应部分不加载对应模型。TRON2A目标在camera arms/both时要求--tron2a-calibration；没选择TRON2A时拒绝其专属标定参数，避免静默忽略。
-- [ ] 预检和场景创建统一采用parts/side：hand-only的tron2a_l21不需要TRON2A URDF/身体标定/SMPLer-X；arm-only不要求手网格或手权重；启用的可见部分缺少真实资源时清晰报错，不悄悄显示其他机器人或简化代理手。
-- [ ] 启动摘要列出目标、source、parts、相机body/VR wrist、权重和物理周期；不提供实体机器人发送后端。
-- [ ] 运行CLI、统一会话、相机/VR旧接口回归与完整套件；提交`feat: make single robot selection the default workflow`。
+- [x] 旧相机入口把参数转换后调用共同session/输出，图像HUD/诊断作为观察器保留，不再私自电机下发或步进。原hands-only接口、独立L21、训练与显式TransHandR不改输入/结果契约；需写整机时在其执行边界接RobotOutput的hands/wrist模式。
+- [x] NN每目标通过--hand-checkpoint MODEL PATH传一份shared；dex拒绝NN权重；无arms/hands相应部分不加载对应模型。TRON2A目标在camera arms/both时要求--tron2a-calibration；没选择TRON2A时拒绝其专属标定参数，避免静默忽略。
+- [x] 预检和场景创建统一采用parts/side：hand-only的tron2a_l21不需要TRON2A URDF/身体标定/SMPLer-X；arm-only不要求手网格或手权重；启用的可见部分缺少真实资源时清晰报错，不悄悄显示其他机器人或简化代理手。
+- [x] 启动摘要列出目标、source、parts、相机body/VR wrist、权重和物理周期；不提供实体机器人发送后端。
+- [x] 运行CLI、统一会话、相机/VR旧接口回归与完整套件；提交`feat: make single robot selection the default workflow`。
 
 ## Task 8：统一完整命令录制与直接回放
 
@@ -261,3 +261,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 5：pre 2ca3591b1524ae5437aad9218c7f5d5307f018de；tag checkpoint-20261104-1401-g1-unified-control；相关21项（1跳过），最终新增核心3项通过；完整571项，568通过、3项dex跳过。G1原装整机/右臂/右手真实渲染已查看；录制身体H5经注册CLI完成4帧，无相机/模型推理。TRON2A原装STL缺失已确认，后续显式简化几何用于其控制验证，不冒充原装网格。
 
 - Task 6：pre c1385e6f24ab2cdc727b012134badf36a659c567；tag checkpoint-20261104-1411-four-target-comparison；相关113项通过；完整575项，572通过、3项dex跳过。四目标同连接/8步单次推进、原装三目标部位渲染、L21独立手、借用TRON2A连接关闭不影响公共场景已覆盖。新增显式--geometry simplified只用于TRON2A原网格缺失时的可见控制验证，full仍严格报缺资源。
+
+- Task 7：pre 6fff4b294177bc9fa7b5c7f61505e39dd351f5aa；tag checkpoint-20261104-1417-explicit-target-routing；新增CLI预检、旧相机/VR手腕和TRON2A相机输出收口。相关100项中TRON65项及其余回归已通过，修正显式目标测试后完整577项，574通过、3项dex跳过；保留旧采集/诊断参数和单手H5边界。

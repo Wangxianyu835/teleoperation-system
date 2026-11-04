@@ -438,6 +438,8 @@ def run_camera(args):
         source = CameraTeleopSource(camera, camera, client, session_id=client.session_id)
         clock = RelativeControlClock()
         print(f"TRON2A {'dual arms and hands' if with_hands else 'arm-only'} simulation. Start neutral; rotation/scale are configured, not estimated. q/Esc exits preview.", flush=True)
+        from .accepted_robot_output import AcceptedRobotOutput
+        robot_execution=AcceptedRobotOutput.tron(world,args.urdf,with_hands,controller.safe_q)
         while args.frames == 0 or report.data["frames"] < args.frames:
             if not world.is_connected():
                 report.data["exit_reason"] = "simulation_window_closed"
@@ -459,12 +461,21 @@ def run_camera(args):
             else:
                 controller.update(raw.upper_body, seconds, raw.wrists)
             controlled = time.perf_counter()
-            if teleoperator is not None:
-                world.apply(command)
-            else:
-                world.apply_arms({side: safety.q for side, safety in controller.controllers.items()})
-            for _ in range(args.simulation_steps):
-                world.step()
+            arms={side:{'tron2a_l21':{'joints':dict(zip(
+                robot_execution.specs['tron2a_l21'].parts[side+'_arm'].joint_names,safety.q))}}
+                for side,safety in controller.controllers.items()}
+            hands={}
+            observed={}
+            for side in ('left','right'):
+                observed['tron2a_l21',side+'_arm']=bool(controller.diagnostics[side].get('ik_success',False)) and raw.upper_body.valid.get(side,False)
+                if teleoperator is not None:
+                    from teleoperation.contracts.hand_control import HandJointCommand
+                    hand=teleoperator.specs['l21',side]
+                    hands['l21',side]=HandJointCommand('l21',side,hand.spec_hash,hand.joint_names,
+                                                     getattr(command,side+'_hand'),seconds)
+                    observed['tron2a_l21',side+'_hand']=getattr(command,side+'_hand_valid')
+            robot_execution.submit(report.data['frames'],seconds,hands=hands,arms=arms,
+                source_timestamp=raw.hands.timestamp,observed=observed,steps=args.simulation_steps)
             actual = world.actual_state()
             simulated = time.perf_counter()
             durations = dict(capture_detection_ms=captured-started,
