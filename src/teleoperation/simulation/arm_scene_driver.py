@@ -203,7 +203,7 @@ class ArmSceneDriver:
         current = adapter.to_base(adapter.arm_points(side)[self.shoulder_anchor_key])
         return tuple(float(current[axis]) - float(anchor[axis]) for axis in range(3))
 
-    def apply_each(self, side: str, targets, source: str = "base",
+    def solve_each(self, side: str, targets, source: str = "base",
                    orientation=None, orientation_frame: str = "absolute",
                    elbows=None, elbow_bend_deg=None, elbow_rigid=None,
                    elbow_bend_baseline=None) -> dict:
@@ -286,10 +286,6 @@ class ArmSceneDriver:
                                        orientation=(orientation[robot_type] if isinstance(orientation, Mapping)
                                                     else orientation),
                                        source=source, **solve_options)
-            with (nullcontext() if diagnostics is None else diagnostics.stage(f"motor.{robot_type}.{side}")):
-                adapter.apply(side, values)
-            if diagnostics is not None:
-                diagnostics.command(robot_type, side, values)
             reports[robot_type] = {"ee": adapter.ee[side][1],
                                    "ik_mode": adapter.ik_mode,
                                    "shoulder_shift_mm": getattr(self, "shoulder_shift_mm", {}).get(
@@ -297,8 +293,26 @@ class ArmSceneDriver:
                                    "posture": {str(name): round(float(value), 5)
                                                for name, value in (posture or {}).items()},
                                    "joints": values}
-        self.applied[side] += 1
         return reports
+
+    def apply_each(self, side, targets, source="base", orientation=None,
+                   orientation_frame="absolute", elbows=None, elbow_bend_deg=None,
+                   elbow_rigid=None, elbow_bend_baseline=None):
+        """Compatibility wrapper: produce commands, then submit motor targets."""
+        reports = self.solve_each(side, targets, source=source, orientation=orientation,
+                                  orientation_frame=orientation_frame, elbows=elbows,
+                                  elbow_bend_deg=elbow_bend_deg, elbow_rigid=elbow_rigid,
+                                  elbow_bend_baseline=elbow_bend_baseline)
+        self.apply_solutions(side, reports)
+        return reports
+
+    def apply_solutions(self, side, reports):
+        for robot_type, report in reports.items():
+            self.ik[robot_type].apply(side, report['joints'])
+            diagnostics = getattr(self, 'diagnostics', None)
+            if diagnostics is not None:
+                diagnostics.command(robot_type, side, report['joints'])
+        self.applied[side] += 1
 
     # ------------------------------------------------------------------ #
     def update_slew(self, frame_dt: float) -> float:

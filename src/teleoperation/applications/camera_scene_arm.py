@@ -19,8 +19,8 @@ def rigid_elbow_robots(per_side):
             and (target.info or {}).get('elbow_target') == 'posture'}
 
 
-def apply_camera_arm_frame(bridge, driver, wrist_control, body, wrists, dt_s, *,
-                           elbow_follow='operator', on_error=None):
+def _camera_arm_frame(bridge, driver, wrist_control, body, wrists, dt_s, *,
+                           elbow_follow='operator', on_error=None, execute=True):
     metadata = getattr(body, 'metadata', {})
     session = metadata.get('session_id')
     if session:
@@ -30,6 +30,7 @@ def apply_camera_arm_frame(bridge, driver, wrist_control, body, wrists, dt_s, *,
             bridge.reset(recalibrate=True)
             wrist_control.reset()
         bridge._camera_identity = identity
+    commands = {}
     targets = bridge.update(arms_world=body, hands=None, frame_dt=dt_s)
     orientations = wrist_control.update(wrists, dt_s)
     bends = bridge.elbow_bend_target() if elbow_follow == 'operator' else None
@@ -45,7 +46,8 @@ def apply_camera_arm_frame(bridge, driver, wrist_control, body, wrists, dt_s, *,
             name: neutral[side] if (target.info or {}).get('posture_frame') == 'delta' else None
             for name, target in per_side.items()}
         try:
-            driver.apply_each(side, positions, source='base', orientation=orientations[side],
+            operation = driver.apply_each if execute else driver.solve_each
+            commands[side] = operation(side, positions, source='base', orientation=orientations[side],
                               orientation_frame='absolute', elbows=elbows,
                               elbow_rigid=rigid_elbow_robots(per_side) or None,
                               elbow_bend_baseline=baseline,
@@ -54,4 +56,11 @@ def apply_camera_arm_frame(bridge, driver, wrist_control, body, wrists, dt_s, *,
             if on_error is None:
                 raise
             on_error(side, error)
-    return targets
+    return targets, commands
+
+def apply_camera_arm_frame(bridge, driver, wrist_control, body, wrists, dt_s, **kwargs):
+    return _camera_arm_frame(bridge, driver, wrist_control, body, wrists, dt_s, **kwargs)[0]
+
+
+def solve_camera_arm_frame(bridge, driver, wrist_control, body, wrists, dt_s, **kwargs):
+    return _camera_arm_frame(bridge, driver, wrist_control, body, wrists, dt_s, execute=False, **kwargs)

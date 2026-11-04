@@ -72,15 +72,22 @@ class WristSceneController:
                     replaceItemUniqueId=self.axis_lines.get(key, -1),
                     physicsClientId=adapter.cid)
 
-    def apply_vr(self, frame, dt):
+    def solve_vr(self, frame, dt):
         """VR has wrist translation, no fabricated shoulder/elbow observations."""
+        commands = {}
         self.update(None if frame is None else frame.wrists, dt)
         for side, tracker in self.trackers.items():
             if tracker.neutral is None:
                 continue
             targets = {name: tuple(self.anchors[(name, side)][0] + tracker.displacement)
                        for name in self.driver.ik}
-            self.driver.apply_each(side, targets, source="base", orientation=self.orientations[side])
+            commands[side] = self.driver.solve_each(side, targets, source="base", orientation=self.orientations[side])
+
+        return commands
+
+    def apply_vr(self, frame, dt):
+        for side, reports in self.solve_vr(frame, dt).items():
+            self.driver.apply_solutions(side, reports)
 
     def record(self):
         """Call after physics; retain the latest 1800 frames for manual acceptance."""

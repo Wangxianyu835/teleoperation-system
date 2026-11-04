@@ -121,11 +121,11 @@ with self.assertRaises(ValueError):
 
 **Interfaces:** 新增ArmSceneDriver.solve_each，参数与现有apply_each的目标/腕/肘参数一致，返回每机器人report与命名关节值，不发电机或step。旧apply_each作为solve_each→adapter.apply包装，签名不变。新增solve_camera_arm_frame，复用当前apply_camera_arm_frame参数，返回targets及按机器人/侧的臂值；新增WristSceneController.solve_vr，旧apply_vr保留执行包装。
 
-- [ ] 建立split-arm-production检查点，先固定同初始q、姿态、中性标定和dt的对照测试。用真实DIRECT机器人求解，观察电机调用与physics步数，不用“源码里没有apply”代替行为验证。
-- [ ] 测试solve_each产生相同关节值且电机写入和物理步进均为0；旧apply_each仍实际下发。IK临时resetJointState是现有算法的一部分，成功及异常后都恢复原q/qdot，不能为了“纯函数”删掉暖启动。
-- [ ] 将apply_each的现有数值流程原样抽出；保留目标slew、肘分支恢复、肩跟随、坐标和日志。只有电机提交后才增加applied等执行计数；求解计数与执行计数分开。
-- [ ] 相机和VR新增求解路径不调用电机；旧包装的回归继续通过。新流程只消费solve路径，避免旧包装与输出层双写。
-- [ ] 运行`python -m unittest tests.test_arm_command_production tests.test_arm_following tests.test_arm_ik_multi_robot tests.test_arm_realtime_bridge tests.test_transhandr_vr -v`及完整套件；提交`refactor: separate arm command production from motor writes`。
+- [x] 建立split-arm-production检查点，先固定同初始q、姿态、中性标定和dt的对照测试。用真实DIRECT机器人求解，观察电机调用与physics步数，不用“源码里没有apply”代替行为验证。
+- [x] 测试solve_each产生相同关节值且电机写入和物理步进均为0；旧apply_each仍实际下发。IK临时resetJointState是现有算法的一部分，成功及异常后都恢复原q/qdot，不能为了“纯函数”删掉暖启动。
+- [x] 将apply_each的现有数值流程原样抽出；保留目标slew、肘分支恢复、肩跟随、坐标和日志。只有电机提交后才增加applied等执行计数；求解计数与执行计数分开。
+- [x] 相机和VR新增求解路径不调用电机；旧包装的回归继续通过。新流程只消费solve路径，避免旧包装与输出层双写。
+- [x] 运行`python -m unittest tests.test_arm_command_production tests.test_arm_following tests.test_arm_ik_multi_robot tests.test_arm_realtime_bridge tests.test_transhandr_vr -v`及完整套件；提交`refactor: separate arm command production from motor writes`。
 
 ## Task 3：汇合手臂命令，独立保持各部位
 
@@ -251,3 +251,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 ## 执行记录
 
 - Task 1：pre abcf428a352c2ca605e8dc175b87563495d2c441；tag checkpoint-20261104-1341-robot-output-contracts；相关14项通过；完整564项，561通过、3项dex依赖跳过。已复验CLI轻量导入修复。
+
+- Task 2：pre ee93a1dbec9005c76307c860a5fbecca5833c60a；tag checkpoint-20261104-1348-split-arm-production；相关172项通过；完整565项，562通过、3项dex依赖跳过。真实G1验证求解无电机/步进且q/qdot恢复，旧执行包装保留。
