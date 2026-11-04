@@ -26,17 +26,21 @@ class SimulationGroup:
 
 
 class NativeRobotBackend:
-    def __init__(self,spec,scene,physics_group,driver=None):
+    def __init__(self,spec,scene,physics_group,driver=None,*,create_driver=True):
         self.spec,self.scene,self.physics_group=spec,scene,physics_group
         self.robot=next(r for r in scene.robots if r['type']==spec.robot_id)
         self.robot_id=spec.robot_id
-        if driver is None and any(k.endswith('_arm') for k in spec.parts):
+        if create_driver and driver is None and any(k.endswith('_arm') for k in spec.parts):
             from .arm_scene_driver import ArmSceneDriver
             driver=ArmSceneDriver(scene,sides=tuple(k.split('_')[0] for k in spec.parts if k.endswith('_arm')),
                                   robots=(spec.robot_id,),track_posture=False)
         self.driver=driver
         self.names={scene.p.getJointInfo(self.robot['body'],i,physicsClientId=scene.cid)[1].decode():i
                     for i in range(scene.p.getNumJoints(self.robot['body'],physicsClientId=scene.cid))}
+        if not create_driver:
+            active={self.names[n] for key,part in spec.parts.items() if key.endswith('_arm') for n in part.joint_names}
+            kept=[(i,q) for i,q in zip(self.robot['hold_ids'],self.robot['hold_targets']) if i not in active]
+            self.robot['hold_ids']=[i for i,q in kept];self.robot['hold_targets']=[q for i,q in kept]
 
     def validate(self,frame):
         self.spec.validate_frame(frame)
@@ -50,6 +54,12 @@ class NativeRobotBackend:
                 self.scene.apply_native(HandJointCommand(hand.hand_model,side,hand.spec_hash,
                     part.joint_names,part.positions,frame.timestamp))
             else:
+                if self.driver is None:
+                    from .arm_ik import ARM_FORCE
+                    for name,value in zip(part.joint_names,part.positions):
+                        self.scene.p.setJointMotorControl2(self.robot['body'],self.names[name],self.scene.p.POSITION_CONTROL,
+                            targetPosition=float(value),force=ARM_FORCE,physicsClientId=self.scene.cid)
+                    continue
                 self.driver.ik[self.spec.robot_id].apply(side,dict(zip(part.joint_names,part.positions)))
                 diagnostics=getattr(self.driver,'diagnostics',None)
                 if diagnostics is not None:
@@ -65,11 +75,11 @@ class NativeRobotBackend:
 
 
 class Tron2AL21Backend:
-    def __init__(self,spec,scene,physics_group,robot,part_bodies,names,world,calibration):
+    def __init__(self,spec,scene,physics_group,robot,part_bodies,names,world,calibration,*,create_controller=True):
         self.spec,self.scene,self.physics_group=spec,scene,physics_group
         self.robot,self.part_bodies,self.names,self.world=robot,part_bodies,names,world
         self.robot_id=spec.robot_id; self.driver=None; self.arm_controller=None
-        if world is not None:
+        if world is not None and create_controller:
             from teleoperation.applications.dual import Tron2ADualArmController
             self.arm_controller=Tron2ADualArmController(calibration,spec.urdf_path,input_mode='smplerx')
 

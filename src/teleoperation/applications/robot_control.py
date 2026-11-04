@@ -62,7 +62,6 @@ def run(args):
         if args.parts!='hands':
             for name in ('smplerx_worker_python','smplerx_root','smplerx_checkpoint','smplx_model_dir'):
                 if not Path(getattr(args,name)).exists():raise FileNotFoundError(getattr(args,name))
-    if args.record_results is not None:raise ValueError('Complete command recording is not connected yet')
     calibration=None
     if args.tron2a_calibration is not None:
         from teleoperation.retargeting.arm.calibration import ArmCalibration
@@ -80,6 +79,15 @@ def run(args):
                     command_options={'filter_mode':args.joint_filter,'alpha':args.filter_alpha,
                         'max_velocity':args.joint_max_velocity,'kalman_q':args.kalman_q,'kalman_r':args.kalman_r})
         resources.callback(session.close)
+        writer=None
+        if args.record_results is not None:
+            from teleoperation.data.robot_command_recording import RobotCommandWriter
+            metadata={'source':args.source,'parts':args.parts,'side':args.side,'geometry':args.geometry,
+                      'backend':args.backend,'execution_config':{}}
+            if calibration is not None:
+                metadata['execution_config']['tron2a_l21']={key:{s:v.tolist() for s,v in getattr(calibration,key).items()}
+                    for key in ('safe_q','hand_mount_pose')}
+            writer=resources.enter_context(RobotCommandWriter(args.record_results,specs,metadata))
         source=_open_source(args); resources.callback(source.close if hasattr(source,'close') else source.release)
         count=0; origin=None; previous=None; started=time.monotonic(); replaying=args.input_h5 is not None or args.input_body is not None
         try:
@@ -98,10 +106,16 @@ def run(args):
                 else:seconds=time.monotonic()-started
                 batch=session.next_batch(raw,count,seconds)
                 dt=1/30 if previous is None else (stamp-previous if replaying else seconds-last_seconds)
-                receipt=session.output.submit(batch,steps=max(1,min(24,round(min(dt,.1)*240))))
+                try:receipt=session.output.submit(batch,steps=max(1,min(24,round(min(dt,.1)*240))))
+                except BaseException:
+                    if writer is not None and session.output.last_receipt is not None and session.output.last_receipt.frame_id==count:
+                        writer.append(batch,session.output.last_receipt)
+                    raise
+                if writer is not None:writer.append(batch,receipt)
                 previous=stamp; last_seconds=seconds; count+=1
                 if args.fps and not (replaying and args.headless):time.sleep(max(0.,1/args.fps-(time.monotonic()-tick)))
-        except KeyboardInterrupt:pass
+        except KeyboardInterrupt:
+            if writer is not None:writer.abort('keyboard interrupt')
         report={'targets':list(targets),'parts':args.parts,'side':args.side,'source':args.source,
                 'arm_mode':'off' if args.parts=='hands' else 'wrist' if args.source=='visionpro' else 'body','frames':count,
                 'physics_frames':group.scene.frames,'hardware_verified':False}
@@ -145,5 +159,54 @@ class _CameraHandsSource:
 
 
 def replay(args):
-    resolve_robot_targets(args.robot,args.robots)
-    raise RuntimeError('Robot command replay is not connected yet')
+    import json
+    import time
+    from contextlib import ExitStack
+    from teleoperation.data.robot_command_recording import load_robot_recording
+    from teleoperation.simulation.robot_backends import SimulationGroup
+    from teleoperation.simulation.robot_part_scene import RobotPartSceneBuilder
+    from teleoperation.simulation.robot_output import RobotOutput
+    targets=resolve_robot_targets(args.robot,args.robots)
+    if args.report is not None and args.report.exists():raise FileExistsError(args.report)
+    if args.report is not None and args.report.resolve()==args.input.resolve():raise ValueError('Report must differ from input')
+    recording=load_robot_recording(args.input,targets)
+    configs=recording.metadata.get('execution_config',{})
+    for name,spec in recording.specs.items():
+        if name=='tron2a_l21' and spec.display!='hands':
+            config=configs.get(name)
+            if not isinstance(config,dict):raise ValueError('Missing recorded TRON2A scene configuration')
+            for side in ('left','right'):
+                q=np.asarray(config['safe_q'][side],dtype=float);pose=np.asarray(config['hand_mount_pose'][side],dtype=float)
+                if q.shape!=(7,) or pose.shape!=(7,) or not np.isfinite(q).all() or not np.isfinite(pose).all() or abs(np.linalg.norm(pose[3:])-1)>1e-5:
+                    raise ValueError('Invalid recorded TRON2A execution pose')
+    with ExitStack() as resources:
+        group=SimulationGroup(gui=not args.headless);resources.callback(group.close)
+        backends={name:RobotPartSceneBuilder().build(spec,group=group,execution_only=True,
+            execution_config=configs.get(name),geometry=args.geometry,
+            base_pose=(i*2.2,0.,.8) if len(targets)>1 else None)
+            for i,(name,spec) in enumerate(recording.specs.items())}
+        output=RobotOutput(backends);resources.callback(output.close)
+        count=steps_total=0;previous=None;started=time.monotonic();first=None
+        try:
+            for batch,recorded_receipt in recording.iter_frames():
+                if not group.scene.alive():break
+                seconds=next(iter(batch.values())).timestamp
+                if first is None:first=seconds
+                if not args.headless:time.sleep(max(0.,seconds-first-(time.monotonic()-started)))
+                dt=next(iter(recorded_receipt.physics_dt.values()))
+                if previous is not None and dt!=previous:raise ValueError('Changing physics dt is unsupported')
+                if previous is None:
+                    group.time_step=dt;group.scene.p.setTimeStep(dt,physicsClientId=group.scene.cid)
+                steps=next(iter(recorded_receipt.steps.values()))
+                output.submit(batch,steps=steps)
+                previous=dt;count+=1;steps_total+=steps
+        except KeyboardInterrupt:pass
+        report={'targets':list(targets),'frames':count,'physics_steps':steps_total,
+            'scene_selection':{name:{'parts':s.display,'side':s.side} for name,s in recording.specs.items()},
+            'recorded_geometry':recording.metadata.get('geometry'),'geometry':args.geometry,
+            'command_source':'accepted_recording','hardware_verified':False}
+        if args.report:
+            args.report.parent.mkdir(parents=True,exist_ok=True)
+            with args.report.open('x',encoding='utf-8') as f:json.dump(report,f,indent=2)
+        print(json.dumps(report))
+    return 0

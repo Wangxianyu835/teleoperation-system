@@ -209,12 +209,12 @@ robot control --robot tron2a_l21 --source visionpro --ip unused --backend dex --
 
 **Interfaces:** 新schema=robot_command_results_v1。RobotCommandWriter.append(batch, receipt)写入已组装命令与提交结果；iter_robot_commands(path,specs)逐帧返回选定目标的RobotCommandFrame。新robot replay先完整校验再打开GUI；直接submit命令，不加载NN/IK/滤波。
 
-- [ ] 建立robot-record-replay检查点，先测四种维数/关节布局的真实命令往返、source时基/holding状态、不同步身体来源时间、只选择录制中一个目标回放。
-- [ ] H5根保存frame_ids/control_timestamps、schema、rad单位、target列表和录制状态；robots/<id>保存spec_hash、URDF身份、enabled_parts、每部位joint_names、positions、source_timestamp/timebase、observed/status。执行receipt单独保存实际提交状态、physics_dt和各组step数；可选actual状态不能覆盖命令值。
-- [ ] 保存目标、parts/side和整机/机械臂/手部场景模式；回放只加载选中目标和对应可见部位。关节规范身份与仅影响取景的摆位分开，不因隐藏身体修改原始HandSpec哈希。
-- [ ] writer拒绝覆盖、规格错配、关节缺失、NaN/Inf、时间/frame倒退和不完整批次；临时文件加完成标记后发布，异常保留明确failed/incomplete状态，不宣告完整成功。旧格式不改metadata冒充新schema，不增加泛化自动转换器。
-- [ ] 真实DIRECT回放时对比电机提交值/步进数；patched NN/IK/滤波在调用时抛异常，回放仍成功，证明没有重新求解。GUI按记录控制时间间隔等待；物理按已记录的physics_dt与step数推进，不用CPU时间重算，也不以时间差重新四舍五入导致累计漂移。
-- [ ] 运行`python -m unittest tests.test_robot_command_recording tests.test_robot_command_replay tests.test_hand_control_h5 tests.test_native_hand_replay -v`及完整套件；提交`feat: record and replay complete robot command frames`。
+- [x] 建立robot-record-replay检查点，先测四种维数/关节布局的真实命令往返、source时基/holding状态、不同步身体来源时间、只选择录制中一个目标回放。
+- [x] H5根保存frame_ids/control_timestamps、schema、rad单位、target列表和录制状态；robots/<id>保存spec_hash、URDF身份、enabled_parts、每部位joint_names、positions、source_timestamp/timebase、observed/status。执行receipt单独保存实际提交状态、physics_dt和各组step数；可选actual状态不能覆盖命令值。
+- [x] 保存目标、parts/side和整机/机械臂/手部场景模式；回放只加载选中目标和对应可见部位。关节规范身份与仅影响取景的摆位分开，不因隐藏身体修改原始HandSpec哈希。
+- [x] writer拒绝覆盖、规格错配、关节缺失、NaN/Inf、时间/frame倒退和不完整批次；临时文件加完成标记后发布，异常保留明确failed/incomplete状态，不宣告完整成功。旧格式不改metadata冒充新schema，不增加泛化自动转换器。
+- [x] 真实DIRECT回放时对比电机提交值/步进数；patched NN/IK/滤波在调用时抛异常，回放仍成功，证明没有重新求解。GUI按记录控制时间间隔等待；物理按已记录的physics_dt与step数推进，不用CPU时间重算，也不以时间差重新四舍五入导致累计漂移。
+- [x] 运行`python -m unittest tests.test_robot_command_recording tests.test_robot_command_replay tests.test_hand_control_h5 tests.test_native_hand_replay -v`及完整套件；提交`feat: record and replay complete robot command frames`。
 
 ## Task 9：清除重复提交路径、更新文档并最终验收
 
@@ -263,3 +263,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 6：pre c1385e6f24ab2cdc727b012134badf36a659c567；tag checkpoint-20261104-1411-four-target-comparison；相关113项通过；完整575项，572通过、3项dex跳过。四目标同连接/8步单次推进、原装三目标部位渲染、L21独立手、借用TRON2A连接关闭不影响公共场景已覆盖。新增显式--geometry simplified只用于TRON2A原网格缺失时的可见控制验证，full仍严格报缺资源。
 
 - Task 7：pre 6fff4b294177bc9fa7b5c7f61505e39dd351f5aa；tag checkpoint-20261104-1417-explicit-target-routing；新增CLI预检、旧相机/VR手腕和TRON2A相机输出收口。相关100项中TRON65项及其余回归已通过，修正显式目标测试后完整577项，574通过、3项dex跳过；保留旧采集/诊断参数和单手H5边界。
+
+- Task 8：pre 11a0461f329a7eb807b5aa4cc145ef9615a2feb7；tag checkpoint-20261104-1440-robot-record-replay；相关14项通过；完整582项，579通过、3项dex跳过。四布局H5往返、异步来源时基/holding、失败保留pending、拒绝覆盖/篡改、四目标回放与单目标抽取均覆盖。真实G1录制与回放逐帧实际q误差≤1e-12，步数完全一致；禁止构造IK/session/filter后仍能回放。TRON2A回放只用录制的safe_q/安装姿态，不启动人体映射。

@@ -142,16 +142,21 @@ class RobotPartWorld:
 
 
 class RobotPartSceneBuilder:
-    def build(self,spec,*,group,parts=None,side=None,base_pose=None,calibration=None,geometry='full'):
+    def build(self,spec,*,group,parts=None,side=None,base_pose=None,calibration=None,geometry='full',
+              execution_only=False,execution_config=None):
         if parts is not None and parts!=spec.display or side is not None and side!=spec.side:
             raise ValueError('Scene selection must match the control specification')
         if spec.robot_id=='tron2a_l21':
-            return self._tron(spec,group,base_pose,calibration,geometry)
+            if execution_only and any(key.endswith('_arm') for key in spec.parts):
+                if execution_config is None:raise ValueError('Recorded TRON2A execution configuration is required')
+                from types import SimpleNamespace
+                calibration=SimpleNamespace(safe_q=execution_config['safe_q'],hand_mount_pose=execution_config['hand_mount_pose'])
+            return self._tron(spec,group,base_pose,calibration,geometry,execution_only)
         group.scene.load_native(spec,base_pose)
         from .robot_backends import NativeRobotBackend
-        return NativeRobotBackend(spec,group.scene,group)
+        return NativeRobotBackend(spec,group.scene,group,create_driver=not execution_only)
 
-    def _tron(self,spec,group,base_pose,calibration,geometry):
+    def _tron(self,spec,group,base_pose,calibration,geometry,execution_only=False):
         from .robot_backends import Tron2AL21Backend
         from .urdf_loader import load_urdf
         scene=group.scene; p=scene.p; part_bodies={}; names={}; main=None
@@ -203,4 +208,4 @@ class RobotPartSceneBuilder:
                                 if p.getJointInfo(main,i,physicsClientId=scene.cid)[2]!=p.JOINT_FIXED and i not in active]
             record['hold_targets']=[p.getJointState(main,i,physicsClientId=scene.cid)[0] for i in record['hold_ids']]
         scene.robots.append(record); scene.frame_scene()
-        return Tron2AL21Backend(spec,scene,group,record,part_bodies,names,world,calibration)
+        return Tron2AL21Backend(spec,scene,group,record,part_bodies,names,world,calibration,create_controller=not execution_only)
