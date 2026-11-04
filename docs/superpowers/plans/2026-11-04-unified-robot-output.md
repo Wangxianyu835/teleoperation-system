@@ -145,11 +145,11 @@ with self.assertRaises(ValueError):
 
 **Interfaces:** RobotBackend提供robot_id/spec、physics_group、validate(frame)、write(frame)、read_state()、close()；SimulationGroup.advance(steps)唯一拥有步进。RobotOutput(backends).submit(batch: dict[str, RobotCommandFrame], *, steps: int)→OutputReceipt，receipt包含frame/time、各目标提交状态和步数；read_state()与命令分离。
 
-- [ ] 建立unified-robot-dispatch检查点。先测真实DIRECT G1：完整手臂帧写入后能动，非受控关节保持；双目标共享连接时物理只推进steps而非2×steps。
-- [ ] submit先核验整批目标、规格、部位、时间与关节限位，任一静态错误在电机调用前失败。合法批次先write所有目标，再按唯一physics_group advance一次；禁用后端在write内部step。
-- [ ] 不重复使用HandExecutor再下发同一只手；NativeRobotBackend复用scene.apply_native和已拆开的arm apply。scene的非手关节hold不能覆盖由统一输出拥有的手臂；未选部位仍保持。
-- [ ] 运行时后端写入异常不能伪称原子回滚：标记当前提交失败，停止该组继续步进，记录已提交目标并关闭资源。正常的IK无效在命令组装阶段独立hold，不作为后端致命异常。
-- [ ] 运行`python -m unittest tests.test_robot_output tests.test_hand_executor tests.test_arm_command_production tests.test_native_hand_replay -v`及完整套件；提交`feat: dispatch robot frames with one physics step owner`。
+- [x] 建立unified-robot-dispatch检查点。先测真实DIRECT G1：完整手臂帧写入后能动，非受控关节保持；双目标共享连接时物理只推进steps而非2×steps。
+- [x] submit先核验整批目标、规格、部位、时间与关节限位，任一静态错误在电机调用前失败。合法批次先write所有目标，再按唯一physics_group advance一次；禁用后端在write内部step。
+- [x] 不重复使用HandExecutor再下发同一只手；NativeRobotBackend复用scene.apply_native和已拆开的arm apply。scene的非手关节hold不能覆盖由统一输出拥有的手臂；未选部位仍保持。
+- [x] 运行时后端写入异常不能伪称原子回滚：标记当前提交失败，停止该组继续步进，记录已提交目标并关闭资源。正常的IK无效在命令组装阶段独立hold，不作为后端致命异常。
+- [x] 运行`python -m unittest tests.test_robot_output tests.test_hand_executor tests.test_arm_command_production tests.test_native_hand_replay -v`及完整套件；提交`feat: dispatch robot frames with one physics step owner`。
 
 ## Task 5：先打通G1单目标相机与VR闭环
 
@@ -255,3 +255,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 2：pre ee93a1dbec9005c76307c860a5fbecca5833c60a；tag checkpoint-20261104-1348-split-arm-production；相关172项通过；完整565项，562通过、3项dex依赖跳过。真实G1验证求解无电机/步进且q/qdot恢复，旧执行包装保留。
 
 - Task 3：pre 4eddbf8c38163a0d037932762f88d0739603a09e；tag checkpoint-20261104-1352-assemble-robot-commands；相关21项（2项跳过）；完整567项，564通过、3项dex跳过；独立保持、来源时基、错误更新不污染状态已覆盖。
+
+- Task 4：pre e58261d9c39812c6c9d0e3f64400e7e3f430dd1b；tag checkpoint-20261104-1357-unified-robot-dispatch；相关7项通过；完整568项，565通过、3项dex跳过；真实双目标组8步只推进8步，静态错误无电机写入，实际关节运动已验证。
