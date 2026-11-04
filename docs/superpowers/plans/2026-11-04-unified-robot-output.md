@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - 默认单目标：新主入口必须显式给--robot；--robots只用于两个及以上不同目标，不指定目标时拒绝启动，不默认四台或暗选G1。
+- 显示范围必须匹配目标和parts/side：单目标不出现其他机器人；both显示该目标整机，arms只显示对应机械臂，hands只显示对应手；left/right只显示所选侧的独立部位，both显示双侧；多目标只展示显式选中的目标。
 - 目标ID固定为h1_2、gr1_t2、g1、tron2a_l21；目标自动绑定原装手或L21，常规机器人控制不再单独选择hand-model。
 - 先保持现有重定向、归一化、权重校验、IK与安全数值；统一输出不再重复滤波或求解。
 - 手、臂、左右侧独立状态；未更新部分保持上次接受命令或明确的初始化参考，不用零填充假装新观测。
@@ -60,6 +61,7 @@ if ($LASTEXITCODE -ne 0) { throw '检查点失败，不开始修改。' }
 |applications/robot_commands.py|RobotCommandAssembler(specs, initial)；assemble(robot_id, frame_id, timestamp, updates)，完成独立部位保持和统一时间封装|
 |simulation/robot_output.py|RobotBackend协议、RobotOutput；validate→write→每physics_group一次advance；read_state分离实际状态|
 |simulation/robot_backends.py|NativeRobotBackend、Tron2AL21Backend、SimulationGroup；封装现有场景的装载和电机写入|
+|simulation/robot_part_scene.py|RobotPartSceneBuilder；按目标、parts、side创建原装手/机械臂可见子场景，保留必要运动学支撑，独立取景|
 |applications/robot_session.py|RobotControlSession：每帧一次观测、各目标求解、组装、提交、诊断与资源关闭|
 |applications/robot_control.py|run(args)、replay(args)、preflight(args)，供新CLI和旧入口边界调用|
 |cli/robot_options.py|目标、部位、来源、后端与权重参数；不加载重型依赖|
@@ -110,6 +112,7 @@ with self.assertRaises(ValueError):
 ```
 
 - [ ] 不硬编码所有机器人完整action数组；加载规格对照实际URDF/HandSpec。H1/GR1/G1通过现有arm_profiles和实际关节解析；TRON2A通过TRON2A_ARM_JOINTS和L21左右HandSpec。测试四目标的14臂＋24/22/14/34手执行关节集合。
+- [ ] 将parts/side同时解析为控制集合和默认显示集合：both→整机，arms→所选侧机械臂，hands→所选侧原装手。无额外显示参数也必须正确；未选目标不得进入场景加载列表。
 - [ ] 运行相关及完整回归；提交`feat: define explicit robot targets and command frames`。
 
 ## Task 2：拆开三机器人机械臂求解与执行
@@ -150,19 +153,21 @@ with self.assertRaises(ValueError):
 
 ## Task 5：先打通G1单目标相机与VR闭环
 
-**Files:** Create applications/robot_control.py、applications/robot_session.py、tests/test_robot_control_session.py；Modify applications/camera_teleop_source.py、hand_input.py（只提取原始观测访问边界）、cli/robot_options.py；复用hand_processing.py、camera_scene_arm.py、wrist_control.py。
+**Files:** Create applications/robot_control.py、applications/robot_session.py、simulation/robot_part_scene.py、tests/test_robot_control_session.py、tests/test_robot_scene_selection.py；Modify applications/camera_teleop_source.py、hand_input.py（只提取原始观测访问边界）、cli/robot_options.py；复用hand_processing.py、camera_scene_arm.py、wrist_control.py。
 
 **Interfaces:** preflight(args)返回已验证的目标、规格、手后端配置与来源能力；RobotControlSession.next_batch(raw, frame_id, control_seconds)返回完整批次，调用者submit；run(args)只拥有一个采集源、一个控制时钟和资源栈。
 
 - [ ] 建立g1-unified-control检查点，先用tests/smplerx_fixtures.py与tests/test_unified_hand_inputs.py的现有观测构造G1 DIRECT闭环测试。测试一帧只有一次采集，两侧手/臂提交前没有电机写入。
 - [ ] 相机both模式一次CameraTeleopSource采集；共同UnifiedHandPipeline处理raw.hands；臂通过现有body/wrist求解。hands-only不启动SMPLer-X；arms-only不加载NN/dex手模型。控制time由会话单调相对秒产生，原始观测time留在part来源字段。
+- [ ] 实现RobotPartSceneBuilder.build(spec, *, parts, side, group)：G1 both只显示一台居中的G1；arms只显示所选侧机械臂，hands只显示所选侧原装手。从原始URDF挑选可见link并保留正确关节坐标、mimic与网格路径；可保留不可见固定运动学祖先，不加载其他机器人。隔离未选部位碰撞，不用镜头裁切或只冻结全身代替。固定支撑场景与整机比较FK/命令，不要求接触动力学完全相同。
+- [ ] 显示测试检查body→目标映射、各可见link集合和至少一帧真实渲染：G1 hands/right只有右手，arms/both只有双臂；镜头根据可见几何自动取景，单目标不使用原先三机器人横向偏移。
 - [ ] VR只读一次VisionProInput/ReplayInput，手走共同pipeline，臂走solve_vr。保留25矩阵、轴和原始时间，不伪造upper_body，不用相机processor处理VR。原始VR H5 EOF与无新样本按既有规则处理，重放控制dt来自录制差分。
 - [ ] 先预检权重/标定/资源/输出覆盖，再分配设备。错误、中断、EOF都关闭源与场景；stdout与report标明source、parts、arm模式、目标和未实测硬件边界。
-- [ ] 运行`python -m unittest tests.test_robot_control_session tests.test_robot_control_cli tests.test_unified_hand_inputs tests.test_body_capture_replay -v`及完整套件；提交`feat: run G1 through the unified robot output path`。
+- [ ] 运行`python -m unittest tests.test_robot_control_session tests.test_robot_scene_selection tests.test_robot_control_cli tests.test_unified_hand_inputs tests.test_body_capture_replay -v`及完整套件；提交`feat: run G1 through the unified robot output path`。
 
 ## Task 6：接入TRON2A及四目标共享场景
 
-**Files:** Modify applications/dual.py、simulation/tron2a_world.py、applications/three_robot_scene.py、simulation/robot_backends.py、applications/robot_session.py；Create tests/test_robot_comparison.py；Regression tests/test_mediapipe_tron2a.py、test_arm_ik_multi_robot.py。
+**Files:** Modify applications/dual.py、simulation/tron2a_world.py、applications/three_robot_scene.py、simulation/robot_backends.py、simulation/robot_part_scene.py、applications/robot_session.py；Create tests/test_robot_comparison.py；Extend tests/test_robot_scene_selection.py；Regression tests/test_mediapipe_tron2a.py、test_arm_ik_multi_robot.py。
 
 **Interfaces:** DualTeleoperator增加`produce_parts(observation, *, control_seconds)`，复用当前手/臂控制后返回通用part命令；现有update保持返回Tron2AL21Command。Tron2AL21Backend完成通用part↔原专用命令映射。场景构造新增可选外部client_id、owns_client、base_pose；默认参数保持已有独立场景行为。
 
@@ -170,8 +175,9 @@ with self.assertRaises(ValueError):
 - [ ] TRON2A从calibration获取safe_q、rotation、workspace和安装姿态，正式入口继续使用smplerx模式和原安全控制。初始化L21姿态必须以实际参考命令与spec校验，不将其他手型权重用于L21。
 - [ ] 统一场景只建一个PyBullet连接和地面，负责重力、dt、布局、GUI与最终disconnect。三机器人和TRON2A子场景使用注入连接，不重设全局物理、不再各自step/关闭共享连接；L21多body、约束及手部安装仍由TRON2A后端拥有。
 - [ ] 对比摆位通过机器人base_pose实现；验证IK在各机器人基座坐标下的目标不因横向摆位改变，TRON2A相机标定不被改成带GUI偏移的新标定。每个目标只允许写自己body的关节。
+- [ ] 将部位显示扩展到H1-2、GR1-T2、TRON2A＋L21。TRON2A arms模式不附加L21可见body，hands模式仅装载所选L21手且不要求身体标定；原full/simplified选项属于几何精度，不能冒充arms/hands显示范围。显式多目标parts=hands只显示选中目标的手，不生成整机对比墙。
 - [ ] 测试单目标仅加载1台；显式双目标及四目标共享同一输入frame_id/控制time；关闭一个借用场景不影响其他目标；共同advance次数不随目标数增加。保留每目标独立状态，单臂观测失效只影响对应part。
-- [ ] 运行`python -m unittest tests.test_robot_comparison tests.test_mediapipe_tron2a tests.test_arm_ik_multi_robot tests.test_robot_output -v`及完整套件；提交`feat: support explicit four-target simulation comparison`。
+- [ ] 运行`python -m unittest tests.test_robot_comparison tests.test_robot_scene_selection tests.test_mediapipe_tron2a tests.test_arm_ik_multi_robot tests.test_robot_output -v`及完整套件；提交`feat: support explicit four-target simulation comparison`。
 
 ## Task 7：完成目标选择与跨入口运行策略
 
@@ -193,6 +199,7 @@ robot control --robot tron2a_l21 --source visionpro --ip unused --backend dex --
 
 - [ ] 旧相机入口把参数转换后调用共同session/输出，图像HUD/诊断作为观察器保留，不再私自电机下发或步进。原hands-only接口、独立L21、训练与显式TransHandR不改输入/结果契约；需写整机时在其执行边界接RobotOutput的hands/wrist模式。
 - [ ] NN每目标通过--hand-checkpoint MODEL PATH传一份shared；dex拒绝NN权重；无arms/hands相应部分不加载对应模型。TRON2A目标在camera arms/both时要求--tron2a-calibration；没选择TRON2A时拒绝其专属标定参数，避免静默忽略。
+- [ ] 预检和场景创建统一采用parts/side：hand-only的tron2a_l21不需要TRON2A URDF/身体标定/SMPLer-X；arm-only不要求手网格或手权重；启用的可见部分缺少真实资源时清晰报错，不悄悄显示其他机器人或简化代理手。
 - [ ] 启动摘要列出目标、source、parts、相机body/VR wrist、权重和物理周期；不提供实体机器人发送后端。
 - [ ] 运行CLI、统一会话、相机/VR旧接口回归与完整套件；提交`feat: make single robot selection the default workflow`。
 
@@ -204,6 +211,7 @@ robot control --robot tron2a_l21 --source visionpro --ip unused --backend dex --
 
 - [ ] 建立robot-record-replay检查点，先测四种维数/关节布局的真实命令往返、source时基/holding状态、不同步身体来源时间、只选择录制中一个目标回放。
 - [ ] H5根保存frame_ids/control_timestamps、schema、rad单位、target列表和录制状态；robots/<id>保存spec_hash、URDF身份、enabled_parts、每部位joint_names、positions、source_timestamp/timebase、observed/status。执行receipt单独保存实际提交状态、physics_dt和各组step数；可选actual状态不能覆盖命令值。
+- [ ] 保存目标、parts/side和整机/机械臂/手部场景模式；回放只加载选中目标和对应可见部位。关节规范身份与仅影响取景的摆位分开，不因隐藏身体修改原始HandSpec哈希。
 - [ ] writer拒绝覆盖、规格错配、关节缺失、NaN/Inf、时间/frame倒退和不完整批次；临时文件加完成标记后发布，异常保留明确failed/incomplete状态，不宣告完整成功。旧格式不改metadata冒充新schema，不增加泛化自动转换器。
 - [ ] 真实DIRECT回放时对比电机提交值/步进数；patched NN/IK/滤波在调用时抛异常，回放仍成功，证明没有重新求解。GUI按记录控制时间间隔等待；物理按已记录的physics_dt与step数推进，不用CPU时间重算，也不以时间差重新四舍五入导致累计漂移。
 - [ ] 运行`python -m unittest tests.test_robot_command_recording tests.test_robot_command_replay tests.test_hand_control_h5 tests.test_native_hand_replay -v`及完整套件；提交`feat: record and replay complete robot command frames`。
@@ -225,6 +233,7 @@ robot control --robot tron2a_l21 --source visionpro --ip unused --backend dex --
 ```
 
 - [ ] 用同一段合成SMPL-X/Hands观测验证G1单目标、H1/GR1/G1三目标、四目标含TRON2A的真实DIRECT运动与保持；VR原始矩阵H5验证三个支持的wrist目标及NN/dex。记录命令前后差异、实际关节运动、非控制漂移、step数和资源关闭；不只验help或mock调用。
+- [ ] 增加显示矩阵验收：四目标分别both/arms/hands、left/right/both，以及显式双目标hands对比；检查可见link身份、无未选机器人、单目标居中和真实渲染图。多body不能被误计为多目标，必要的不可见支撑不能露出身体几何或造成未选部位碰撞。
 - [ ] 若触碰上游VR数值/共享预处理，按AGENTS重新验证实际D:/2026/code/TransHandR/TransHandR来源、SHA-256及等价；未触碰则明确历史数值报告未重跑。真实相机/头显/实体硬件不在场时只报告软件验证。
 - [ ] 记录各批hash/tag、主/独立环境pass/skip/fail、能力限制和回退命令，提交`docs: verify unified robot output and workflow boundaries`，不push。
 
