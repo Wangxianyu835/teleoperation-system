@@ -222,9 +222,9 @@ robot control --robot tron2a_l21 --source visionpro --ip unused --backend dex --
 
 **Interfaces:** 所有已迁移整机工作流通过RobotOutput提交；旧单手H5、训练、TransHandR上游和任务action接口保持其原语义。SimulationEnv任务基准不在本次自动接通遥操作，也不宣称任务成绩。
 
-- [ ] 建立verify-robot-output检查点，删除迁移后确实无调用的下发分支/闲置import；保留旧公开包装只作为共同实现的转发，不复制求解循环。逐项列出现存未迁移诊断入口及保留原因。
-- [ ] 更新新主入口、显式目标选择、NN权重、TRON2A标定、VR能力矩阵、录制schema及旧入口行为改变；删除“默认同时三台”的现状说明，补单目标与显式四目标流程图。
-- [ ] 运行所有新测试、完整unittest；主环境dex跳过用例在独立环境补跑：
+- [x] 建立verify-robot-output检查点，删除迁移后确实无调用的下发分支/闲置import；保留旧公开包装只作为共同实现的转发，不复制求解循环。逐项列出现存未迁移诊断入口及保留原因。
+- [x] 更新新主入口、显式目标选择、NN权重、TRON2A标定、VR能力矩阵、录制schema及旧入口行为改变；删除“默认同时三台”的现状说明，补单目标与显式四目标流程图。
+- [x] 运行所有新测试、完整unittest；主环境dex跳过用例在独立环境补跑：
 
 ```powershell
 & $robotPlanPython -B -X utf8 -m unittest discover -s tests
@@ -232,10 +232,10 @@ robot control --robot tron2a_l21 --source visionpro --ip unused --backend dex --
 & $dexPython -B -X utf8 -m unittest tests.test_normalized_dex tests.test_normalized_retargeters tests.test_unified_hand_inputs tests.test_robot_control_session tests.test_robot_comparison -v
 ```
 
-- [ ] 用同一段合成SMPL-X/Hands观测验证G1单目标、H1/GR1/G1三目标、四目标含TRON2A的真实DIRECT运动与保持；VR原始矩阵H5验证三个支持的wrist目标及NN/dex。记录命令前后差异、实际关节运动、非控制漂移、step数和资源关闭；不只验help或mock调用。
-- [ ] 增加显示矩阵验收：四目标分别both/arms/hands、left/right/both，以及显式双目标hands对比；检查可见link身份、无未选机器人、单目标居中和真实渲染图。多body不能被误计为多目标，必要的不可见支撑不能露出身体几何或造成未选部位碰撞。
-- [ ] 若触碰上游VR数值/共享预处理，按AGENTS重新验证实际D:/2026/code/TransHandR/TransHandR来源、SHA-256及等价；未触碰则明确历史数值报告未重跑。真实相机/头显/实体硬件不在场时只报告软件验证。
-- [ ] 记录各批hash/tag、主/独立环境pass/skip/fail、能力限制和回退命令，提交`docs: verify unified robot output and workflow boundaries`，不push。
+- [x] 用同一段合成SMPL-X/Hands观测验证G1单目标、H1/GR1/G1三目标、四目标含TRON2A的真实DIRECT运动与保持；VR原始矩阵H5验证三个支持的wrist目标及NN/dex。记录命令前后差异、实际关节运动、非控制漂移、step数和资源关闭；不只验help或mock调用。
+- [x] 增加显示矩阵验收：四目标分别both/arms/hands、left/right/both，以及显式双目标hands对比；检查可见link身份、无未选机器人、单目标居中和真实渲染图。多body不能被误计为多目标，必要的不可见支撑不能露出身体几何或造成未选部位碰撞。
+- [x] 若触碰上游VR数值/共享预处理，按AGENTS重新验证实际D:/2026/code/TransHandR/TransHandR来源、SHA-256及等价；未触碰则明确历史数值报告未重跑。真实相机/头显/实体硬件不在场时只报告软件验证。
+- [x] 记录各批hash/tag、主/独立环境pass/skip/fail、能力限制和回退命令，提交`docs: verify unified robot output and workflow boundaries`，不push。
 
 ## 验收底线与回退
 
@@ -265,3 +265,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 7：pre 6fff4b294177bc9fa7b5c7f61505e39dd351f5aa；tag checkpoint-20261104-1417-explicit-target-routing；新增CLI预检、旧相机/VR手腕和TRON2A相机输出收口。相关100项中TRON65项及其余回归已通过，修正显式目标测试后完整577项，574通过、3项dex跳过；保留旧采集/诊断参数和单手H5边界。
 
 - Task 8：pre 11a0461f329a7eb807b5aa4cc145ef9615a2feb7；tag checkpoint-20261104-1440-robot-record-replay；相关14项通过；完整582项，579通过、3项dex跳过。四布局H5往返、异步来源时基/holding、失败保留pending、拒绝覆盖/篡改、四目标回放与单目标抽取均覆盖。真实G1录制与回放逐帧实际q误差≤1e-12，步数完全一致；禁止构造IK/session/filter后仍能回放。TRON2A回放只用录制的safe_q/安装姿态，不启动人体映射。
+
+- Task 9：pre 2d77fec09e39d6f0d82c52d7f4fe97504cce963a；tag checkpoint-20261104-1450-verify-robot-output；最终验收新增4项全部通过，主环境完整586项（583通过、3项dex依赖跳过），独立dex环境26项全部通过。四目标部位/侧面显示矩阵、VR手腕来源时间与stale holding、三目标VR NN/dex、统一录制回放、旧入口输出收口和文档流程图均已验证。真实相机、真实Vision Pro和实体机器人仍未在本机执行。

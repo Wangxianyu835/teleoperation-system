@@ -72,7 +72,6 @@ class RobotControlSession:
             if b.driver is None:continue
             if self.source_kind=='visionpro':
                 produced=self.wrists[name].solve_vr(hands,dt)
-                source_time=hands.timestamp; timebase=hands.metadata.get('timestamp_unit','sensor_seconds')
             else:
                 if not isinstance(raw,RawTeleopObservation):raise ValueError('Camera arm control requires body observations')
                 from teleoperation.applications.camera_scene_arm import solve_camera_arm_frame
@@ -80,10 +79,17 @@ class RobotControlSession:
                 source_time=raw.upper_body.timestamp; timebase='body_monotonic_s'
             for side,reports in produced.items():
                 report=reports.get(name)
+                if self.source_kind=='visionpro':
+                    wrist=None if hands.wrists is None else hands.wrists.get(side)
+                    source_time=None if wrist is None else wrist.timestamp
+                    timebase='visionpro_wrist_s'
                 if report is None or source_time is None:continue
                 if self.source_kind=='camera' and not raw.upper_body.valid.get(side,False):continue
-                if self.source_kind=='visionpro' and (hands.wrists is None or hands.wrists.get(side) is None
-                        or not hands.wrists[side].orientation_valid):continue
+                if self.source_kind=='visionpro':
+                    tracker=self.wrists[name].trackers[side]
+                    if (hands.wrists is None or hands.wrists.get(side) is None
+                            or not hands.wrists[side].orientation_valid
+                            or tracker.status not in ('tracking','reacquiring')):continue
                 names=spec.parts[side+'_arm'].joint_names
                 updates[name][side+'_arm']=RobotPartCommand(names,[report['joints'][n] for n in names],source_time,timebase,True,'tracking')
         batch={n:self.assembler.assemble(n,frame_id,control_seconds,updates[n]) for n in self.specs}

@@ -17,7 +17,8 @@ class Tron2ADualArmWorld:
 
     def __init__(self, urdf_path: str | Path, *, hand_mount_pose=None, gui=True,
                  time_step=1.0 / 240.0, display="full", attach_hands=True, safe_q=None,
-                 hand_reference_only=False, client_id=None, owns_client=None, base_pose=None, visible_links=None):
+                 hand_reference_only=False, client_id=None, owns_client=None, base_pose=None, visible_links=None,
+                 hand_sides=None):
         import pybullet as pybullet
         self.p = pybullet
         self.client = -1
@@ -63,6 +64,7 @@ class Tron2ADualArmWorld:
             self.apply_arms(initial)
             self._hold_other_joints()
             self.hand_mount_pose = hand_mount_pose or {}
+            self.hand_sides = tuple(hand_sides or ('left','right'))
             self.hand_reference_only = hand_reference_only
             self.hand_bodies, self.hand_indices = self._attach_l21_hands() if attach_hands else ({}, {})
             if hand_reference_only:
@@ -115,7 +117,7 @@ class Tron2ADualArmWorld:
     def _attach_l21_hands(self):
         from teleoperation.retargeting.hand.config import L21
         hand_bodies, hand_indices = {}, {}
-        for side, urdf in (("left", L21.left_urdf), ("right", L21.right_urdf)):
+        for side, urdf in ((s, getattr(L21, s+'_urdf')) for s in self.hand_sides):
             mount = np.asarray(self.hand_mount_pose.get(side, [0, 0, 0, 0, 0, 0, 1]), dtype=np.float32)
             if mount.shape != (7,):
                 raise ValueError(f"{side} hand mount pose must have shape (7,)")

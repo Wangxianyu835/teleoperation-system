@@ -220,6 +220,29 @@ RGB和Vision Pro的正式dex均无需NN权重或人工掌长标定。将`g1`换�
 
 两种方法共用滤波、URDF 有效限位、关节限速和耦合展开。缺手时保持上一条接受命令，恢复时限制首步时间预算。L21 保留网格路径检查；其他原装手没有等价运行时网格检查。方法比较与指标说明见[统一手部规范](docs/current-interfaces.md)。
 
+## 5.5 统一机器人控制、部位显示与命令回放
+
+新主入口按“输入采集一次 → 手部/机械臂并列求解 → 目标规格约束 → 接受命令帧 → 统一输出 → 仿真或录制”组织。RGB 相机和 Vision Pro 在手部重定向入口处是并列来源；相机机械臂使用 SMPLer-X 的身体与腕观测，Vision Pro 机械臂使用腕姿态，二者都在接受命令边界汇合。
+
+```powershell
+# 默认只显示并控制一台完整机器人
+& $python -m teleoperation robot control --robot g1 --source camera --backend dex
+
+# 只有右侧机械臂，场景中不加载完整身体
+& $python -m teleoperation robot control --robot g1 --parts arms --side right --source camera --backend dex
+
+# 需要对比时才显式打开多机器人
+& $python -m teleoperation robot control --robots h1_2 gr1_t2 g1 --source camera --backend dex
+
+# 录制统一接受命令；回放不重新推理或求解
+& $python -m teleoperation robot control --robot g1 --input-body $body --parts both --record-results outputs/robot_commands.h5
+& $python -m teleoperation robot replay --robot g1 --input outputs/robot_commands.h5 --headless
+```
+
+`--parts both` 显示一台目标的整机，`--parts arms` 和 `--parts hands` 只显示所选侧的原装机械臂或手；`--side left|right|both` 控制侧面集合。多目标必须使用 `--robots`，且至少两个目标。TRON2A 机械臂需要显式相机标定；TRON2A 的 `--geometry simplified` 只表示简化显示几何，不能当作原装网格验收。
+
+录制格式为 `robot_command_results_v1`，每帧保存目标规格身份、部位关节顺序、接受位置、来源时间及时基、tracking/holding 状态，以及输出回执中的物理步数和步长。回放先完整校验文件，再按录制的步数直接提交命令。
+
 ## 6. SMPLer-X 相机机械臂、录制与回放
 
 相机身体链路使用 SMPLer-X S32；MediaPipe Hands 仅提供手指。一次 RGB 采集共享给 Hands 和独立模型工作进程，保留各自时间。手臂使用根相对米制肩、肘、腕及完整旋转链得到的腕朝向，再进入既有重定向、腕对齐、IK 和安全控制。
@@ -246,7 +269,7 @@ $body = "outputs/smplerx/$armSession/body.h5"
   --input-body $body --output-dir "outputs/smplerx/$armSession/validation"
 ```
 
-默认同时显示 H1-2、GR1-T2 和 G1；添加 `--robot g1` 可选一台。首次加载工作进程约需十余秒，期间机械臂保持。请保持中性姿态等待标定完成。多人、检测框突然换位或离场超过两秒会锁定身体输入，需重开会话并重新标定。
+旧三机器人入口现在要求显式选择目标；单目标使用 `--robot g1`，对比使用 `--robot h1_2 --robot gr1_t2 --robot g1`。新主入口推荐使用 `robot control`，默认只构造所选目标。首次加载工作进程约需十余秒，期间机械臂保持。请保持中性姿态等待标定完成。多人、检测框突然换位或离场超过两秒会锁定身体输入，需重开会话并重新标定。
 
 只录制观测、不启动机器人仿真时使用：
 

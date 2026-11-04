@@ -168,12 +168,14 @@ class RobotPartSceneBuilder:
             visible=visible_part_links(root,spec)
             world=Tron2ADualArmWorld(spec.urdf_path,client_id=scene.cid,owns_client=False,
                 base_pose=base_pose or (0,0,0),gui=False,display=geometry,visible_links=visible,
-                attach_hands=bool(spec.hand_specs),safe_q=calibration.safe_q,hand_mount_pose=calibration.hand_mount_pose)
+                attach_hands=bool(spec.hand_specs),hand_sides=tuple(spec.hand_specs),
+                safe_q=calibration.safe_q,hand_mount_pose=calibration.hand_mount_pose)
             scene.borrowed_resources.append(world); main=world.robot
             names[main]=world.joint_indices
             for side in ('left','right'):
                 if side+'_arm' in spec.parts:part_bodies[side+'_arm']=main
             for side,body in world.hand_bodies.items():
+                if side+'_hand' not in spec.parts:continue
                 part_bodies[side+'_hand']=body
                 names[body]={p.getJointInfo(body,i,physicsClientId=scene.cid)[1].decode():i
                              for i in range(p.getNumJoints(body,physicsClientId=scene.cid))}

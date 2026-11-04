@@ -18,12 +18,12 @@ RGB与Vision Pro经各自设备适配器进入`hand_palm_length_window3_v1`，�
 |执行命令|HandJointCommand；有效限位、滤波、限速、可选L21网格检查和耦合展开|
 |手部结果|hand_joint_results_v1；分离raw与accepted command，回放校验规格、顺序和耦合|
 |身体记录|smplerx_body_recording_h5_v1；保存RGB、模型包及来源时间|
-|TRON2A|身体观测和原生L21命令组合成48D，每侧7臂+17手|
+|TRON2A|身体观测和原生L21命令组合成48D，每侧7臂+17手；统一入口通过 RobotCommandFrame/RobotOutput 提交|
 |显式上游复现|hand vr --backend transhandr；内部原始18D、外部原生17D，诊断格式transhandr_vr_results_v2|
 
 相机原始world、已对齐canonical world和Vision Pro矩阵记录仍由当前入口使用。相机采集保存观测并进行对齐；geometric.py仍供L21几何诊断使用。图像normalized坐标用于检测、预览及现存诊断，不等同于掌长归一化的无量纲后端窗口。
 
-三机器人NN用重复的`--hand-checkpoint MODEL PATH`指定各目标shared权重，dex无需操作者标定。TRON2A导出用`--hand-joints`读取原生命令；DualTeleoperator接受RawTeleopObservation和显式control_seconds。正式手控制使用共同pipeline，但训练和双臂相机消费者尚未全部收敛到UnifiedHandPipeline。
+三机器人和新统一机器人入口用重复的`--hand-checkpoint MODEL PATH`指定各目标shared权重，dex无需操作者标定。TRON2A导出用`--hand-joints`读取原生命令；DualTeleoperator接受RawTeleopObservation和显式control_seconds。旧相机、VR手腕和TRON2A相机入口的最终执行都经过 RobotOutput；训练、导出和显式 TransHandR 保留各自原有格式。
 
 ## 保留并交由后续处理的部分
 
@@ -31,7 +31,7 @@ RGB与Vision Pro经各自设备适配器进入`hand_palm_length_window3_v1`，�
 |---|---|
 |固定VR标定组件|hand dex-calibrate和devtools/dex_native_acceptance.py仍使用DexInputAdapter、DexCalibration、DexNativeRetargeter及相关辅助函数；正式NN/dex控制无需固定标定|
 |相机pipeline与camera profile|MediaPipePalmLocalPipeline供三机器人和TRON2A预处理使用；camera profile还用于训练数据规范，不能直接删除|
-|双臂legacy与normalized诊断分支|仍有旧行为测试或几何验收用途，本次未迁移|
+|双臂legacy与normalized诊断分支|保留为数值诊断、旧结果格式和几何验收用途；整机执行边界已转发到统一输出|
 |模型构造重复|hand_control._selection、hand_backend.build_camera_retargeter、dual.load_camera_hand_retargeter分别服务当前入口|
 |GBK扫描工具|devtools与诊断CLI各有入口，尚未合并|
 |录制与动作验证|活跃H5格式用途不同；PartialLimbVector仍用于拒绝不完整机器人动作|
@@ -74,3 +74,23 @@ RGB与Vision Pro经各自设备适配器进入`hand_palm_length_window3_v1`，�
 相较清理前560项，减少的3项仅验证已退出的旧最新帧包装器、旧VR控制循环和旧独立录制格式；输出维数、规格身份、限位篡改、左右手转换等校验已保留或迁移到当前shared接口。组合录制、统一VR缺手/恢复、通用结果和严格回放测试继续执行。
 
 各批检查点、提交和剩余消费者见[执行记录](superpowers/plans/2026-11-04-unused-code-cleanup.md#执行记录)。没有启动真实相机、头显或实体机器人；本次未重新生成上游数值等价报告，历史证据在上节单独标注。
+
+## 统一机器人输出验收
+
+```mermaid
+flowchart LR
+  A[RGB camera] --> B[raw observation]
+  V[Vision Pro] --> B
+  B --> H[hand pipeline]
+  B --> A2[body or wrist arm solver]
+  H --> C[accepted hand command]
+  A2 --> C2[accepted arm command]
+  C --> F[RobotCommandFrame]
+  C2 --> F
+  F --> O[RobotOutput: validate and write once]
+  O --> P[one physics advance per group]
+  O --> R[robot_command_results_v1]
+  R --> Q[direct replay]
+```
+
+新工作流的默认目标是单机器人；多机器人比较必须显式列出目标。仿真已验证四目标共享一个 PyBullet 连接时，同一提交只推进一次物理步；实体机器人发送后端、真实相机、真实 Vision Pro 和真实硬件仍需单独验收。
