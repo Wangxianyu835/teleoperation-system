@@ -157,13 +157,13 @@ with self.assertRaises(ValueError):
 
 **Interfaces:** preflight(args)返回已验证的目标、规格、手后端配置与来源能力；RobotControlSession.next_batch(raw, frame_id, control_seconds)返回完整批次，调用者submit；run(args)只拥有一个采集源、一个控制时钟和资源栈。
 
-- [ ] 建立g1-unified-control检查点，先用tests/smplerx_fixtures.py与tests/test_unified_hand_inputs.py的现有观测构造G1 DIRECT闭环测试。测试一帧只有一次采集，两侧手/臂提交前没有电机写入。
-- [ ] 相机both模式一次CameraTeleopSource采集；共同UnifiedHandPipeline处理raw.hands；臂通过现有body/wrist求解。hands-only不启动SMPLer-X；arms-only不加载NN/dex手模型。控制time由会话单调相对秒产生，原始观测time留在part来源字段。
-- [ ] 实现RobotPartSceneBuilder.build(spec, *, parts, side, group)：G1 both只显示一台居中的G1；arms只显示所选侧机械臂，hands只显示所选侧原装手。从原始URDF挑选可见link并保留正确关节坐标、mimic与网格路径；可保留不可见固定运动学祖先，不加载其他机器人。隔离未选部位碰撞，不用镜头裁切或只冻结全身代替。固定支撑场景与整机比较FK/命令，不要求接触动力学完全相同。
-- [ ] 显示测试检查body→目标映射、各可见link集合和至少一帧真实渲染：G1 hands/right只有右手，arms/both只有双臂；镜头根据可见几何自动取景，单目标不使用原先三机器人横向偏移。
-- [ ] VR只读一次VisionProInput/ReplayInput，手走共同pipeline，臂走solve_vr。保留25矩阵、轴和原始时间，不伪造upper_body，不用相机processor处理VR。原始VR H5 EOF与无新样本按既有规则处理，重放控制dt来自录制差分。
-- [ ] 先预检权重/标定/资源/输出覆盖，再分配设备。错误、中断、EOF都关闭源与场景；stdout与report标明source、parts、arm模式、目标和未实测硬件边界。
-- [ ] 运行`python -m unittest tests.test_robot_control_session tests.test_robot_scene_selection tests.test_robot_control_cli tests.test_unified_hand_inputs tests.test_body_capture_replay -v`及完整套件；提交`feat: run G1 through the unified robot output path`。
+- [x] 建立g1-unified-control检查点，先用tests/smplerx_fixtures.py与tests/test_unified_hand_inputs.py的现有观测构造G1 DIRECT闭环测试。测试一帧只有一次采集，两侧手/臂提交前没有电机写入。
+- [x] 相机both模式一次CameraTeleopSource采集；共同UnifiedHandPipeline处理raw.hands；臂通过现有body/wrist求解。hands-only不启动SMPLer-X；arms-only不加载NN/dex手模型。控制time由会话单调相对秒产生，原始观测time留在part来源字段。
+- [x] 实现RobotPartSceneBuilder.build(spec, *, parts, side, group)：G1 both只显示一台居中的G1；arms只显示所选侧机械臂，hands只显示所选侧原装手。从原始URDF挑选可见link并保留正确关节坐标、mimic与网格路径；可保留不可见固定运动学祖先，不加载其他机器人。隔离未选部位碰撞，不用镜头裁切或只冻结全身代替。固定支撑场景与整机比较FK/命令，不要求接触动力学完全相同。
+- [x] 显示测试检查body→目标映射、各可见link集合和至少一帧真实渲染：G1 hands/right只有右手，arms/both只有双臂；镜头根据可见几何自动取景，单目标不使用原先三机器人横向偏移。
+- [x] VR只读一次VisionProInput/ReplayInput，手走共同pipeline，臂走solve_vr。保留25矩阵、轴和原始时间，不伪造upper_body，不用相机processor处理VR。原始VR H5 EOF与无新样本按既有规则处理，重放控制dt来自录制差分。
+- [x] 先预检权重/标定/资源/输出覆盖，再分配设备。错误、中断、EOF都关闭源与场景；stdout与report标明source、parts、arm模式、目标和未实测硬件边界。
+- [x] 运行`python -m unittest tests.test_robot_control_session tests.test_robot_scene_selection tests.test_robot_control_cli tests.test_unified_hand_inputs tests.test_body_capture_replay -v`及完整套件；提交`feat: run G1 through the unified robot output path`。
 
 ## Task 6：接入TRON2A及四目标共享场景
 
@@ -257,3 +257,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 3：pre 4eddbf8c38163a0d037932762f88d0739603a09e；tag checkpoint-20261104-1352-assemble-robot-commands；相关21项（2项跳过）；完整567项，564通过、3项dex跳过；独立保持、来源时基、错误更新不污染状态已覆盖。
 
 - Task 4：pre e58261d9c39812c6c9d0e3f64400e7e3f430dd1b；tag checkpoint-20261104-1357-unified-robot-dispatch；相关7项通过；完整568项，565通过、3项dex跳过；真实双目标组8步只推进8步，静态错误无电机写入，实际关节运动已验证。
+
+- Task 5：pre 2ca3591b1524ae5437aad9218c7f5d5307f018de；tag checkpoint-20261104-1401-g1-unified-control；相关21项（1跳过），最终新增核心3项通过；完整571项，568通过、3项dex跳过。G1原装整机/右臂/右手真实渲染已查看；录制身体H5经注册CLI完成4帧，无相机/模型推理。TRON2A原装STL缺失已确认，后续显式简化几何用于其控制验证，不冒充原装网格。

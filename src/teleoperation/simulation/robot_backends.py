@@ -4,7 +4,10 @@ from teleoperation.contracts.hand_control import HandJointCommand
 
 
 class SimulationGroup:
-    def __init__(self,scene):
+    def __init__(self,scene=None,*,gui=False):
+        if scene is None:
+            from .robot_part_scene import RobotPartWorld
+            scene=RobotPartWorld(gui)
         self.scene=scene
         self.group_id=f'pybullet:{scene.cid}'
         self.time_step=1/240.
