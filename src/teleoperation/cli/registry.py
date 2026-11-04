@@ -1,6 +1,8 @@
 """Static command routing; importing this registry starts no workflows."""
 
 COMMANDS = (
+    ('robot', 'control', 'robot_control', 'teleoperation.applications.robot_control:run'),
+    ('robot', 'replay', 'robot_replay', 'teleoperation.applications.robot_control:replay'),
     ('hand', 'control', 'hand_control', 'teleoperation.applications.hand_control:run'),
     ('hand', 'list-models', 'hand_list_models', 'teleoperation.applications.hand_control:list_models'),
     ('replay', 'hand-joints', 'replay_hand_joints', 'teleoperation.applications.hand_control:replay'),

@@ -98,9 +98,9 @@ parts键为left_arm/right_arm/left_hand/right_hand中的显式启用集合。未
 
 **Interfaces:** 实现上述resolve_robot_targets/load_robot_control_spec与两个命令类型。新增robot control、robot replay路由到applications.robot_control；该应用先只提供参数预检与清晰的未连接运行错误，任务5/7完成实际循环，不静默返回成功。
 
-- [ ] 建立robot-output-contracts检查点，先写参数与规格测试：缺失目标、重复目标、单复数冲突、--robots只有1个、错误机器人、错误手权重映射全部在加载设备前拒绝。
-- [ ] 运行失败测试：`python -m unittest tests.test_robot_control_contracts tests.test_robot_control_cli -v`。
-- [ ] 实现目标注册与命令校验：名称、长度、有限值、rad单位、规格hash、frame_id/时间，独立部位数组不能混用；目标数和目标手型来源唯一。示例行为：
+- [x] 建立robot-output-contracts检查点，先写参数与规格测试：缺失目标、重复目标、单复数冲突、--robots只有1个、错误机器人、错误手权重映射全部在加载设备前拒绝。
+- [x] 运行失败测试：`python -m unittest tests.test_robot_control_contracts tests.test_robot_control_cli -v`。
+- [x] 实现目标注册与命令校验：名称、长度、有限值、rad单位、规格hash、frame_id/时间，独立部位数组不能混用；目标数和目标手型来源唯一。示例行为：
 
 ```python
 self.assertEqual(resolve_robot_targets(robot='g1'), ('g1',))
@@ -111,9 +111,9 @@ with self.assertRaises(ValueError):
     resolve_robot_targets(robots=['g1', 'g1'])
 ```
 
-- [ ] 不硬编码所有机器人完整action数组；加载规格对照实际URDF/HandSpec。H1/GR1/G1通过现有arm_profiles和实际关节解析；TRON2A通过TRON2A_ARM_JOINTS和L21左右HandSpec。测试四目标的14臂＋24/22/14/34手执行关节集合。
-- [ ] 将parts/side同时解析为控制集合和默认显示集合：both→整机，arms→所选侧机械臂，hands→所选侧原装手。无额外显示参数也必须正确；未选目标不得进入场景加载列表。
-- [ ] 运行相关及完整回归；提交`feat: define explicit robot targets and command frames`。
+- [x] 不硬编码所有机器人完整action数组；加载规格对照实际URDF/HandSpec。H1/GR1/G1通过现有arm_profiles和实际关节解析；TRON2A通过TRON2A_ARM_JOINTS和L21左右HandSpec。测试四目标的14臂＋24/22/14/34手执行关节集合。
+- [x] 将parts/side同时解析为控制集合和默认显示集合：both→整机，arms→所选侧机械臂，hands→所选侧原装手。无额外显示参数也必须正确；未选目标不得进入场景加载列表。
+- [x] 运行相关及完整回归；提交`feat: define explicit robot targets and command frames`。
 
 ## Task 2：拆开三机器人机械臂求解与执行
 
@@ -247,3 +247,7 @@ robot control --robot tron2a_l21 --source visionpro --ip unused --backend dex --
 git -c safe.directory=D:/2026/code/teleoperation-system-retargeting diff $robotPlanTag -- src tests docs README.md
 git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c rollback-robot-output $robotPlanTag
 ```
+
+## 执行记录
+
+- Task 1：pre abcf428a352c2ca605e8dc175b87563495d2c441；tag checkpoint-20261104-1341-robot-output-contracts；相关14项通过；完整564项，561通过、3项dex依赖跳过。已复验CLI轻量导入修复。

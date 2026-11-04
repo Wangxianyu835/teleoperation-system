@@ -21,6 +21,14 @@ def hand_dex_calibrate(parser):
 
 ROOT = str(PROJECT_ROOT)
 
+def robot_control(parser):
+    from .robot_options import configure
+    configure(parser)
+
+def robot_replay(parser):
+    from .robot_options import configure
+    configure(parser,replay=True)
+
 def hand_record(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--landmark-space", choices=("world",), default="world")
     destination = parser.add_mutually_exclusive_group()
