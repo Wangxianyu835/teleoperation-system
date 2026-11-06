@@ -142,36 +142,17 @@ if ($cmd -and ($cmd.Source -match '[\\/]\.venv[\\/]')) {
     Say '[INFO]' "PATH 'python' resolves to $($cmd.Source)"
 }
 
-# --- 2. GBK safety (rule 4) ----------------------------------------------
+# --- 2. GBK safety: one implementation shared by script and CLI ------------
 Head '2) GBK safety of .py sources (rule 4)'
 if ($py) {
-    $gbkLog = Join-Path $env:TEMP "preflight_gbk_$PID.log"
-    & cmd /c "`"$py`" devtools\check_gbk_safe.py --strict > `"$gbkLog`" 2>&1"
+    $gbkLog = Join-Path $env:TEMP "preflight_gbk_cli_$PID.log"
+    & cmd /c "`"$py`" -m teleoperation tools check-gbk-safe --strict > `"$gbkLog`" 2>&1"
     $gbkExit = $LASTEXITCODE
     if ($gbkExit -eq 0) {
-        Pass 'no non-GBK characters in .py'
-    } else {
-        Fail "check_gbk_safe.py --strict -> exit $gbkExit"
-        Get-Content $gbkLog | Select-String 'U\+|FAIL' |
-            Select-Object -First 8 | ForEach-Object { Write-Host "        $($_.Line)" }
-        Write-Host "        full log: $gbkLog"
-    }
-}
-
-# --- 2b. same rule through the project's own CLI --------------------------
-# The teammate ships the same check as src/teleoperation/applications/diagnostics/
-# check_gbk_safe.py, i.e. 'python -m teleoperation tools check-gbk-safe'.  We run
-# both: ours covers our own files even if the package changes, theirs is the
-# authoritative one for the shipping tree.
-if ($py) {
-    $gbk2Log = Join-Path $env:TEMP "preflight_gbk_cli_$PID.log"
-    & cmd /c "`"$py`" -m teleoperation tools check-gbk-safe --strict > `"$gbk2Log`" 2>&1"
-    $gbk2Exit = $LASTEXITCODE
-    if ($gbk2Exit -eq 0) {
         Pass 'tools check-gbk-safe --strict -> exit 0'
     } else {
-        Fail "tools check-gbk-safe --strict -> exit $gbk2Exit"
-        Get-Content $gbk2Log | Select-Object -Last 12 |
+        Fail "tools check-gbk-safe --strict -> exit $gbkExit"
+        Get-Content $gbkLog | Select-Object -Last 12 |
             ForEach-Object { Write-Host "        $_" }
     }
 }

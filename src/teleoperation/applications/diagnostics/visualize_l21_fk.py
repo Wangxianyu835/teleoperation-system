@@ -62,6 +62,6 @@ def _fk_positions(side: str, pose: str) -> np.ndarray:
     return positions[0].detach().cpu().numpy()
 
 
-from teleoperation.tools.l21_fk import _draw_hand, _finish_axes, _plot_both, _plot_side, _set_equal_axes
+from teleoperation.tools.l21_fk import _draw_hand, _finish_axes, _plot_both, _plot_side
 
 from teleoperation.retargeting.hand.fk_demo import _angles_for_pose

@@ -207,4 +207,4 @@ def _check_frame_index(frame_index: int, frame_count: int, path: Path) -> None:
 from teleoperation.data.array_recording import read_recording
 from teleoperation.data.array_recording import read_arrays
 
-from teleoperation.tools.hand_keypoints import _is_plottable, _plot_hands, _plot_one_hand, _set_equal_axes
+from teleoperation.tools.hand_keypoints import _is_plottable, _plot_hands, _plot_one_hand

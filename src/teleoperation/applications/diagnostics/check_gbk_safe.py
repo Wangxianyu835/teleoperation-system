@@ -24,14 +24,10 @@ Python 会直接抛：
     U+25C0 -> <--       U+25B6 -> -->        U+FE0F -> 删除
 """
 import os
-import sys
 
-try:
-    sys.stdout.reconfigure(encoding='utf-8')
-except Exception:
-    pass
-
-SKIP_DIRS = {'lib', '.venv', '__pycache__', 'linkerhand_sdk', 'robots', '.git'}
+# Exclude generated and external trees; owned src/teleoperation/robots is scanned.
+SKIP_DIRS = {'lib', '.venv', '__pycache__', 'linkerhand_sdk', '.git',
+             'assets', 'third_party', 'outputs', '.pytest_cache'}
 
 SUGGEST = {
     '\u2713': '[OK]', '\u2717': '[FAIL]', '\u26a0': '注意',

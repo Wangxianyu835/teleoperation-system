@@ -48,3 +48,16 @@ def draw_skeleton(canvas, pixels, edges, color, tips, labels):
                    (0, 190, 255) if i in tips else color, -1, cv2.LINE_AA)
         if labels:
             text(canvas, str(i), (int(pixel[0]) + 4, int(pixel[1]) - 4), scale=0.35)
+
+
+def set_equal_axes(ax, points, *, padding, zero_radius):
+    """Set a cubic 3D view, preserving each caller's framing parameters."""
+    mins = points.min(axis=0)
+    maxs = points.max(axis=0)
+    center = (mins + maxs) * 0.5
+    radius = float(np.max(maxs - mins) * padding)
+    if radius <= 0:
+        radius = zero_radius
+    ax.set_xlim(center[0] - radius, center[0] + radius)
+    ax.set_ylim(center[1] - radius, center[1] + radius)
+    ax.set_zlim(center[2] - radius, center[2] + radius)

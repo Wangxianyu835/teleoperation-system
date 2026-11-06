@@ -157,12 +157,12 @@ assert read_arrays(root/'frames.npz')['timestamps'].tolist() == [0.,1.]
 
 **Interfaces:** 保留CLI `tools check-gbk-safe`和脚本`python devtools/check_gbk_safe.py`。plotting新增`set_equal_axes(ax, points, *, padding, zero_radius)`，两个调用方显式传原参数。
 
-- [ ] 设置cleanupBatch=merge-duplicate-devtools并建检查点。
-- [ ] 先用临时目录测试扫描路径、中文/不可GBK字符、strict退出码、错误读取和跳过目录；两入口相同root得到相同结果。扫描核心保留在现有diagnostics文件，移除导入时修改sys.stdout的副作用。
-- [ ] 两份SKIP_DIRS有差异，按项目受维护源码范围统一为跳过assets、third_party、outputs、.venv、.git、__pycache__等生成/外部目录；写入行为测试，不假称原策略完全相同。脚本只解析参数、设置src路径后调用同一main。
-- [ ] preflight只运行一次正式GBK扫描，保留退出码和日志。删除“队友各维护一份必须重复跑”的过时说明。
-- [ ] 合并绘图坐标轴代码时，hand_keypoints保留padding=.55/zero_radius=1.0，l21_fk保留padding=.6/zero_radius=.1；测试零跨度和普通点云的轴范围与原值一致。
-- [ ] 运行新增两组测试、test_inspection_entrypoints、CLI静态help和全套；提交`refactor: reuse source scanning and plotting utilities`。
+- [x] 设置cleanupBatch=merge-duplicate-devtools并建检查点。
+- [x] 先用临时目录测试扫描路径、中文/不可GBK字符、strict退出码、错误读取和跳过目录；两入口相同root得到相同结果。扫描核心保留在现有diagnostics文件，移除导入时修改sys.stdout的副作用。
+- [x] 两份SKIP_DIRS有差异，按项目受维护源码范围统一为跳过assets、third_party、outputs、.venv、.git、__pycache__等生成/外部目录；写入行为测试，不假称原策略完全相同。脚本只解析参数、设置src路径后调用同一main。
+- [x] preflight只运行一次正式GBK扫描，保留退出码和日志。删除“队友各维护一份必须重复跑”的过时说明。
+- [x] 合并绘图坐标轴代码时，hand_keypoints保留padding=.55/zero_radius=1.0，l21_fk保留padding=.6/zero_radius=.1；测试零跨度和普通点云的轴范围与原值一致。
+- [x] 运行新增两组测试、test_inspection_entrypoints、CLI静态help和全套；提交`refactor: reuse source scanning and plotting utilities`。
 
 ## Task 6：启动器共用一套准备逻辑，移除失效说明
 
@@ -209,3 +209,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 3：pre b350d15b7f5947be46fb632c68abdffb47782681；tag checkpoint-20261106-2120-share-hand-backend；新增tests/test_hand_backend_factory.py覆盖共享加载/跨入口数值/纯臂零模型/混合侧dex等价。相关93项（3跳过）；完整594项，590通过、4项dex依赖跳过（含新增dex工厂等价用例）；独立dex20项全部通过。算法、输入profile、shared校验和后处理未改。
 
 - Task 4：pre b7db89e852f65d5947fe64736d8d08d70b7b33de；tag checkpoint-20261106-2129-preview-scene-support；新camera_preview/realtime_support归属明确，迁移类/函数AST与原实现一致；初始化重试集中到urdf_loader；重复rigid_elbow_robots删除并迁移测试。相关96项通过；完整596项，592通过、4项dex依赖跳过。
+
+- Task 5：pre a372c915cfc6c121d6c9ac0bd69087eb63b31d25；tag checkpoint-20261106-2139-merge-devtools；GBK脚本/CLI共用扫描，preflight只执行一次；扫描覆盖自有robots源码、跳过外部/生成目录；两个绘图padding/零跨度默认值保持。相关15项、实际仓库GBK strict与PowerShell解析通过；完整600项，596通过、4项dex依赖跳过。
