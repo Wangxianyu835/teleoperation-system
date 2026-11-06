@@ -53,14 +53,14 @@ def hand_align(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--landmark-space", choices=("world",), default="world")
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.set_defaults(_handler="teleoperation.applications.hand:align")
+    parser.set_defaults(_handler="teleoperation.applications.hand_align:run")
 
 
 def hand_train(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--run-name", required=True)
     from teleoperation.paths import DEFAULT_HAND_MODEL_ROOT
-    from teleoperation.contracts.hand_models import HAND_MODELS
+    from teleoperation.contracts.constants import HAND_MODELS
     parser.add_argument("--hand-model", choices=HAND_MODELS, nargs='+', required=True)
     parser.add_argument("--checkpoint-root", type=Path, default=DEFAULT_HAND_MODEL_ROOT)
     from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
@@ -114,7 +114,7 @@ def hand_list_models(parser):
 
 
 def replay_hand_joints(parser):
-    from teleoperation.contracts.hand_models import HAND_MODELS
+    from teleoperation.contracts.constants import HAND_MODELS
     parser.add_argument('--input',type=Path,required=True)
     parser.add_argument('--hand-model',choices=HAND_MODELS,required=True)
     parser.add_argument('--hand',choices=('left','right','both'),default='right')
@@ -124,7 +124,7 @@ def replay_hand_joints(parser):
 
 def hand_inspect(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--angle-h5", type=Path, required=True)
-    parser.set_defaults(_handler="teleoperation.applications.hand:inspect")
+    parser.set_defaults(_handler="teleoperation.applications.hand_inspect:run")
 
 
 
@@ -254,7 +254,7 @@ def dual_export(parser):
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF)
-    parser.set_defaults(_handler="teleoperation.applications.dual_export_cli:main")
+    parser.set_defaults(_handler="teleoperation.applications.dual_export:main")
 
 def dual_realtime(parser):
     parser = parser

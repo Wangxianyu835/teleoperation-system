@@ -10,7 +10,7 @@ def configure(parser):
     source.add_argument("--input-h5", type=Path, help="existing raw Vision Pro transform recording")
     parser.add_argument("--backend", choices=("nn", "dex", "transhandr"), default="nn",
                         help='nn/dex share the RGB hand contract; transhandr is explicit upstream compatibility')
-    from teleoperation.contracts.hand_models import HAND_MODELS
+    from teleoperation.contracts.constants import HAND_MODELS
     from teleoperation.contracts.coordinates import UNIFIED_HAND_PROFILE
     parser.add_argument('--hand-model', choices=HAND_MODELS, default='l21')
     parser.set_defaults(source='visionpro', input_profile=UNIFIED_HAND_PROFILE,

@@ -110,11 +110,11 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting diff --check
 
 **Interfaces:** 命令名/参数不变。新array_recording提供`read_recording(path)`、`read_arrays(path)`；分别保留原np.load行为和NPZ上下文关闭；不改其他录制格式。
 
-- [ ] 设置cleanupBatch=merge-thin-modules并建检查点。
-- [ ] registry与schemas的handler同步改为`teleoperation.applications.hand_align:run`、`teleoperation.applications.hand_inspect:run`、`teleoperation.applications.dual_export:main`，不保留旧内部转发文件。
-- [ ] 将dual_export_cli.main原8行移到dual_export.py；将HAND_MODELS原元组移到constants.py，保持元组内容和顺序；修改全部调用方的显式导入。
-- [ ] 合并npy/npz现用读取函数到array_recording.py，修改visualize_hand_keypoints.py的两个import，然后删除原文件。
-- [ ] 复用CLI轻量help回归，要求无NumPy/Torch时help仍成功。用临时NPY/NPZ做读取与关闭验证：
+- [x] 设置cleanupBatch=merge-thin-modules并建检查点。
+- [x] registry与schemas的handler同步改为`teleoperation.applications.hand_align:run`、`teleoperation.applications.hand_inspect:run`、`teleoperation.applications.dual_export:main`，不保留旧内部转发文件。
+- [x] 将dual_export_cli.main原8行移到dual_export.py；将HAND_MODELS原元组移到constants.py，保持元组内容和顺序；修改全部调用方的显式导入。
+- [x] 合并npy/npz现用读取函数到array_recording.py，修改visualize_hand_keypoints.py的两个import，然后删除原文件。
+- [x] 复用CLI轻量help回归，要求无NumPy/Torch时help仍成功。用临时NPY/NPZ做读取与关闭验证：
 
 ```python
 np.save(root/'frames.npy', {'left': np.zeros((25,3))})
@@ -123,7 +123,7 @@ assert read_recording(root/'frames.npy').item()['left'].shape == (25,3)
 assert read_arrays(root/'frames.npz')['timestamps'].tolist() == [0.,1.]
 ```
 
-- [ ] 运行test_cli_integration、test_coordinate_pipeline、test_hand_core_regression、test_inspection_entrypoints、test_hand_specs、test_mediapipe_tron2a及全套；提交`refactor: consolidate dispatch and array recording helpers`。
+- [x] 运行test_cli_integration、test_coordinate_pipeline、test_hand_core_regression、test_inspection_entrypoints、test_hand_specs、test_mediapipe_tron2a及全套；提交`refactor: consolidate dispatch and array recording helpers`。
 
 ## Task 3：统一手部NN/dex实例构造
 
@@ -203,3 +203,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 ## 执行记录
 
 - Task 1：pre 77ecb0bce0a1a5bbfb93d1a9fded43f7d572168f；tag checkpoint-20261106-2058-remove-unused-members；删除15个无调用函数/方法及闲置导入。相关40项、间接依赖补测25项通过；最终完整589项，586通过、3项可选dex依赖跳过。PALM_LENGTH_ALIGNMENT有效再导出保留；旧测试时钟补丁迁移到实际JointCommandPipeline归属模块。
+
+- Task 2：pre 479226ee8401a8d206b8605d446bf280630a67db；tag checkpoint-20261106-2112-merge-thin-modules；5个薄文件迁移后删除、新增array_recording，源码净减少4个文件；相关101项通过；完整590项，587通过、3项dex依赖跳过。28命令保持，CLI静态help和数组读取/文件释放通过。

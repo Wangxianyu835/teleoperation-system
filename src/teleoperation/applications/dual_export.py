@@ -50,3 +50,10 @@ def _empty_output(frame_count: int) -> dict[str, np.ndarray]:
         data[f"{side}_arm_valid"] = np.zeros(frame_count, dtype=bool)
         data[f"{side}_hand_valid"] = np.zeros(frame_count, dtype=bool)
     return data
+
+
+def main(args):
+    count = export_robot_commands(args.observations, args.angle_h5, args.calibration, args.output, args.urdf)
+    print(f"output={args.output}")
+    print(f"frames={count}")
+    return 0

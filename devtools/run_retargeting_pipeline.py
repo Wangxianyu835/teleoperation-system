@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from teleoperation.contracts.hand_models import HAND_MODELS
+from teleoperation.contracts.constants import HAND_MODELS
 from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
 from teleoperation.paths import PROJECT_ROOT, training_run_directory
 

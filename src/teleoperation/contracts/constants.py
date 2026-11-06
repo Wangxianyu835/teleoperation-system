@@ -15,3 +15,6 @@ HAND_COORDS = HAND_COORDINATE_DIM
 
 DEFAULT_MAX_CENTER_DISPLACEMENT = 0.08
 DEFAULT_MAX_SHAPE_RMSE = 0.05
+
+# Dependency-free registry shared by CLI and target specifications.
+HAND_MODELS = ("l21", "h1_2", "gr1_t2", "g1")
