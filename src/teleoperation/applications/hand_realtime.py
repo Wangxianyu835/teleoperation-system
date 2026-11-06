@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 import time
 
-import numpy as np
 
-from teleoperation.contracts.coordinates import palm_local_metadata
-from teleoperation.contracts.hand_control import valid_joint_result
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
-from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
 
 
 

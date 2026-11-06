@@ -232,10 +232,3 @@ def load_robot_recording(path,targets):
             metadata=json.loads(stream.attrs['metadata_json'])
         except (KeyError,TypeError,IndexError) as error:raise ValueError('Malformed robot recording') from error
     return RobotRecording(Path(path),{key:specs[key] for key in targets},metadata,count)
-
-
-def iter_robot_commands(path,specs):
-    recording=load_robot_recording(path,specs)
-    for key,spec in specs.items():
-        if spec.spec_hash!=recording.specs[key].spec_hash:raise ValueError('Replay specification mismatch')
-    for batch,_ in recording.iter_frames():yield batch

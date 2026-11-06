@@ -298,10 +298,6 @@ class AxisMap:
             values = [values[0][index] for index in range(3)]
         return cls(tuple(letters), tuple(float(value) for value in values))
 
-    def with_defaults(self, order=None, signs=None) -> "AxisMap":
-        """用可选覆盖值得到一个新的映射（``None`` = 保持原值）。"""
-        return AxisMap(tuple(order) if order else self.order,
-                       tuple(signs) if signs else self.signs)
 
 
 @dataclass(frozen=True)
@@ -1537,4 +1533,3 @@ def _round_or_none(value, digits: int):
     if not np.isfinite(number):
         return None
     return round(number, digits)
-

@@ -96,3 +96,7 @@ flowchart LR
 ```
 
 新工作流的默认目标是单机器人；多机器人比较必须显式列出目标。仿真已验证四目标共享一个 PyBullet 连接时，同一提交只推进一次物理步；实体机器人发送后端、真实相机、真实 Vision Pro 和真实硬件仍需单独验收。
+
+## 2026-11-06 代码归并
+
+新一轮清理只删除无消费者片段并归并重复实现。整机回放以load_robot_recording和RobotRecording.iter_frames为正式读取入口，保留每帧receipt；退出未使用的iter_robot_commands和DualTeleoperator.produce_parts包装。KalmanSmoother继续提供在线reset/step；未使用的离线序列包装退出。MediaPipeCameraWorkflow.next_input公开输入接口仍保留。实施范围和逐批验证见[代码归并计划](superpowers/plans/2026-11-06-code-consolidation.md)。

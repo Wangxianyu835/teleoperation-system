@@ -9,15 +9,10 @@ import h5py
 import numpy as np
 
 from teleoperation.retargeting.hand.temporal import TemporalBuffer
-from teleoperation.contracts.observations import RawHandFrame
 from teleoperation.contracts.hand import CanonicalHandFrame
 from teleoperation.data.hand_h5 import load_twohand_h5, read_coordinate_alignment
 from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
-from teleoperation.contracts.coordinates import (
-    COORDINATE_FRAME, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
-    coordinate_frame_for_alignment, is_world_alignment,
-    PALM_LENGTH_PROFILE, PALM_LENGTH_ALIGNMENT,
-)
+from teleoperation.contracts.coordinates import WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, coordinate_frame_for_alignment, is_world_alignment, PALM_LENGTH_PROFILE, PALM_LENGTH_ALIGNMENT
 
 
 HAND_SIDES = ("left", "right")

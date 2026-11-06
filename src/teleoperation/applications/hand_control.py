@@ -5,7 +5,7 @@ import time
 
 import numpy as np
 
-from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE, UNIFIED_HAND_PROFILE, palm_length_metadata, palm_local_metadata
+from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE, UNIFIED_HAND_PROFILE, palm_length_metadata
 from teleoperation.contracts.hand import HandWindow
 from teleoperation.data.hand_joint_recording import HandJointResultWriter, iter_joint_commands
 from teleoperation.robots.hand_spec import HAND_MODELS, load_hand_spec

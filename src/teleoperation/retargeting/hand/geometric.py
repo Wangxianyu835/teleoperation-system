@@ -36,7 +36,7 @@ world 规范坐标先在 retarget 内转换回各侧原生根坐标；normalized
 轴测拇指会得到 -30.7 度且符号翻转，故拇指必须用自身轴。
 
 镜像输入（自拍镜像 / 图像翻转）会让上面这套量整体反号，所以保留一个**镜像
-自检**：L21 零位姿的拇指掌骨偏掌心一侧（``expected_thumb_lean``，实测约
+自检**：L21 零位姿的拇指掌骨偏掌心一侧（零位姿拇指倾斜量，实测约
 ±0.03），把输入拇指掌骨在法向上的投影取窗口内中位数，与它同号则为正常输入
 （系数 1.0），异号则判为镜像输入（系数 -1.0，屈曲维与拇指 yaw 整体取反）；
 证据不足时按正常输入处理（URDF 轴已在正常输入下给出正确符号）。
@@ -178,13 +178,6 @@ def bend_angle(parent: np.ndarray, child: np.ndarray, axis: np.ndarray, sign: fl
     return float(sign * np.arctan2(sine, circle))
 
 
-def _in_plane_angle(direction: np.ndarray, lateral: np.ndarray, longitudinal: np.ndarray) -> float:
-    """Angle of ``direction`` inside the palm plane, measured from +Y toward +X.
-
-    Kept for probing the palm-plane reading of the thumb metacarpal (the coarse
-    "in-plane yaw" the chain inversion replaced); no longer used by the pipeline.
-    """
-    return float(np.arctan2(float(np.dot(direction, lateral)), float(np.dot(direction, longitudinal))))
 
 
 def _rodrigues(axis: np.ndarray, angle: float) -> np.ndarray:
@@ -361,9 +354,6 @@ class GeometricHandRetargeter(HandRetargeter):
         """
         return self._robot_reference(side)[0]
 
-    def expected_thumb_lean(self, side: str) -> float:
-        """How this side's own zero-pose thumb metacarpal leans along the palm normal."""
-        return self._robot_reference(side)[1]
 
     def _robot_reference(self, side: str) -> tuple[dict[int, np.ndarray], float, np.ndarray]:
         """One FK pass over the zero pose: per-joint axes, thumb lean, node cloud.
@@ -480,7 +470,7 @@ class GeometricHandRetargeter(HandRetargeter):
         """+1 for a normal source, -1 when the input hand looks mirrored.
 
         The L21 zero pose says which way its own thumb metacarpal leans along the
-        palm normal (``expected_thumb_lean``); a source whose thumb leans the
+        palm normal (零位姿拇指倾斜量); a source whose thumb leans the
         other way is a mirrored point cloud (selfie mirror, flipped image), and
         then every signed angle must be negated. Weak evidence falls back to +1
         because the URDF joint axes already carry the flexion sign.

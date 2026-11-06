@@ -135,17 +135,6 @@ class RobotLoader:
                                   physicsClientId=self.client)
 
     # ------------------------------------------------------------------ #
-    def set_arm_pose(self, side, angles):
-        """按「关节名后缀」设置手臂姿态（兼容旧代码）"""
-        prefix = side + '_'
-        for k, v in angles.items():
-            jname = k if k.startswith(prefix) else prefix + k
-            idx = self.all_joints.get(jname)
-            if idx is not None:
-                p.setJointMotorControl2(
-                    self.robot_id, idx, p.POSITION_CONTROL,
-                    targetPosition=v, force=200,
-                    physicsClientId=self.client)
 
     # ------------------------------------------------------------------ #
     def describe_action_space(self):

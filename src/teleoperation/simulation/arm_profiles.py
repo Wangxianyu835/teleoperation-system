@@ -7,7 +7,7 @@ scene robots are resolved from their loaded URDFs."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence
+from typing import Mapping
 
 SIDES = ("left", "right")
 
@@ -275,4 +275,3 @@ def describe(robot_type: str) -> dict:
 def table() -> dict:
     """``{robot_type: describe(robot_type)}`` for every registered robot."""
     return {name: describe(name) for name in all_robots()}
-

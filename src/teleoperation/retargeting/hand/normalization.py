@@ -2,12 +2,7 @@
 import numpy as np
 
 from teleoperation.contracts.hand import CanonicalHandFrame, HandWindow
-from teleoperation.contracts.coordinates import (
-    WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, WORLD_LANDMARK_SPACE, CANONICAL_HAND_FRAME,
-    PALM_LENGTH_ALIGNMENT, PALM_LENGTH_PROFILE, validate_landmark_contract,
-    palm_length_metadata,
-    UNIFIED_METRIC_ALIGNMENT, UNIFIED_HAND_PROFILE,
-)
+from teleoperation.contracts.coordinates import WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, PALM_LENGTH_PROFILE, PALM_LENGTH_ALIGNMENT, validate_landmark_contract, palm_length_metadata, UNIFIED_METRIC_ALIGNMENT, UNIFIED_HAND_PROFILE
 from .coordinates import build_palm_basis
 
 MIN_PALM_LENGTH_M = 1e-6

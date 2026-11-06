@@ -1,10 +1,8 @@
 """Argument schemas only: no model, device or simulator imports."""
 import argparse
-import os
 from pathlib import Path
 from teleoperation.paths import *
-from teleoperation.retargeting.hand.config import L21, RUNTIME, ANGLE_LIMITS
-from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
+from teleoperation.retargeting.hand.config import L21, RUNTIME
 from .smplerx_options import add_smplerx_arguments
 
 

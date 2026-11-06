@@ -23,7 +23,6 @@ Python 会直接抛：
     U+00B2 -> ^2        U+00B3 -> ^3         U+00B9 -> ^1
     U+25C0 -> <--       U+25B6 -> -->        U+FE0F -> 删除
 """
-import argparse
 import os
 import sys
 
@@ -101,5 +100,3 @@ def main(args=None):
     print('  提示：这些字符在中文 Windows 控制台 print() 时会抛 '
           'UnicodeEncodeError 导致崩溃')
     return 0
-
-

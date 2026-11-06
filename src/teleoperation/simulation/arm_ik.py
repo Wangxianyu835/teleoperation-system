@@ -10,12 +10,7 @@ from math import acos, degrees, pi, radians
 
 import numpy as np
 
-from teleoperation.simulation.arm_profiles import (
-    SIDES,
-    ArmProfile,
-    profile_for,
-    resolve_joint_names,
-)
+from teleoperation.simulation.arm_profiles import SIDES, profile_for, resolve_joint_names
 
 PHYSICS_DT = 1.0 / 240.0
 ARM_FORCE = 200.0
@@ -1038,5 +1033,3 @@ class PyBulletArmIK:
             "limits_from_urdf": True,
             "last_solve": dict(self.last_solve),
         }
-
-

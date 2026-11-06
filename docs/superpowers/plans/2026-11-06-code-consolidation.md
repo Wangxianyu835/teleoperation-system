@@ -1,6 +1,6 @@
 # 当前代码清理与合并 Implementation Plan
 
-> **For agentic workers:** 逐任务使用可用的执行计划工作流；本项目由当前会话顺序执行，不启用子智能体。当前仅规划，不执行删除或重构。
+> **For agentic workers:** 逐任务使用可用的执行计划工作流；本项目由当前会话顺序执行，不启用子智能体。用户已批准执行，逐批记录结果。
 
 **Goal:** 删除已确认无消费者的片段，将同职责重复实现归并到一个维护位置，保留现有功能与命令。
 
@@ -97,12 +97,12 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting diff --check
 
 **Interfaces:** 所有仍被调用的函数签名和数值不变；输出backends使用现有RobotBackend Protocol进行类型说明。
 
-- [ ] 设置cleanupBatch=remove-unused-members并执行公共Git步骤；逐个符号rg复核src/tests/devtools和文档，排除只定义/历史计划命中。
-- [ ] 删除1.1中的15个函数/方法及常量；删除相关过时docstring（例如filter_sequence用法），保留next_input。
-- [ ] 闲置import必须先检索外部导入/属性访问。特别保留或迁移后再删除：hand_realtime.MediaPipePalmLocalPipeline、arm_diagnostics.sample_seconds、simulation.hand_commands.add_hand_command_arguments、diagnostics绘图导出、tasks和evaluation包导出。星号导入不能按“未使用”直接删除。
-- [ ] RobotOutput参数使用`backends: Mapping[str, RobotBackend]`，typing.Mapping和现有Protocol同文件维护。contracts/robot_control.py删除无用names局部变量，不改变L21按part命名空间行为。
-- [ ] 运行现有test_camera_record、test_mediapipe_realtime、test_joint_commands、test_robot_command_recording、test_robot_command_replay、test_arm_following、test_arm_display_stability及全套。
-- [ ] 更新current-interfaces对离线Kalman/produce_parts/iter_robot_commands的当前说明；历史实施计划加后续变更提示，不伪造原执行记录。提交`refactor: remove unused helpers and stale imports`。
+- [x] 设置cleanupBatch=remove-unused-members并执行公共Git步骤；逐个符号rg复核src/tests/devtools和文档，排除只定义/历史计划命中。
+- [x] 删除1.1中的15个函数/方法及常量；删除相关过时docstring（例如filter_sequence用法），保留next_input。
+- [x] 闲置import必须先检索外部导入/属性访问。特别保留或迁移后再删除：hand_realtime.MediaPipePalmLocalPipeline、arm_diagnostics.sample_seconds、simulation.hand_commands.add_hand_command_arguments、diagnostics绘图导出、tasks和evaluation包导出。星号导入不能按“未使用”直接删除。
+- [x] RobotOutput参数使用`backends: Mapping[str, RobotBackend]`，typing.Mapping和现有Protocol同文件维护。contracts/robot_control.py删除无用names局部变量，不改变L21按part命名空间行为。
+- [x] 运行现有test_camera_record、test_mediapipe_realtime、test_joint_commands、test_robot_command_recording、test_robot_command_replay、test_arm_following、test_arm_display_stability及全套。
+- [x] 更新current-interfaces对离线Kalman/produce_parts/iter_robot_commands的当前说明；历史实施计划加后续变更提示，不伪造原执行记录。提交`refactor: remove unused helpers and stale imports`。
 
 ## Task 2：合并薄转发与轻量数据文件
 
@@ -199,3 +199,7 @@ assert read_arrays(root/'frames.npz')['timestamps'].tolist() == [0.,1.]
 git -c safe.directory=D:/2026/code/teleoperation-system-retargeting diff $cleanupTag -- src tests devtools docs README.md
 git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c rollback-code-consolidation $cleanupTag
 ```
+
+## 执行记录
+
+- Task 1：pre 77ecb0bce0a1a5bbfb93d1a9fded43f7d572168f；tag checkpoint-20261106-2058-remove-unused-members；删除15个无调用函数/方法及闲置导入。相关40项、间接依赖补测25项通过；最终完整589项，586通过、3项可选dex依赖跳过。PALM_LENGTH_ALIGNMENT有效再导出保留；旧测试时钟补丁迁移到实际JointCommandPipeline归属模块。

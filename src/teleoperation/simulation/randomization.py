@@ -55,10 +55,3 @@ class DomainRandomizer:
                                         physicsClientId=client_id)
         except Exception:
             pass  # 颜色抖动非必需，失败也不影响
-
-    def get_randomized_params(self) -> dict:
-        """返回当前随机化的参数值（用于记录和复现）"""
-        return {
-            'friction': np.random.uniform(*self.friction_range),
-            'position_noise': np.random.uniform(0, self.position_noise),
-        }

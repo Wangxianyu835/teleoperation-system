@@ -57,6 +57,5 @@ class RobotCommandFrame:
         parts=dict(self.parts)
         if not parts or set(parts)-set(PARTS) or any(not isinstance(p,RobotPartCommand) for p in parts.values()):
             raise ValueError('Invalid robot command parts')
-        names=[n for p in parts.values() for n in p.joint_names]
         # L21 uses identical left/right names in separate bodies; namespaces are per-part.
         object.__setattr__(self,'parts',MappingProxyType(parts))

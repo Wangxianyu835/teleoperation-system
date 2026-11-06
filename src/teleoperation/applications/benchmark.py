@@ -8,8 +8,6 @@ TeleOpBench 仿真平台主入口
     python -m teleoperation sim run --task pushcube --no-render  # 无头模式
 """
 
-import sys
-import os
 import argparse
 import time
 from functools import partial
@@ -160,5 +158,3 @@ def main(args=None):
     finally:
         env.close()
         print("\n仿真环境已关闭。")
-
-

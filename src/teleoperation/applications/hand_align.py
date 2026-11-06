@@ -1,5 +1,4 @@
 """Read → align → persist, assembled only at the application layer."""
-import argparse
 import json
 from pathlib import Path
 from teleoperation.data.hand_h5 import read_alignment_input, write_aligned_copy

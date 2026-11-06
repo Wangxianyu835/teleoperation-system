@@ -5,13 +5,8 @@ from types import SimpleNamespace
 
 from teleoperation.paths import DEFAULT_MEDIAPIPE_ASSET, PROJECT_ROOT
 
-MODEL_ASSET_CANDIDATES = (DEFAULT_MEDIAPIPE_ASSET,)
 
 
-def default_model_asset():
-    if not DEFAULT_MEDIAPIPE_ASSET.is_file():
-        raise FileNotFoundError(f'MediaPipe model not found: {DEFAULT_MEDIAPIPE_ASSET}')
-    return DEFAULT_MEDIAPIPE_ASSET
 
 
 def build_parser():

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import statistics
 import sys
 import threading
@@ -12,14 +11,12 @@ from pathlib import Path
 
 import numpy as np
 
-from teleoperation.contracts.hand_control import valid_joint_result
 from teleoperation.data.urdf import parse_joint_limits
 from teleoperation.paths import (
     DEFAULT_MEDIAPIPE_ASSET,
     L21_ROOT,
     PROJECT_ROOT,
 )
-from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM, RUNTIME
 from teleoperation.robots.l21 import L21_JOINT_ORDER, L21HandAdapter
 
 SIDES = ("left", "right")
@@ -484,15 +481,6 @@ def build_preview(args, workflow, sides):
     return preview
 
 
-def preview_hud(processed, marks, sides, samples, invalid, retargeter, raw_seen,
-                landmark_space="normalized") -> str:
-    """窗口左上角那行：帧数 / 帧率 / 原始检出 / 有效角度帧数 / 无效帧数 / 开手标定。"""
-    raw = " ".join(f"{side}={raw_seen[side]}" for side in sides)
-    counts = " ".join(f"{side}={len(samples[side])}" for side in sides)
-    return (f"frame={processed} fps={_loop_fps(marks):.1f} raw={raw} valid={counts} "
-            f"invalid={sum(invalid.values())} "
-            f"calibration={getattr(retargeter, 'calibration_status', None)} "
-            f"source={landmark_space} units={'m' if landmark_space == 'world' else 'normalized'}")
 
 
 def _describe(vectors, mapping=None) -> dict:

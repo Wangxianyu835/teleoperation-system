@@ -1,7 +1,6 @@
 """One camera capture shared by MediaPipe Hands and the SMPLer-X worker."""
 from __future__ import annotations
 
-import time
 from collections import Counter
 
 import numpy as np

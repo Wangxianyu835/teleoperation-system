@@ -8,14 +8,10 @@ from __future__ import annotations
 
 import itertools
 import math
-import time
 
 import numpy as np
 
-from teleoperation.data.urdf import parse_joint_limits
-from teleoperation.paths import L21_ROOT
 from teleoperation.robots.l21 import L21_JOINT_ORDER
-from teleoperation.retargeting.hand.postprocessing import KalmanSmoother
 from teleoperation.cli.hand_command_options import add_hand_command_arguments
 
 

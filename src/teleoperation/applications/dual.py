@@ -167,22 +167,6 @@ class DualTeleoperator:
             arm_valid[side] = self.arms.update_side(observation.upper_body, side, timestamp, (observation.wrists or {}).get(side))
         return Tron2AL21Command(timestamp, self.controllers["left"].q.copy(), self.hand_q["left"].copy(), self.controllers["right"].q.copy(), self.hand_q["right"].copy(), arm_valid["left"], hand_valid["left"], arm_valid["right"], hand_valid["right"])
 
-    def produce_parts(self, observation, *, control_seconds):
-        """Expose existing accepted TRON2A commands at the generic part boundary."""
-        from teleoperation.contracts.robot_control import RobotPartCommand
-        command=self.update(observation,control_seconds=control_seconds)
-        parts={}
-        for side in ('left','right'):
-            for kind in ('arm','hand'):
-                key=side+'_'+kind
-                names=(self.solvers[side].specification.joint_names if kind=='arm'
-                       else self.specs[('l21',side)].joint_names)
-                stamp=observation.upper_body.timestamp if kind=='arm' else observation.hands.timestamp
-                valid=bool(getattr(command,key+'_valid'))
-                parts[key]=RobotPartCommand(names,getattr(command,key),stamp,
-                    'body_monotonic_s' if kind=='arm' else observation.hands.metadata.get('timestamp_unit','sensor_seconds'),
-                    valid,'tracking' if valid else 'holding')
-        return parts
 
     def close(self):
         from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline

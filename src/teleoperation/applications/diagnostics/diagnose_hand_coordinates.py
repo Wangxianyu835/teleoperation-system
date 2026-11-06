@@ -6,15 +6,12 @@ classifier. Missing units remain undeclared; no calibration is inferred.
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import io
 import json
 from pathlib import Path
-import sys
 import xml.etree.ElementTree as ET
 
-import h5py
 import numpy as np
 import torch
 
@@ -22,8 +19,7 @@ from teleoperation.paths import PROJECT_ROOT
 
 from teleoperation.retargeting.hand.kinematics import create_hand_kinematics
 from teleoperation.retargeting.hand.config import L21, ROBOT_JOINTS, SOURCE_JOINTS
-from teleoperation.contracts.coordinates import SUPPORTED_COORDINATE_ALIGNMENTS, COORDINATE_ALIGNMENT, COORDINATE_FRAME
-from teleoperation.retargeting.hand.coordinates import SOURCE_TO_L21_MATRIX
+from teleoperation.contracts.coordinates import SUPPORTED_COORDINATE_ALIGNMENTS, COORDINATE_FRAME
 from teleoperation.data.hand_h5 import load_twohand_h5
 from teleoperation.retargeting.hand.topology import ensure_hand25
 

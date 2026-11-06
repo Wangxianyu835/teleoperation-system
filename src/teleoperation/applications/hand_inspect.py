@@ -1,6 +1,5 @@
 import argparse
 from pathlib import Path
-from teleoperation.contracts.constants import HAND_SIDES
 
 
 def inspect_angle_h5(path):

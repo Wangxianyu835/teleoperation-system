@@ -8,7 +8,7 @@ import pybullet_data
 from .robot_loader import RobotLoader
 from .randomization import DomainRandomizer
 from .urdf_loader import create_ground
-from teleoperation.simulation.tasks import get_task, list_tasks
+from teleoperation.simulation.tasks import get_task
 from teleoperation.simulation.tasks import register_builtin_tasks
 register_builtin_tasks()          # noqa: F401  ★ 触发 30 个任务注册
 from teleoperation.evaluation import MetricsTracker

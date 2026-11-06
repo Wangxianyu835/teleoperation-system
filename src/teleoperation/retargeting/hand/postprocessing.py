@@ -2,7 +2,7 @@
 
 每维独立维护角度与角速度。process_noise控制跟随速度，measurement_noise
 控制观测平滑程度。创新门控gate默认关闭；快速连续动作不应被当作孤立尖峰。
-在线使用reset(n_dims)和step(z)，离线使用filter_sequence(seq)。
+在线使用reset(n_dims)和step(z)。
 """
 import numpy as np
 
@@ -115,41 +115,3 @@ class KalmanSmoother:
         return self.x[:, 0].copy()
 
     # ------------------------------------------------------------------
-    def filter_sequence(self, seq, dt=None, return_stats=False):
-        """对整段序列滤波
-
-        Args:
-            seq: (T, D) 观测序列（可含 NaN）
-            dt:  覆盖构造时的 dt（通常用数据真实帧间隔）
-            return_stats: 是否返回统计（离群点数量等）
-
-        Returns:
-            (T, D) 滤波结果；若 return_stats 则返回 (result, stats)
-        """
-        seq = np.asarray(seq, dtype=np.float64)
-        if seq.ndim != 2:
-            raise ValueError(f'seq 应为二维 (T, D)，实际 {seq.shape}')
-        if dt is not None:
-            self.dt = float(dt)
-
-        self.reset(seq.shape[1])
-        out = np.empty_like(seq)
-        n_outlier = 0
-        n_nan = 0
-        for i in range(seq.shape[0]):
-            z = seq[i]
-            if np.any(np.isnan(z)):
-                n_nan += 1
-            # 统计离群点（与 step 内的门控逻辑一致）
-            if (self.gate > 0 and self.initialized and self.x is not None):
-                dt_ = self.dt
-                pred = self.x[:, 0] + self.x[:, 1] * dt_
-                s = np.sqrt(self.P[:, 0, 0] + self.P[:, 0, 1] * dt_
-                            + self.P[:, 0, 0] + self.r)
-                n_outlier += int(np.sum(
-                    np.abs(z - pred) > self.gate * s))
-            out[i] = self.step(z)
-
-        if return_stats:
-            return out, {'n_outlier': n_outlier, 'n_nan': n_nan}
-        return out

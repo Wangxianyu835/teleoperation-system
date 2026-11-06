@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import argparse
 import time
 
-import h5py
-import numpy as np
 
 from teleoperation.retargeting.arm.calibration import ArmCalibration
 from teleoperation.contracts.commands import Tron2AL21Command

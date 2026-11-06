@@ -267,3 +267,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 8：pre 11a0461f329a7eb807b5aa4cc145ef9615a2feb7；tag checkpoint-20261104-1440-robot-record-replay；相关14项通过；完整582项，579通过、3项dex跳过。四布局H5往返、异步来源时基/holding、失败保留pending、拒绝覆盖/篡改、四目标回放与单目标抽取均覆盖。真实G1录制与回放逐帧实际q误差≤1e-12，步数完全一致；禁止构造IK/session/filter后仍能回放。TRON2A回放只用录制的safe_q/安装姿态，不启动人体映射。
 
 - Task 9：pre 2d77fec09e39d6f0d82c52d7f4fe97504cce963a；tag checkpoint-20261104-1450-verify-robot-output；最终验收新增4项全部通过，主环境完整586项（583通过、3项dex依赖跳过），独立dex环境26项全部通过。四目标部位/侧面显示矩阵、VR手腕来源时间与stale holding、三目标VR NN/dex、统一录制回放、旧入口输出收口和文档流程图均已验证。真实相机、真实Vision Pro和实体机器人仍未在本机执行。
+
+后续整理说明（2026-11-06）：新代码归并计划退出本历史计划曾描述、但最终没有运行时消费者的produce_parts和iter_robot_commands包装。实际统一控制仍走RobotControlSession，回放走保留receipt的RobotRecording.iter_frames；原实施记录保留。

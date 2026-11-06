@@ -20,8 +20,6 @@
 
 支持格式：.npz / .h5 / .hdf5
 """
-import argparse
-import os
 import sys
 import time
 

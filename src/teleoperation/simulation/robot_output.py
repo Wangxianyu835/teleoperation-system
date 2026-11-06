@@ -1,7 +1,7 @@
 """Validate complete control frames before actuation and advance each world once."""
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Protocol
+from typing import Mapping, Protocol
 import numpy as np
 
 
@@ -24,7 +24,7 @@ class OutputReceipt:
 
 
 class RobotOutput:
-    def __init__(self,backends):
+    def __init__(self,backends: Mapping[str, RobotBackend]):
         self.backends=dict(backends)
         if not self.backends or any(k!=v.spec.robot_id for k,v in self.backends.items()):
             raise ValueError('One backend is required for each explicit target')

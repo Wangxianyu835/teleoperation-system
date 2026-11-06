@@ -4,17 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
-import torch
 import torch.nn as nn
 
-from teleoperation.contracts.validation import HAND_SIDES, validate_retarget_input
-from teleoperation.contracts.coordinates import (
-    COORDINATE_ALIGNMENT, validate_coordinate_alignment,
-    validate_landmark_contract,
-    WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
-)
-from .angles import canonical_to_native_angles
 
 
 def build_hand_model(model_kwargs: dict[str, Any]) -> nn.Module:

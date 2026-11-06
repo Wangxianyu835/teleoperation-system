@@ -1,6 +1,5 @@
 """One observation fans out to independent per-target command producers."""
 from dataclasses import replace
-import numpy as np
 from teleoperation.contracts.robot_control import RobotPartCommand
 from teleoperation.contracts.observations import RawTeleopObservation
 from teleoperation.applications.hand_processing import UnifiedHandPipeline

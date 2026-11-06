@@ -2,11 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import h5py
 import numpy as np
-from teleoperation.contracts.coordinates import (
-    COORDINATE_FRAME, validate_coordinate_alignment, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
-    WORLD_LANDMARK_SPACE, NORMALIZED_LANDMARK_SPACE, palm_local_metadata, validate_landmark_contract,
-    coordinate_frame_for_alignment, is_world_alignment,
-)
+from teleoperation.contracts.coordinates import COORDINATE_FRAME, validate_coordinate_alignment, WORLD_LANDMARK_SPACE, NORMALIZED_LANDMARK_SPACE, palm_local_metadata, validate_landmark_contract, coordinate_frame_for_alignment, is_world_alignment
 
 _SIDE_KEYS = {"left": "left_hand_keypoints", "right": "right_hand_keypoints"}
 

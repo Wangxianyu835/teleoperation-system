@@ -159,7 +159,7 @@ class NativeCommandTests(unittest.TestCase):
             for index in range(10):
                 # Host clock has no role when recording timestamps are passed.
                 from unittest.mock import patch
-                with patch("teleoperation.simulation.hand_commands.time.monotonic", return_value=index*host_interval):
+                with patch("teleoperation.retargeting.hand.joint_commands.time.monotonic", return_value=index*host_interval):
                     before = pipeline.previous[key].copy()
                     named = pipeline.update(result, timestamp=index/30).named_positions()
                 after = pipeline.previous[key]

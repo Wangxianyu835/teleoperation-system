@@ -10,19 +10,12 @@ from collections.abc import Mapping
 from contextlib import nullcontext
 import json
 import math
-import time
 from pathlib import Path
 
 import numpy as np
 
 from teleoperation.simulation.arm_ik import ARM_FORCE, ELBOW_PASS_ORDERS, PyBulletArmIK
-from teleoperation.simulation.arm_profiles import (
-    SIDES,
-    describe,
-    loadable_robots,
-    profile_for,
-    table,
-)
+from teleoperation.simulation.arm_profiles import SIDES, loadable_robots, table
 
 #: Hard ceiling for each target step in metres.
 SLEW_MAX_STEP_M = 0.04
@@ -432,11 +425,6 @@ class ArmSceneDriver:
                     out.setdefault(robot_type, {})[side] = measure(adapter, side)
         return out
 
-    def arm_values(self, sides=None) -> dict:
-        """``{robot: {side: {joint: angle}}}`` of the driven arms (for reports)."""
-        wanted = self.sides if sides is None else tuple(sides)
-        return {robot_type: {side: adapter.joint_values(side) for side in wanted}
-                for robot_type, adapter in self.ik.items()}
 
     def hold_drift(self) -> dict:
         """Worst drift (rad) of the joints the scene still holds: legs, waist, head.
@@ -693,5 +681,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

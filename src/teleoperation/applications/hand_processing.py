@@ -1,13 +1,8 @@
 """Explicit application composition of acquisition, preprocessing and buffering."""
 from teleoperation.contracts.observations import RawHandFrame
-from teleoperation.contracts.hand import CanonicalHandFrame, HandWindow
+from teleoperation.contracts.hand import CanonicalHandFrame
 from teleoperation.retargeting.hand.temporal import TemporalBuffer
-from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
-from teleoperation.contracts.coordinates import (
-    COORDINATE_ALIGNMENT, PALM_LOCAL_COORDINATE_ALIGNMENT,
-    validate_coordinate_alignment,
-    PALM_LENGTH_PROFILE,
-)
+from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
 from teleoperation.retargeting.hand.processing import MediaPipePalmLocalProcessor
 import numpy as np
 
