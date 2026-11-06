@@ -18,28 +18,22 @@ def _sides(hand):
 
 
 def _selection(args):
-    """Validate native target weights before opening a device or GUI."""
-    from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
-    from teleoperation.retargeting.hand.device import resolve_device
+    """Validate source/CLI options before constructing a shared native backend."""
+    from .hand_backend import build_hand_retargeter_from_specs
     if args.input_profile not in (PALM_LENGTH_PROFILE, UNIFIED_HAND_PROFILE):
         raise ValueError('Hand control requires a declared palm-length window profile')
-    sides = _sides(args.hand)
-    specs = {(args.hand_model, side): load_hand_spec(args.hand_model, side) for side in sides}
+    specs = {(args.hand_model, side): load_hand_spec(args.hand_model, side) for side in _sides(args.hand)}
     if args.backend == 'dex':
         if any(getattr(args, name, None) is not None for name in ('checkpoint', 'left_checkpoint', 'right_checkpoint')):
             raise ValueError('Checkpoint arguments only apply to --backend nn')
-        from teleoperation.retargeting.hand.dex_native import NormalizedDexRetargeter
-        return specs, NormalizedDexRetargeter([args.hand_model], sides)
-    if args.backend != 'nn':
+        checkpoints = None
+    elif args.backend == 'nn':
+        if args.checkpoint is None or any(getattr(args, name, None) is not None for name in ('left_checkpoint', 'right_checkpoint')):
+            raise ValueError('NN requires --checkpoint (exactly one shared checkpoint for the selected target)')
+        checkpoints = {args.hand_model: args.checkpoint}
+    else:
         raise ValueError('Hand backend must be nn or dex, independently of source')
-    if args.checkpoint is None or any(getattr(args, name, None) is not None for name in ('left_checkpoint', 'right_checkpoint')):
-        raise ValueError('NN requires --checkpoint (exactly one shared checkpoint for the selected target)')
-    from teleoperation.retargeting.hand.checkpoint import load_shared_joint_checkpoint
-    from teleoperation.retargeting.hand.interface import SharedJointNNRetargeter
-    device = resolve_device(args.device)
-    canonical_spec = load_hand_spec(args.hand_model, 'right')
-    model, _ = load_shared_joint_checkpoint(args.checkpoint, canonical_spec, device)
-    return specs, SharedJointNNRetargeter(specs, model, device, canonical_spec=canonical_spec)
+    return specs, build_hand_retargeter_from_specs(specs, args.backend, checkpoints=checkpoints, device=args.device)
 
 
 def _commands(args, specs, scene=None):

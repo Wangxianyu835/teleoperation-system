@@ -131,12 +131,12 @@ assert read_arrays(root/'frames.npz')['timestamps'].tolist() == [0.,1.]
 
 **Interfaces:** hand_backend新增`build_hand_retargeter_from_specs(specs, backend, *, checkpoints=None, device='cpu')`，消费HandKey→HandSpec及每模型一份shared权重，返回具备specs/reset/retarget的现有retargeter组合。保持build_camera_retargeter和build_target_hand_retargeters公开签名。
 
-- [ ] 设置cleanupBatch=share-hand-backend-construction并建检查点。
-- [ ] 先加行为对照：固定seed/同shared checkpoint、同specs和同HandWindow，通过旧公开入口与新工厂得到相同positions/valid/hand identity。每个模型权重只加载一次；左右侧共用canonical-right模型。dex同环境比对，arms-only零模型构造。
-- [ ] 先运行新测试确认因工厂尚未定义失败，再迁移共同的模型选择、device解析、shared加载和NN/dex实例化。
-- [ ] hand_control._selection保留source/profile及旧单权重选项校验；dual.load_camera_hand_retargeter保留L21两侧和调用签名；旧camera入口保留显式camera profile。它们只把完成预检的规格交给工厂，不删除边界限制。
-- [ ] 不合并手部命令后处理、碰撞guard或TransHandR专用模型加载；不把CameraRetargeters改名扩散到所有文件。本批先消除实现重复。
-- [ ] 运行test_normalized_retargeters、test_hand_control_cli、test_hand_control_h5、test_mediapipe_tron2a、test_unified_hand_inputs、test_robot_control_session和全套；独立dex环境补test_normalized_dex及test_unified_hand_inputs。提交`refactor: share native hand backend construction`。
+- [x] 设置cleanupBatch=share-hand-backend-construction并建检查点。
+- [x] 先加行为对照：固定seed/同shared checkpoint、同specs和同HandWindow，通过旧公开入口与新工厂得到相同positions/valid/hand identity。每个模型权重只加载一次；左右侧共用canonical-right模型。dex同环境比对，arms-only零模型构造。
+- [x] 先运行新测试确认因工厂尚未定义失败，再迁移共同的模型选择、device解析、shared加载和NN/dex实例化。
+- [x] hand_control._selection保留source/profile及旧单权重选项校验；dual.load_camera_hand_retargeter保留L21两侧和调用签名；旧camera入口保留显式camera profile。它们只把完成预检的规格交给工厂，不删除边界限制。
+- [x] 不合并手部命令后处理、碰撞guard或TransHandR专用模型加载；不把CameraRetargeters改名扩散到所有文件。本批先消除实现重复。
+- [x] 运行test_normalized_retargeters、test_hand_control_cli、test_hand_control_h5、test_mediapipe_tron2a、test_unified_hand_inputs、test_robot_control_session和全套；独立dex环境补test_normalized_dex及test_unified_hand_inputs。提交`refactor: share native hand backend construction`。
 
 ## Task 4：预览与场景辅助各归其位
 
@@ -205,3 +205,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 1：pre 77ecb0bce0a1a5bbfb93d1a9fded43f7d572168f；tag checkpoint-20261106-2058-remove-unused-members；删除15个无调用函数/方法及闲置导入。相关40项、间接依赖补测25项通过；最终完整589项，586通过、3项可选dex依赖跳过。PALM_LENGTH_ALIGNMENT有效再导出保留；旧测试时钟补丁迁移到实际JointCommandPipeline归属模块。
 
 - Task 2：pre 479226ee8401a8d206b8605d446bf280630a67db；tag checkpoint-20261106-2112-merge-thin-modules；5个薄文件迁移后删除、新增array_recording，源码净减少4个文件；相关101项通过；完整590项，587通过、3项dex依赖跳过。28命令保持，CLI静态help和数组读取/文件释放通过。
+
+- Task 3：pre b350d15b7f5947be46fb632c68abdffb47782681；tag checkpoint-20261106-2120-share-hand-backend；新增tests/test_hand_backend_factory.py覆盖共享加载/跨入口数值/纯臂零模型/混合侧dex等价。相关93项（3跳过）；完整594项，590通过、4项dex依赖跳过（含新增dex工厂等价用例）；独立dex20项全部通过。算法、输入profile、shared校验和后处理未改。

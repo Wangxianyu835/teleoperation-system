@@ -86,11 +86,9 @@ class Tron2ADualArmController:
 def load_camera_hand_retargeter(checkpoint, device="cpu"):
     """Load only the canonical shared native L21 camera checkpoint."""
     from teleoperation.robots.hand_spec import load_hand_spec
-    from teleoperation.retargeting.hand.checkpoint import load_shared_joint_checkpoint
-    from teleoperation.retargeting.hand.interface import SharedJointNNRetargeter
+    from .hand_backend import build_hand_retargeter_from_specs
     specs = {("l21", side): load_hand_spec("l21", side) for side in ("left", "right")}
-    model, _ = load_shared_joint_checkpoint(checkpoint, specs[("l21", "right")], device)
-    return SharedJointNNRetargeter(specs, model, device)
+    return build_hand_retargeter_from_specs(specs, 'nn', checkpoints={'l21': checkpoint}, device=device)
 
 
 class DualTeleoperator:

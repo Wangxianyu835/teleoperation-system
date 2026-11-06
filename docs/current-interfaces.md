@@ -32,7 +32,7 @@ RGB与Vision Pro经各自设备适配器进入`hand_palm_length_window3_v1`，�
 |固定VR标定组件|hand dex-calibrate和devtools/dex_native_acceptance.py仍使用DexInputAdapter、DexCalibration、DexNativeRetargeter及相关辅助函数；正式NN/dex控制无需固定标定|
 |相机pipeline与camera profile|MediaPipePalmLocalPipeline供三机器人和TRON2A预处理使用；camera profile还用于训练数据规范，不能直接删除|
 |双臂legacy与normalized诊断分支|保留为数值诊断、旧结果格式和几何验收用途；整机执行边界已转发到统一输出|
-|模型构造重复|hand_control._selection、hand_backend.build_camera_retargeter、dual.load_camera_hand_retargeter分别服务当前入口|
+|模型构造|hand_backend.build_hand_retargeter_from_specs统一实例化NN/dex；各入口保留来源、profile和权重选项校验|
 |GBK扫描工具|devtools与诊断CLI各有入口，尚未合并|
 |录制与动作验证|活跃H5格式用途不同；PartialLimbVector仍用于拒绝不完整机器人动作|
 |环境工具与路径接口|preflight.ps1仍需维护；training_run_directory当前侧参数行为保留|
