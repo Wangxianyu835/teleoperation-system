@@ -226,16 +226,16 @@ RGB和Vision Pro的正式dex均无需NN权重或人工掌长标定。将`g1`换�
 
 ```powershell
 # 默认只显示并控制一台完整机器人
-& $python -m teleoperation robot control --robot g1 --source camera --backend dex
+& $dexPython -m teleoperation robot control --robot g1 --source camera --backend dex
 
 # 只有右侧机械臂，场景中不加载完整身体
-& $python -m teleoperation robot control --robot g1 --parts arms --side right --source camera --backend dex
+& $dexPython -m teleoperation robot control --robot g1 --parts arms --side right --source camera --backend dex
 
 # 需要对比时才显式打开多机器人
-& $python -m teleoperation robot control --robots h1_2 gr1_t2 g1 --source camera --backend dex
+& $dexPython -m teleoperation robot control --robots h1_2 gr1_t2 g1 --source camera --backend dex
 
 # 录制统一接受命令；回放不重新推理或求解
-& $python -m teleoperation robot control --robot g1 --input-body $body --parts both --record-results outputs/robot_commands.h5
+& $dexPython -m teleoperation robot control --robot g1 --input-body $body --parts both --record-results outputs/robot_commands.h5
 & $python -m teleoperation robot replay --robot g1 --input outputs/robot_commands.h5 --headless
 ```
 
@@ -256,13 +256,13 @@ $armSession = Get-Date -Format 'yyyyMMdd_HHmmss'
 $body = "outputs/smplerx/$armSession/body.h5"
 
 & $dexPython -m teleoperation.simulation.realtime_teleop `
-  --backend dex --side both --arm-map posture --arm-calibrate-mode hold `
+  --robot g1 --backend dex --side both --arm-map posture --arm-calibrate-mode hold `
   --camera-index $camera --model-asset-path $handAsset `
   --dump-body $body --report "outputs/smplerx/$armSession/live.json"
 
 # 无相机、无 S32 推理，按原始采集间隔回放。
 & $dexPython -m teleoperation.simulation.realtime_teleop `
-  --input-body $body --backend dex --headless --no-preview `
+  --robot g1 --input-body $body --backend dex --headless --no-preview `
   --report "outputs/smplerx/$armSession/replay.json"
 
 & $python -m teleoperation.applications.arm_validation `
@@ -319,3 +319,9 @@ TRON2A 的 `dual camera --with-hands` 使用一份新版 L21 shared checkpoint�
 ```
 
 软件回归和静态图片推理不代替真实相机、头显、操作者变化与实体硬件连续验收。
+
+## 9. 代码维护入口
+
+机器人正式控制与回放使用`robot control/replay`；手部训练、导出和独立手场景继续使用`hand`命令。各入口的实现归属、保留诊断工具和录制格式见[代码归属表](docs/current-interfaces.md#当前代码归属)。本次清理没有改变重定向算法或训练数据契约。
+
+Windows三个启动脚本仍保留给既有IDE配置使用，共用`devtools/windows_runtime.py`，用于旧相机预览/诊断；必须显式`--robot`，`--check`核对当前后端依赖及SMPLer-X路径。手/臂正式验收推荐上面的统一机器人入口。

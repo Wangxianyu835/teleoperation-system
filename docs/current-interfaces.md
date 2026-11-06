@@ -100,3 +100,41 @@ flowchart LR
 ## 2026-11-06 代码归并
 
 新一轮清理只删除无消费者片段并归并重复实现。整机回放以load_robot_recording和RobotRecording.iter_frames为正式读取入口，保留每帧receipt；退出未使用的iter_robot_commands和DualTeleoperator.produce_parts包装。KalmanSmoother继续提供在线reset/step；未使用的离线序列包装退出。MediaPipeCameraWorkflow.next_input公开输入接口仍保留。实施范围和逐批验证见[代码归并计划](superpowers/plans/2026-11-06-code-consolidation.md)。
+
+## 当前代码归属
+
+|使用场景|入口/应用|唯一维护实现或边界|
+|---|---|---|
+|统一机器人控制|robot control → applications/robot_control.py、robot_session.py|robot_commands组装；simulation/robot_output提交；robot_part_scene只加载所选目标/部位|
+|整机命令回放|robot replay → robot_control.replay|data/robot_command_recording，直接提交命令与记录步数，不构造求解会话|
+|独立手控制/导出/回放|hand control/export、replay hand-joints → applications/hand_control.py|共同手窗口、JointCommandPipeline、hand_joint_results_v1；保留L21 guard与独立场景|
+|手模型构造|applications/hand_backend.py|build_hand_retargeter_from_specs；入口保留来源/profile/权重选项校验|
+|手型/机器人标识|contracts/constants.py|HAND_MODELS、ROBOT_TARGETS；CLI help不引入数值库|
+|手部对齐与检查|hand align/inspect|直接路由hand_align.run/hand_inspect.run，不再经hand.py转发|
+|TRON2A相机/标定/导出|mediapipe_tron2a.py、dual.py、dual_export.py|保留安全标定和48D格式；通用工厂加载shared L21；未使用的produce_parts包装退出|
+|显式上游复现|hand vr --backend transhandr|visionpro_hand/visionpro_processing/transhandr_vr，算法和来源证据独立保留|
+|相机预览|applications/camera_preview.py、simulation/arm_preview.py|CameraPreview与ArmCameraPreview；后者是现用构造入口，删除无调用的旧build_preview包装|
+|帧率与退出辅助|applications/realtime_support.py|统计和有界清理，各场景不再各复制|
+|PyBullet初始化|simulation/urdf_loader.py|prepare_physics按client_id等待初始化；场景保留各自装载职责|
+|旧相机诊断|simulation/realtime_teleop.py|保留HUD、诊断和调参，通过共同输出提交；目标必须显式选择|
+|Windows诊断启动|devtools/run_realtime*.py|共用windows_runtime，保留三个IDE入口；重启原脚本，不切换成另一工作流|
+|GBK检查|tools check-gbk-safe、devtools/check_gbk_safe.py|同一diagnostics扫描器，preflight只运行一次；跳过外部/输出树，不跳过自有robots源码|
+|绘图等比例范围|tools/plotting.py|set_equal_axes显式保留调用方padding与zero_radius|
+|NPY/NPZ观察记录读取|data/array_recording.py|只合并原有读取，不转换成整机或训练schema|
+|任务仿真与基准|sim run → applications/benchmark.py、simulation.py|环境、任务注册、Sensors/Recorder仍有消费者；不等同真实遥操作任务成绩|
+
+最终复核额外删除旧build_preview和PREVIEW_HINT_HANDS：仅被旧说明提及，没有运行时/测试/开发工具调用。CameraPreview及实际使用的build_arm_preview完整保留。本轮没有合并不同录制schema、可微FK与NumPy URDF几何，也没有修改TransHandR数值。历史清理/上游数值报告保留历史日期，不能当作本次重新执行的设备验收。
+
+### 2026-11-06归并后的软件验证
+
+|项目|实际结果|
+|---|---|
+|主环境完整unittest|606项，602通过、4项因dex依赖跳过；152.212秒|
+|独立dex环境|33项全部通过，无跳过；覆盖新工厂、RGB/VR共用后端、机器人会话、比较、显示和机械臂稳定性|
+|入口|28个注册handler均可定位，28条--help在无site-packages模式返回0|
+|静态解析|180个源码、81个测试、28个Python开发工具、8个外部工作进程文件全部通过|
+|数值保留核对|14个涉及数值处理的改动文件中，208个保留函数体AST与清理前一致|
+|文档与检查|Markdown本地文件链接无断链，GBK严格扫描通过；PowerShell预检脚本语法通过|
+|边界|未执行真实相机、头显或实体机器人；未重新生成历史上游数值等价报告；未推送|
+
+本轮源文件净减少2个（182→180）；移除16个无消费者函数/方法并集中重复实现。逐批检查点、测试与保留原因见[归并执行记录](superpowers/plans/2026-11-06-code-consolidation.md#执行记录)。

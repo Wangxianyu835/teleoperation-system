@@ -181,13 +181,13 @@ assert read_arrays(root/'frames.npz')['timestamps'].tolist() == [0.,1.]
 
 **Files:** README.md、docs/current-interfaces.md、docs/unified-hand-input.md、本plan/spec；给2026-11-04两份相关历史计划加后续整理说明。
 
-- [ ] 设置cleanupBatch=verify-code-consolidation并建检查点。
-- [ ] 新增“命令→实际应用→算法/数据模块”表，注明正式机器人入口、独立手/训练、旧诊断和显式上游复现，不把旧诊断写成无用代码。
-- [ ] 复做182文件级导入/符号/动态入口审计；确认删除对象没有当前代码、脚本、测试或现行用法文档残留；历史计划中的清单保留为历史记录。
-- [ ] 对全部现存Python做AST解析；逐个注册命令定位handler、检查--help，并复查help未引入NumPy/Torch/相机重依赖。
-- [ ] 主环境完整unittest；dex环境运行test_normalized_dex、test_normalized_retargeters、test_unified_hand_inputs、test_robot_control_session、test_robot_comparison、test_robot_final_acceptance、test_arm_display_stability；检查没有新增意外skip。
-- [ ] 必须保留test_arm_display_stability的缺失输入零IK、单侧独立、异常渲染恢复，以及录制回放/parts显示矩阵检查。相机和真实头显未实测时单列“未实测”，不据离线测试宣称硬件通过。
-- [ ] 记录实际删改文件、前后源码数量、各批hash/tag、测试pass/skip/fail和未合并部分；提交`docs: document consolidated code ownership and entry points`，不push。
+- [x] 设置cleanupBatch=verify-code-consolidation并建检查点。
+- [x] 新增“命令→实际应用→算法/数据模块”表，注明正式机器人入口、独立手/训练、旧诊断和显式上游复现，不把旧诊断写成无用代码。
+- [x] 复做182文件级导入/符号/动态入口审计；确认删除对象没有当前代码、脚本、测试或现行用法文档残留；历史计划中的清单保留为历史记录。
+- [x] 对全部现存Python做AST解析；逐个注册命令定位handler、检查--help，并复查help未引入NumPy/Torch/相机重依赖。
+- [x] 主环境完整unittest；dex环境运行test_normalized_dex、test_normalized_retargeters、test_unified_hand_inputs、test_robot_control_session、test_robot_comparison、test_robot_final_acceptance、test_arm_display_stability；检查没有新增意外skip。
+- [x] 必须保留test_arm_display_stability的缺失输入零IK、单侧独立、异常渲染恢复，以及录制回放/parts显示矩阵检查。相机和真实头显未实测时单列“未实测”，不据离线测试宣称硬件通过。
+- [x] 记录实际删改文件、前后源码数量、各批hash/tag、测试pass/skip/fail和未合并部分；提交`docs: document consolidated code ownership and entry points`，不push。
 
 ## 预计结果与回退
 
@@ -213,3 +213,13 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 5：pre a372c915cfc6c121d6c9ac0bd69087eb63b31d25；tag checkpoint-20261106-2139-merge-devtools；GBK脚本/CLI共用扫描，preflight只执行一次；扫描覆盖自有robots源码、跳过外部/生成目录；两个绘图padding/零跨度默认值保持。相关15项、实际仓库GBK strict与PowerShell解析通过；完整600项，596通过、4项dex依赖跳过。
 
 - Task 6：pre 8196844ab9bc57e384d64295d647cf1d3fc1fd02；tag checkpoint-20261106-2146-windows-launchers；windows_runtime集中准备/体检/报告及启动流程；3个脚本保留，重启原脚本并保留参数/退出码，按实际后端选择可用解释器；废弃Pose/E盘/默认三台提示退出。原报告测试迁移到共享模块，相关62项通过；完整606项，602通过、4项dex依赖跳过。
+
+最终审计补充：Task 4曾按原清单移动build_preview，后续精确符号复核确认它只被旧docstring提及，实际入口均调用build_arm_preview；Task 7删除该无调用包装及PREVIEW_HINT_HANDS，并同步描述。全轮无调用函数/方法删除数因此为16，另有重复实现归并。
+
+- Task 7：pre f131189c35995d36365b1414274bd2b0517a7b1a；tag checkpoint-20261106-2154-verify-consolidation；针对性43项通过；最终完整606项，602通过、4项dex依赖跳过，152.212秒；独立dex33项全部通过，无跳过。28个handler可定位、28条无site-packages help返回0。源码180个、测试81个（76个test模块）、Python开发工具28个、外部工作进程8个全部AST解析通过；Markdown本地文件链接无断链；GBK strict通过。涉及数值模块的14个改动文件，208个保留函数体AST与782712f一致。未启动真实相机/头显/实体机器人；未重新生成上游数值等价报告。
+
+## 最终状态
+
+七批均完成；本地逐批提交，不推送。源码从182个文件到180个，薄文件先迁移后退出5个，新增3个职责明确的源码模块。devtools新增1个共同Windows运行支持模块，三个原启动脚本保留。删除16个无消费者函数/方法，另合并重复初始化、扫描和绘图实现。新增6个行为测试模块，合计17项新测试；主环境新增1项可选dex用例，在独立环境已通过。旧手/身体/48D/整机H5、任务注册、可微FK/NumPy几何和TransHandR专用流程继续保留，各有实际消费者。
+
+日志位于本机临时目录：consolidation-final-full.log、consolidation-final-dex.log、consolidation-final-static.json、consolidation-numeric-audit.json、consolidation-gbk.log。测试通过后只追加文档执行记录，未继续改动已测试的源码。

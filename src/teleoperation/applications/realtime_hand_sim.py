@@ -20,7 +20,6 @@ URDF_NAME = "linkerhand_l21_{side}.urdf"
 ASSET_NAME = "hand_landmarker.task"
 # 双手并排摆位；单只手时放在原点前方。
 BASE_POSITIONS = {"left": (-0.15, 0.0, 0.3), "right": (0.15, 0.0, 0.3)}
-# 摄像头窗口：标题、指尖下标（复用 tools/plotting 的 COLORS 与 SOURCE_EDGES 连线）。
 
 
 def resolve_model_asset(path: Path | None) -> Path:

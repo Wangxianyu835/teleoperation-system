@@ -86,3 +86,6 @@ python -m teleoperation hand vr --backend transhandr --input-h5 datasets/raw/vis
 - 实际本地TransHandR上游/真实权重：左右输入与原始输出最大差异均0，来源hash见等价报告。
 
 无调用代码清理后的回归结果单独记录在[当前接口与验收](current-interfaces.md)，以上历史数字不作为本次清理的新验证。
+
+
+2026-11-06代码归并：各入口的NN/dex实例构造统一到applications/hand_backend.build_hand_retargeter_from_specs；设备适配、三帧掌长处理、左右shared语义和命令后处理保持原实现。独立手与整机录制格式继续分开。当前归属和本轮软件验证结果见[当前接口](current-interfaces.md#当前代码归属)。本轮不重新生成历史上游数值等价报告。

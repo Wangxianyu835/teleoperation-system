@@ -13,13 +13,10 @@ PREVIEW_TIPS = (4, 8, 12, 16, 20)
 
 
 PREVIEW_HINT_ROBOTS = (
-    "two windows: PyBullet shows H1-2 / GR1-T2 / G1 side by side with their native "
+    "two windows: PyBullet shows the explicitly selected robots with their native "
     "hands, the camera window shows your hand; press q/Esc in the camera window to stop.")
 
 
-PREVIEW_HINT_HANDS = (
-    "two windows: PyBullet shows the L21 hand, the camera window shows your hand; "
-    "press q/Esc in the camera window to stop.")
 
 
 class _PreviewCapture:
@@ -247,30 +244,3 @@ class CameraPreview:
             except self._cv2.error:
                 pass
         self.show = False
-
-
-def build_preview(args, workflow, sides):
-    """按参数建预览并打印它到底开没开窗；不需要 / 装不上时返回 ``None``。"""
-    want_window = not args.headless and not args.no_preview
-    if not want_window and not args.preview_dump_dir:
-        return None
-    sink = attach_preview_capture(workflow)
-    if sink is None:
-        print("note: the input layer does not expose a camera frame; preview skipped",
-              flush=True)
-        return None
-    preview = CameraPreview(sink, sides, show_window=want_window,
-                            mirror=not args.preview_no_mirror,
-                            dump_dir=args.preview_dump_dir,
-                            dump_frames=args.preview_dump_frames,
-                            window_pos=args.preview_window_pos,
-                            topmost=not args.preview_no_topmost)
-    dump = (""
-            if preview.dump_dir is None
-            else f", dumping first {preview.dump_frames} frames to {preview.dump_dir}")
-    print(f"camera window: {'on' if preview.show else 'off'}"
-          f"{' (mirrored)' if preview.mirror else ''}{dump}"
-          f", title={preview.window_name!r}"
-          f"{'' if preview.window_pos is None else f', position={preview.window_pos}'}",
-          flush=True)
-    return preview

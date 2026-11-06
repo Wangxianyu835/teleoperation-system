@@ -352,3 +352,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 |6 最终验收|保存本执行记录的提交|checkpoint-20261104-0125-verify-unused-cleanup|
 
 主环境跳过的3项均因缺少dex_retargeting；独立环境已执行同一批可选用例，全部通过。软件/合成输入与离线回放不代表真实相机、头显或实体机器人验收。本次没有运行真实设备，没有重跑上游数值报告，没有推送或合并分支。
+
+后续整理说明（2026-11-06）：保留分支中的手后端构造、GBK扫描和场景辅助已按新归并计划集中维护；活跃诊断、旧数据格式和TransHandR未删除。此文件的清理清单和测试数字属于当时执行记录。
