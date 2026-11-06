@@ -23,15 +23,9 @@ from teleoperation.applications.hand_processing import MediaPipePalmLocalPipelin
 from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
 from teleoperation.applications.hand_backend import build_camera_retargeter
 from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
-from teleoperation.applications.realtime_hand_sim import (
-    PREVIEW_HINT_ROBOTS,
-    _describe,
-    _drain_in_background,
-    _loop_fps,
-    _median_interval,
-    _window_pos,
-    resolve_model_asset,
-)
+from teleoperation.applications.camera_preview import PREVIEW_HINT_ROBOTS, _window_pos
+from teleoperation.applications.realtime_support import _describe, _drain_in_background, _loop_fps, _median_interval
+from teleoperation.applications.realtime_hand_sim import resolve_model_asset
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
 from teleoperation.inputs.smplerx import SmplerXClient
 from teleoperation.inputs.smplerx_process import SmplerXWorkerTransport
@@ -599,11 +593,6 @@ def _save_arm_frames(path, arrays) -> Path:
     return target
 
 
-def rigid_elbow_robots(per_side) -> set:
-    """Select robots whose posture mapping produces a rigid elbow/wrist target pair."""
-    return {name for name, target in per_side.items()
-            if getattr(target, "elbow", None) is not None
-            and (target.info or {}).get("elbow_target") == "posture"}
 
 
 def run(args) -> int:

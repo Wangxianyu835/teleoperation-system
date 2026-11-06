@@ -334,7 +334,7 @@ def main(argv: list[str]) -> int:
     if check:
         return run_check(want_window=wants_window(argv))
 
-    from teleoperation.applications.realtime_hand_sim import PREVIEW_WINDOW
+    from teleoperation.applications.camera_preview import PREVIEW_WINDOW
     from teleoperation.simulation.realtime_teleop import build_parser
     from teleoperation.simulation.realtime_teleop import main as sim_main
 

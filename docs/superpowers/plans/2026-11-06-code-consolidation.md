@@ -144,12 +144,12 @@ assert read_arrays(root/'frames.npz')['timestamps'].tolist() == [0.,1.]
 
 **Interfaces:** camera_preview持有现有PREVIEW_WINDOW、CameraPreview、_PreviewCapture、attach_preview_capture、build_preview、_desktop_size/_window_pos。realtime_support持有现有_describe、_loop_fps、_median_interval、RELEASE_TIMEOUT_SECONDS、_drain_in_background。urdf_loader新增`prepare_physics(call, positional, *, client_id, timeout=15.0)`。
 
-- [ ] 设置cleanupBatch=share-preview-and-scene-support并建检查点。
-- [ ] 预览代码和运行辅助按原函数体移动；调用方改为从真实归属文件导入，删除旧文件的间接再导出，避免长出新兼容链。RealtimeL21Scene、resolve_model_asset和现被VisionPro使用的build_scene继续保留在原场景文件。
-- [ ] 将两个逐语句相同的_prepare_physics实现合成urdf_loader.prepare_physics；重试间隔、超时、报错内容不变，两个场景显式传client_id。
-- [ ] 将realtime_teleop.rigid_elbow_robots删除，消费者/测试改用applications.camera_scene_arm.rigid_elbow_robots，保留原集合行为。
-- [ ] 共享初始化新增行为测试：第一次调用抛Not connected、第二次成功；已超时则RuntimeError；不同client_id不得混用。预览沿用现有mock CV2/截图回归；不重新设计UI。
-- [ ] 运行test_mediapipe_realtime、test_arm_preview、test_native_hand_replay、test_transhandr_vr、test_arm_ik_multi_robot、test_arm_display_stability及全套；提交`refactor: centralize preview and simulation setup helpers`。
+- [x] 设置cleanupBatch=share-preview-and-scene-support并建检查点。
+- [x] 预览代码和运行辅助按原函数体移动；调用方改为从真实归属文件导入，删除旧文件的间接再导出，避免长出新兼容链。RealtimeL21Scene、resolve_model_asset和现被VisionPro使用的build_scene继续保留在原场景文件。
+- [x] 将两个逐语句相同的_prepare_physics实现合成urdf_loader.prepare_physics；重试间隔、超时、报错内容不变，两个场景显式传client_id。
+- [x] 将realtime_teleop.rigid_elbow_robots删除，消费者/测试改用applications.camera_scene_arm.rigid_elbow_robots，保留原集合行为。
+- [x] 共享初始化新增行为测试：第一次调用抛Not connected、第二次成功；已超时则RuntimeError；不同client_id不得混用。预览沿用现有mock CV2/截图回归；不重新设计UI。
+- [x] 运行test_mediapipe_realtime、test_arm_preview、test_native_hand_replay、test_transhandr_vr、test_arm_ik_multi_robot、test_arm_display_stability及全套；提交`refactor: centralize preview and simulation setup helpers`。
 
 ## Task 5：合并GBK扫描器和绘图重复函数
 
@@ -207,3 +207,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 2：pre 479226ee8401a8d206b8605d446bf280630a67db；tag checkpoint-20261106-2112-merge-thin-modules；5个薄文件迁移后删除、新增array_recording，源码净减少4个文件；相关101项通过；完整590项，587通过、3项dex依赖跳过。28命令保持，CLI静态help和数组读取/文件释放通过。
 
 - Task 3：pre b350d15b7f5947be46fb632c68abdffb47782681；tag checkpoint-20261106-2120-share-hand-backend；新增tests/test_hand_backend_factory.py覆盖共享加载/跨入口数值/纯臂零模型/混合侧dex等价。相关93项（3跳过）；完整594项，590通过、4项dex依赖跳过（含新增dex工厂等价用例）；独立dex20项全部通过。算法、输入profile、shared校验和后处理未改。
+
+- Task 4：pre b7db89e852f65d5947fe64736d8d08d70b7b33de；tag checkpoint-20261106-2129-preview-scene-support；新camera_preview/realtime_support归属明确，迁移类/函数AST与原实现一致；初始化重试集中到urdf_loader；重复rigid_elbow_robots删除并迁移测试。相关96项通过；完整596项，592通过、4项dex依赖跳过。

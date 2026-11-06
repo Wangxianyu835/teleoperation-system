@@ -9,10 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from teleoperation.applications.realtime_hand_sim import (
-    CameraPreview,
-    attach_preview_capture,
-)
+from teleoperation.applications.camera_preview import CameraPreview, attach_preview_capture
 
 #: 窗口标题：与基线区分开，用户一眼能看出"这条预览额外画了手臂"。
 ARM_PREVIEW_WINDOW = "camera: hands + arms (q/Esc quits)"

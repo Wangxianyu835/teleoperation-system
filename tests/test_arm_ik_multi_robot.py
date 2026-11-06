@@ -701,7 +701,7 @@ class FieldArmDefaultsTests(unittest.TestCase):
 
     def test_only_the_posture_recipe_is_marked_as_a_rigid_elbow_pair(self):
         """入口只把「方向口径」那几台标成刚性的一对（斜坡整体平移的作用范围）。"""
-        from teleoperation.simulation.realtime_teleop import rigid_elbow_robots
+        from teleoperation.applications.camera_scene_arm import rigid_elbow_robots
 
         class Fake:
             def __init__(self, elbow, info):

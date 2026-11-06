@@ -6,7 +6,7 @@ Non-hand joints remain held until an arm driver explicitly takes control.
 
 from __future__ import annotations
 
-import time
+from teleoperation.simulation.urdf_loader import prepare_physics
 
 import numpy as np
 
@@ -76,7 +76,7 @@ class ThreeRobotHandScene:
             )
         if gui:
             p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0, physicsClientId=self.cid)
-        self._prepare_physics(p.setGravity, (0, 0, self.gravity))
+        prepare_physics(p.setGravity, (0, 0, self.gravity), client_id=self.cid)
         p.setTimeStep(PHYSICS_DT, physicsClientId=self.cid)
         p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=self.cid)
         p.loadURDF("plane.urdf", physicsClientId=self.cid)
@@ -183,24 +183,6 @@ class ThreeRobotHandScene:
             print(f"  抬离地面（避免初始穿透）：{lifted} m", flush=True)
         return lifted
 
-    def _prepare_physics(self, call, positional, timeout: float = 15.0) -> None:
-        """Call a PyBullet setup function, retrying until the server answers.
-
-        ``p.connect(p.GUI)`` returns before the GUI server is ready, so the first
-        call can raise ``Not connected to physics server``. DIRECT 客户端会立刻应答。
-        """
-        deadline = time.perf_counter() + timeout
-        while True:
-            try:
-                call(*positional, physicsClientId=self.cid)
-                return
-            except Exception as error:  # noqa: BLE001 - retried until the deadline
-                if time.perf_counter() >= deadline:
-                    raise RuntimeError(
-                        f"PyBullet did not answer within {timeout:.0f} s "
-                        f"({type(error).__name__}: {error}); rerun with --headless."
-                    ) from error
-                time.sleep(0.1)
 
     def frame_scene(self, view: str = "full"):
         """算三台整机的取景并（GUI 下）设置相机；返回相机距离。
