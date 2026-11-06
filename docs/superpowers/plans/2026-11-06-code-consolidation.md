@@ -170,12 +170,12 @@ assert read_arrays(root/'frames.npz')['timestamps'].tolist() == [0.,1.]
 
 **Interfaces:** 保留三个脚本入口供现有PyCharm启动配置使用；共同环境准备、解释器选择/重启、缓存、GUI/相机检查和报告读取放windows_runtime。该模块提供prepare_environment、redirect_caches、relaunch_with_canonical_python、run_check、summarise_camera_window，参数保持原调用语义。
 
-- [ ] 设置cleanupBatch=consolidate-windows-launchers并建检查点。
-- [ ] 为参数传递写测试：hands启动器添加--no-arms；普通arm启动器保留原参数；elbow启动器显式operator/off覆盖规则不变；调用方给的--robot、backend、worker路径、report不得丢失。
-- [ ] 把run_realtime_windows中共用的准备/检查函数移动到windows_runtime；另外两个启动器不再经“手启动器→臂启动器→肘启动器”获取公共环境。解释器重启必须指向原调用脚本，避免切错工作流。
-- [ ] 删除POSE_ASSET及“缺Pose模型只能动手”的错误检查，改为检查smplerx_defaults对应的worker/source/checkpoint/body-model路径；更新E盘/空壳venv/默认三台的错误提示。
-- [ ] 不悄悄切换成不支持预览诊断参数的新CLI。仍保留旧诊断入口；没有--robot时在打开设备前清晰报错，不替用户默认选三台。
-- [ ] 用mock subprocess/设备检查验证--check、重启退出码和参数传递；无需自动开启相机。运行test_cli_integration、test_arm_following、test_smplerx_assets、test_windows_launchers和全套；提交`refactor: consolidate Windows runtime launch support`。
+- [x] 设置cleanupBatch=consolidate-windows-launchers并建检查点。
+- [x] 为参数传递写测试：hands启动器添加--no-arms；普通arm启动器保留原参数；elbow启动器显式operator/off覆盖规则不变；调用方给的--robot、backend、worker路径、report不得丢失。
+- [x] 把run_realtime_windows中共用的准备/检查函数移动到windows_runtime；另外两个启动器不再经“手启动器→臂启动器→肘启动器”获取公共环境。解释器重启必须指向原调用脚本，避免切错工作流。
+- [x] 删除POSE_ASSET及“缺Pose模型只能动手”的错误检查，改为检查smplerx_defaults对应的worker/source/checkpoint/body-model路径；更新E盘/空壳venv/默认三台的错误提示。
+- [x] 不悄悄切换成不支持预览诊断参数的新CLI。仍保留旧诊断入口；没有--robot时在打开设备前清晰报错，不替用户默认选三台。
+- [x] 用mock subprocess/设备检查验证--check、重启退出码和参数传递；无需自动开启相机。运行test_cli_integration、test_arm_following、test_smplerx_assets、test_windows_launchers和全套；提交`refactor: consolidate Windows runtime launch support`。
 
 ## Task 7：最终核对与文档归档
 
@@ -211,3 +211,5 @@ git -c safe.directory=D:/2026/code/teleoperation-system-retargeting switch -c ro
 - Task 4：pre b7db89e852f65d5947fe64736d8d08d70b7b33de；tag checkpoint-20261106-2129-preview-scene-support；新camera_preview/realtime_support归属明确，迁移类/函数AST与原实现一致；初始化重试集中到urdf_loader；重复rigid_elbow_robots删除并迁移测试。相关96项通过；完整596项，592通过、4项dex依赖跳过。
 
 - Task 5：pre a372c915cfc6c121d6c9ac0bd69087eb63b31d25；tag checkpoint-20261106-2139-merge-devtools；GBK脚本/CLI共用扫描，preflight只执行一次；扫描覆盖自有robots源码、跳过外部/生成目录；两个绘图padding/零跨度默认值保持。相关15项、实际仓库GBK strict与PowerShell解析通过；完整600项，596通过、4项dex依赖跳过。
+
+- Task 6：pre 8196844ab9bc57e384d64295d647cf1d3fc1fd02；tag checkpoint-20261106-2146-windows-launchers；windows_runtime集中准备/体检/报告及启动流程；3个脚本保留，重启原脚本并保留参数/退出码，按实际后端选择可用解释器；废弃Pose/E盘/默认三台提示退出。原报告测试迁移到共享模块，相关62项通过；完整606项，602通过、4项dex依赖跳过。

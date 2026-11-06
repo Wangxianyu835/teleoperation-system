@@ -216,11 +216,11 @@ class BuildArmPreviewTests(unittest.TestCase):
         self.assertIsNone(build_arm_preview(preview_args(headless=False), workflow, SIDES))
 
 
-LAUNCHER = Path(__file__).resolve().parents[1] / "devtools" / "run_realtime_windows.py"
+LAUNCHER = Path(__file__).resolve().parents[1] / "devtools" / "windows_runtime.py"
 
 
 def load_launcher():
-    """按路径加载 ``devtools/run_realtime_windows.py``：它不在安装包里，不靠 sys.path。"""
+    """按路径加载 ``devtools/windows_runtime.py``：它不在安装包里，不靠 sys.path。"""
     spec = importlib.util.spec_from_file_location("run_realtime_windows_under_test", LAUNCHER)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -242,7 +242,7 @@ def summarise(module, report, want_window=True):
 
 
 class CameraWindowSummaryTests(unittest.TestCase):
-    """``devtools/run_realtime_windows.summarise_camera_window``：跑完回的那一句话。"""
+    """``devtools/windows_runtime.summarise_camera_window``：跑完回的那一句话。"""
 
     def setUp(self):
         self.launcher = load_launcher()
