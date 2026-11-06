@@ -910,6 +910,9 @@ class PyBulletArmIK:
         saved = [(index, self.p.getJointState(self.body, index,
                                             physicsClientId=self.cid)[:2])
                  for index in self.indices]
+        gui = self.p.getConnectionInfo(physicsClientId=self.cid).get('connectionMethod') == self.p.GUI
+        if gui:
+            self.p.configureDebugVisualizer(self.p.COV_ENABLE_RENDERING, 0, physicsClientId=self.cid)
         try:
             solution, target_orientation = self._ik_sequence(
                 side, world, elbow_world, orientation, arguments, elbow_pass, warm_start)
@@ -923,10 +926,14 @@ class PyBulletArmIK:
                     details = dict(self._sequence_details)
                 self.last_solution_cost[side] = self._branch_cost(side, world, elbow_world)
         finally:
-            for index, (position_before, velocity_before) in saved:
-                self.p.resetJointState(self.body, index, position_before,
-                                       targetVelocity=velocity_before,
-                                       physicsClientId=self.cid)
+            try:
+                for index, (position_before, velocity_before) in saved:
+                    self.p.resetJointState(self.body, index, position_before,
+                                           targetVelocity=velocity_before,
+                                           physicsClientId=self.cid)
+            finally:
+                if gui:
+                    self.p.configureDebugVisualizer(self.p.COV_ENABLE_RENDERING, 1, physicsClientId=self.cid)
         if orientation is not None:
             previous = {i: q for i, (q, _v) in saved}
             rejection = "pose_position_conflict" if details.get("position_fallback") else None

@@ -37,6 +37,10 @@ def _camera_arm_frame(bridge, driver, wrist_control, body, wrists, dt_s, *,
     neutral = bridge.elbow_bend_neutral() if bends is not None else None
     driver.update_slew(dt_s)
     for side in driver.sides:
+        # Missing body data must not even enter IK: its warm starts temporarily
+        # move the displayed robot although the accepted command stays held.
+        if not execute and (body is None or not body.valid.get(side, False)):
+            continue
         per_side = {name: values[side] for name, values in targets.items()}
         positions = {name: target.position for name, target in per_side.items() if target.position is not None}
         if len(positions) != len(per_side):
