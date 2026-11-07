@@ -57,6 +57,11 @@ class MediaPipeCameraWorkflow:
         self._start_time = time.time()
 
     def next_window(self):
+        """采集并预处理一次；正式 CLI 的统一路线返回无量纲 (3,25,3) 窗口。
+
+        每侧需要三帧有效历史；两侧都未准备好时返回 None。
+        对象持有采集源与 pipeline，release() 会清空历史并关闭采集源。
+        """
         try:
             raw = (self._input.next_observation(include_world=True) if self.landmark_space == "world"
                    else self._input.next_observation())

@@ -78,6 +78,11 @@ def _metadata(args, commands):
 
 
 def _process(window, specs, retargeter, commands, *, live=False):
+    """单窗口处理：NN/dex 求解 → 命令策略；结果与实际执行命令分别返回。
+
+    retargeter 接收已归一化的三帧窗口；commands 保留跨帧滤波与限速状态。
+    targets 供显示/记录使用，不是实际执行的关节命令。
+    """
     solved = retargeter.retarget(window)
     results = {key:solved[key] for key in specs}
     accepted = {key:commands.update(result,timestamp=None if live else window.timestamp) for key,result in results.items()}
@@ -163,8 +168,10 @@ def run(args):
     count = valid = 0
     with ExitStack() as stack:
         scene, executor = _scene(specs,args.headless)
+        # ExitStack 在正常结束或异常退出时按逆序清理已登记资源。
         stack.callback(scene.close)
         commands = _commands(args,specs,scene)
+        # camera 与 commands 均在循环外创建：历史窗口和上次命令需要跨帧保留。
         if source_kind == 'camera':
             camera = stack.enter_context(MediaPipeCameraWorkflow(asset,args.camera_index,landmark_space=space,input_profile=profile))
         else:
@@ -185,12 +192,14 @@ def run(args):
             while scene.alive() and (args.frames == 0 or count < args.frames):
                 tick = time.monotonic()
                 try:
+                    # 不只是采集：内部还会坐标转换、积累三帧并做掌长归一化。
                     window = camera.next_window()
                 except StopIteration:
                     break
                 timestamp = ((camera.timestamp if source_kind == 'visionpro' else time.time()-camera._start_time)
                              if window is None else window.timestamp)
                 if window is None:
+                    # 预热/无有效窗口仍进入命令处理，以保持上一条已接受命令。
                     metadata = palm_length_metadata(profile)
                     window = HandWindow({'left':None,'right':None},timestamp,source_kind,metadata)
                 # The same acquisition time is stored on both result and command.

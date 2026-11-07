@@ -76,6 +76,10 @@ class UnifiedHandPipeline:
     resulting dimensionless window without knowing which device produced it.
     TransHandR's original checkpoint preprocessing remains a separate explicit
     compatibility route; it is never relabelled as this contract.
+
+    状态由本对象持有：buffer 保存各侧历史，_source 标记当前设备。
+    current_hands 是当前米制帧，不是已归一化三帧窗口；详见
+    docs/hand-camera-reading-guide.md。
     """
 
     def __init__(self):
@@ -103,6 +107,7 @@ class UnifiedHandPipeline:
                 raise ValueError('Unsupported hand input source')
             device = 'visionpro' if raw.source == 'visionpro' else 'camera'
             if self._source != device:
+                # 设备切换后重新预热，不能混用相机与 VR 的历史帧。
                 self.reset()
                 self._source = device
             adapted = (self.visionpro.adapt(raw) if device == 'visionpro'
@@ -116,6 +121,7 @@ class UnifiedHandPipeline:
             })
             canonical = validate_metric_hand_frame(canonical)
             self.current_hands, self.invalid_reasons = canonical.hands, canonical.invalid_reasons
+            # 单帧 (25,3) 米 → 三帧 (3,25,3) 米 → 同形状的无量纲窗口。
             window = self.buffer.append(canonical)
             if window is not None:
                 window = normalize_hand_window(window)

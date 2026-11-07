@@ -9,6 +9,12 @@ from .postprocessing import KalmanSmoother
 
 
 class JointCommandPipeline:
+    """把独立关节求解结果变成可执行命令；同一对象跨帧复用。
+
+    previous 保存上次接受角度，filtered 保存滤波角度，times 与
+    _last_command_times 区分有效输入时间和已发命令时间（包括缺手保持）。
+    因此相同输入角度在不同历史/时间间隔下可能产生不同命令。
+    """
     def __init__(self, specs, filter_mode="lowpass", alpha=.2, max_velocity=1.5,
                  kalman_q=1., kalman_r=.01, initial=None, guards=None, clock=time.monotonic):
         if filter_mode not in ("lowpass", "kalman", "none"):
@@ -44,6 +50,7 @@ class JointCommandPipeline:
                                 np.array([named[n] for n in spec.joint_names]), float(timestamp))
 
     def missing(self, key, timestamp=None):
+        """缺失时保持上一角度，并重置滤波状态；不把关节送回零位。"""
         now = self.clock() if timestamp is None else float(timestamp)
         if not math.isfinite(now):
             raise ValueError("Command timestamp must be finite seconds")
@@ -81,6 +88,7 @@ class JointCommandPipeline:
         dt = min(elapsed, .1)
         self.times[key] = now
         self._last_command_times[key] = now
+        # bounds 为 (D,2)；转置并用 * 解包成各关节下限/上限，clip 逐项截断。
         target = np.clip(result.positions, *spec.bounds.T)
         self.stats[key]["limit_clipped"] += int(not np.allclose(target, result.positions))
         if self.mode == "lowpass":
@@ -95,6 +103,7 @@ class JointCommandPipeline:
         before = self.previous[key]
         delta = filtered-before
         active = np.abs(delta) > 1e-14
+        # 所有关节共享一个缩放比例，既满足各自速度上限，又保留本次运动方向。
         fraction = min(1., float(np.min(self.speeds[key][active]*dt/np.abs(delta[active])))) if active.any() else 1.
         command = before + fraction*delta
         guard = self.guards.get(key)

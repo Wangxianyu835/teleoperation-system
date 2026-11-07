@@ -1,5 +1,7 @@
 # 遥操作与运动重定向
 
+想从源码理解“相机数据如何变成机器人手动作”，先读[相机手部链路阅读说明](docs/hand-camera-reading-guide.md)：包含调用关系、数据形状和单位、类保存的状态，以及修改影响与对应测试。
+
 手部输入现按“RGB相机 / Vision Pro → 设备适配 → 同一手部契约 → NN或dex → 原生命令”组织。使用 `hand control --source camera|visionpro --backend nn|dex --hand-model ...`，设备与算法独立选择；`hand vr` 的 NN/dex 也复用此入口。完整命令、数值规范与旧权重边界见[统一手部输入](docs/unified-hand-input.md)。
 
 本项目将摄像头或 Vision Pro 的人体观测转换为机器人关节命令，并在 PyBullet 中显示动作。手部支持 L21、H1-2、GR1-T2 和 G1；摄像头还支持三机器人双臂跟随与 TRON2A 工作流。下列示例用于仿真，不连接实体机器人。

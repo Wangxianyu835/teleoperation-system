@@ -48,6 +48,7 @@ class SharedJointNNRetargeter(HandRetargeter):
             if key != spec.key or spec.dof != self.canonical_spec.dof:
                 raise ValueError("Shared target specs must have matching native output dimensions")
         self.model = model.to(device).eval()
+        # eval() 选择推理行为；梯度是否记录由 retarget() 的 no_grad() 控制。
 
     def reset(self):
         """Inference is stateless; windows are owned by the producer."""
@@ -60,6 +61,8 @@ class SharedJointNNRetargeter(HandRetargeter):
             raise TypeError("NN retargeting requires HandWindow")
         validate_palm_length_contract(window.metadata, "Shared joint NN")
         results = {}
+        # 模型不保存历史窗口；三帧历史由上游 pipeline 管理。左右手共用权重，
+        # 但循环中分别推理，并非把两只手自动组成一个 batch。
         with torch.no_grad():
             for key, spec in self.specs.items():
                 points = window.hands[spec.side]
@@ -68,10 +71,13 @@ class SharedJointNNRetargeter(HandRetargeter):
                     if points.shape != (3, 25, 3) or not np.isfinite(points).all():
                         raise ValueError("Shared joint NN requires a finite normalized (3,25,3) window")
                     started = perf_counter()
+                    # as_tensor 转为模型张量，unsqueeze(0) 加 batch 维：
+                    # (3,25,3) → (1,3,25,3)；model(...) 经 PyTorch 调用 forward。
                     tensor = torch.as_tensor(
                         np.array(points), dtype=torch.float32, device=self.device,
                     ).unsqueeze(0)
                     values = self.model(tensor).detach()[0]
+                    # 模型返回 (1,D)，[0] 取出 D 个角；随后转换目标左右手约定。
                     values = canonical_to_native_target_angles(
                         values, self.canonical_spec, spec,
                     )

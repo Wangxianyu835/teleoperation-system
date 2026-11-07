@@ -44,6 +44,11 @@ def validate_metric_hand_frame(frame: CanonicalHandFrame) -> CanonicalHandFrame:
 
 
 def normalize_hand_window(window: HandWindow) -> HandWindow:
+    """三帧米制手坐标 → 同形状的无量纲窗口；返回新对象。
+
+    每帧先减去腕点，再用该侧三帧掌长的中位数统一缩放。
+    metadata 中保留 palm_length_m；不能仅凭 HandWindow 类型判断单位。
+    """
     if not isinstance(window, HandWindow):
         raise TypeError("Palm normalization requires HandWindow")
     alignment = window.metadata.get("coordinate_alignment")
@@ -67,6 +72,7 @@ def normalize_hand_window(window: HandWindow) -> HandWindow:
             reasons[side] = str(error)
             continue
         denominator = float(np.median(frame_lengths))
+        # 同一个分母用于三帧，保留窗口内相对尺度；不是每帧分别除掌长。
         hands[side] = (points / denominator).astype(np.float32)
         lengths[side], reasons[side] = denominator, None
     metadata = dict(window.metadata)

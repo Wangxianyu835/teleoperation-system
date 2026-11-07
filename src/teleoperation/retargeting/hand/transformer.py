@@ -261,7 +261,9 @@ class PoseTransformer(nn.Module):
             x: 输入张量,shape [batch_size,frames, joints,channels]
             
         Returns:
-            3D姿态预测结果,shape [batch_size, 1, joints, 3]
+            预测向量，shape [batch_size, self.out_dim]。
+            正式目标手 NN 由 build_joint_model 配置为 D 个独立关节角（弧度）；
+            此处不是 [batch_size, 1, joints, 3] 的关键点坐标。
         """
         # 调整输入张量维度顺序
         # print('forward重组前x',x.shape)
@@ -275,9 +277,9 @@ class PoseTransformer(nn.Module):
         x = self.forward_features(x)  # [batch_size, 1, embed_dim]
         # print('时序特征提取',x.shape)
         # 通过输出头得到最终角度向量预测
-        x = self.head(x)  # [batch_size, 1, joints]
+        x = self.head(x)  # [batch_size, 1, self.out_dim]
         # print('输出头',x.shape)
-        # 重塑输出形状为[batch_size, frame, joints, 1]，表示每个关节的角度预测
+        # 历史输出布局尝试保留在下面的注释中；实际返回在末尾展平为二维向量。
         #x = x.view(b, 1, p, -1)
         # x = x.view(b, 1, self.out_dim, self.out_chans)
         # 应用角度限制
