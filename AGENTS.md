@@ -53,3 +53,28 @@ boundary. Document these adaptations separately from the upstream algorithm.
 Do not silently apply camera preprocessing to VR data or rewrite checkpoint
 metadata to claim compatibility. Keep the upstream VR route explicit, and
 verify existing camera workflows after changes to shared interfaces.
+
+## Implementation and Communication
+
+### Code
+
+- Implement current requirements using actual caller contracts and existing
+  project patterns. New abstractions, compatibility layers, retries or fallbacks
+  require a concrete requirement or evidence of a failure.
+- Validate external inputs at system boundaries; trust established contracts
+  internally. Fail explicitly when required conditions are unmet, avoiding
+  redundant checks and silent fallbacks.
+- Catch exceptions for concrete recovery, resource cleanup or useful diagnostic
+  context. Preserve the original error and follow existing resource management
+  patterns.
+
+### Communication
+
+- Lead with the answer or result, then give necessary evidence. Match detail to
+  task complexity and state each point once.
+- Match certainty to evidence. Report risks, limitations and unverified behavior
+  only when they affect the current decision or next action, and explain the
+  specific impact.
+- Proceed with authorized, routine, reversible actions and investigate available
+  information independently. Ask the user only for key decisions, authorization
+  beyond the agreed scope or actual permission blockers.
