@@ -20,20 +20,20 @@
 
 ## Task 1：删除已确认无消费者的片段
 
-- [ ] 删除 `retargeting/arm/ik.py` 的 `ArmIK` 协议及仅服务该声明的 `Protocol` 导入。实际调用使用 `RoboticsToolboxArmIK`。
-- [ ] 删除八项未读取的内部常量：`hand_body_recording.FORMAT_VERSION`、`config.EXCLUDED_COLLISION_PAIRS`、`geometric.ROLL_DIM`、`topology.VISIONPRO_SOURCE/MEDIAPIPE_APPROX_SOURCE`、`plotting.NAME_INDEX/ROBOT_EDGES/ROBOT_TIPS`。实际保存版本、碰撞实现和绘图拓扑有各自现用定义，保持原样。
-- [ ] 按定义所属模块复核同名符号后，再删除十一项闲置定义：两个可视化入口的五项拓扑/颜色常量、`replay_actions.ROOT`、`schemas.ROOT`、`realtime_hand_sim.SIDES`、`arm/retargeter.ARM_DOF`、`geometric.WRIST`、`learning/dataset._SIDE_KEYS`。实际被绘图模块、IK、H5 读取器使用的同名定义保留。
-- [ ] 删除 `hand_control._process` 未使用的私有 `live` 参数及其不可达的时钟分支。全部两个应用调用和四个测试调用均未传入该参数，继续使用 `window.timestamp`。
-- [ ] 清理 `realtime_support`、相机/环境诊断、可视化、动作回放和外部 SMPLer-X 后端内已核实无使用/无消费者的导入。保留 `matplotlib.use('Agg')`、环境诊断的导入探针、任务注册导入及有测试消费者的再导出。
-- [ ] 对照 checkpoint 检查 diff，确认保留函数除上述私有参数/分支与闲置导入外无行为变化。
+- [x] 删除 `retargeting/arm/ik.py` 的 `ArmIK` 协议及仅服务该声明的 `Protocol` 导入。实际调用使用 `RoboticsToolboxArmIK`。
+- [x] 删除八项未读取的内部常量：`hand_body_recording.FORMAT_VERSION`、`config.EXCLUDED_COLLISION_PAIRS`、`geometric.ROLL_DIM`、`topology.VISIONPRO_SOURCE/MEDIAPIPE_APPROX_SOURCE`、`plotting.NAME_INDEX/ROBOT_EDGES/ROBOT_TIPS`。实际保存版本、碰撞实现和绘图拓扑有各自现用定义，保持原样。
+- [x] 按定义所属模块复核同名符号后，再删除十一项闲置定义：两个可视化入口的五项拓扑/颜色常量、`replay_actions.ROOT`、`schemas.ROOT`、`realtime_hand_sim.SIDES`、`arm/retargeter.ARM_DOF`、`geometric.WRIST`、`learning/dataset._SIDE_KEYS`。实际被绘图模块、IK、H5 读取器使用的同名定义保留。
+- [x] 删除 `hand_control._process` 未使用的私有 `live` 参数及其不可达的时钟分支。全部两个应用调用和四个测试调用均未传入该参数，继续使用 `window.timestamp`。
+- [x] 清理 `realtime_support`、相机/环境诊断、可视化、动作回放和外部 SMPLer-X 后端内已核实无使用/无消费者的导入。保留 `matplotlib.use('Agg')`、环境诊断的导入探针、任务注册导入及有测试消费者的再导出。
+- [x] 对照 checkpoint 检查 diff，确认保留函数除上述私有参数/分支与闲置导入外无行为变化。
 
 ## Task 2：验证和提交
 
-- [ ] 主环境运行手部控制、统一输入、机械臂、绘图、应用入口、SMPLer-X 相关既有测试。
-- [ ] 主环境运行 `python -B -X utf8 -m unittest discover -s tests`。
-- [ ] 独立 dex 环境运行统一输入与 NN/dex 后端相关既有测试。
-- [ ] 验证 28 个 CLI handler 可定位、无 site-packages 下的帮助入口可用、两种可视化实际出图及所有自有 Python 文件 AST 可解析。
-- [ ] `git diff --check`，提交本次明确文件，报告提交哈希和 checkpoint。
+- [x] 主环境运行手部控制、统一输入、机械臂、绘图、应用入口、SMPLer-X 相关既有测试。
+- [x] 主环境运行 `python -B -X utf8 -m unittest discover -s tests`。
+- [x] 独立 dex 环境运行统一输入与 NN/dex 后端相关既有测试。
+- [x] 验证 28 个 CLI handler 可定位、无 site-packages 下的帮助入口可用、两种可视化实际出图及所有自有 Python 文件 AST 可解析。
+- [x] `git diff --check`，提交本次明确文件，报告提交哈希和 checkpoint。
 
 ## Task 3：仅报告的逻辑候选（不执行）
 
@@ -53,4 +53,15 @@
 
 ## 执行证据
 
-待完成验证后填写实际结果；历史文档的测试数字不作为本次结果。
+本次检查覆盖 180 个 src、81 个测试、28 个开发工具和 8 个外部 worker Python 文件，共 297 个；结合注册字符串、装饰器、包导出和全文搜索复核。未发现有足够证据可整文件删除的业务模块。
+
+- 第一批提交：`194127d9bd1df0d06228031c6691b4e31920a05c`；主环境全套 606 项，602 通过、4 项因 dex 依赖跳过，150.031 秒。
+- 第二批修改前提交：`194127d9bd1df0d06228031c6691b4e31920a05c`；检查点 `checkpoint-20261109-0106-unused-module-constants`。
+- 最终主环境全套：606 项，602 通过、4 项因 dex 依赖跳过，139.592 秒。日志：`outputs/tmp_unused_code_audit/unittest-final.log`。
+- 主环境定向回归：56 项，55 通过、1 项因 dex 依赖跳过，37.216 秒。
+- 独立 dex 环境：统一输入、NormalizedDex 和后端工厂共 16 项全部通过，32.379 秒。
+- 最终 28 个 handler 可定位，28 条无 site-packages 的 CLI 帮助均返回 0；两个绘图命令实际生成 4 张非空 PNG。
+- 最终 297 个 Python 文件 AST 解析通过。与最初 checkpoint 比较，本次涉及文件中 135 个保留函数在忽略 import 后 AST 一致；唯一函数内变化是 `_process` 删除无人传入的 live 选项、固定采用现有调用使用的窗口时间戳。删除的函数仅为未使用协议中的 `ArmIK.solve` 声明。
+- 本次 18 个 Python 文件共新增 8 行、删除 86 行，净减少 78 行。没有新增测试或删除测试；使用既有行为回归验证。
+- Task 3 的九项建议均未实施。公开的 `RawObservation`、契约常量和 `next_input` 接口保持兼容；无仓库调用不等于可以破坏公开输入/结果接口。
+- 共享工作区的 `3c52840` 文档检查点及 `369fe72` 文献说明提交保留；最终只暂存本次明确修改的源码与本计划。不推送。

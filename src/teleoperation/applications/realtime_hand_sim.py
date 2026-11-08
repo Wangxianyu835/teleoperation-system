@@ -15,7 +15,6 @@ from teleoperation.paths import (
 )
 from teleoperation.robots.l21 import L21_JOINT_ORDER, L21HandAdapter
 
-SIDES = ("left", "right")
 URDF_NAME = "linkerhand_l21_{side}.urdf"
 ASSET_NAME = "hand_landmarker.task"
 # 双手并排摆位；单只手时放在原点前方。

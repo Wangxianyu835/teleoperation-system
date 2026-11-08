@@ -112,7 +112,6 @@ from teleoperation.retargeting.hand.interface import HandRetargeter
 SIDES = ("left", "right")
 
 # 25 点布局（与 retargeting/hand/topology.py 的 mediapipe21_to_hand25 一致）
-WRIST = 0
 THUMB = {"cmc": 1, "mcp": 2, "ip": 3, "tip": 4}
 FINGERS = {
     "index": (5, 6, 7, 8, 9),

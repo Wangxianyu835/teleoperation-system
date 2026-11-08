@@ -17,8 +17,6 @@ def hand_dex_calibrate(parser):
 
 
 
-ROOT = str(PROJECT_ROOT)
-
 def robot_control(parser):
     from .robot_options import configure
     configure(parser)

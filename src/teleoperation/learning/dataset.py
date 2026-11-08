@@ -16,10 +16,6 @@ from teleoperation.contracts.coordinates import WORLD_PALM_LOCAL_COORDINATE_ALIG
 
 
 HAND_SIDES = ("left", "right")
-_SIDE_KEYS = {
-    "left": "left_hand_keypoints",
-    "right": "right_hand_keypoints",
-}
 
 
 class TwoHandH5Dataset:

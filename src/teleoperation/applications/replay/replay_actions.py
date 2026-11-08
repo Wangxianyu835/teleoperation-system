@@ -25,10 +25,6 @@ import time
 
 import numpy as np
 
-# 默认资源由仓库路径模块定位
-from teleoperation.paths import PROJECT_ROOT
-ROOT = str(PROJECT_ROOT)
-
 try:
     sys.stdout.reconfigure(encoding='utf-8')
 except Exception:

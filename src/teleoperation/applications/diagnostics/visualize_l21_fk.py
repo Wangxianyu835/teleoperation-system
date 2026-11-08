@@ -12,13 +12,6 @@ from teleoperation.retargeting.hand.kinematics import create_hand_kinematics
 from teleoperation.retargeting.hand.config import L21
 
 
-TIP_NAMES = ("thumb_tip", "index_tip", "middle_tip", "ring_tip", "pinky_tip")
-SIDE_COLORS = {
-    "left": "#2563eb",
-    "right": "#dc2626",
-}
-
-
 def main(args=None) -> int:
     if args is None:
         raise TypeError("Use teleoperation.cli.main() to parse command arguments")
