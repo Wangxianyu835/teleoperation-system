@@ -70,6 +70,16 @@ class RobotPartWorld:
         pos=base_pose or (0.,0.,ROBOT_SPECS[spec.robot_id]['base_z'])
         body=load_urdf(destination,basePosition=pos,useFixedBase=True,physicsClientId=self.cid)
         self._register(spec,body,visible)
+        if spec.display=='both':
+            # Match the existing full-body scene's clearance before creating IK.
+            p=self.p
+            lowest=min(p.getAABB(body,i,physicsClientId=self.cid)[0][2]
+                       for i in range(-1,p.getNumJoints(body,physicsClientId=self.cid)))
+            raise_by=.03-lowest
+            if raise_by>0:
+                base,orientation=p.getBasePositionAndOrientation(body,physicsClientId=self.cid)
+                p.resetBasePositionAndOrientation(body,[base[0],base[1],base[2]+raise_by],
+                                                 orientation,physicsClientId=self.cid)
         self.frame_scene()
         return body
 

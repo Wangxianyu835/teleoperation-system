@@ -31,6 +31,10 @@ class RobotControlSession:
         self.bridges={}; self.wrists={}; self.previous_time=None
         for name,b in backends.items():
             if b.driver is None:continue
+            if source_kind=='visionpro':
+                b.driver.lock_others=True
+                for adapter in b.driver.ik.values():
+                    adapter.ik_lock_others=True
             from teleoperation.simulation.wrist_control import WristSceneController
             self.wrists[name]=WristSceneController(b.driver)
             if source_kind=='camera':

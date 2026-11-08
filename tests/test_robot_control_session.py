@@ -9,6 +9,33 @@ from teleoperation.applications.robot_session import RobotControlSession
 
 
 class RobotControlSessionTests(unittest.TestCase):
+    def test_source_specific_ik_matches_existing_wrist_and_camera_commands(self):
+        from teleoperation.simulation.wrist_control import vr_arm_controller
+        for source in ('visionpro', 'camera'):
+            with self.subTest(source=source):
+                reference, current = SimulationGroup(gui=False), SimulationGroup(gui=False)
+                try:
+                    spec = load_robot_control_spec('g1', resource_overrides={'parts':'arms', 'side':'right'})
+                    new = RobotPartSceneBuilder().build(spec, group=current)
+                    if source == 'visionpro':
+                        reference.scene.load_native(spec)
+                        driver = vr_arm_controller(reference.scene, {'right':'right'}).driver
+                    else:
+                        driver = RobotPartSceneBuilder().build(spec, group=reference).driver
+                    session = RobotControlSession({'g1':new}, source_kind=source)
+                    adapter = driver.ik['g1']
+                    position, orientation = adapter.measure('right')
+                    target = np.asarray(adapter.to_base(position)) + [.1, -.1, .05]
+                    expected = driver.solve_each('right', {'g1':target}, source='base', orientation=orientation)
+                    actual = session.wrists['g1'].driver.solve_each('right', {'g1':target},
+                        source='base', orientation=orientation)
+                    names = spec.parts['right_arm'].joint_names
+                    np.testing.assert_allclose([actual['g1']['joints'][n] for n in names],
+                        [expected['g1']['joints'][n] for n in names], atol=1e-8, rtol=0)
+                finally:
+                    current.close()
+                    reference.close()
+
     def test_registered_robot_cli_replays_body_observations_without_camera(self):
         from teleoperation.cli import main
         from tests.smplerx_fixtures import write

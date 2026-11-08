@@ -66,6 +66,17 @@ class WristTracker:
             self.spike_frames = 0
         if observation.timestamp is not None:
             stamp = float(observation.timestamp)
+            if self.last_timestamp is not None and stamp == self.last_timestamp:
+                # Cached SDK packets are waiting, not additional calibration samples.
+                self.elapsed_missing += elapsed
+                if self.neutral is None:
+                    if self.elapsed_missing >= .5:
+                        self.samples.clear()
+                    self.status = "uncalibrated" if self.elapsed_missing >= .5 else "calibrating"
+                else:
+                    self.status = "lost_hold" if self.elapsed_missing >= .5 else "hold"
+                self.reason = "waiting for a new wrist sample"
+                return
             if not np.isfinite(stamp) or (self.last_timestamp is not None and stamp <= self.last_timestamp):
                 self.update(None, elapsed)
                 self.reason = "stale or nonmonotonic wrist sample"
@@ -82,6 +93,7 @@ class WristTracker:
             return
         current = Rotation.from_quat(observation.orientation_xyzw)
         if self.neutral is None:
+            self.elapsed_missing = 0.
             if self.samples and (current * self.samples[0][0].inv()).magnitude() > np.deg2rad(8):
                 self.samples.clear()
             if self.samples and observation.position_valid and self.samples[0][1] is not None:
