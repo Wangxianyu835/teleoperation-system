@@ -77,7 +77,7 @@ def _metadata(args, commands):
     return metadata
 
 
-def _process(window, specs, retargeter, commands, *, live=False):
+def _process(window, specs, retargeter, commands):
     """单窗口处理：NN/dex 求解 → 命令策略；结果与实际执行命令分别返回。
 
     retargeter 接收已归一化的三帧窗口；commands 保留跨帧滤波与限速状态。
@@ -85,7 +85,7 @@ def _process(window, specs, retargeter, commands, *, live=False):
     """
     solved = retargeter.retarget(window)
     results = {key:solved[key] for key in specs}
-    accepted = {key:commands.update(result,timestamp=None if live else window.timestamp) for key,result in results.items()}
+    accepted = {key:commands.update(result,timestamp=window.timestamp) for key,result in results.items()}
     targets = {}
     if window.metadata.get('input_profile') in (PALM_LENGTH_PROFILE,UNIFIED_HAND_PROFILE):
         from teleoperation.retargeting.hand.hand_model import build_hand_targets

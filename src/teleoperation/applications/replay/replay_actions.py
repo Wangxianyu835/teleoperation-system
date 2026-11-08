@@ -136,9 +136,7 @@ def main(args=None):
     if args is None:
         raise TypeError("Use teleoperation.cli.main() to parse command arguments")
 
-    from teleoperation.applications.simulation import create_environment as SimulationEnv, run_episode, evaluate_task, benchmark_all_tasks
-    import teleoperation.simulation.tasks          # noqa: F401  <- 触发 30 个任务注册
-    from teleoperation.simulation.tasks import get_task      # noqa: F401
+    from teleoperation.applications.simulation import create_environment as SimulationEnv
 
     # ---- describe：只打印动作空间定义
     if args.describe:

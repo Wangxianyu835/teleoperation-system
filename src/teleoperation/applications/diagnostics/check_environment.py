@@ -1,7 +1,5 @@
 def main(args=None):
     """快速测试 - 验证所有模块能正确导入"""
-    import sys
-    import os
 
 
     print("测试1: 导入基础模块...")
@@ -66,7 +64,7 @@ def main(args=None):
         import numpy as np
         from teleoperation.simulation.tasks import register_builtin_tasks
         register_builtin_tasks()  # noqa
-        from teleoperation.applications.simulation import create_environment as SimulationEnv, run_episode, evaluate_task, benchmark_all_tasks
+        from teleoperation.applications.simulation import create_environment as SimulationEnv
         env = SimulationEnv(robot_type='h1_2', task_name='pushcube',
                             render=False, record=False)
         try:

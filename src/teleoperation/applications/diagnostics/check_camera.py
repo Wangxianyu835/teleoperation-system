@@ -1,6 +1,6 @@
 def main(args=None):
     """测试联想摄像头 - RGB 画面采集"""
-    import sys, cv2, os
+    import cv2
     from teleoperation.inputs.camera import CameraInterface
 
     cam = CameraInterface(0)

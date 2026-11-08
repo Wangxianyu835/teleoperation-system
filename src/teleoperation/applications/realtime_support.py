@@ -1,7 +1,6 @@
 """Realtime statistics and bounded resource teardown."""
 import statistics
 import threading
-import time
 import numpy as np
 from teleoperation.robots.l21 import L21_JOINT_ORDER
 

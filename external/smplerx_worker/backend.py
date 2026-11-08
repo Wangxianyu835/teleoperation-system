@@ -6,7 +6,6 @@ one unambiguous person, and derived joints/rotations from the same SMPL-X pass.
 """
 from __future__ import annotations
 
-import contextlib
 import hashlib
 from pathlib import Path
 import sys

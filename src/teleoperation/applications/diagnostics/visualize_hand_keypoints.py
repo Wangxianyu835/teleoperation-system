@@ -4,16 +4,12 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import sys
 
 import matplotlib
 
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt
 import numpy as np
-
-from teleoperation.paths import PROJECT_ROOT
 
 from teleoperation.learning.dataset import HAND_SIDES, TwoHandH5Dataset
 from teleoperation.data.hand_h5 import load_twohand_h5
@@ -207,4 +203,4 @@ def _check_frame_index(frame_index: int, frame_count: int, path: Path) -> None:
 from teleoperation.data.array_recording import read_recording
 from teleoperation.data.array_recording import read_arrays
 
-from teleoperation.tools.hand_keypoints import _is_plottable, _plot_hands, _plot_one_hand
+from teleoperation.tools.hand_keypoints import _plot_hands

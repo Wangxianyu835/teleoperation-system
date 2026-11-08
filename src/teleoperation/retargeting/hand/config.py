@@ -131,9 +131,6 @@ ROBOT_JOINTS = {
     "MCP_dic": [14, 1, 4, 7, 10],
 }
 
-EXCLUDED_COLLISION_PAIRS = ((1, 2), (4, 5), (7, 8), (10, 11), (14, 15))
-
-
 @dataclass(frozen=True)
 class L21Config:
     model: ModelConfig = ModelConfig()

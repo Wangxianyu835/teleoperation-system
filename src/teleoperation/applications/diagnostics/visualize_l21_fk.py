@@ -2,22 +2,14 @@
 
 from __future__ import annotations
 
-import argparse
-from pathlib import Path
-import sys
-
 import matplotlib
 
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt
 import numpy as np
-import torch
-
-from teleoperation.paths import PROJECT_ROOT
 
 from teleoperation.retargeting.hand.kinematics import create_hand_kinematics
-from teleoperation.retargeting.hand.config import JOINT_EDGES, JOINT_NAMES, L21
+from teleoperation.retargeting.hand.config import L21
 
 
 TIP_NAMES = ("thumb_tip", "index_tip", "middle_tip", "ring_tip", "pinky_tip")
@@ -62,6 +54,6 @@ def _fk_positions(side: str, pose: str) -> np.ndarray:
     return positions[0].detach().cpu().numpy()
 
 
-from teleoperation.tools.l21_fk import _draw_hand, _finish_axes, _plot_both, _plot_side
+from teleoperation.tools.l21_fk import _plot_both, _plot_side
 
 from teleoperation.retargeting.hand.fk_demo import _angles_for_pose

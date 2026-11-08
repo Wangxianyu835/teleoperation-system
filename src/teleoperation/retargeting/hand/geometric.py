@@ -122,7 +122,6 @@ FINGERS = {
 }
 
 # 18 维 L21 向量里的下标（0 是 hand_base_link 固定占位）
-ROLL_DIM = {"index": 1, "middle": 4, "ring": 7, "pinky": 10}
 PITCH_DIM = {"index": 2, "middle": 5, "ring": 8, "pinky": 11}
 PIP_DIM = {"index": 3, "middle": 6, "ring": 9, "pinky": 12}
 THUMB_ROLL_DIM, THUMB_YAW_DIM, THUMB_PITCH_DIM = 13, 14, 15

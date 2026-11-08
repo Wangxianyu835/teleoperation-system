@@ -2,7 +2,6 @@
 
 import cv2
 import numpy as np
-from teleoperation.retargeting.hand.config import JOINT_EDGES, JOINT_NAMES
 
 SOURCE_EDGES = (
     (0, 1), (1, 2), (2, 3), (3, 4),
@@ -11,10 +10,6 @@ SOURCE_EDGES = (
     (9, 13), (13, 14), (14, 15), (15, 16),
     (13, 17), (17, 18), (18, 19), (19, 20), (0, 17),
 )
-NAME_INDEX = {name: i for i, name in enumerate(JOINT_NAMES)}
-ROBOT_EDGES = tuple((NAME_INDEX[a], NAME_INDEX[b]) for a, b in JOINT_EDGES)
-ROBOT_TIPS = tuple(NAME_INDEX[f"{finger}_tip"] for finger in
-                   ("thumb", "index", "middle", "ring", "pinky"))
 COLORS = {"left": (255, 145, 65), "right": (80, 220, 100)}  # BGR
 
 

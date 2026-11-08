@@ -22,6 +22,7 @@
 
 - [ ] 删除 `retargeting/arm/ik.py` 的 `ArmIK` 协议及仅服务该声明的 `Protocol` 导入。实际调用使用 `RoboticsToolboxArmIK`。
 - [ ] 删除八项未读取的内部常量：`hand_body_recording.FORMAT_VERSION`、`config.EXCLUDED_COLLISION_PAIRS`、`geometric.ROLL_DIM`、`topology.VISIONPRO_SOURCE/MEDIAPIPE_APPROX_SOURCE`、`plotting.NAME_INDEX/ROBOT_EDGES/ROBOT_TIPS`。实际保存版本、碰撞实现和绘图拓扑有各自现用定义，保持原样。
+- [ ] 按定义所属模块复核同名符号后，再删除十一项闲置定义：两个可视化入口的五项拓扑/颜色常量、`replay_actions.ROOT`、`schemas.ROOT`、`realtime_hand_sim.SIDES`、`arm/retargeter.ARM_DOF`、`geometric.WRIST`、`learning/dataset._SIDE_KEYS`。实际被绘图模块、IK、H5 读取器使用的同名定义保留。
 - [ ] 删除 `hand_control._process` 未使用的私有 `live` 参数及其不可达的时钟分支。全部两个应用调用和四个测试调用均未传入该参数，继续使用 `window.timestamp`。
 - [ ] 清理 `realtime_support`、相机/环境诊断、可视化、动作回放和外部 SMPLer-X 后端内已核实无使用/无消费者的导入。保留 `matplotlib.use('Agg')`、环境诊断的导入探针、任务注册导入及有测试消费者的再导出。
 - [ ] 对照 checkpoint 检查 diff，确认保留函数除上述私有参数/分支与闲置导入外无行为变化。
@@ -44,6 +45,9 @@
 |`applications/benchmark.py`、`applications/diagnostics/check_environment.py`、`simulation/environment.py`|多个应用/导入阶段重复调用 `register_builtin_tasks()`；任务模块的 import 缓存使后续调用通常不再执行注册装饰器|保留明确初始化边界，其余应用复用已初始化注册表|减少重复职责，性能收益很小；`get_task()` 单独调用不会自动注册，不能一概删除注册入口。|
 |`applications/benchmark.py:interactive_menu`；`simulation/tasks/sequences.py:DrawerBook.check_success`|调用 `list_tasks()` 和读取书位置后将结果赋值给不再读取的局部变量|删除未使用的枚举/查询及赋值，继续使用现有按级别列表和 `_is_above()` 判定|前者重复排序，后者重复物理状态查询；属于运行逻辑删除，按用户要求保留待决定。|
 |`contracts/validation.py`|星号导入 constants 后又定义相同侧标识与维度别名|内部直接使用 constants 中的定义；保留确有消费者的公开导出|减少重复定义，基本无性能收益；星号导入形成的公开名字需保留兼容性。|
+|`cli/schemas.py` 的七处 `parser = parser`|参数解析函数入口先把 parser 赋给自身|直接调用传入 parser 的方法|纯无效赋值，没有业务作用；属于会执行的语句，本次按用户要求保留待决定。|
+|`learning/dataset.py:TwoHandH5Dataset.__init__`|接收 `track_identity` 和两项身份阈值；严格要求 canonical world 输入，随后把 `track_identity` 设为 False，阈值仅存储而未读取|单独清理这一组历史身份跟踪选项；保留实际窗口、缺帧重置及输入校验|当前有效输入的数值流程不变，但构造接口会改变；需要决定直接收紧 API 还是暂时保留这些参数。|
+|`learning/losses.py:CollisionLoss`|接收并保存 `rb_dic`、`mode`、`hand_type`，forward 实际只使用 threshold、excluded_points 和 excluded_pairs|构造器只保留实际影响损失的参数，并同步现有调用点|减少误导性的配置选项；不改变距离/掩码/损失公式，但会改变构造接口。|
 
 不建议把两种 FK、各版本 H5、独立手/整机输出适配器、无效输入保持、资源清理或输入边界校验视为同一套冗余实现。它们存在不同消费者或执行语义。
 

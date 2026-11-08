@@ -2,8 +2,6 @@ from __future__ import annotations
 import numpy as np
 from teleoperation.contracts.constants import *
 MEDIAPIPE_HAND_KEYPOINTS = 21
-VISIONPRO_SOURCE = "visionpro"
-MEDIAPIPE_APPROX_SOURCE = "mediapipe_approx"
 def wrist_relative(points: np.ndarray, scale_factor: float = 1.0) -> np.ndarray:
     """
     将关键点坐标转换为相对于腕部（索引 0）的偏移量，并可选缩放。

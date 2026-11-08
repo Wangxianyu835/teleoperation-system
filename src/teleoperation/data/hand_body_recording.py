@@ -17,7 +17,6 @@ import numpy as np
 from .transaction import atomic_output
 
 
-FORMAT_VERSION = "hand_body_capture_h5_v1"
 POINT_DATASETS = (
     ("left_hand_keypoints", (21, 3)),
     ("right_hand_keypoints", (21, 3)),
