@@ -1,4 +1,4 @@
-# 30 个仿真任务的「测试与评估」怎么做（批次 1 已落地）
+# 30 个仿真任务的「测试与评估」怎么做（批次 1、2 已落地）
 
 > 目标：复现 TeleOpBench 论文 §3.1 / §4 的**仿真任务测试与评估**，先做**视觉（MediaPipe）**这条接口。
 > 本文是这件事的**唯一入口文档**：口径、批次划分、已测数字、偏差声明、下一步。
@@ -23,7 +23,7 @@
 | 批次 | 内容 | 需要人在摄像头前吗 | 状态 |
 |---|---|---|---|
 | 1 | 30 任务可评测性审计（稳定 / 假成功 / 判据可触发 / 手臂可达） | 否 | **已完成**（本文 §3） |
-| 2 | 任务评估入口：单机器人 + 任务物体 + 工作台标定 + 逐帧判成功 + 逐 trial 落 JSON | 否 | 待做 |
+| 2 | 任务评估入口：单机器人 + 任务物体 + 工作台标定 + 逐帧判成功 + 逐 trial 落 JSON | 否 | **已完成**（本文 §4） |
 | 3 | 单任务端到端试点（pushcube，真摄像头），确认画面 / HUD / 判据 / 记录 | **是**（约 30 分钟） | 待做 |
 | 4 | 10（再 30）个任务 x N trial，统计成功率与完成时间，出论文 Table 2 样式的表 | **是**（1 人约 35 分钟/10 任务，30 任务分 2 次现场） | 待做 |
 
@@ -117,7 +117,109 @@ E:\python3.11.7\python.exe -m unittest tests.test_task_audit -v        # 退出�
 3. **不稳任务**：batch 2 的场景在 `task.reset()` 之后做"退让"（把重叠物体按不重叠的位姿放回去），
    或先空转 600 步再记初始状态；两条路都要在报告里写清楚改了什么。
 
-## 4. 与论文的偏差（写进任何对外材料，不要含糊）
+## 4. 批次 2：场景层 + 任务评估入口（已完成）
+
+工具：`devtools/task_eval.py`（场景层 + trial runner + `--verify`），用例扩到
+`tests/test_task_audit.py` 的 17 个（批次 1 的 7 个 + 场景层 10 个）。
+
+```powershell
+cd F:\simulation_platform
+$env:PYTHONPATH = "$pwd\src"; $env:PYTHONUTF8 = "1"
+
+# ① 验收：30 个任务过场景层，四列检查（稳定 / 无假成功 / 判据可触发 / 在可达圈内）
+E:\python3.11.7\python.exe devtools\task_eval.py --verify --robot all      # 退出码 0
+# ② 空转：不下发动作，判据不许自己变真
+E:\python3.11.7\python.exe devtools\task_eval.py --task pushcube --trials 2 --policy idle
+# ③ 假动作：证明动作真的送到关节上（joint_travel_rad = 2.07 rad）
+E:\python3.11.7\python.exe devtools\task_eval.py --task pushcube --policy dummy --max-sim-s 3
+# ④ 契约H 动作文件回放
+E:\python3.11.7\python.exe devtools\task_eval.py --policy replay --actions datasets\actions\x.h5
+```
+
+报告：`outputs/task_eval/verify_all.json`（每任务 shift / clamped / compressed / separated /
+settle / in_reach 全在里面），trial 报告默认 `outputs/task_eval/<robot>_<policy>_<N>.json`。
+
+### 4.1 根因：30 个任务**全部**把物体中心摆在台面高度
+
+`load_cylinder(name, r, height, ...)` 的 `height` 在 PyBullet 里是**全高**，而所有任务都把
+物体的**中心**放在 `z=0.42`（台面顶面）。实测（`outputs/tmp_tasks/probe_sink.log`）：
+
+| 现象 | 数字 |
+|---|---|
+| 陷进台面的任务 | **30 / 30**（漏出来的只有 `rotatehearth` 的旋钮） |
+| 单个物体下陷 | 0.005 m（plate）~ 0.37 m（cabinet） |
+| 只做"抬到台面上"就完全不漂的任务 | **18 / 30** |
+| 还要再做"物体间退让"的任务 | 12 个（盖子陷在锅里、门陷在本体里、抽屉陷在柜体里、手柄陷在基座里） |
+| 抽屉被弹飞 | 1.20 m（box 半宽 0.14 比柜体半宽 0.15 还大，实心体必然互穿） |
+
+这就是批次 1 那 10 个"不稳"的物理来源 —— 不是链路的错，是**摆法**的错。
+
+### 4.2 场景层怎么做（6 步，全部只改运行时位姿，不碰 baseline）
+
+1. `SCENE_OPS`（只有 3 个任务需要）：抽屉换成 0.015 m 厚的**薄面板**（质量 / 摩擦沿用原体），
+   `closedrawer` 摆在拉开位置、`drawerbook` / `opendrawer` 摆在关上位置。
+2. **平移**（`solve_shift`，纯 numpy）：物体 + 家具一起搬到肩前 `0.66 x 臂长`、抬到离肩
+   `0.8 x 臂长` 的球面上（**只抬不降** —— `pickcube` / `potbimanual` 的判据里有绝对 z）；
+   桌子单独平移，近边留在机器人本体前 0.24 m，并保证**盖住**所有物体（`pottomatoplate` 的
+   盘子离锅 0.2 m，桌子不跟着走就会从桌沿掉下去，实测掉 1.18 m）。
+3. **落地支撑**：台面下面补一根从地面到台面的静态 box（`x >= 0.18`，不穿腿），
+   抬到 1.2 m 的板子看起来才像桌子。
+4. **抬到台面上**：AABB 底面低于台面的（含 static 的地标 / 柜体）逐个抬上来。
+5. **退让**（`_separate`）：AABB 互相嵌入的按质量取"轻的那个"——浅嵌入 / 在上面的叠到顶上，
+   其余沿最小嵌入轴推开（`lid` 叠到锅顶、`tomato` 摆到锅边、`oven_door` 挪到烤箱外）。
+6. **收进可达圈**：按 AABB 连通分组（柜体+抽屉、烤箱+门算一套）平移；还放不下就
+   以肩为圆心**等比收缩**（`compressed` 实测 0.9955-0.999，只有几毫米）；最后空转 600 步验稳定性。
+
+**`sink` 模式**（只给 `pickcube` / `potbimanual`）：这两条的判据是绝对 z（`cube z > 0.66`、
+`pot z > 0.58`），台面一抬就恒真。改成**桌面保持作者写的 0.42 m、把机器人底座降下去**
+（fixed base，实测降 0.61-0.66 m），判据原意不变、物体照样进圈。
+
+### 4.3 结果：72/90 格可评测（3 台机器人 x 30 任务）
+
+| 机器人 | OK | CRITERIA_INVALID | CRITERIA_ABSOLUTE | SCENE_UNSUPPORTED | 最大漂移 | 台面高度 |
+|---|---:|---:|---:|---:|---:|---|
+| h1_2 | **24** | 3 | 2 | 1 | 0.051 m | 1.22-1.44 m |
+| gr1_t2 | **24** | 3 | 2 | 1 | 0.051 m | 1.05-1.27 m |
+| g1 | **24** | 3 | 2 | 1 | 0.094 m | 0.85-1.08 m |
+
+* 30 个任务**全部** `stable`（< 0.10 m）+ 判据可触发；10 个**代表任务全部 OK**（批次 3 有任务可做）。
+* 漂移剩下的最大 0.094 m（g1 的锅被两个手柄推）也在阈值内，且已写进 report。
+* 18 格排除项不是"没测"，是**测出来是坏任务**，见 4.5。
+### 4.4 trial runner：一次 trial 记什么
+
+`evaluate_task()` 用 `SimulationEnv(record=False)`；**不用** baseline 的 `env.step()`
+超时（它按 `time.time()` 算，空转一个 trial 也要等 300 s），改成自己数物理步（1/240 s），
+每步 `task.check_success()`，成功即记 `completion_time_s`。每个 trial 落一条：
+
+```json
+{"trial": 0, "policy": "idle", "success": false, "completion_time_s": null,
+ "steps": 720, "sim_time_s": 3.0, "joint_travel_rad": 0.0165, "wall_s": 1.05,
+ "scene": {"shift": {}, "clamped": {}, "compressed": {}, "separated": [],
+           "settle": {"stable": true, "max_drift_m": 0.0}, "in_reach": {},
+           "criteria_at_reset": false},
+ "final_objects": {"cube": [], "target": []}}
+```
+
+`joint_travel_rad` 是"动作到底有没有送到关节上"的证据：idle = 0.0165 rad（只在重力下微沉），
+`--policy dummy` = 2.07 rad。
+
+### 4.5 交给任务作者的问题清单（我们不改 baseline，只报）
+
+| 任务 | 性质 | 证据 | 建议 |
+|---|---|---|---|
+| `liftmug` / `opendrawer` / `openmicrowave` | 判据在 reset 即为真 | 阈值 <= 自身半宽：盖子与杯高差 0.055 > 0.05、抽屉与柜体 x 差 0.14 > 0.12（柜体半宽 0.15）、门与本体差 0.15 > 0.12（本体半宽 0.15） | 阈值改成"相对初始位姿的位移" |
+| `breadtoaster` | 判据永不成立 | 按钮初始 `z=0.48`、半高 0.01，正好躺在烤面包机上；判据要 `< 0.47` | 同上 |
+| `rotatehearth` | 判据永不成立 | 旋钮躺在台面 `z=0.44`，判据要 `< 0.43` = 按进台面 | 同上 |
+| `pottomatoout` | 场景摆不出来 | 判据要番茄"离开锅"，初始必须"在锅里"（`z=0.44 < 锅顶 0.48`），实心 cylinder 装不住球 | 换空心容器，或改成相对位移 |
+| 全部 30 个 | **摆法** | `cylinder height` 是全高，物体中心却摆在台面 `z=0.42` -> 30/30 陷进台面 | 初始位姿按 `table_top + 半高` 写 |
+
+`drawer` / `cabinet` 那组还有一条几何硬伤：抽屉的 box 半宽 0.14 比柜体半宽 0.15 大，
+实心体必然互穿（我们只能换成薄面板绕开）。
+
+## 5. 与论文的偏差（写进任何对外材料，不要含糊）
+
+
+
 
 | 项 | 论文 | 我们 |
 |---|---|---|
@@ -125,12 +227,13 @@ E:\python3.11.7\python.exe -m unittest tests.test_task_audit -v        # 退出�
 | 手腕 / 上体估计 | SMPLer-X + 身体参数标定 | MediaPipe pose 关键点 + 我们自己的 7 DoF IK |
 | IK | PINK | PyBullet `calculateInverseKinematics`（+ 肘位置任务 / 零空间参考）|
 | 任务资产 | 论文场景（含真实物体模型与质量 / 摩擦参数） | 简化的 box / cylinder 代理物体，判据也是代理判据 |
-| 场景几何 | 按机器人身高布置 | **台面高度与物体位置尚未标定**（批次 2 修） |
+| 场景几何 | 按机器人身高布置 | 台面按机器人抬到 0.85-1.44 m、物体用同一套代理几何（批次 2 已标定）；`pickcube` / `potbimanual` 改用"降机器人"保绝对 z 判据 |
 | 被试 | 4 人 | 先 1 人 |
 
-## 5. 相关
+## 6. 相关
 
-- 工具：`devtools/audit_tasks.py`（批次 1），用例：`tests/test_task_audit.py`
+- 工具：`devtools/audit_tasks.py`（批次 1 审计）、`devtools/task_eval.py`（批次 2 场景层 + trial runner）
+- 用例：`tests/test_task_audit.py`（17 个：审计表 / 场景层 / trial runner）
 - 手臂链路与实测数字：[`multi-robot-arm.md`](multi-robot-arm.md)、[`RETARGETING_PIPELINE.md`](RETARGETING_PIPELINE.md)
 - 任务代码（只读，队友维护）：`src/teleoperation/simulation/tasks/`、`environment.py`、`evaluation/metrics.py`
 

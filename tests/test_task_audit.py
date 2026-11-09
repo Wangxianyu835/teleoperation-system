@@ -1,4 +1,4 @@
-"""``devtools/audit_tasks.py`` 的口径保护：ORACLE 表要覆盖 30 个任务，检查逻辑要真能发现问题。
+"""``devtools/audit_tasks.py`` + ``devtools/task_eval.py`` 的口径保护。
 
 为什么需要这些用例
 ------------------
@@ -9,7 +9,10 @@
    跑出 100% 成功率才发现；
 2. ``pushcube`` 必须被判 OK（稳定 / 无假成功 / 判据可触发）；
 3. 已知在 reset 时就成立的 ``liftmug`` 必须被判 FALSE_POSITIVE —— 这条保护的是
-   **检测逻辑**：工具把坏的看成好的，比任务本身坏更危险。
+   **检测逻辑**：工具把坏的看成好的，比任务本身坏更危险；
+4. 批次 2 的场景层：``solve_shift`` 只许往里拉、不许往外推；套上场景层后
+   ``pushcube`` 必须 稳定 + 无假成功 + 全在可达圈内；10 个代表任务**一个都不许**
+   落进排除名单（否则批次 3 的试点就没任务了）。
 
 运行::
 
@@ -23,6 +26,7 @@ from pathlib import Path
 import numpy as np
 
 AUDIT_PATH = Path(__file__).resolve().parents[1] / "devtools" / "audit_tasks.py"
+EVAL_PATH = Path(__file__).resolve().parents[1] / "devtools" / "task_eval.py"
 
 #: op 名 -> 这条 op 应有的字段数（见 ORACLE 表上面的注释）
 OP_ARITY = {"copy_pose": 3, "align": 3, "above": 4, "set_pos": 3,
@@ -37,7 +41,16 @@ def load_audit():
     return module
 
 
+def load_eval():
+    """按路径加载 ``devtools/task_eval.py``（它 import audit_tasks，自己也加 devtools 到 sys.path）。"""
+    spec = importlib.util.spec_from_file_location("task_eval_under_test", EVAL_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 AUDIT = load_audit()
+EVAL = load_eval()
 
 
 def registered_tasks():
@@ -117,6 +130,123 @@ class TaskChecksTests(unittest.TestCase):
                         "liftmug is known to satisfy its criterion at reset")
         self.assertIn("FALSE_POSITIVE", row["flags"])
         self.assertEqual("FALSE_POSITIVE", row["verdict"])
+
+class SceneShiftTests(unittest.TestCase):
+    """``solve_shift`` 是纯 numpy：拉了之后必须进圈，已经进圈的不许乱动。"""
+
+    def test_far_cloud_is_pulled_inside_the_reach_sphere(self):
+        shoulder = np.array([0.0, 0.0, 1.43])
+        cloud = [[0.5, -0.3, 0.45], [0.3, 0.3, 0.45]]
+        info = EVAL.solve_shift(shoulder, cloud, 0.55, table_min_x=0.0)
+        moved = np.asarray(cloud, float) + np.array([info["dx_obj"], 0.0,
+                                                     info["dz_obj"]])
+        farthest = float(np.linalg.norm(moved - shoulder, axis=1).max())
+        self.assertLessEqual(farthest, 0.55 + 1e-6, info)
+        self.assertEqual(2, info["inside"], info)
+        self.assertGreater(info["dz_obj"], 0.0, "只抬不降（判据里有绝对 z）")
+
+    def test_cloud_already_inside_is_not_moved(self):
+        info = EVAL.solve_shift(np.array([0.0, 0.0, 1.0]), [[0.3, 0.0, 1.0]],
+                                0.55, table_min_x=0.0)
+        self.assertEqual(0.0, info["dx_obj"])
+        self.assertEqual(0.0, info["dz_obj"])
+        self.assertTrue(info["feasible"])
+        self.assertAlmostEqual(0.24, info["dx_table"], places=6,
+                               msg="桌子仍要让开机器人本体")
+
+    def test_no_shoulder_means_no_shift(self):
+        info = EVAL.solve_shift(None, [[0.5, 0.0, 0.4]], 0.5)
+        self.assertEqual(0.0, info["dx_obj"])
+        self.assertFalse(info["feasible"])
+
+
+class SceneRegistryTests(unittest.TestCase):
+    """排除名单 / 场景 op 必须对得上真实任务；10 个代表任务不许被排除。"""
+
+    def test_every_registry_key_is_a_registered_task(self):
+        names = set(registered_tasks())
+        for registry in (EVAL.CRITERIA_INVALID, EVAL.CRITERIA_ABSOLUTE_Z,
+                         EVAL.SCENE_UNSUPPORTED):
+            self.assertEqual(set(), set(registry) - names)
+        self.assertEqual(set(), set(EVAL.SCENE_OPS) - names)
+
+    def test_representative_tasks_are_all_still_scoreable(self):
+        excluded = (set(EVAL.CRITERIA_INVALID) | set(EVAL.CRITERIA_ABSOLUTE_Z)
+                    | set(EVAL.SCENE_UNSUPPORTED))
+        self.assertEqual(set(), set(EVAL.DEFAULT_TASKS) & excluded,
+                         "10 个代表任务里出现了被排除的任务，批次 3 的试点会没任务")
+
+    def test_scene_ops_are_well_formed(self):
+        arity = {"resize": 3, "place": 3, "above": 4, "align": 3}
+        for task, ops in EVAL.SCENE_OPS.items():
+            self.assertTrue(ops, task)
+            for op in ops:
+                self.assertIn(op[0], arity, task)
+                self.assertEqual(arity[op[0]], len(op), "%s: %r" % (task, op))
+
+    def test_shift_oracle_only_moves_absolute_z(self):
+        ops = EVAL.shift_oracle([("set_z", "cube", 0.66),
+                                 ("above", "cube", "plate", 0.06),
+                                 ("set_pos", "ball", (0.5, 0.0, 0.65))], 0.75)
+        self.assertAlmostEqual(1.41, ops[0][2])
+        self.assertEqual(("above", "cube", "plate", 0.06), ops[1])
+        self.assertAlmostEqual(1.40, ops[2][2][2])
+
+
+class SceneLayerTests(unittest.TestCase):
+    """真连一个 DIRECT client：过完场景层，任务必须 稳定 / 无假成功 / 全在圈内。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import pybullet as p
+        cls.client = p.connect(p.DIRECT)
+        cls.arm = EVAL.measure_arm("h1_2")
+
+    @classmethod
+    def tearDownClass(cls):
+        import pybullet as p
+        if cls.client >= 0:
+            p.disconnect(cls.client)
+
+    def _prepare(self, name, steps=240):
+        from teleoperation.simulation.tasks import get_task
+        AUDIT.fresh(self.client)
+        task = get_task(name)(self.client)
+        task.reset()
+        scene = EVAL.TaskScene(self.client, task, robot="h1_2",
+                               shoulder=self.arm["shoulder_m"],
+                               reach=self.arm["reach_m"], name=name)
+        return task, scene.prepare(steps)
+
+    def test_pushcube_becomes_stable_and_reachable(self):
+        task, report = self._prepare("pushcube")
+        try:
+            self.assertTrue(report["settle"]["stable"], report["settle"])
+            self.assertFalse(report["criteria_at_reset"])
+            self.assertEqual(report["in_reach"]["total"], report["in_reach"]["inside"])
+        finally:
+            task._clear_objects()
+
+    def test_objects_are_lifted_onto_the_bench(self):
+        task, report = self._prepare("pickcube")
+        try:
+            self.assertIn("cube", report["rest_on_table"],
+                          "baseline 把方块中心摆在台面高度，必须抬上来")
+            self.assertGreater(report["bench_top_m"], 0.9)
+        finally:
+            task._clear_objects()
+
+    def test_trial_runner_scores_idle_as_failure(self):
+        report = EVAL.evaluate_task("h1_2", "pushcube", trials=1, policy="idle",
+                                    max_steps=240, settle_steps=120,
+                                    verbose=False)
+        self.assertEqual(0, report["summary"]["successes"])
+        trial = report["trials"][0]
+        self.assertLess(trial["joint_travel_rad"], 0.1,
+                        "idle 不该让手臂动起来")
+        self.assertTrue(trial["scene"]["settle"]["stable"])
+
+
 
 
 if __name__ == "__main__":
