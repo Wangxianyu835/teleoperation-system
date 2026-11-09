@@ -156,7 +156,7 @@ MediaPipeCameraInput.next_teleop_observation()   # 同一帧：手 21 点 + pose
 | `src/teleoperation/simulation/arm_preview.py` | **采集窗口的手臂层**：`ArmCameraPreview`（子类化基线预览，基线文件零改动）、`finite_arm_points`、`outside_frame`、`build_arm_preview` |
 | `devtools/verify_realtime_arm_bridge.py` | 离线验收（无相机、无人可跑），含 `--probe-travel` / `--probe-lateral` 两个"只量参数、不改文件"的模式 |
 | `devtools/run_realtime_arm_windows.py` | PyCharm 一键入口（`--check` 只体检） |
-| `devtools/run_realtime_arm_elbow_follow_windows.py` | **2026-10-15 现场版固化档**：上一层入口 + 钉住 `--arm-elbow-follow operator`（`--off` = 历史行为对照），零复制（见 §8.17.10） |
+| ~~`devtools/run_realtime_arm_elbow_follow_windows.py`~~（2026-11-09 删除） | **2026-10-15 现场版固化档**：薄封装 + 钉住 `--arm-elbow-follow operator`（`--off` = 历史行为对照）。已并回上一层入口：`devtools/run_realtime_arm_windows.py --elbow-follow operator`（见 §8.17.10） |
 | `tests/test_arm_realtime_bridge.py` | 83 个用例（轴向 / 几何 / 标定 / 相对映射 / 夹取 / 保持兜底 / 报告 IO / 入口默认值 / 回放元数据 / 标定口径 hold-vs-track / 帮助文案可渲染） |
 | `tests/test_arm_preview.py` | 21 个用例（合法点才画 / NaN 与形状不对当"没有" / `--no-arm-overlay` 逐像素等于基线 / 镜像翻面 / 画面外提示 / `build_arm_preview` 开关语义） |
 | `arm_profiles.py`（改） | `realtime_travel_m` / `realtime_offset` + `realtime_neutral(side)` / `travel_limit(side)` |
@@ -1694,7 +1694,7 @@ E:\python3.11.7\python.exe devtools\report_table.py outputs\tmp_realtime\ab_rp_c
 | `src/teleoperation/simulation/arm_scene_driver.py` | `apply_each(..., elbow_bend_deg=None)`：给这一项时逐台换算成参考角交给 `solve(posture=...)`；返回值里多一段 `posture`（这一帧真正交给零空间项的参考角） |
 | `src/teleoperation/simulation/arm_realtime.py` | 新增 `elbow_bend_target()`（`{侧: 这一帧的肘弯 or None}`，机器人无关的那一份）+ 静态 `_bend_of()`；`summary()` 多一段 `elbow_bend_deg`（你的中性肘弯 / 这一帧的肘弯） |
 | `src/teleoperation/simulation/realtime_teleop.py` | 新旗子 `--arm-elbow-follow {off,operator}`（**默认 `off` = 历史行为逐字不变**）+ 启动行加 `elbow follow = {当前档}` + 每帧把 `bridge.elbow_bend_target()` 转给 `apply_each` |
-| `devtools/run_realtime_arm_elbow_follow_windows.py`（新，§8.17.10） | **现场版固化档入口**：薄包装，把 `--arm-elbow-follow operator` 钉死（`--off` 走历史档），其余全部委托 `devtools/run_realtime_arm_windows.py`（环境 / 体检 / 两个窗口 / 报告 / 退出码零复制） |
+| ~~`devtools/run_realtime_arm_elbow_follow_windows.py`~~（2026-11-09 已并回，文件已删，§8.17.10） | **现场版固化档入口**：薄包装，把 `--arm-elbow-follow operator` 钉死（`--off` 走历史档），其余全部委托 `devtools/run_realtime_arm_windows.py`。现在用 `devtools/run_realtime_arm_windows.py --elbow-follow operator` 复现，`--off` 换成 `--elbow-follow off` |
 | `tests/test_arm_ik_multi_robot.py` | 新增 `ElbowPostureTests` 4 条（实测的关节/斜率；加载姿势夹角就是历史参考；折叠方向 1:1；伸直方向封顶；`apply_each` 真的把参考交给 `solve` 并留在报告里）+ 入口 1 条（默认 `off`、`operator` 能进） |
 | `tests/test_arm_realtime_bridge.py` | 新增 `ElbowBendTargetTests` 5 条（标定前给 None；直臂读 180；弯臂读实际角；断流那一帧沿用上一帧；`summary()` 带中性/当前两个数）；§8.17.10 又加 `ElbowFollowLauncherTests` 6 条（固化档入口钉的是哪一档：默认档 / `--off` / 透传 / 显式档不被覆盖 / 打印最后生效项 / 钉子能被入口 parser 接受） |
 | `docs/multi-robot-arm.md` + `docs/RETARGETING_PIPELINE.md` | 本节（§8.17）+ 入口末条与「最后更新」行同步 |
@@ -1883,7 +1883,16 @@ E:\python3.11.7\python.exe devtools\report_table.py outputs\tmp_realtime\ab_ef_o
 
 
 
-#### 8.17.10 现场版固化档入口：`devtools/run_realtime_arm_elbow_follow_windows.py`（2026-10-15）
+#### 8.17.10 现场版固化档入口（2026-10-15；2026-11-09 并回主启动器）
+
+> **2026-11-09 更新**：按"一个功能只住一个文件"（约定 14），这个薄封装已经并回
+> `devtools/run_realtime_arm_windows.py` 并**删除文件**。复现方式：
+> `E:\python3.11.7\python.exe devtools\run_realtime_arm_windows.py --elbow-follow operator`
+> （历史档 = `--arm-elbow-follow off`，也就是留空时的入口默认）。
+> 并回时顺手修掉一个真实 bug：主启动器原来用 `base.relaunch_with_canonical_python()` 换解释器，
+> 它重跑的是**手部那个**入口文件，`--arm-*` 会被手部 parser 判 `unrecognized arguments`；
+> 现在主启动器自己带 `hand_over()` 重跑自己（就是从下面这个薄封装搬过去的）。
+> 下面保留当时的记录（含 2026-10-15 的实测与那个"直接关 PyBullet 窗口不落盘"的坑）。
 
 现场看过这一档之后，第一件想做的事是「下次一键跑出同样的东西」。所以新增一个**薄包装**
 （约定 14 的例外③：用户要求单独成文件）：它不复制任何逻辑，只把参数交给

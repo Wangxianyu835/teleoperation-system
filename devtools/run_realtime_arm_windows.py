@@ -23,8 +23,22 @@ PyCharm 怎么配
 
     E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py
     E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --check
+    E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --elbow-follow operator
     E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --arm-trace
     E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --robot h1_2 --side right
+
+现场档（``--elbow-follow``）
+----------------------------
+2026-10-15 现场看过说"还不错"的那一版是**肘跟着你弯**（入口参数
+``--arm-elbow-follow operator``）。它原先单独立了一个薄封装
+``devtools/run_realtime_arm_elbow_follow_windows.py``；2026-11-09 按"一个功能只住一个文件"
+并回本文件并删掉那个文件：
+
+    PyCharm Parameters = --elbow-follow operator     <- 现场档
+    PyCharm Parameters = （留空）                     <- 入口默认口径（off，历史行为）
+
+``--elbow-follow`` 只是本文件的糖，交给入口前会换成 ``--arm-elbow-follow``；你自己写了
+``--arm-elbow-follow`` 就不插手（以你的为准）。
 
 两个窗口怎么摆（本文件负责，队友文件一行未改）
 ----------------------------------------------
@@ -44,6 +58,7 @@ variables），或加 ``--no-preview`` / ``--headless``。
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -54,6 +69,10 @@ import run_realtime_windows as base      # 同目录：环境准备 / 体检 / �
 ROOT = base.ROOT
 REPORT_DIR = ROOT / "outputs" / "tmp_realtime"
 POSE_ASSET = ROOT / "datasets" / "pose_landmarker_lite.task"
+#: 本文件的糖 ``--elbow-follow`` 与它换成入口参数后的名字（现场档 = operator）。
+ELBOW_SWITCH = "--elbow-follow"
+ELBOW_FLAG = "--arm-elbow-follow"
+ELBOW_BUILD = "operator"
 #: PyBullet GUI 窗口的身份（2026-11-09 实测：类名 DeviceWin32，标题以 'Bullet Physics' 开头）。
 PYBULLET_WINDOW_CLASS = "DeviceWin32"
 PYBULLET_WINDOW_TITLE = "Bullet Physics"
@@ -213,12 +232,88 @@ def arrange_two_windows(args):
     return thread
 
 
+def apply_elbow_preset(argv: list[str]) -> list[str]:
+    """``--elbow-follow operator|off`` -> ``--arm-elbow-follow operator|off``。
+
+    2026-11-09 并回来的"现场档"：原先它在 ``run_realtime_arm_elbow_follow_windows.py`` 里是
+    默认值（那个文件已经不在了），现在改成显式开关，不写就是入口自己的默认口径。
+    你自己写了 ``--arm-elbow-follow`` 就不插手 —— 以你的为准。
+    """
+    cleaned: list[str] = []
+    wanted: "str | None" = None
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == ELBOW_SWITCH and index + 1 < len(argv):
+            wanted = argv[index + 1]
+            index += 2
+            continue
+        if item.startswith(ELBOW_SWITCH + "="):
+            wanted = item.split("=", 1)[1]
+            index += 1
+            continue
+        cleaned.append(item)
+        index += 1
+    if wanted is None:
+        return cleaned
+    if any(item == ELBOW_FLAG or item.startswith(ELBOW_FLAG + "=") for item in cleaned):
+        return cleaned
+    return cleaned + [ELBOW_FLAG, wanted]
+
+
+def elbow_follow_value(argv: list[str]) -> str:
+    """启动行要打印的那一档（argparse 的规矩：后面的覆盖前面的；没有就报入口默认 off）。"""
+    value = "off"
+    for index, item in enumerate(argv):
+        if item == ELBOW_FLAG and index + 1 < len(argv):
+            value = argv[index + 1]
+        elif item.startswith(ELBOW_FLAG + "="):
+            value = item.split("=", 1)[1]
+    return value
+
+
+def hand_over(argv: list[str]) -> "int | None":
+    """解释器不对（缺 pybullet/cv2/mediapipe，或 cv2 开不了窗口）时用 E: 的解释器重跑**本文件**。
+
+    为什么不直接用 ``base.relaunch_with_canonical_python()``：它重跑的是 ``base`` 那个文件
+    （``run_realtime_windows.py`` = 只驱动手部的入口），手臂这一整套 ``--arm-*`` 会被喂给
+    手部 parser，直接报 ``unrecognized arguments``。这里重跑本文件，参数完整带过去
+    （2026-11-09 从并掉的那个固化档搬过来）。
+    """
+    if os.environ.get(base.REEXEC_FLAG) == "1":
+        return None
+    missing = base.missing_modules()
+    problem = f"lacks: {', '.join(missing)}" if missing else ""
+    if not problem and base.wants_window(argv):
+        ok, detail = base.gui_support()
+        if not ok:
+            problem = f"cannot open a GUI window: {detail}"
+    if not problem:
+        return None
+    base.log("WARN", f"current interpreter {sys.executable} {problem}")
+    canonical = base.CANONICAL_PYTHON
+    if not canonical.is_file():
+        base.log("FAIL", f"canonical interpreter not found: {canonical}")
+        return 3
+    if Path(sys.executable).resolve() == canonical.resolve():
+        base.log("FAIL", f"{canonical} itself cannot do it: {problem}")
+        return 3
+    env = dict(os.environ)
+    env[base.REEXEC_FLAG] = "1"
+    base.log("OK", f"re-running {Path(__file__).name} with {canonical}")
+    completed = subprocess.run(
+        [str(canonical), str(Path(__file__).resolve()), *argv],
+        cwd=str(base.ROOT), env=env)
+    return int(completed.returncode)
+
+
 def main(argv) -> int:
+    argv = apply_elbow_preset(list(argv))
     check = "--check" in list(argv)
     argv = [item for item in argv if item != "--check"]
     base.prepare_environment()
     base.redirect_caches()
-    handed_over = base.relaunch_with_canonical_python((["--check"] if check else []) + list(argv))
+    handed_over = hand_over((["--check"] if check else []) + list(argv))
     if handed_over is not None:
         return handed_over
     if check:
@@ -232,6 +327,8 @@ def main(argv) -> int:
     base.log("INFO", f"interpreter : {sys.executable}")
     base.log("INFO", f"repo root   : {ROOT}")
     base.log("INFO", f"entry       : teleoperation.simulation.realtime_teleop")
+    base.log("INFO", f"elbow follow: {elbow_follow_value(list(argv))}"
+                     f" (the field build is --elbow-follow {ELBOW_BUILD})")
     gui_ok, gui_detail = base.gui_support()
     if gui_ok:
         base.log("OK", f"cv2 window support: {gui_detail}")

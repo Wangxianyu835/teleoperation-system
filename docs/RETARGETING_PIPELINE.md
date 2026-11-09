@@ -204,10 +204,12 @@ $py='E:\python3.11.7\python.exe'
   腕任务 **6/6 侧不恶化**，代价是 h1_2 右与个别 jerk 峰值。启动行会打印
   `elbow follow = off|operator`，报告里看 `/arm/robots/<robot>/elbow_posture` 与
   `/bridge/elbow_bend_deg`。
-- **想一键跑这一档（2026-10-15 现场版）**：`devtools/run_realtime_arm_elbow_follow_windows.py`
-  —— 它就是上面那个入口的**固化档**（同一个 parser、同一套两个窗口、同一份报告、同一套退出码），
-  只把 `--arm-elbow-follow operator` 钉死；加 `--off` 就是历史行为对照档。PyCharm 里把 Script path
-  指到它、直接 Run 即可（细节见 `multi-robot-arm.md` §8.17.10）。
+- **想一键跑这一档（2026-10-15 现场版）**：`devtools/run_realtime_arm_windows.py --elbow-follow operator`
+  —— 2026-11-09 起这一档就住在上面那个入口里（原来那个薄封装
+  `run_realtime_arm_elbow_follow_windows.py` 已并回并删除，`--off` 换成 `--elbow-follow off`）；
+  不写就是入口自己的默认口径 `off`（历史行为）。PyCharm 里把 Parameters 填
+  `--elbow-follow operator`、Script path 指到 `devtools/run_realtime_arm_windows.py` 即可
+  （细节见 `multi-robot-arm.md` §8.17.10）。
 
 - PyCharm 配置：Script path 指向该文件，Working directory = `F:\simulation_platform_cs`，
   Parameters 留空即可；**解释器选错也能起来** —— 它发现当前解释器缺

@@ -1335,63 +1335,71 @@ class HelpTextTests(unittest.TestCase):
 DEVTOOLS = Path(__file__).resolve().parents[1] / "devtools"
 
 
-def load_elbow_launcher():
-    """按路径加载 ``devtools/run_realtime_arm_elbow_follow_windows.py``。
+def load_arm_launcher():
+    """按路径加载 ``devtools/run_realtime_arm_windows.py``。
 
-    它不在安装包里，而且它 ``import run_realtime_arm_windows``（同目录），所以先把
+    它不在安装包里，而且它 ``import run_realtime_windows``（同目录），所以先把
     ``devtools`` 放进 ``sys.path``；加载方式与 ``tests/test_arm_preview.py`` 里那套一致。
+    2026-11-09 起现场档（``--elbow-follow``）也住在这个文件里，原先的薄封装
+    ``run_realtime_arm_elbow_follow_windows.py`` 已删掉。
     """
     if str(DEVTOOLS) not in sys.path:
         sys.path.insert(0, str(DEVTOOLS))
     spec = importlib.util.spec_from_file_location(
-        "run_realtime_arm_elbow_follow_windows",
-        DEVTOOLS / "run_realtime_arm_elbow_follow_windows.py")
+        "run_realtime_arm_windows", DEVTOOLS / "run_realtime_arm_windows.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-class ElbowFollowLauncherTests(unittest.TestCase):
-    """固化档入口只干一件事：把这一版钉死（现场"下次一键跑出同样的东西"）。
+class ElbowFollowPresetTests(unittest.TestCase):
+    """启动器的 ``--elbow-follow`` 只干一件事：把现场档换成入口的那个参数。
 
     ``--arm-elbow-follow`` 的语义在 ``arm_ik`` / ``arm_scene_driver`` 侧已由
     ``ElbowPostureTests`` 覆盖；这里钉的是"到底把哪个参数交给了入口"。
     """
 
     def setUp(self):
-        self.launcher = load_elbow_launcher()
+        self.launcher = load_arm_launcher()
 
-    def test_default_run_is_this_build(self):
-        self.assertEqual(self.launcher.apply_pin([]),
-                         ["--arm-elbow-follow", "operator"])
+    def test_without_the_switch_nothing_is_injected(self):
+        self.assertEqual(self.launcher.apply_elbow_preset(["--robot", "g1"]),
+                         ["--robot", "g1"])
 
-    def test_the_off_switch_is_the_historical_side(self):
-        pinned = self.launcher.apply_pin(["--off"])
-        self.assertEqual(pinned, ["--arm-elbow-follow", "off"])
-        self.assertNotIn("--off", pinned)     # 糖不能漏给入口的 parser
+    def test_the_switch_becomes_the_entry_flag(self):
+        self.assertEqual(
+            self.launcher.apply_elbow_preset(["--elbow-follow", "operator"]),
+            ["--arm-elbow-follow", "operator"])
+        self.assertEqual(self.launcher.apply_elbow_preset(["--elbow-follow=off"]),
+                         ["--arm-elbow-follow", "off"])
 
-    def test_other_flags_are_passed_through(self):
-        pinned = self.launcher.apply_pin(["--robot", "g1", "--side", "right"])
+    def test_the_switch_never_reaches_the_entry_parser(self):
+        pinned = self.launcher.apply_elbow_preset(
+            ["--robot", "g1", "--elbow-follow", "operator", "--side", "right"])
+        self.assertNotIn("--elbow-follow", pinned)   # 糖不能漏给入口的 parser
         self.assertEqual(pinned[-2:], ["--arm-elbow-follow", "operator"])
         self.assertIn("--robot", pinned)
+        self.assertIn("--side", pinned)
 
     def test_an_explicit_choice_is_not_overridden(self):
-        self.assertEqual(self.launcher.apply_pin(["--arm-elbow-follow", "off"]),
-                         ["--arm-elbow-follow", "off"])
-        self.assertEqual(self.launcher.apply_pin(["--arm-elbow-follow=off"]),
+        self.assertEqual(
+            self.launcher.apply_elbow_preset(
+                ["--arm-elbow-follow", "off", "--elbow-follow", "operator"]),
+            ["--arm-elbow-follow", "off"])
+        self.assertEqual(self.launcher.apply_elbow_preset(["--arm-elbow-follow=off"]),
                          ["--arm-elbow-follow=off"])
 
     def test_the_printed_mode_follows_the_last_flag(self):
         self.assertEqual(
-            self.launcher.pinned_value(
+            self.launcher.elbow_follow_value(
                 ["--arm-elbow-follow=off", "--arm-elbow-follow", "operator"]),
             "operator")
-        self.assertEqual(self.launcher.pinned_value(["--arm-elbow-follow", "off"]),
-                         "off")
+        self.assertEqual(self.launcher.elbow_follow_value([]), "off")
 
     def test_the_pinned_choice_is_accepted_by_the_entry_parser(self):
-        args = build_parser().parse_args(self.launcher.apply_pin([]))
-        self.assertEqual(args.arm_elbow_follow, self.launcher.THIS_BUILD)
+        args = build_parser().parse_args(
+            self.launcher.apply_elbow_preset(["--elbow-follow", self.launcher.ELBOW_BUILD]))
+        self.assertEqual(args.arm_elbow_follow, self.launcher.ELBOW_BUILD)
 
 
 if __name__ == "__main__":
