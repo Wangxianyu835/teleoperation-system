@@ -22,12 +22,26 @@ PyCharm 怎么配
     E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --arm-trace
     E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --robot h1_2 --side right
 
+两个窗口怎么摆（本文件负责，队友文件一行未改）
+----------------------------------------------
+运行起来就是**两个窗口并排**，方便一边看自己一边看机器人：
+
+    左：摄像头预览  camera: hands + arms (q/Esc quits)   手 21 点 + 肩/肘/腕折线 + 每侧数字
+    右：PyBullet    H1-2 / GR1-T2 / G1 三台并排          手由 18 维角度驱动、手臂由 IK 驱动
+
+PyBullet 的窗口比摄像头窗口晚一步出现，所以这里开一个后台线程轮询（``DeviceWin32``
+类 + 标题以 ``Bullet Physics`` 开头，2026-11-09 实测），找到后把它 ``MoveWindow``
+到右半边；30 s 内没找到只打一行 WARN，不影响主链路。想自己拖窗口就把环境变量
+``TELEOP_WINDOW_LAYOUT=off``（PyCharm：Run -> Edit Configurations -> Environment
+variables），或加 ``--no-preview`` / ``--headless``。
+
 退出码：0 = 至少一侧有输出（手角度或手臂目标）；1 = 全程没有数据；3 = 解释器/依赖/模型不对。
 """
 from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -36,6 +50,14 @@ import run_realtime_windows as base      # 同目录：环境准备 / 体检 / �
 ROOT = base.ROOT
 REPORT_DIR = ROOT / "outputs" / "tmp_realtime"
 POSE_ASSET = ROOT / "datasets" / "pose_landmarker_lite.task"
+#: PyBullet GUI 窗口的身份（2026-11-09 实测：类名 DeviceWin32，标题以 'Bullet Physics' 开头）。
+PYBULLET_WINDOW_CLASS = "DeviceWin32"
+PYBULLET_WINDOW_TITLE = "Bullet Physics"
+#: 关掉自动摆放：想自己拖窗口时设 ``TELEOP_WINDOW_LAYOUT=off``。
+LAYOUT_ENV = "TELEOP_WINDOW_LAYOUT"
+#: 等 PyBullet 建窗口的上限（秒）与轮询间隔；它通常入场后 1-3 s 出现。
+LAYOUT_TIMEOUT_S = 30.0
+LAYOUT_POLL_S = 0.4
 
 
 def check_arm_entry() -> int:
@@ -54,6 +76,137 @@ def check_arm_entry() -> int:
                          f"pose_landmarker_lite.task into datasets/ for hands + arms")
     base.log("OK", "check finished; ready to open the two windows (hands + arms)")
     return 0
+
+
+def _win32():
+    """``(ctypes, wintypes)``；非 Windows / 取不到时 ``None``（摆窗口只是显示糖）。"""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        return ctypes, wintypes
+    except Exception:  # noqa: BLE001 - 摆不了就按系统默认位置跑，主链路不受影响
+        return None
+
+
+def screen_size():
+    """主屏像素 ``(宽, 高)``；拿不到时 ``None``（远程桌面 / 无桌面会话都可能拿不到）。"""
+    api = _win32()
+    if api is None:
+        return None
+    try:
+        width = int(api[0].windll.user32.GetSystemMetrics(0))
+        height = int(api[0].windll.user32.GetSystemMetrics(1))
+    except Exception:  # noqa: BLE001
+        return None
+    return (width, height) if width > 0 and height > 0 else None
+
+
+def find_pybullet_window():
+    """PyBullet GUI 窗口的 HWND；还没建出来 / 找不到时 ``None``。"""
+    api = _win32()
+    if api is None:
+        return None
+    ctypes, wintypes = api
+    user32 = ctypes.windll.user32
+    found = []
+
+    def callback(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        name = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, name, 256)
+        if name.value != PYBULLET_WINDOW_CLASS:
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        title = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, title, length + 1)
+        if not title.value.startswith(PYBULLET_WINDOW_TITLE):
+            return True
+        found.append(int(hwnd))
+        return False                     # 找到了就停，不再翻别的窗口
+
+    user32.EnumWindows(ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
+                                          wintypes.LPARAM)(callback), 0)
+    return found[0] if found else None
+
+
+def window_rect(hwnd):
+    """``(x, y, 宽, 高)``；取不到时 ``None``。"""
+    api = _win32()
+    if api is None:
+        return None
+    ctypes, wintypes = api
+    rect = wintypes.RECT()
+    if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+    return (int(rect.left), int(rect.top),
+            int(rect.right - rect.left), int(rect.bottom - rect.top))
+
+
+def move_window(hwnd, target) -> bool:
+    """把窗口挪/缩到 ``target=(x, y, 宽, 高)``；Windows 拒绝时 ``False``。"""
+    api = _win32()
+    if api is None:
+        return False
+    ctypes, _wintypes = api
+    x, y, width, height = (int(value) for value in target)
+    return bool(ctypes.windll.user32.MoveWindow(hwnd, x, y, width, height, True))
+
+
+def planned_layout(args, screen):
+    """``(摄像头位置, PyBullet 目标矩形)``：左摄像头、右 PyBullet，中间留 8 px。"""
+    width, height = screen
+    camera = getattr(args, "preview_window_pos", None)
+    capture_width = int(getattr(args, "width", 640) or 640)
+    # 分界线：至少让摄像头窗口（默认 640 宽）整块放进左半边；屏幕窄时保底给仿真留 320。
+    split = max(capture_width + 60, width // 2)
+    split = min(split, max(width - 320, 320))
+    rect = (split + 8, 40, max(width - split - 16, 320), max(height - 120, 320))
+    return camera, rect
+
+
+def arrange_two_windows(args):
+    """把 PyBullet 窗口摆到右半边（后台线程等它出现，不阻塞主链路）。"""
+    if os.environ.get(LAYOUT_ENV, "").strip().lower() in ("off", "0", "no", "false"):
+        base.log("INFO", f"window layout off ({LAYOUT_ENV}=off): drag the windows yourself")
+        return None
+    if getattr(args, "headless", False) or getattr(args, "no_preview", False):
+        return None
+    screen = screen_size()
+    if screen is None or _win32() is None:
+        base.log("INFO", "cannot query the screen size here: both windows stay where the "
+                         "system puts them (pass --preview-window-pos X,Y to move the camera one)")
+        return None
+    camera, target = planned_layout(args, screen)
+    where = ("where the system puts it" if camera is None
+             else f"at {camera[0]},{camera[1]}")
+    base.log("INFO", f"two windows side by side (screen {screen[0]}x{screen[1]}): camera preview "
+                     f"on the left {where}, PyBullet (three robots) on the right at "
+                     f"{target[0]},{target[1]} ({target[2]}x{target[3]})")
+    base.log("INFO", f"set {LAYOUT_ENV}=off to place the windows yourself")
+
+    def worker():
+        deadline = time.monotonic() + LAYOUT_TIMEOUT_S
+        while time.monotonic() < deadline:
+            hwnd = find_pybullet_window()
+            if hwnd:
+                before = window_rect(hwnd)
+                if before == target:
+                    base.log("OK", f"PyBullet window already at {target}")
+                elif move_window(hwnd, target):
+                    base.log("OK", f"PyBullet window {before} -> {target}")
+                else:
+                    base.log("WARN", f"cannot move the PyBullet window (stays {before})")
+                return
+            time.sleep(LAYOUT_POLL_S)
+        base.log("WARN", f"PyBullet window not found within {LAYOUT_TIMEOUT_S:.0f} s: "
+                         f"drag it next to the camera window yourself")
+
+    thread = threading.Thread(target=worker, name="pybullet-window-layout", daemon=True)
+    thread.start()
+    return thread
 
 
 def main(argv) -> int:
@@ -95,9 +248,13 @@ def main(argv) -> int:
     args = build_parser().parse_args(extra)
     base.log("INFO", "two windows: camera preview + PyBullet; press q/Esc in the camera "
                      "window (or close PyBullet) to stop")
-    if getattr(args, "preview_window_pos", None) is not None:
+    if getattr(args, "input_npz", None) is not None:
+        base.log("INFO", f"replay mode (--input-npz): no camera window opens, only the "
+                         f"PyBullet window shows the three robots")
+    elif getattr(args, "preview_window_pos", None) is not None:
         base.log("INFO", f"the camera window is moved to {args.preview_window_pos} and kept "
                          f"on top; look for the window titled {PREVIEW_WINDOW!r}")
+    arrange_two_windows(args)
     if args.arm_calibrate_mode == "hold":
         follow = ("the arms hold their working point until then "
                   "(--arm-calibrate-mode hold)")
