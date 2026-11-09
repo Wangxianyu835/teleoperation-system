@@ -16,6 +16,12 @@ PHYSICS_DT = 1.0 / 240.0
 ARM_FORCE = 200.0
 IK_ITERATIONS = 200
 IK_RESIDUAL_THRESHOLD = 1e-5
+#: 手臂关节限位容差（rad）：IK 解落在 URDF 边界外这么一点点以内就**夹到边界**，不是丢整帧。
+#: 三机 900 帧实测（2026-11-09，h1_2 + g1 + gr1_t2）：全部 209 次限位拒绝的超限量都在
+#: 0.1~7.8 mrad，且都只落在腕关节（wrist_yaw / wrist_pitch / wrist_roll），属数值噪声；
+#: 按 1e-5 拒绝等于让手臂在这些帧卡住上一姿势。真正不可达的目标不会走这条路 —— 它落在
+#: ``pose_position_conflict``（位置残差 50~100 mm），不受本容差影响。
+ARM_LIMIT_TOLERANCE = 1e-2
 SHOULDER_KEYWORD = "shoulder"
 ELBOW_KEYWORD = "elbow"
 #: 「肘跟手」（``posture_from_bend``）在加载时量肘关节正方向用的探针角（度）：把该关节拧
@@ -737,10 +743,10 @@ class PyBulletArmIK:
     def _arm_values(self, side: str, solution) -> dict:
         """Return named arm angles with tolerance-sized overshoot pulled onto the bounds.
 
-        The wrist branch above accepts a value up to 1e-5 rad outside the URDF limits so a
-        saturated pose is not rejected on every frame, while command validation requires the
-        exact limits (1e-6). Return only in-range values; keep larger violations untouched so
-        the existing rejection path still refuses them.
+        The wrist branch accepts a value up to ``ARM_LIMIT_TOLERANCE`` outside the URDF limits
+        so a saturated pose is not rejected on every frame, while command validation requires
+        the exact limits (1e-6). Return only in-range values; keep larger violations untouched
+        so the existing rejection path still refuses them.
         """
         values = {}
         for index, name in self.arm[side]:
@@ -748,10 +754,33 @@ class PyBulletArmIK:
             value = float(solution[position])
             low = float(self.limits["lower"][position])
             high = float(self.limits["upper"][position])
-            if np.isfinite(value) and low - 1e-5 <= value <= high + 1e-5:
+            if np.isfinite(value) and low - ARM_LIMIT_TOLERANCE <= value <= high + ARM_LIMIT_TOLERANCE:
                 value = min(max(value, low), high)
             values[name] = value
         return values
+
+    def _limit_violation(self, side: str, solution) -> dict:
+        """Worst out-of-limit arm joint of a rejected solution (report diagnostic).
+
+        The wrist branch rejects a pose whose arm values leave the URDF bounds by more than
+        ``ARM_LIMIT_TOLERANCE``. Recording which joint, its value and the excess lets a report
+        tell boundary noise (1e-6..1e-3 rad) from a genuinely unreachable target.
+        """
+        worst = None
+        for index, name in self.arm[side]:
+            position = self.position_of[index]
+            value = float(solution[position])
+            low = float(self.limits["lower"][position])
+            high = float(self.limits["upper"][position])
+            if not np.isfinite(value):
+                return {"joint": name, "value": None, "lower": round(low, 6),
+                        "upper": round(high, 6), "excess_rad": None}
+            excess = value - high if value > high else low - value
+            if excess > ARM_LIMIT_TOLERANCE and (worst is None or excess > worst["excess_rad"]):
+                worst = {"joint": name, "value": round(value, 6),
+                         "lower": round(low, 6), "upper": round(high, 6),
+                         "excess_rad": round(float(excess), 8)}
+        return worst or {}
 
     def _teleport(self, side: str, solution) -> None:
         """Temporarily set arm joint positions for the next IK pass, without stepping physics."""
@@ -951,10 +980,12 @@ class PyBulletArmIK:
             for index, _name in self.arm[side]:
                 k = self.position_of[index]
                 value = solution[k]
-                if not np.isfinite(value) or not self.limits["lower"][k] - 1e-5 <= value <= self.limits["upper"][k] + 1e-5:
+                if not np.isfinite(value) or not self.limits["lower"][k] - ARM_LIMIT_TOLERANCE <= value <= self.limits["upper"][k] + ARM_LIMIT_TOLERANCE:
                     rejection = "nonfinite_or_limit"
                 largest_step = max(largest_step, abs(value - previous[index]))
             if rejection:
+                if rejection == "nonfinite_or_limit":
+                    details["limit_violation"] = self._limit_violation(side, solution)
                 solution = [previous[index] for index in self.indices]
             elif largest_step > .35:
                 # Bound a branch-sized step without permanently rejecting an
