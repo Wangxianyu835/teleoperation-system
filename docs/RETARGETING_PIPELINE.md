@@ -709,6 +709,104 @@ $py='E:\python3.11.7\python.exe'; $env:PYTHONPATH="$pwd\src"; $env:PYTHONUTF8='1
   `visionpro_check_report.json`、`visionpro_axis_report.json`、`hand_align_probe.json`、`derived_layer_check.json`。
 
 
+### 4.7 队友共享 NN 权重的端到端验收（2026-11-09，`3eb1dd8` 交付）
+
+队友交付包 `shared_nn_3eb1dd8_20261109.zip`（327.94 MB）内含 `h1_2` / `l21` 两个模型 ZIP
+（164.11 / 163.74 MB）加 `manifest.json`、`README.md`、`SHA256SUMS.txt`。
+`source_commit = 3eb1dd844799433383aea2259b4c7aa6ea43a686`（= `origin/wrist-input-arm-follow` 的 HEAD），
+run 名 `six_term_all_20261031_232129`，profile `camera_palm_length_window3_v1`，左右手共享权重
+（l21 17 DOF / best_epoch 96，h1_2 6 DOF / best_epoch 81，训练集 sha256 `67e16971...`）。
+交付包 README 明确：**他只做了加载器/身份校验，没有跑过 VR 推理**（`manifest.json` 里 `vr_inference_run: false`），
+所以跨设备效果由这次验收首次测量。
+
+#### 一、包完整性（先验哈希再动手）
+
+| 检查 | 结果 |
+|---|---|
+| 两个内层 ZIP 的 SHA256 vs `SHA256SUMS.txt` | 2/2 一致 |
+| 解开后 6 个文件的长度 + SHA256 vs `manifest.json` | 6/6 一致（`model_best.pth` 186048807 / 185942311 B，`config.json` 5009 / 4606 B，`dataset.json` 535 B）|
+| 落盘位置 | `outputs/hand_retargeting/models/<l21|h1_2>/shared/nn/camera_palm_length_window3_v1/six_term_all_20261031_232129/`（每个 `.pth` 177 MB，两个共 ~354 MB）|
+| 运行期 spec 身份 | l21 右手 `--output-h5` 的 `spec_hash = b9de716b...` 与 `manifest.json` 的 `models[0].spec_hash` 逐字符一致 |
+
+结论：包没坏、身份没串。`l21` 与 `h1_2` 的 `config.json` 不同（5009 vs 4606 B），按手型分开加载，不能互换。
+
+#### 二、真权重推理：链路通
+
+以下命令都在 `F:\sim_wt_wrist`（`3eb1dd8` 的 worktree）里跑，输入是
+`datasets/raw/visionpro_hand_arm_20261012_215137_live.h5`（2886 帧，已验过格式兼容）：
+
+```powershell
+$py='E:\python3.11.7\python.exe'; $env:PYTHONPATH="$pwd\src"; $env:PYTHONUTF8='1'
+$run='six_term_all_20261031_232129'; $root="outputs\hand_retargeting\models"
+$l21="$root\l21\shared\nn\camera_palm_length_window3_v1\$run\model_best.pth"
+$h12="$root\h1_2\shared\nn\camera_palm_length_window3_v1\$run\model_best.pth"
+
+# l21：两段录像都跑通
+& $py -m teleoperation hand vr --backend nn --hand-model l21 --hand both `
+    --checkpoint $l21 --input-h5 datasets\raw\visionpro_hand_arm_20261012_215137_live.h5 `
+    --device cpu --headless --frames 120 --fps 0 --report outputs\recv_l21_nn_vr.json
+
+# 看窗口（真权重下必须是这条才看得出动作）
+& $py -m teleoperation hand vr --backend nn --hand-model l21 --hand both `
+    --checkpoint $l21 --input-h5 datasets\raw\visionpro_hand_arm_20261012_215137_live.h5 `
+    --device cpu --scene hands --fps 20 --no-collision-guard
+```
+
+| 项 | 实测 |
+|---|---|
+| `hand vr` 退出码 / 耗时 | 0 / 23 s（CPU，20 帧/sec 左右）|
+| 帧数 / 有效解 | 120 / 236（左右各 118，与 smoke 权重持平）|
+| `limit_clipped` | 0（17 维全部在限位内）|
+| `hand train -> .pth -> hand vr -> PyBullet` | 通；`--scene hands` 窗口里左右手的手指弯曲/张开随帧变化（worktree 的 `outputs/noguard_a.png` 与 `noguard_b.png`）|
+
+#### 三、真权重暴露的三个问题（按严重度）
+
+1. **L21 默认碰撞网在真权重下拦掉几乎全部命令（手看起来"冻住"）。**
+   215137 段：左 `blocked_commands = 117 / 118`、右 `104 / 118`；换 213812 段：**左右各 118 / 118 全拦**。
+   阻塞对恒定是 `index_metacarpals x middle_metacarpals`：参考位 `-7.55e-5 m`，命令位 `-2.9e-4` 到 `-3.3e-4 m`，
+   允许值 `-1.76e-4 m`（= 基线穿深 + 0.1 mm）。加 `--no-collision-guard` 后 `rate_limited` 降到 94 / 85，
+   动作恢复正常。**先看 `commands.collision_guard.<hand>.blocked_commands`，别先怀疑权重没加载。**
+
+2. **根因线索：`*_mcp_roll`（展开角，限位 ±0.18 rad）在 VR 输入上被模型自己钉在极限。**
+   从 `--output-h5` 的 `raw_positions` 统计（120 帧，左右各 118 有效）：
+
+   | 关节 | 左手 min..max | 右手 min..max |
+   |---|---|---|
+   | `index_mcp_roll` | -0.074..+0.113 | -0.068..+0.152 |
+   | `middle_mcp_roll` | -0.154..-0.109 | +0.081..+0.145 |
+   | `ring_mcp_roll` | -0.170..-0.138 | +0.098..+0.164 |
+   | `pinky_mcp_roll` | **-0.180..-0.178** | **+0.172..+0.180** |
+
+   左手三指恒定负、右手三指恒定正、小指正好贴在 ±0.180，而食指方向明显不同 => 相邻掌骨相向转约 0.15 rad，
+   穿插加深 0.2-0.3 mm。`limit_clipped = 0` 说明**不是管线截断**，是模型输出层自带界限被顶满：
+   roll 通道在 VR（头显）输入上处于训练分布外（训练集全是摄像头数据）。
+   建议队友先跑一遍自己的 VR 验收，再决定是加 roll 正则/后处理还是放宽碰撞网预算。
+
+3. **`h1_2` 真权重跑满 120 帧会抛 `ValueError: Part exceeds joint limits`。**
+   60 帧能过（116 有效解），120 帧挂在 `right_arm / right_wrist_pitch_joint = 0.470007`，URDF 限位 `0.47`，
+   **超 7e-6 rad**，而 `robots/control_spec.py:62` 的容差是 `1e-6`。
+   值来自手臂 IK 的 `report['joints']`（`simulation/arm_scene_driver.py::solve_each`），
+   经 `applications/accepted_robot_output.py:62` 直接进 `applications/robot_commands.py:31` 校验，中间没有按限位 clip。
+   修法两种：IK 输出侧按 `part.limits` clip，或把校验容差放到 `1e-5`（7e-6 在 float 上已属数值噪声）。
+   **不是权重问题**（同一份权重 60 帧全绿）。
+
+#### 四、回给队友的三条
+
+1. 包完整、加载器接受、VR 推理能出解，`spec_hash` 一致；但 L21 默认碰撞网在真权重下拦 ~99%（两段录像都这样），
+   请先看 `*_mcp_roll` 是否被顶到 ±0.18。
+2. `h1_2` 120 帧挂在 `right_wrist_pitch_joint 0.470007 > 0.47`，请在手臂 IK 输出侧 clip 或放宽
+   `validate_frame` 容差（README 的示例命令正好是 --frames 120，直接照抄会挂）。
+3. 交付包 README 的命令本身**可以照跑**（`--backend nn` 时 `hand vr` 直接委派给 `applications/hand_control.run`，
+   `--hand both` 不再要求 `--hand-mapping same`，只有 legacy TransHandR 分支才要）；建议补三条注意点：
+   ① 手"冻住"先看 `commands.collision_guard.<hand>.blocked_commands`，并用 `--no-collision-guard` 做对照；
+   ② `hand vr` 的结果用 `--output-h5` + `--report`（`--record-results` 是 `robot control` 的开关，混用会被 argparse 拒）；
+   ③ `h1_2` 的示例 `--frames 120` 目前会挂在右侧腕关节限位（见上面第 3 条）。
+
+本次核验产物都在 worktree 的 `outputs/`（未入库）：`recv_l21_nn_vr.json`、`recv_l21_noguard.json`、
+`recv_l21_vr2.json`、`recv_l21_joints.h5`、`recv_h12_nn_vr.log`、`real_hands_a/b.png`、`noguard_a/b.png`，
+探针 `probe_l21_roll.py` / `probe_h12_failing_part.py` / `probe_expand_limits.py`。
+
+
 ---
 
 ## 5. 旧布局 → 新布局对照表（合并前的习惯怎么迁过来）
