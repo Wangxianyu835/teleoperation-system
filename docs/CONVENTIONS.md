@@ -367,8 +367,8 @@ git commit -F outputs\tmp_commit\msg.txt
 6. **测试同理**：优先加到既有 `tests/test_*.py` 里新增 `TestCase`，不要一个小改动建一个测试文件。
 7. **启动器同理（★ 用户 2026-11-09 明确要求）**：`devtools/run_*.py` 这类一键入口**只养一个**；
    新增"现场档 / 预设 / 对照档"用**开关**表达（例：`devtools/run_realtime_arm_windows.py
-   --elbow-follow operator`），不要再建 `run_xxx_yyy_windows.py` 这种薄包装文件；已有的包装档
-   要并回主入口并删掉（2026-11-09 就并掉了一个 `run_realtime_arm_elbow_follow_windows.py`）。
+   --elbow-follow off` = 历史档，留空 = 现场档），不要再建 `run_xxx_yyy_windows.py` 这种薄包装文件；
+   已有的包装档要并回主入口并删掉（2026-11-09 就并掉了一个 `run_realtime_arm_elbow_follow_windows.py`）。
 
 **为什么**：同一个功能的代码散在多个文件里，改一处忘一处 —— 这类"遗漏"是本项目返工的主要来源
 （对照约定 3 的翻车记录：一次改动了 4 个文件、事后全部回退）。
@@ -389,7 +389,7 @@ git commit -F outputs\tmp_commit\msg.txt
 | 5 | 没有禁入库目录/大资产进暂存（`lib/`、`.venv/`、`outputs/`、`tmp_*`，或 `.pt/.h5/...` > 5 MB）| 约定 7 | `git restore --staged <路径>`，文件搬进 `outputs/tmp_*/` |
 | 6 | 规则文件在位（`.clinerules`、`docs/CONVENTIONS.md`）| 约定 12 | 补回文件 |
 | 7 | 架构边界：11 个旧布局根条目名（`scripts`、`retargeting`、`teleop`...）+ `src/teleoperation/**` 里的 `sys.path.insert` | 原属队友 `tests/architecture/test_boundaries.py:107`（上游 `10ebd9f` 已删该文件），现由本脚本自查 | 改名/搬家（我们的工具目录固定叫 `devtools/`）|
-| 8 | `-Full`：`unittest discover`（判 `failures<=-MaxFail`、`errors<=-MaxErr`）+ 4 条 CLI 冒烟 | 约定 5 | 当前基线实测 `Ran 372 tests / failures=0 / errors=0 / skipped=3`（2026-11-09，§3.2）|
+| 8 | `-Full`：`unittest discover`（判 `failures<=-MaxFail`、`errors<=-MaxErr`）+ 4 条 CLI 冒烟 | 约定 5 | 当前基线实测 `Ran 373 tests / failures=0 / errors=0 / skipped=3`（2026-11-09，§3.2）|
 
 退出码：`0` = 无 `[FAIL]`（`[WARN]` 允许），`1` = 至少一项 `[FAIL]`。
 开关：`-Full`、`-Base <sha>`（默认 `10ebd9f`）、`-MaxFail N`（默认 `0`）、`-MaxErr N`（默认 `17`，宽松上限；基线实测 `errors=0`）、
@@ -400,7 +400,7 @@ git commit -F outputs\tmp_commit\msg.txt
 | 环境 | `python -m unittest discover -s tests -v` 期望（2026-10-10 实测）| `preflight.ps1 -Full` 参数 |
 |---|---|---|
 | 正式 conda `teleoperation`（Python 3.10.20）| `OK (skipped=1)` | 默认即可；更严用 `-MaxFail 0 -MaxErr 0` |
-| 本机回落 `E:\python3.11.7\python.exe` + `PYTHONPATH=src` | `Ran 372 tests` / `failures=0` / `errors=0` / `skipped=3`（2026-11-09 实测 `OK (skipped=3)`）| 默认（`-MaxFail 0 -MaxErr 17`），**建议仍带 `PYTHONUTF8=1`**（上游删 `tests/` 前不带它会多 6 项假失败）|
+| 本机回落 `E:\python3.11.7\python.exe` + `PYTHONPATH=src` | `Ran 373 tests` / `failures=0` / `errors=0` / `skipped=3`（2026-11-09 实测 `OK (skipped=3)`）| 默认（`-MaxFail 0 -MaxErr 17`），**建议仍带 `PYTHONUTF8=1`**（上游删 `tests/` 前不带它会多 6 项假失败）|
 
 **`PYTHONUTF8=1` 是怎么变成"硬要求"的**（历史）：上游删 `tests/` 之前，那 6 个子进程用例
 断言中文结束语"仿真环境已关闭"，子进程按 UTF-8 打印、父进程按控制台 cp936 解码 → 断言失败
@@ -470,6 +470,6 @@ Python 报 `invalid PYTHONUTF8 value`）—— 这也是约定 10"看退出码�
 | 2026-10-10 | v1.0 | 首版：旧布局（`retargeting/` 等）的约定移植到 `current-state` 布局；新增 `devtools/` 工具链与 `docs/RETARGETING_PIPELINE.md`；确认两个关键结论 —— 必须 `PYTHONUTF8=1`、工具目录必须叫 `devtools/`（队友架构黑名单）| `docs/CONVENTIONS.md`、`.clinerules`、`docs/RETARGETING_PIPELINE.md`、`devtools/*` |
 | 2026-10-10 | v1.1 | **基线随上游推进到 `10ebd9f`**（`src/teleoperation/apps/` -> `applications/` 整目录改名；上游删除整个 `tests/`、`docs/archive/`、`configs/` 与两个 `datasets/raw/*.h5`）：本支 rebase 到新基线、同步 49 处路径引用，并把所有钉死的数字刷新（基线 `747` 文件 / `Ran 19 tests` / `errors=0`）；`preflight.ps1` 的 `-Base` 默认值由 `42bbe10` 改为 `10ebd9f` | `docs/CONVENTIONS.md`、`.clinerules`、`docs/RETARGETING_PIPELINE.md`、`devtools/*` |
 | 2026-10-14 | v1.2 | **新增约定 14「改动落点：优先在既有文件里增量修改」**（用户 2026-10-14 明确要求：不要动不动新建文件，否则"这一块那一块"、以后容易漏改）；同步 `.clinerules`。配套：`preflight.ps1` 第 4 项把 `.clinerules`、`docs/CONVENTIONS.md`、`docs/RETARGETING_PIPELINE.md` 与 `devtools/**` 加进默认放行名单 —— 它们分别是本支自己维护的**规则文件**（改约定本身是受控动作）、**运行/验收手册**、**工具链**（`.clinerules` 布局说明里就写着 `devtools/**` 与 `docs/**` 是"我加的、可改"，只是被队友线合并进了基线），都不是队友算法代码；其余基线文件（`src/teleoperation/**`、`assets/**`、`datasets/**`、队内共用的 `docs/contracts.md` / `architecture.md` / `TEAM_ONBOARDING.md`、`pyproject.toml`、`README.md`）照旧零改动 | `docs/CONVENTIONS.md`、`.clinerules`、`devtools/preflight.ps1` |
-| 2026-11-09 | v1.3 | **约定 14 加第 7 条「启动器只养一个」**（用户 2026-11-09 明确要求：`devtools` 里入口文件太多太乱，以后代码写在同一个文件里）：新档位用开关表达（`--elbow-follow operator`），不建薄包装文件；同日已把 `devtools/run_realtime_arm_elbow_follow_windows.py` 并回 `devtools/run_realtime_arm_windows.py` 并删除。顺手刷新本文件里过期的自检期望值：`unittest discover -s tests` 现为本机实测 `Ran 372 tests / OK (skipped=3)`（不再是 19） | `docs/CONVENTIONS.md`、`.clinerules`、`docs/multi-robot-arm.md`、`docs/RETARGETING_PIPELINE.md`、`devtools/run_realtime_arm_windows.py`、`tests/test_arm_realtime_bridge.py` |
+| 2026-11-09 | v1.3 | **约定 14 加第 7 条「启动器只养一个」**（用户 2026-11-09 明确要求：`devtools` 里入口文件太多太乱，以后代码写在同一个文件里）：新档位用开关表达（`--elbow-follow operator`），不建薄包装文件；同日已把 `devtools/run_realtime_arm_elbow_follow_windows.py` 并回 `devtools/run_realtime_arm_windows.py` 并删除，且现场口径 `--arm-elbow-follow operator` 成为该启动器的默认值（Parameters 留空 = 现场档，`--elbow-follow off` / 旧糖 `--off` = 历史档）。顺手刷新本文件里过期的自检期望值：`unittest discover -s tests` 现为本机实测 `Ran 373 tests / OK (skipped=3)`（不再是 19） | `docs/CONVENTIONS.md`、`.clinerules`、`docs/multi-robot-arm.md`、`docs/RETARGETING_PIPELINE.md`、`devtools/run_realtime_arm_windows.py`、`tests/test_arm_realtime_bridge.py` |
 
 > 改约定 = 本表加一行 + `.clinerules` 同步（约定 12）。

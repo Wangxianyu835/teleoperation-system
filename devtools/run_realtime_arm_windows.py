@@ -23,22 +23,23 @@ PyCharm 怎么配
 
     E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py
     E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --check
-    E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --elbow-follow operator
+    E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --elbow-follow off
     E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --arm-trace
     E:\\python3.11.7\\python.exe devtools\\run_realtime_arm_windows.py --robot h1_2 --side right
 
-现场档（``--elbow-follow``）
-----------------------------
-2026-10-15 现场看过说"还不错"的那一版是**肘跟着你弯**（入口参数
-``--arm-elbow-follow operator``）。它原先单独立了一个薄封装
+现场档（默认口径，= 2026-10-15 现场验收"还不错"的那一版）
+--------------------------------------------------------
+那一版是**肘跟着你弯**（入口参数 ``--arm-elbow-follow operator``）。它原先单独立了一个薄封装
 ``devtools/run_realtime_arm_elbow_follow_windows.py``；2026-11-09 按"一个功能只住一个文件"
-并回本文件并删掉那个文件：
+并回本文件、删掉那个文件，并把这个口径设成**本文件的默认值** —— 所以 PyCharm 的
+Parameters **留空 = 现场档**，不用记参数：
 
-    PyCharm Parameters = --elbow-follow operator     <- 现场档
-    PyCharm Parameters = （留空）                     <- 入口默认口径（off，历史行为）
+    Parameters 留空                                   -> 现场档（elbow follow = operator）
+    Parameters = --elbow-follow off                   -> 历史档（elbow follow = off）
+    Parameters = --off                                -> 同上（旧薄封装的糖，保留兼容）
 
-``--elbow-follow`` 只是本文件的糖，交给入口前会换成 ``--arm-elbow-follow``；你自己写了
-``--arm-elbow-follow`` 就不插手（以你的为准）。
+``--elbow-follow`` / ``--off`` 只是本文件的糖，交给入口前会换成 ``--arm-elbow-follow``；
+你自己写了 ``--arm-elbow-follow`` 就不插手（以你的为准）。
 
 两个窗口怎么摆（本文件负责，队友文件一行未改）
 ----------------------------------------------
@@ -69,8 +70,9 @@ import run_realtime_windows as base      # 同目录：环境准备 / 体检 / �
 ROOT = base.ROOT
 REPORT_DIR = ROOT / "outputs" / "tmp_realtime"
 POSE_ASSET = ROOT / "datasets" / "pose_landmarker_lite.task"
-#: 本文件的糖 ``--elbow-follow`` 与它换成入口参数后的名字（现场档 = operator）。
+#: 本文件的糖 ``--elbow-follow`` 与它换成入口参数后的名字（默认 = 现场档 operator）。
 ELBOW_SWITCH = "--elbow-follow"
+ELBOW_OFF_SWITCH = "--off"      # 旧薄封装的糖：等价 --elbow-follow off（历史档）
 ELBOW_FLAG = "--arm-elbow-follow"
 ELBOW_BUILD = "operator"
 #: PyBullet GUI 窗口的身份（2026-11-09 实测：类名 DeviceWin32，标题以 'Bullet Physics' 开头）。
@@ -233,17 +235,25 @@ def arrange_two_windows(args):
 
 
 def apply_elbow_preset(argv: list[str]) -> list[str]:
-    """``--elbow-follow operator|off`` -> ``--arm-elbow-follow operator|off``。
+    """把"现场档"钉进参数表：默认 ``--arm-elbow-follow operator``。
 
-    2026-11-09 并回来的"现场档"：原先它在 ``run_realtime_arm_elbow_follow_windows.py`` 里是
-    默认值（那个文件已经不在了），现在改成显式开关，不写就是入口自己的默认口径。
-    你自己写了 ``--arm-elbow-follow`` 就不插手 —— 以你的为准。
+    2026-10-15 现场验收"还不错"的那一版就是 ``operator``（肘跟着你弯）。它原先是薄封装
+    ``run_realtime_arm_elbow_follow_windows.py`` 的默认值；那个文件 2026-11-09 并回本文件后，
+    这里直接把它当**默认口径** —— Parameters 留空就是这一档，不用记参数。
+
+    - ``--elbow-follow off`` / 旧糖 ``--off`` -> 历史档（``off``，= 入口自己的默认）
+    - 自己写了 ``--arm-elbow-follow`` -> 不插手（以你的为准）
+    两种糖都会从参数表里摘掉，免得漏给入口 parser 报 unrecognized arguments。
     """
     cleaned: list[str] = []
     wanted: "str | None" = None
     index = 0
     while index < len(argv):
         item = argv[index]
+        if item == ELBOW_OFF_SWITCH:            # 旧薄封装的糖：--off = 历史档
+            wanted = "off"
+            index += 1
+            continue
         if item == ELBOW_SWITCH and index + 1 < len(argv):
             wanted = argv[index + 1]
             index += 2
@@ -254,16 +264,14 @@ def apply_elbow_preset(argv: list[str]) -> list[str]:
             continue
         cleaned.append(item)
         index += 1
-    if wanted is None:
-        return cleaned
     if any(item == ELBOW_FLAG or item.startswith(ELBOW_FLAG + "=") for item in cleaned):
         return cleaned
-    return cleaned + [ELBOW_FLAG, wanted]
+    return cleaned + [ELBOW_FLAG, wanted if wanted is not None else ELBOW_BUILD]
 
 
 def elbow_follow_value(argv: list[str]) -> str:
-    """启动行要打印的那一档（argparse 的规矩：后面的覆盖前面的；没有就报入口默认 off）。"""
-    value = "off"
+    """启动行要打印的那一档（argparse 的规矩：后面的覆盖前面的；没有就是现场档）。"""
+    value = ELBOW_BUILD
     for index, item in enumerate(argv):
         if item == ELBOW_FLAG and index + 1 < len(argv):
             value = argv[index + 1]
@@ -331,7 +339,8 @@ def main(argv) -> int:
     base.log("INFO", f"repo root   : {ROOT}")
     base.log("INFO", f"entry       : teleoperation.simulation.realtime_teleop")
     base.log("INFO", f"elbow follow: {elbow_follow_value(list(argv))}"
-                     f" (the field build is --elbow-follow {ELBOW_BUILD})")
+                     f" (field build = operator, the 2026-10-15 version; "
+                     f"add --elbow-follow off for the historical side)")
     gui_ok, gui_detail = base.gui_support()
     if gui_ok:
         base.log("OK", f"cv2 window support: {gui_detail}")

@@ -52,7 +52,7 @@
      `python -m teleoperation replay actions --dummy --steps 120 --robot h1_2 --no-render`；
      `python -m teleoperation tools check-environment`；`tools verify-hand-pipeline`
    - 全量：`PYTHONUTF8=1` 下 `python -m unittest discover -s tests -v` —— 本机回落解释器实测
-     `Ran 372 tests / OK (skipped=3)`（2026-11-09；上游 `10ebd9f` 已删掉队友的 `tests/`，
+     `Ran 373 tests / OK (skipped=3)`（2026-11-09；上游 `10ebd9f` 已删掉队友的 `tests/`，
      现在跑的是本支自己的套件）。`PYTHONUTF8=1` 仍建议带上
      （cp936 控制台拿 GBK 解 UTF-8 输出，见 CONVENTIONS 3.2）。
      判据是**不劣化**：`preflight.ps1 -Full`（默认 `-MaxFail 0 -MaxErr 17`），不是"必须全绿"。
@@ -81,6 +81,6 @@
   测试优先加到既有 `tests/test_*.py` 里新增 TestCase，不要一个改动一个测试文件。
 - **启动器只养一个**（★ 用户 2026-11-09 明确要求，见约定 14 第 7 条）：`devtools/run_*.py` 这类一键入口
   不要越建越多；新档位 / 预设 / 对照档用**开关**表达（例：`devtools\run_realtime_arm_windows.py
-  --elbow-follow operator`），不要写 `run_xxx_yyy_windows.py` 这种只钉一个参数的薄包装；已有的包装档
+  --elbow-follow off` = 历史档，留空 = 现场档），不要写 `run_xxx_yyy_windows.py` 这种只钉一个参数的薄包装；已有的包装档
   要并回主入口并在同一提交里删掉 + 改文档。
 - 回复用户用中文，结论先给"做了什么 / 证据 / 影响"，不要把过程日志堆在前面。

@@ -1353,7 +1353,7 @@ def load_arm_launcher():
 
 
 class ElbowFollowPresetTests(unittest.TestCase):
-    """启动器的 ``--elbow-follow`` 只干一件事：把现场档换成入口的那个参数。
+    """启动器的默认口径是 2026-10-15 的现场档，``--elbow-follow`` 只负责换成入口参数。
 
     ``--arm-elbow-follow`` 的语义在 ``arm_ik`` / ``arm_scene_driver`` 侧已由
     ``ElbowPostureTests`` 覆盖；这里钉的是"到底把哪个参数交给了入口"。
@@ -1362,9 +1362,18 @@ class ElbowFollowPresetTests(unittest.TestCase):
     def setUp(self):
         self.launcher = load_arm_launcher()
 
-    def test_without_the_switch_nothing_is_injected(self):
+    def test_default_run_is_this_build(self):
+        self.assertEqual(self.launcher.apply_elbow_preset([]),
+                         ["--arm-elbow-follow", "operator"])
         self.assertEqual(self.launcher.apply_elbow_preset(["--robot", "g1"]),
-                         ["--robot", "g1"])
+                         ["--robot", "g1", "--arm-elbow-follow", "operator"])
+
+    def test_the_off_switches_are_the_historical_side(self):
+        self.assertEqual(self.launcher.apply_elbow_preset(["--off"]),
+                         ["--arm-elbow-follow", "off"])
+        self.assertEqual(self.launcher.apply_elbow_preset(["--elbow-follow", "off"]),
+                         ["--arm-elbow-follow", "off"])
+        self.assertNotIn("--off", self.launcher.apply_elbow_preset(["--off"]))
 
     def test_the_switch_becomes_the_entry_flag(self):
         self.assertEqual(
@@ -1394,11 +1403,12 @@ class ElbowFollowPresetTests(unittest.TestCase):
             self.launcher.elbow_follow_value(
                 ["--arm-elbow-follow=off", "--arm-elbow-follow", "operator"]),
             "operator")
-        self.assertEqual(self.launcher.elbow_follow_value([]), "off")
+        self.assertEqual(self.launcher.elbow_follow_value([]), "operator")
+        self.assertEqual(self.launcher.elbow_follow_value(["--arm-elbow-follow", "off"]),
+                         "off")
 
     def test_the_pinned_choice_is_accepted_by_the_entry_parser(self):
-        args = build_parser().parse_args(
-            self.launcher.apply_elbow_preset(["--elbow-follow", self.launcher.ELBOW_BUILD]))
+        args = build_parser().parse_args(self.launcher.apply_elbow_preset([]))
         self.assertEqual(args.arm_elbow_follow, self.launcher.ELBOW_BUILD)
 
 
