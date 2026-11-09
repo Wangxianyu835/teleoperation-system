@@ -719,13 +719,17 @@ run 名 `six_term_all_20261031_232129`，profile `camera_palm_length_window3_v1`
 交付包 README 明确：**他只做了加载器/身份校验，没有跑过 VR 推理**（`manifest.json` 里 `vr_inference_run: false`），
 所以跨设备效果由这次验收首次测量。
 
+> **路径约定**：本节所有源码行号都指 worktree `F:\sim_wt_wrist` 的 **`3eb1dd8`**（= 交付这批权重的源码），
+> 不是本仓库当前的 `147d497` —— 后者没有 `simulation/hand_commands.py` 与 `robots/control_spec.py`，
+> `simulation/arm_ik.py` 也还是旧版，照本节的 `file:line` 去本仓库跳转会落到别处。
+
 #### 一、包完整性（先验哈希再动手）
 
 | 检查 | 结果 |
 |---|---|
 | 两个内层 ZIP 的 SHA256 vs `SHA256SUMS.txt` | 2/2 一致 |
 | 解开后 6 个文件的长度 + SHA256 vs `manifest.json` | 6/6 一致（`model_best.pth` 186048807 / 185942311 B，`config.json` 5009 / 4606 B，`dataset.json` 535 B）|
-| 落盘位置 | `outputs/hand_retargeting/models/<l21|h1_2>/shared/nn/camera_palm_length_window3_v1/six_term_all_20261031_232129/`（每个 `.pth` 177 MB，两个共 ~354 MB）|
+| 落盘位置 | `outputs/hand_retargeting/models/{l21,h1_2}/shared/nn/camera_palm_length_window3_v1/six_term_all_20261031_232129/`（每个 `.pth` 177 MB，两个共 ~354 MB）|
 | 运行期 spec 身份 | l21 右手 `--output-h5` 的 `spec_hash = b9de716b...` 与 `manifest.json` 的 `models[0].spec_hash` 逐字符一致 |
 
 结论：包没坏、身份没串。`l21` 与 `h1_2` 的 `config.json` 不同（5009 vs 4606 B），按手型分开加载，不能互换。
@@ -761,46 +765,73 @@ $h12="$root\h1_2\shared\nn\camera_palm_length_window3_v1\$run\model_best.pth"
 
 #### 三、真权重暴露的三个问题（按严重度）
 
-1. **L21 默认碰撞网在真权重下拦掉几乎全部命令（手看起来"冻住"）。**
-   215137 段：左 `blocked_commands = 117 / 118`、右 `104 / 118`；换 213812 段：**左右各 118 / 118 全拦**。
-   阻塞对恒定是 `index_metacarpals x middle_metacarpals`：参考位 `-7.55e-5 m`，命令位 `-2.9e-4` 到 `-3.3e-4 m`，
-   允许值 `-1.76e-4 m`（= 基线穿深 + 0.1 mm）。加 `--no-collision-guard` 后 `rate_limited` 降到 94 / 85，
-   动作恢复正常。**先看 `commands.collision_guard.<hand>.blocked_commands`，别先怀疑权重没加载。**
+1. **L21 默认碰撞护栏把绝大多数候选运动打进投影修正（左 117/118、右 104/118）。**
+   `blocked_commands` 是"候选路径触碰护栏、被投影修正"的次数，**不是整帧丢弃**：
+   `simulation/hand_commands.py:92` 的 `L21CollisionGuard.project` 先按 0.02 rad 步长扫路径、
+   遇到接触就二分出安全比例，然后逐维把屈曲类关节的候选值重新提议并整体复检，
+   返回一条**能执行的修正命令**（注释原文：Preserve feasible flexion rather than freezing the whole hand）。
+   从 `--output-h5` 复核（`outputs/probe_l21_roll.py`）：raw 相邻有效帧 117 次转换**全部有变化**（frozen=0），
+   最终 `command_positions` 119 次转换里 118 次在动 —— 谈不上"整手冻结"；
+   `--scene hands` 窗口里动作幅度小主要来自速度限幅（`rate_limited` 110/118 与 118/118，
+   单帧最大增量 0.038 rad ≈ 1.0 rad/s @30 Hz），不是护栏。
+   但 99% 的候选姿势都要修正，仍是必须解决的质量问题：参考位 `-7.55e-5 m` → 违规采样位 `-3.28e-4 m`，
+   预算 `-1.76e-4 m`（基线 0.075 mm + 0.1 mm），超 0.153 mm；213812 段左右 **118/118**。
+   是否该放宽网格预算**尚无结论**：训练侧碰撞损失是关节点距离代理（`learning/losses.py`），
+   运行侧是全网格 + 路径检查，两者不等价，需要先比相机/VR 的原始输出与具体碰撞姿态。
 
-2. **根因线索：`*_mcp_roll`（展开角，限位 ±0.18 rad）在 VR 输入上被模型自己钉在极限。**
-   从 `--output-h5` 的 `raw_positions` 统计（120 帧，左右各 118 有效）：
+2. **roll 通道有持续偏置、小指接近饱和；但不是"全部钉在 ±0.180"。**
+   从 `--output-h5` 的 `raw_positions` 统计（120 帧，左右各 118 有效，单位 rad）：
 
-   | 关节 | 左手 min..max | 右手 min..max |
+   | 关节 | 左手 min..max（mean） | 右手 min..max（mean） |
    |---|---|---|
-   | `index_mcp_roll` | -0.074..+0.113 | -0.068..+0.152 |
-   | `middle_mcp_roll` | -0.154..-0.109 | +0.081..+0.145 |
-   | `ring_mcp_roll` | -0.170..-0.138 | +0.098..+0.164 |
-   | `pinky_mcp_roll` | **-0.180..-0.178** | **+0.172..+0.180** |
+   | `index_mcp_roll` | -0.0985..+0.1233（-0.008）| -0.0925..+0.1523（+0.075）|
+   | `middle_mcp_roll` | -0.1541..-0.1093（-0.144）| +0.0807..+0.1451（+0.110）|
+   | `ring_mcp_roll` | -0.1702..-0.1385（-0.163）| +0.0982..+0.1638（+0.146）|
+   | `pinky_mcp_roll` | -0.17998..-0.17841（-0.1795）| +0.17226..+0.17999（+0.1777）|
 
-   左手三指恒定负、右手三指恒定正、小指正好贴在 ±0.180，而食指方向明显不同 => 相邻掌骨相向转约 0.15 rad，
-   穿插加深 0.2-0.3 mm。`limit_clipped = 0` 说明**不是管线截断**，是模型输出层自带界限被顶满：
-   roll 通道在 VR（头显）输入上处于训练分布外（训练集全是摄像头数据）。
-   建议队友先跑一遍自己的 VR 验收，再决定是加 roll 正则/后处理还是放宽碰撞网预算。
+   更准确的读法：**中指/无名指有同向的持续偏置，小指基本贴在限位（左手恒定 -0.179，右手 +0.178），
+   食指跨越零点**。左右符号相反是既有左手原生轴约定造成的，不算异常：`robots/hand_spec.py:132`
+   用 `OPERATOR_TO_CANONICAL['left'] = OPERATOR_TO_DEX_LEFT @ LEFT_DEX_TO_CANONICAL`（镜像变换）建掌基。
+   输出层本身是 tanh 软限幅 `center + range/2 * tanh(0.5 z)`（`retargeting/hand/transformer.py:292`
+   `AngleClamper`），网络内部幅值大时角度自然贴边、永远出不了 ±0.18 —— 所以 `limit_clipped = 0`
+   与之完全相容，**这不是管线 clip，也没有证据表明存在被截断**。
+   相邻掌骨相向转约 0.15 rad、穿插加深 0.2-0.3 mm 直接来自这些偏置；
+   但训练偏置 vs 跨设备分布变化仍未区分（该 run 的 `dataset.json` 指向的原训练 H5 本机缺失，
+   相机对照跑不起来），所以**不能断言"只在头显上饱和"**。
 
-3. **`h1_2` 真权重跑满 120 帧会抛 `ValueError: Part exceeds joint limits`。**
-   60 帧能过（116 有效解），120 帧挂在 `right_arm / right_wrist_pitch_joint = 0.470007`，URDF 限位 `0.47`，
-   **超 7e-6 rad**，而 `robots/control_spec.py:62` 的容差是 `1e-6`。
-   值来自手臂 IK 的 `report['joints']`（`simulation/arm_scene_driver.py::solve_each`），
-   经 `applications/accepted_robot_output.py:62` 直接进 `applications/robot_commands.py:31` 校验，中间没有按限位 clip。
-   修法两种：IK 输出侧按 `part.limits` clip，或把校验容差放到 `1e-5`（7e-6 在 float 上已属数值噪声）。
-   **不是权重问题**（同一份权重 60 帧全绿）。
+3. **`h1_2` 跑满 120 帧会在腕关节限位边界抛 `ValueError: Part exceeds joint limits`。**
+   我们 `--fps 0` 的复现是 `frame_id=92`（t=3.292 s）：`right_arm / right_wrist_pitch_joint = 0.470006893`，
+   上限 `0.47`，**超出 6.893e-6 rad**；队友在另一套 fps 下看到 `frame_id=99` / 7.153e-6。
+   **越界帧号随运行设置漂移**（同一份权重与 H5），说明这是贴限位时的间歇性数值边界，不是某一帧的数据问题。
+   契约不一致的三处：上游 `simulation/arm_ik.py:939` 判定 `lower - 1e-5 <= v <= upper + 1e-5`，
+   `_arm_values`（:737）把 IK 解原样返回、**不回收限位**；下游 `robots/control_spec.py:61` 只允许 `1e-6`。
+   即上游接受的值不满足下游契约。
+   修法应统一在 IK 输出边界：容差内的微小越界夹回合法区间，超容差的异常解继续拒绝/回退上一帧
+   （现有 `wrist_rejection` 分支已具备该语义）。**不建议单纯放宽下游容差** —— 那只是把越界命令留在管线里。
+   **与手指 shared 权重无关**（同一份权重 60 帧全绿）。
 
-#### 四、回给队友的三条
+#### 四、两轮复核后的结论
 
-1. 包完整、加载器接受、VR 推理能出解，`spec_hash` 一致；但 L21 默认碰撞网在真权重下拦 ~99%（两段录像都这样），
-   请先看 `*_mcp_roll` 是否被顶到 ±0.18。
-2. `h1_2` 120 帧挂在 `right_wrist_pitch_joint 0.470007 > 0.47`，请在手臂 IK 输出侧 clip 或放宽
-   `validate_frame` 容差（README 的示例命令正好是 --frames 120，直接照抄会挂）。
-3. 交付包 README 的命令本身**可以照跑**（`--backend nn` 时 `hand vr` 直接委派给 `applications/hand_control.run`，
-   `--hand both` 不再要求 `--hand-mapping same`，只有 legacy TransHandR 分支才要）；建议补三条注意点：
-   ① 手"冻住"先看 `commands.collision_guard.<hand>.blocked_commands`，并用 `--no-collision-guard` 做对照；
-   ② `hand vr` 的结果用 `--output-h5` + `--report`（`--record-results` 是 `robot control` 的开关，混用会被 argparse 拒）；
-   ③ `h1_2` 的示例 `--frames 120` 目前会挂在右侧腕关节限位（见上面第 3 条）。
+我方首轮结论发出后，队友用同一个 commit、同一份权重、同一份 VR H5 独立复现，并对两处措辞做了更正
+（本节已按更正后的说法重写）：
+
+| 我方首轮说法 | 复核后的准确说法 |
+|---|---|
+| 碰撞网"拦掉 / 整手冻结" | `blocked_commands` 是**投影修正次数**，命令仍会下发；H5 里 118/119 次转换有变化 |
+| `*_mcp_roll` "全部钉在 ±0.18" | 食指跨零点、中指/无名指同向偏置、**只有小指接近饱和**；输出层 tanh 天然贴边 |
+| 越界帧 = 61 或 99 | 越界帧随 fps 漂移（我方 fps=0 得 92，队友得 99），是贴限位的间歇性边界 |
+| （我方）可放宽 `validate_frame` 容差 | **应在 IK 输出边界收回限位**，下游严格校验保持不变 |
+| roll 偏置 = 只在头显输入上饱和 | 训练碰撞损失（关节点距离代理）与运行护栏（全网格 + 路径）不等价；训练偏置 vs 跨设备分布变化**尚未区分** |
+
+目前口径（与队友一致）：这批权重 **"身份校验通过、VR 推理可运行，闭环控制验收未通过"**。
+之前的交付验证只覆盖加载与元数据一致性，不能当作控制效果通过的依据。
+
+待办：
+
+1. 队友侧：`arm_ik.py` 输出边界统一限位（容差内夹回、超容差拒绝），并补一条 VR 自测到交付 README；
+2. 我方侧：拿到该 run 的原训练 H5 后做 **相机 vs VR 的 `raw_positions` 对照**（限幅前输出 + 具体碰撞姿态），
+   再判断是放网格预算、加 roll 后处理，还是要求重训；
+3. `h1_2` 的示例命令 `--frames 120` 在修好前会挂，复现时先用 `--frames 60`。
 
 本次核验产物都在 worktree 的 `outputs/`（未入库）：`recv_l21_nn_vr.json`、`recv_l21_noguard.json`、
 `recv_l21_vr2.json`、`recv_l21_joints.h5`、`recv_h12_nn_vr.log`、`real_hands_a/b.png`、`noguard_a/b.png`，
