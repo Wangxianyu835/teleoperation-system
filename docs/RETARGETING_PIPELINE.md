@@ -823,19 +823,47 @@ $h12="$root\h1_2\shared\nn\camera_palm_length_window3_v1\$run\model_best.pth"
 | （我方）可放宽 `validate_frame` 容差 | **应在 IK 输出边界收回限位**，下游严格校验保持不变 |
 | roll 偏置 = 只在头显输入上饱和 | 训练碰撞损失（关节点距离代理）与运行护栏（全网格 + 路径）不等价；训练偏置 vs 跨设备分布变化**尚未区分** |
 
-目前口径（与队友一致）：这批权重 **"身份校验通过、VR 推理可运行，闭环控制验收未通过"**。
+目前口径（与队友一致）：这批权重 **"身份校验通过、VR 推理可运行"，闭环控制验收"跑不通 → 现已可跑通、但一致性待训练侧"**。
 之前的交付验证只覆盖加载与元数据一致性，不能当作控制效果通过的依据。
 
 待办：
 
-1. 队友侧：`arm_ik.py` 输出边界统一限位（容差内夹回、超容差拒绝），并补一条 VR 自测到交付 README；
-2. 我方侧：拿到该 run 的原训练 H5 后做 **相机 vs VR 的 `raw_positions` 对照**（限幅前输出 + 具体碰撞姿态），
-   再判断是放网格预算、加 roll 后处理，还是要求重训；
-3. `h1_2` 的示例命令 `--frames 120` 在修好前会挂，复现时先用 `--frames 60`。
+1. ~~`arm_ik.py` 输出边界统一限位~~ —— **我方已改好**，见下面第五节（worktree 分支 `fix/limit-clamp-and-guard-margin`）；
+2. 队友侧：把这两处修复合回 `wrist-input-arm-follow`，并在交付 README 补一条 VR 自测；
+3. 我方侧：拿到该 run 的原训练 H5 后做 **相机 vs VR 的 `raw_positions` 对照**（限幅前输出 + 具体碰撞姿态），
+   再判断是放网格预算、加 roll 后处理，还是要求重训 —— 这是唯一剩下的"是否影响控制质量"问题。
+
+#### 五、我方已落地的两处最小修复
+
+都在 worktree `F:\sim_wt_wrist` 的新分支 `fix/limit-clamp-and-guard-margin`（从 `3eb1dd8` 拉出，commit `c1a0af8`，
+只动 2 个文件、+21/-5 行，**没有改动任何配置/权重/接口**）：
+
+1. `simulation/arm_ik.py::_arm_values`：把 `±1e-5` 容差内的越界夹回 URDF 限位再返回；超容差的解原样返回，
+   仍由已有 `wrist_rejection` 分支拒绝。等于把「上游接受 1e-5 / 下游只收 1e-6」的口径对齐在 IK 出口，
+   下游 `robots/control_spec.py` 的严格校验一行没动。
+2. `simulation/hand_commands.py`：相邻掌骨的初始接触预算从硬编码 `0.0001` 改为 `self.margin`
+   （即 `--collision-margin-mm`，默认 1 mm），与其余碰撞对同一口径；docstring 同步改。
+
+验证（同一份权重 + 同一份 H5，`--fps 0`）：
+
+| 项 | 修复前 | 修复后 |
+|---|---|---|
+| l21 215137 / 213812，120 帧 | exit 0 / exit 0 | exit 0 / exit 0 |
+| h1_2 120 帧 | `ValueError` @ frame 92 | **exit 0**，118+118 命令、`limit_clipped=0` |
+| `_arm_values` 实际夹了几次 | —— | 222 次调用 **只夹 2 个值**，最大 `6.893e-06 rad`（`outputs/probe_arm_clamp.py`）|
+| 护栏对最终命令的扰动（对 `--no-collision-guard` 逐帧比）| 左 mean 0.236 rad / max 0.390；右 0.146 / 0.296 | 左 **0.123** / 0.219；右 **0.063** / 0.167 |
+| `--collision-margin-mm 0.1` | 不可配（硬编码）| 可复现旧行为：左 `blocked=117`（旧 117）|
+| 回归 | —— | `unittest` 81 项 OK；`--help` / `replay actions --dummy` / `tools check-environment` 全 exit 0；两套 GBK 检查 exit 0 |
+
+残留：护栏仍在 100/118（左）与 93/118（右）的帧上做修正，因为模型输出把相邻掌骨压到
+**1.18 mm** 穿插（远超 0.1 mm 旧预算），这不是代码能消掉的 —— 属于 roll 通道偏置，需要训练侧处理。
+换句话说：**能力上修好了"跑得通"，没有修好"预测-执行一致"。**
 
 本次核验产物都在 worktree 的 `outputs/`（未入库）：`recv_l21_nn_vr.json`、`recv_l21_noguard.json`、
-`recv_l21_vr2.json`、`recv_l21_joints.h5`、`recv_h12_nn_vr.log`、`real_hands_a/b.png`、`noguard_a/b.png`，
-探针 `probe_l21_roll.py` / `probe_h12_failing_part.py` / `probe_expand_limits.py`。
+`recv_l21_vr2.json`、`recv_l21_joints.h5`、`recv_h12_nn_vr.log`、`real_hands_a/b.png`、`noguard_a/b.png`；
+修复后的对照产物 `fix_l21_{nn_vr,noguard,m01}.json`、`fix_l21_{joints,noguard,m01}.h5`、`fix_h12.json`；
+探针 `probe_l21_roll.py` / `probe_h12_failing_part.py` / `probe_expand_limits.py` /
+`probe_arm_clamp.py` / `compare_guard_deviation.py`。
 
 
 ---
