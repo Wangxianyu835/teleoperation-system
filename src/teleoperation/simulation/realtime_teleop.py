@@ -890,6 +890,16 @@ def run(args) -> int:
                 pass_note = ("" if args.arm_map == "posture" else
                              (f" (pass {args.arm_elbow_pass})"
                               if args.arm_elbow_task else ""))
+                # 加载姿势被弯到反面的肘（gr1_t2 的肘关节正方向与另两台相反）已经摆正了吗：
+                # 一行打出来，现场不用翻报告就能核对（见 arm_ik._level_elbow_pose）。
+                leveled = [f"{name}:{side[0]} {fix['before_rad']:+.2f}->"
+                           f"{fix['after_rad']:+.2f} rad"
+                           for name, adapter in driver.ik.items()
+                           for side, fix in adapter.elbow_pose_fix.items()
+                           if fix is not None and fix["applied"]]
+                elbow_pose_note = (" | elbow pose: " + ", ".join(leveled)
+                                   if leveled else
+                                   " | elbow pose: as loaded (no elbow was bent backwards)")
 
                 print(f"arm map: {args.arm_map} | shoulder end = {args.arm_anchor} "
                       f"({'rigid: the elbow parent link' if args.arm_anchor == 'upper' else 'historical name-matched link'})"
@@ -908,7 +918,8 @@ def run(args) -> int:
                          f" retry every {args.arm_elbow_recovery_frames} frames)"
 
                          if args.arm_elbow_recovery_deg > 0.0 else
-                         " | elbow branch recovery: off"),
+                         " | elbow branch recovery: off")
+                      + elbow_pose_note,
                       flush=True)
             else:
                 # chain 口径（历史默认）：不量连杆长、也不给肘位置目标。这一行必须打出来 ——

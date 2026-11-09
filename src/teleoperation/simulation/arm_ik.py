@@ -73,6 +73,23 @@ ELBOW_POSTURE_MIN_SLOPE = 0.2
 #: 「比伸直还直」的那一侧。实测 g1 加载姿势只剩 7 度余量，往那边推 40 度会让夹角越过 180
 #: 折返（178 -> 147），参考就变成「跟位置任务对着干」——正是 ``restPoses`` 的老毛病（§8.16）。
 BEND_STRAIGHT_DEG = 180.0
+#: 「加载姿势下的肘被弯到了反面」的判据与修法（2026-11-09 现场「GR1-T2 的肘关节角度是反的」）。
+#:
+#: 根因（实测，``devtools/`` 外部探针，两次都 0 退出）：机器人加载时由队友的
+#: ``robots.specification.ARM_NEUTRAL`` 按**关节名**把肘拧到 +1.2 rad（h1_2 与 gr1_t2 的
+#: 关节名一样，都是 ``*_elbow_pitch_joint``），而 gr1_t2 这个关节的**正方向是伸直方向**
+#: （斜率 -0.999，见下一条常量），于是同一个 +1.2 在它身上把前臂甩到了**背后**：
+#:
+#: | 加载姿势（基座系） | 前臂方向 x | 肘相对肩-腕连线 x | 弯角 |
+#: |---|---|---|---|
+#: | h1_2 左 | +0.555 | -0.527 | 155.2 度 |
+#: | g1 左 | +0.565 | -0.845 | 172.9 度 |
+#: | gr1_t2 左 | **-0.791** | **+0.904** | 111.7 度 |
+#:
+#: 这一反不只是「看着反」：加载姿势就是 ``restPoses`` 的参考，每帧都在把肘往反侧拽。
+#: 修法见 ``_level_elbow_pose``：正方向相反的肘对 0（= 伸直）取反，弯角不变、只换一侧；
+#: 验收判据是「弯角差不超过本常量」（实测 gr1_t2 111.65 -> 111.20 度）。
+ELBOW_LEVEL_MAX_ERROR_DEG = 5.0
 #: 姿态统计里两两点积/距离的取样上限：长会话按步长抽稀，避免 O(n^2) 爆内存。
 POSTURE_MAX_FRAMES = 600
 #: ``solve(orientation_frame=...)`` 的两种口径。
@@ -311,6 +328,23 @@ class PyBulletArmIK:
         #: ``record_posture()`` 每帧采样的姿势（每侧一串 dict），赛后统计肩/肘动没动。
         self.posture = {side: [] for side in self.sides}
 
+        #: 「肘跟手」用的肘关节：``{side: (关节名, d(肩-肘-腕夹角)/d(关节角))}``。
+        #: 关节名来自 ``elbow_link``（名字里含 elbow 的那个关节；PyBullet 里子连杆索引就是关节
+        #: 索引），斜率由 FK 实测（``_measure_elbow_posture``）。消费方是
+        #: ``posture_from_bend`` -> ``solve(posture=...)``，即论文 ``PostureTask`` 等价物。
+        self.elbow_posture = {side: self._measure_elbow_posture(side)
+                              for side in self.sides}
+        #: 加载姿势被弯到**反面**的肘（现在只有 gr1_t2）：``{side: 读数 or None}``，见
+        #: ``_level_elbow_pose``。必须在 ``self.limits`` / ``self.hold`` /
+        #: ``self.neutral_orientation`` **之前**做 —— 那三项都要按摆正之后的姿势取样，
+        #: 而 ``restPoses`` 的参考正是 ``self.limits["rest"]``。
+        self.elbow_pose_fix = {side: self._level_elbow_pose(side)
+                               for side in self.sides}
+        for side, fix in self.elbow_pose_fix.items():
+            if fix is not None and fix["applied"]:
+                # 摆正之后加载夹角变了零点几度：斜率与基准重新量一遍，别用旧读数。
+                self.elbow_posture[side] = self._measure_elbow_posture(side)
+
         self.limits = self._joint_limits()
         #: Angle of every movable joint when this adapter was built (drift reference).
         self.hold = {index: float(p.getJointState(body, index,
@@ -324,12 +358,6 @@ class PyBulletArmIK:
         self.last_target_world = {}
         self.last_orientation = {}
         self.last_posture = {}
-        #: 「肘跟手」用的肘关节：``{side: (关节名, d(肩-肘-腕夹角)/d(关节角))}``。
-        #: 关节名来自 ``elbow_link``（名字里含 elbow 的那个关节；PyBullet 里子连杆索引就是关节
-        #: 索引），斜率由 FK 实测（``_measure_elbow_posture``）。消费方是
-        #: ``posture_from_bend`` -> ``solve(posture=...)``，即论文 ``PostureTask`` 等价物。
-        self.elbow_posture = {side: self._measure_elbow_posture(side)
-                              for side in self.sides}
         #: 这一帧交给「肘位置任务」的世界坐标点（``None`` = 没给，走单目标那条路）。
         self.last_elbow_world = {}
         #: 肘支路恢复（``_recover_elbow_branch``）：阈值（度，0 = 关）与每侧救回来的次数。
@@ -506,6 +534,82 @@ class PyBulletArmIK:
         if abs(chord) < ELBOW_POSTURE_MIN_SLOPE:
             return (str(name), 0.0, float(before))
         return (str(name), chord, float(before))
+
+    def _forearm_unit_base(self, side: str):
+        """前臂方向（肘 -> 腕）在**基座系**里的单位向量；量不到返回 ``None``。
+
+        为什么要基座系：三台的摆位在 ``three_robot_scene`` 里是「各自朝 +x 并排」，基座系
+        的 x 才是「朝前」这个可比的量（世界系里三台的 x 被 ``LAYOUT_X`` 平移、gr1_t2 的加载
+        姿态还带一点旋转，见 ``to_world`` 的说明）。
+        """
+        points = self.arm_points(side)
+        vector = (np.asarray(points["wrist"], dtype=np.float64)
+                  - np.asarray(points["elbow"], dtype=np.float64))
+        norm = float(np.linalg.norm(vector))
+        if not np.isfinite(norm) or norm <= 0.0:
+            return None
+        _base, orientation = self.p.getBasePositionAndOrientation(
+            self.body, physicsClientId=self.cid)
+        table = self.p.getMatrixFromQuaternion(orientation)
+        rotation = np.asarray(table, dtype=np.float64).reshape(3, 3)
+        return rotation.T @ (vector / norm)
+
+    def _level_elbow_pose(self, side: str):
+        """把「正方向与另两台相反」的肘摆回同一侧（幂等）；返回读数 dict 或 ``None``。
+
+        为什么要这一步（2026-11-09 现场「GR1-T2 的肘关节角度是反的」）：加载姿势由队友的
+        ``ARM_NEUTRAL`` 按**关节名**给 +1.2 rad，而 gr1_t2 的 ``*_elbow_pitch_joint`` 正方向
+        是伸直方向（斜率 -0.999）—— 于是同一个数在它身上把前臂甩到了背后（基座系 x=-0.79，
+        h1_2/g1 是 +0.56/+0.57），肘也鼓到肩-腕连线**前面**。加载姿势又是 ``restPoses`` 的
+        参考，所以这一反每帧都在把肘往反侧拽，不只是看着不对。
+
+        做法：``angle -> -angle``。这些 URDF 的肘在 0 处伸直，所以「取反」= 同一个弯角、另一
+        侧；验收判据是弯角几乎不变（``ELBOW_LEVEL_MAX_ERROR_DEG``）。**幂等**：前臂 x 变正之
+        后第二次构造 adapter 不会再动它（``slope > 0`` 的机器人本来一个数都不碰）。
+        """
+        name, slope, bend = self.elbow_posture.get(side) or (None, 0.0, None)
+        if not name or not slope or bend is None or float(slope) >= 0.0:
+            return None
+        fore = self._forearm_unit_base(side)
+        if fore is None or float(fore[0]) >= 0.0:
+            return None                     # 前臂本来就朝前：这一台没有被弯到反面
+        index = int(self.index_of[str(name)])
+        info = self.p.getJointInfo(self.body, index, physicsClientId=self.cid)
+        low, high = float(info[8]), float(info[9])
+        before = float(self.p.getJointState(self.body, index,
+                                           physicsClientId=self.cid)[0])
+        target = -before
+        record = {"joint": str(name), "applied": False,
+                  "bend_slope": round(float(slope), 3),
+                  "before_rad": round(before, 6), "after_rad": round(target, 6),
+                  "before_bend_deg": round(float(bend), 2), "after_bend_deg": None,
+                  "forearm_x_base_before": round(float(fore[0]), 3),
+                  "forearm_x_base_after": None, "note": None}
+        if not (low == low and high == high) or high <= low:
+            record["note"] = "no usable joint limits; pose left as loaded"
+            return record
+        if not (low - 1e-9 <= target <= high + 1e-9):
+            record["note"] = (f"mirrored angle {target:+.4f} rad is outside the joint "
+                              f"limits ({low:+.3f}, {high:+.3f}); pose left as loaded")
+            return record
+        self.p.resetJointState(self.body, index, target, physicsClientId=self.cid)
+        after_bend = float(self._bend_deg(side))
+        after_fore = self._forearm_unit_base(side)
+        record["after_bend_deg"] = None if not np.isfinite(after_bend) else round(after_bend, 2)
+        if after_fore is not None:
+            record["forearm_x_base_after"] = round(float(after_fore[0]), 3)
+        if (not np.isfinite(after_bend)
+                or abs(after_bend - float(bend)) > ELBOW_LEVEL_MAX_ERROR_DEG):
+            # 取反之后弯角变了：说明这一台的 0 位不是伸直位，不敢乱动，原样放回。
+            self.p.resetJointState(self.body, index, before, physicsClientId=self.cid)
+            record["note"] = ("mirroring would change the bend by more than "
+                              f"{ELBOW_LEVEL_MAX_ERROR_DEG:.1f} deg; pose left as loaded")
+            return record
+        record["applied"] = True
+        record["note"] = ("this elbow joint's positive direction is the extension "
+                          "direction, so the shared neutral pose bent the forearm "
+                          "backwards; angle negated (same bend, other side)")
+        return record
 
     def record_posture(self, side: str) -> dict:
         """Sample this arm once: every arm joint angle plus the three FK points.
@@ -1279,6 +1383,10 @@ class PyBulletArmIK:
                 "joint": name, "bend_slope": round(float(slope), 3),
                 "bend_at_hold_deg": None if bend is None else round(float(bend), 2)}
                 for side, (name, slope, bend) in self.elbow_posture.items()},
+            #: 加载姿势被弯到反面的肘摆正了吗（``_level_elbow_pose``）：只列真正发生过的侧，
+            #: 键是"改没改"，值是"改前/改后"的关节角、弯角与前臂朝向（现场核对用）。
+            "elbow_pose_fix": {side: fix for side, fix in self.elbow_pose_fix.items()
+                               if fix is not None},
             "limits_from_urdf": True,
         }
 

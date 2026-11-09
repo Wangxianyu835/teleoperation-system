@@ -1,9 +1,9 @@
 # 多机器人手臂驱动：按 robot_type 选臂并驱动机器人关节
 
-最后更新：2026-10-14 深夜（§8.16 **「肘/小臂不跟手」的机制是 PyBullet `restPoses` 把解往加载姿势拽**：探针 A/B 把「精确可达目标」的残差从 6.6-140.1 mm 打到 0.0 mm / 拽动 35.0 度打到 0.00 度，证明主因是零空间代价项而不是链路帧口径；但同一条现场录制上换 `--arm-rest-poses live` **不是一边倒的赢**（肘任务只 3/6 侧变好、腕精度中位 17.2 -> 40.5 mm 变差），所以 CLI 默认仍留在 `current`、`live` 只作实验档）| 前一轮 §8.15「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」的根因是那场跑在默认 `chain` 口径上（`--arm-map` 默认改 `posture`、`report_table.py` 加行程与夹断列）| 前一轮 §8.14 中性标定永远等不到数据（`--arm-calibrate-mode track`、`record_posture` 静默丢腕命令、`--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
+最后更新：2026-11-09（§8.17.11 **GR1-T2 的肘被中性姿势弯到了反面**：`ARM_NEUTRAL` 按关节名给 +1.2 rad，而 gr1_t2 的肘关节正方向是伸直方向（斜率 -0.999），加载时前臂因此朝后（基座系 x=-0.79，另两台 +0.56）；`arm_ik._level_elbow_pose` 把这类关节对 0 取反 —— 同一个弯角、换到另一侧，启动行与报告 `elbow_pose_fix` 都能核对）| 2026-10-14 深夜（§8.16 **「肘/小臂不跟手」的机制是 PyBullet `restPoses` 把解往加载姿势拽**：探针 A/B 把「精确可达目标」的残差从 6.6-140.1 mm 打到 0.0 mm / 拽动 35.0 度打到 0.00 度，证明主因是零空间代价项而不是链路帧口径；但同一条现场录制上换 `--arm-rest-poses live` **不是一边倒的赢**（肘任务只 3/6 侧变好、腕精度中位 17.2 -> 40.5 mm 变差），所以 CLI 默认仍留在 `current`、`live` 只作实验档）| 前一轮 §8.15「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」的根因是那场跑在默认 `chain` 口径上（`--arm-map` 默认改 `posture`、`report_table.py` 加行程与夹断列）| 前一轮 §8.14 中性标定永远等不到数据（`--arm-calibrate-mode track`、`record_posture` 静默丢腕命令、`--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
 相关代码：`src/teleoperation/simulation/arm_ik.py`、`arm_profiles.py`、`arm_scene_driver.py`、
 `arm_realtime.py`、`realtime_teleop.py`、`arm_preview.py`
-相关测试：`tests/test_arm_ik_multi_robot.py`（31 个用例）、`tests/test_arm_realtime_bridge.py`（84 个用例）、
+相关测试：`tests/test_arm_ik_multi_robot.py`（40 个用例）、`tests/test_arm_realtime_bridge.py`（84 个用例）、
 `tests/test_arm_preview.py`（25 个用例）；
 离线验收 `devtools/verify_arm_multi_robot.py`、`devtools/verify_realtime_arm_bridge.py`、
 `devtools/verify_arm_wing.py`、`devtools/probe_elbow_task.py`、`devtools/probe_posture_task.py`、
@@ -1920,4 +1920,52 @@ E:\python3.11.7\python.exe devtools\report_table.py outputs\tmp_realtime\ab_ef_o
 | 同上 + `--input-npz outputs\tmp_realtime\live_long_frames.npz --frames 200 --headless --report tmp_ik_frame\ef_launcher_probe.json` | **0** | 启动行 `... \| elbow follow = operator \| ...`（钉子确实到了 parser 与场景驱动），报告里有 `elbow_posture` |
 | 同上 + `--off` | **0** | 启动行 `elbow follow = off`（对照档有效） |
 | `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | **0** | `未发现 GBK 无法编码的字符` |
+
+
+#### 8.17.11 GR1-T2 的肘被弯到了反面（2026-11-09；根因是中性姿势按关节名给数）
+
+现场一句话：「GR1-T2 的肘关节角度是反的。」量了一遍，不是错觉 —— 加载姿势下它的前臂朝
+**后**，而 H1-2 / G1 朝前：
+
+| 加载姿势（基座系，左） | 前臂方向 x | 肘相对肩-腕连线 x | 弯角 |
+|---|---|---|---|
+| h1_2 | +0.555 | -0.527 | 155.2 度 |
+| g1 | +0.565 | -0.845 | 172.9 度 |
+| gr1_t2 改前 | **-0.791** | **+0.904** | 111.7 度 |
+| gr1_t2 改后 | **+0.984** | **-0.545** | 112.0 度 |
+
+根因：加载姿势由队友的 `robots/specification.py::ARM_NEUTRAL` 按**关节名**给 +1.2 rad，而
+h1_2 与 gr1_t2 的肘关节名是同一个（`*_elbow_pitch_joint`）—— 但 §8.17.3 已经量出 gr1_t2 这个
+关节的正方向是**伸直**方向（斜率 -0.999）。同一个数在它身上就把前臂甩到背后。并且加载姿势正
+是 `restPoses` 的参考（§8.16），所以这一反每帧都在把肘往反侧拽，不只是看着不对。
+
+修法（落在 `arm_ik.py` 这个我们自己的文件里；队友的 `specification.py` / `robot_loader.py`
+一个字没动）：`PyBulletArmIK._level_elbow_pose()` 在加载时判两条 —— ① 实测斜率 < 0（正方向
+是伸直方向）；② 前臂在基座系的 x < 0（朝后）。两条都成立就把该关节角**对 0 取反**（0 = 伸直
+位，取反 = 同一个弯角、另一侧），验收判据是弯角差不超过 5 度（实测 111.65 -> 112.0）。
+`slope > 0` 的机器人一个数都不动；**幂等**：摆正之后前臂 x 变正，再构造一次 adapter 不会翻回
+去。读数写进报告 `arm.robots.<robot>.elbow_pose_fix`，启动行也多一段：
+
+```
+| elbow pose: gr1_t2:l +1.20->-1.20 rad, gr1_t2:r +1.20->-1.20 rad
+```
+
+顺序上有一条硬要求：这一步必须发生在 `self.limits` / `self.hold` /
+`self.neutral_orientation` **之前** —— 那三项都要按摆正之后的姿势取样，而 `restPoses` 用的正是
+`limits["rest"]`。
+
+验收（本机实跑，2026-11-09）：
+
+| 命令 | 退出码 | 关键不变量 |
+|---|---|---|
+| `E:\python3.11.7\python.exe -m unittest discover -s tests -p test_arm_ik_multi_robot.py` | **0** | `Ran 40 tests ... OK`（改前 36）。新增 `ElbowPoseSideTests` 4 条：三台前臂都朝前且肘在连线后方 / 只有 gr1_t2 被取反（+1.2 -> -1.2 rad）/ 弯角差 0.3 度且落在关节限位内 / 第二次构造 adapter 不再动姿势（幂等） |
+| `E:\python3.11.7\python.exe -m unittest discover -s tests` | **0** | `Ran 377 tests in 88.674s ... OK (skipped=3)`（改前 373） |
+| `E:\python3.11.7\python.exe devtools\run_realtime_arm_windows.py --headless --frames 60` | **0** | 启动行末多出 `elbow pose: gr1_t2:l +1.20->-1.20 rad, gr1_t2:r +1.20->-1.20 rad`，`report written: ...arm_run_20261109_144924.json` |
+| `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | **0** | 未发现 GBK 无法编码的字符 |
+
+如实说：本条只按**几何**验收（前臂朝前、肘在连线后方、弯角不变、关节仍在限位内）。现场还要
+看一次动态：`restPoses` 不再往反侧拽之后，GR1-T2 的 `forearm_dir_error_deg` 应当下降（改前
+现场 200 帧中位 57.94 度，h1_2 41.21 / g1 29.99）；没降就说明还有别的常数在拽，下一轮先核对
+报告里 `elbow_pose_fix` 与 `elbow_posture` 这两段是不是如本节所写。
+
 

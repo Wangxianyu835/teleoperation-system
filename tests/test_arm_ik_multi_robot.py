@@ -937,3 +937,135 @@ class RigidShoulderAnchorTests(unittest.TestCase):
                 pybullet.resetJointState(adapter.body, roll, start,
                                          physicsClientId=adapter.cid)
 
+
+class ElbowPoseSideTests(unittest.TestCase):
+    """加载姿势下肘弯到哪一侧：GR1-T2 的肘关节正方向与另两台相反，姿势要对 0 取反。
+
+    2026-11-09 现场「GR1-T2 的肘关节角度是反的」：队友的 ``ARM_NEUTRAL`` 按**关节名**把肘拧到
+    +1.2 rad，h1_2 与 gr1_t2 的名字一样（``*_elbow_pitch_joint``），但 gr1_t2 这个关节的正方向
+    是伸直方向（斜率 -0.999）。于是同一个数在它身上把前臂甩到背后：
+
+        加载姿势（基座系，左）   前臂方向 x   肘相对肩-腕连线 x   弯角
+        h1_2                    +0.555       -0.527            155.2 度
+        g1                      +0.565       -0.845            172.9 度
+        gr1_t2（改前）           -0.791       +0.904            111.7 度
+        gr1_t2（改后）           +0.984       -0.545            112.0 度
+
+    加载姿势又是 ``restPoses`` 的参考，所以这一反每帧都在把肘往反侧拽 —— 不只是看着不对。
+    ``PyBulletArmIK._level_elbow_pose`` 把这一类关节对 0（= 伸直）取反：弯角不变、只换一侧。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+        from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+
+        cls.scene = ThreeRobotHandScene(sides=SIDES, gui=False)
+        cls.driver = ArmSceneDriver(cls.scene, sides=SIDES)
+        cls.driver.step(5)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.driver = None
+        cls.scene.close()
+
+    def forearm_in_base(self, adapter, side):
+        """前臂方向（肘 -> 腕）在基座系里的单位向量（走公开的 ``to_base``）。"""
+        points = adapter.arm_points(side)
+        elbow = np.asarray(adapter.to_base(points["elbow"]), dtype=np.float64)
+        wrist = np.asarray(adapter.to_base(points["wrist"]), dtype=np.float64)
+        vector = wrist - elbow
+        return vector / float(np.linalg.norm(vector))
+
+    def elbow_offset_in_base(self, adapter, side):
+        """肘相对「肩 -> 腕」连线的偏移（基座系，单位向量）。"""
+        points = adapter.arm_points(side)
+        shoulder = np.asarray(adapter.to_base(points["upper"]), dtype=np.float64)
+        elbow = np.asarray(adapter.to_base(points["elbow"]), dtype=np.float64)
+        wrist = np.asarray(adapter.to_base(points["wrist"]), dtype=np.float64)
+        line = wrist - shoulder
+        line = line / float(np.linalg.norm(line))
+        offset = elbow - shoulder
+        offset = offset - float(np.dot(offset, line)) * line
+        return offset / float(np.linalg.norm(offset))
+
+    def test_every_elbow_loads_bending_towards_the_front(self):
+        for robot in PAPER_ROBOTS:
+            adapter = self.driver.ik[robot]
+            for side in SIDES:
+                fore = self.forearm_in_base(adapter, side)
+                offset = self.elbow_offset_in_base(adapter, side)
+                with self.subTest(robot=robot, side=side):
+                    # 三台都应当「前臂朝前」（+x）——改前 gr1_t2 是 -0.79。
+                    self.assertGreater(fore[0], 0.3,
+                                       f"{robot}/{side} forearm points backwards: {fore}")
+                    # 肘落在肩-腕连线的**后**方（人的肘就是这样）：改前 gr1_t2 是 +0.90。
+                    self.assertLess(offset[0], -0.1,
+                                    f"{robot}/{side} elbow sits in front of the "
+                                    "shoulder-wrist line")
+
+    def test_only_the_reversed_joint_is_negated(self):
+        for robot in PAPER_ROBOTS:
+            adapter = self.driver.ik[robot]
+            for side in SIDES:
+                fix = adapter.elbow_pose_fix[side]
+                with self.subTest(robot=robot, side=side):
+                    if robot != "gr1_t2":
+                        # 斜率 > 0 的机器人一个数都不碰（报告里也不出现）。
+                        self.assertIsNone(fix)
+                        self.assertNotIn(side, adapter.describe()["elbow_pose_fix"])
+                        continue
+                    self.assertIsNotNone(fix)
+                    self.assertTrue(fix["applied"], fix)
+                    self.assertLess(fix["bend_slope"], 0.0)   # 摆正之前量到的斜率
+                    self.assertAlmostEqual(fix["before_rad"], 1.2, places=3)
+                    self.assertAlmostEqual(fix["after_rad"], -1.2, places=3)
+                    self.assertLess(fix["forearm_x_base_before"], 0.0)
+                    self.assertGreater(fix["forearm_x_base_after"], 0.5)
+                    # 报告里看得见：``describe()`` 只列真正动过的侧。
+                    described = adapter.describe()["elbow_pose_fix"]
+                    self.assertEqual(described[side]["after_rad"], fix["after_rad"])
+
+    def test_negating_keeps_the_bend_and_respects_the_joint_limits(self):
+        for robot in PAPER_ROBOTS:
+            adapter = self.driver.ik[robot]
+            for side in SIDES:
+                fix = adapter.elbow_pose_fix[side]
+                name, _slope, bend = adapter.elbow_posture[side]
+                index = adapter.index_of[name]
+                info = pybullet.getJointInfo(adapter.body, index,
+                                             physicsClientId=adapter.cid)
+                low, high = float(info[8]), float(info[9])
+                angle = float(pybullet.getJointState(adapter.body, index,
+                                                     physicsClientId=adapter.cid)[0])
+                with self.subTest(robot=robot, side=side):
+                    self.assertGreaterEqual(angle, low - 1e-9)
+                    self.assertLessEqual(angle, high + 1e-9)
+                    # 加载姿势下的弯角仍是那个量级（改前 111.7 / 改后 112.0）。
+                    self.assertGreater(bend, 60.0)
+                    self.assertLess(bend, 180.0)
+                    if fix is not None and fix["applied"]:
+                        # 「同一个弯角、另一侧」：差 0.3 度（判据 5 度）。
+                        self.assertLessEqual(abs(fix["after_bend_deg"]
+                                                 - fix["before_bend_deg"]), 5.0)
+
+    def test_a_second_adapter_leaves_the_leveled_pose_alone(self):
+        """幂等：再构造一次 adapter 不会把肘翻回反面（触发器必须还看「前臂朝哪」）。"""
+        from teleoperation.simulation.arm_ik import PyBulletArmIK
+
+        for robot in PAPER_ROBOTS:
+            first = self.driver.ik[robot]
+            name = first.elbow_posture["left"][0]
+            index = first.index_of[name]
+            before = float(pybullet.getJointState(first.body, index,
+                                                  physicsClientId=first.cid)[0])
+            again = PyBulletArmIK(first.body, first.cid, robot, sides=SIDES)
+            after = float(pybullet.getJointState(again.body, index,
+                                                physicsClientId=again.cid)[0])
+            with self.subTest(robot=robot):
+                for side in SIDES:
+                    self.assertIsNone(again.elbow_pose_fix[side])
+                # 姿势一个 rad 都没动（``_measure_elbow_posture`` 的探针原样恢复）。
+                self.assertAlmostEqual(after, before, places=6)
+                self.assertGreater(self.forearm_in_base(again, "left")[0], 0.3)
+
