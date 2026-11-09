@@ -622,6 +622,93 @@ $py='E:\python3.11.7\python.exe'
 60 度上下）。所以本节的残差/行程是**仿真里的事实**，只能证明"这条链接得上、能收敛"，
 **不能**当作论文的数值对比结果。
 
+### 4.6 Vision Pro 交付数据核验（2026-11-09，队友 2026-10-12 交付）
+
+队友用 Apple Vision Pro（App Store 的 Tracking Streamer + `avp_stream`）离线录了两段双手 + 腕/前臂数据，
+交付物是一份说明 `visionpro-data-handoff-2026-10-12.md` 加 4 个 H5（2 份 `_live.h5` 拟入库、2 份原始文件只作追溯）。
+本节记录**我这边独立重算的核验**：哪些数字对得上、说明里哪几处要改、我们的管线现在能不能直接吃。
+
+#### 一、文件与指标（重算值，不是抄说明）
+
+| 文件 | 帧数 | 时长 | fps | 大小 | SHA256 | 有效帧（左/右） | 最长逐位相同连续帧 |
+|---|---:|---:|---:|---:|---|---|---:|
+| `..._213812_live.h5` | 4631 | 164.98 s | 28.06 | 18.961 MB | `68CB950C...B23C8` | 4630 / 4631 | 2（第 2488 帧起，远低于 30 帧判据）|
+| `..._215137_live.h5` | 2886 | 103.46 s | 27.86 | 11.822 MB | `6D98E000...B64B` | 2886 / 2886 | 0 |
+| `..._213812.h5`（原始）| 8410 | 299.98 s | 28.03 | 38.866 MB | `944A141F...AA73` | - | 未裁剪，含冻结尾 |
+| `..._215137.h5`（原始）| 5657 | 203.04 s | 27.86 | 26.173 MB | `53559FFB...8048` | - | 2771 帧，起点 2885（说明里「裁掉 2771 帧」成立）|
+
+- 两份 `_live.h5` 的 SHA256 与说明**逐字符一致**（说明 §1 可信）。
+- 尺度：腕到指尖中位 左 138.9 / 177.0 / 178.6 / 165.1 / 143.9 mm、右 138.1 / 176.2 / 178.2 / 165.4 / 141.8 mm，
+  与说明表一致；中指最长、小指最短、左右手相差不超过 2 mm，米制与腕相对原点成立。
+- 派生层：用本仓库自己的 `visionpro_fingers_to_points` + `ensure_hand25` 重算，两个文件各抽样
+  **662 / 413 帧 / 每侧**，与文件里的 `*_hand_keypoints` **逐点差 0.000 m**（说明 §2.2 的声明成立）。
+- 时间戳：`unix_ms` 严格递增，`timestamps` 首尾差等于时长，无重复帧。
+
+#### 二、说明里要改的三处（递给队友）
+
+1. **轴说明与数据不符**。说明 §3 写「X 右、Y 上、Z 后」，但实测**第三列才是高度**：头显中位
+   `[0.007, 0.015, 1.237]`、腕 `[-0.113, 0.325, 1.001] / [0.140, 0.322, 1.007]`、肘中位
+   `[-0.217, 0.141, 0.894] / [0.240, 0.145, 0.889]`。若 Y 是上，头显离地只有 1.5 cm，显然不成立。
+   合理解读是 **X 右、Y 前、Z 上**（与说明 §4.2 把 0.811 读成「离地 0.81 m」自洽，所以是 §3 的轴说明写错，
+   不是数据错）。影响：任何照 §3 做 Y/Z 交换的加载器会把手臂平面旋转 90 度。
+2. **落盘是扁平命名**（`left_hand_keypoints` / `right_wrist_transform` / `left_valid` ...），
+   不是说明 §2.1 表格里 `left/right_hand_transforms` 那种嵌套组。按嵌套写 `h5["left"]["wrist_transform"]`
+   会直接 KeyError。
+3. **`_live.h5` 残留裁剪前的属性**：live1 的 `left_detected_frames=4836` 比 `frame_count=4631` 还大，
+   还留着 `recorded_frames=8410`、`right_freeze_at_frame=4637`；live2 明显也是裁过的（5657 -> 2886，
+   冻结起点 2885）却没有 `trimmed_from` / `trimmed_frames` / `trim_reason`（live1 有）。
+   拿属性算覆盖率会算错，建议裁剪时统一刷新或统一删除。
+
+另：`forearmArm` 距腕实测 0.235 / 0.233 m（live1 左/右）与 0.240 / 0.231 m（live2），说明写 0.22 m，差 1-2 cm。
+
+#### 三、我方管线现在能不能吃
+
+**手：今天就能吃，只差一个元数据决定。**
+
+```powershell
+$py='E:\python3.11.7\python.exe'; $env:PYTHONPATH="$pwd\src"; $env:PYTHONUTF8='1'
+& $py -m teleoperation hand align --input <交付的 _live.h5> --output <aligned.h5>
+```
+
+- 直接跑**被拒**：`ValueError: source_landmark_space must be 'mediapipe_normalized' or undeclared; got 'visionpro_world_meters'`
+  （`data/hand_h5.py::_validate_source_landmark_space`）。这是契约「未知来源必须报错、不许猜」的正确行为，不是数据问题。
+- 把副本的根属性 `source_landmark_space` / `derived_landmark_space` 去掉（**数据一个字节不动**）后再跑：
+  `frames=4631`，左 `nonzero 4630 / zero_source 1 / degenerate 0 / nonfinite 0`，右 `4631 / 0 / 0 / 0`；
+  输出声明 `coordinate_frame=l21` + `coordinate_alignment=palm_local_to_l21_v1`；
+  随后 `load_twohand_h5()` 读得动，腕原点误差 0.000 m，中指指尖中位 178.6 / 178.2 mm（与对齐前相同，说明对齐只做旋转）。
+- 也就是说 `hand align -> hand inspect -> hand train` 这条路**已经通**。要团队拍板的是：要不要正式新增
+  `visionpro_*` 的 alignment 名字（说明 §10 第 1 问）。我的意见是要，但理由不是「不加就跑不动」，
+  而是「删属性会丢掉『这份来自头显、米制、腕相对』这层来源」。务实做法：ingest 时把原值搬到
+  `visionpro_source_landmark_space` 这类新属性再删，可追溯。
+
+**臂：不能直接吃，缺肩，而且肩反推不出来。**
+
+- `ArmRetargeter` 要 `(3,3)` 的肩/肘/腕，Vision Pro 只到前臂。我用肘轨迹做最小二乘球拟合
+  （若肘绕固定肩运动，球心即肩）：左球心 `(-0.206, 0.222, 0.871)`、半径 **0.103 m**、残差 0.023 m；
+  右球心 `(0.258, 0.210, 0.845)`、半径 0.104 m、残差 0.025 m。半径远小于成人上臂（约 0.29 m）说明
+  **肘几乎没动**（左右肘标准差 2.7-5.6 cm），拟合退化，**反推不出肩**。别把它当成「拟合一下就有肩」。
+- 但**位置完全够用**：`ArmRetargeter` 的 legacy 口径里末端位置只由 `wrist` 决定
+  （`robot_neutral + translation + rotation @ (scale * (wrist - human_neutral_wrist))`，见
+  `retargeting/arm/retargeter.py:57`），肩只参与手臂平面法向。头显给的腕是**绝对米制位姿**，正是这条公式要的量。
+- 姿态也不必靠肩：`*_wrist_transform` 与 `*_forearm_transforms[0]` 本身就是旋转矩阵，直接当姿态来源比三点叉积稳。
+- 推荐路线（与论文 TeleOpBench §3.2.3「VR-based」一致：腕/头显位姿换到机器人坐标系，腕相对头的偏移再换算到
+  骨盆，**只把腕的平移**喂给 IK）：
+  **VR 腕世界位姿 -> 减去中性腕 -> 乘 scale + 机器人 home -> `PyBulletArmIK`**（要姿态时用 VR 自带旋转矩阵，
+  不要用三点叉积）；肩要么固定假设、要么用摄像头 pose 并行补（`camera_world` 口径已有）。这层是待做的，
+  落在 `devtools/`，不动 `src/teleoperation/**`。
+
+#### 四、入库与待办
+
+- 建议按说明 §10 第 4 问把两份 `_live.h5`（19.0 + 11.8 MB）放进 `datasets/raw/visionpro/`：
+  `datasets/**` 是本仓库约定的大资产例外，合计 30.8 MB 远低于 100 MB 上限，不需要 LFS；
+  原始两份（38.9 + 26.2 MB，含冻结尾）只作追溯，不入库。
+- 待办：① 与队友确认第二节三处更正与 alignment 命名；② 写 `devtools/visionpro_ingest.py`
+  （校验 SHA -> 搬元数据 -> 调 `hand align` -> 出报告），不再手工删属性；③ 定肩的来源（固定假设 / 摄像头 pose）；
+  ④ 采集侧按「一条一个动作主题」标注，这两段都没有动作标签，训练时切不出验证集。
+- 本次核验用临时探针（`outputs/tmp_vr/`，未入库），报告 JSON 同目录：
+  `visionpro_check_report.json`、`visionpro_axis_report.json`、`hand_align_probe.json`、`derived_layer_check.json`。
+
+
 ---
 
 ## 5. 旧布局 → 新布局对照表（合并前的习惯怎么迁过来）
