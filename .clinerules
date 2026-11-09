@@ -52,8 +52,8 @@
      `python -m teleoperation replay actions --dummy --steps 120 --robot h1_2 --no-render`；
      `python -m teleoperation tools check-environment`；`tools verify-hand-pipeline`
    - 全量：`PYTHONUTF8=1` 下 `python -m unittest discover -s tests -v` —— 本机回落解释器实测
-     `Ran 19 tests / failures=0 / errors=0 / skipped=1`（上游 `10ebd9f` 已删掉队友的 `tests/`，
-     现在只有本支的 2 个文件、19 个用例）。`PYTHONUTF8=1` 仍建议带上
+     `Ran 372 tests / OK (skipped=3)`（2026-11-09；上游 `10ebd9f` 已删掉队友的 `tests/`，
+     现在跑的是本支自己的套件）。`PYTHONUTF8=1` 仍建议带上
      （cp936 控制台拿 GBK 解 UTF-8 输出，见 CONVENTIONS 3.2）。
      判据是**不劣化**：`preflight.ps1 -Full`（默认 `-MaxFail 0 -MaxErr 17`），不是"必须全绿"。
    给用户的结论必须附 **命令 + 退出码 + 关键不变量**，禁止只写"已通过"。
@@ -79,4 +79,8 @@
   ① 约定 3 禁止改的队友文件（`src/teleoperation/**`）；② 现有文件里确实没有可挂靠的位置（全新工具）；
   ③ 用户要求单独成文件。新建时必须**在同一次提交**里把它登记进对应文档（索引 / 清单）；
   测试优先加到既有 `tests/test_*.py` 里新增 TestCase，不要一个改动一个测试文件。
+- **启动器只养一个**（★ 用户 2026-11-09 明确要求，见约定 14 第 7 条）：`devtools/run_*.py` 这类一键入口
+  不要越建越多；新档位 / 预设 / 对照档用**开关**表达（例：`devtools\run_realtime_arm_windows.py
+  --elbow-follow operator`），不要写 `run_xxx_yyy_windows.py` 这种只钉一个参数的薄包装；已有的包装档
+  要并回主入口并在同一提交里删掉 + 改文档。
 - 回复用户用中文，结论先给"做了什么 / 证据 / 影响"，不要把过程日志堆在前面。
