@@ -311,6 +311,9 @@ def main(argv) -> int:
     argv = apply_elbow_preset(list(argv))
     check = "--check" in list(argv)
     argv = [item for item in argv if item != "--check"]
+    if any(item in ("-h", "--help") for item in argv):
+        base.log("INFO", "launcher switches: --elbow-follow {operator,off} (-> --arm-elbow-follow), "
+                         "--check (environment check only); the rest goes to the entry below")
     base.prepare_environment()
     base.redirect_caches()
     handed_over = hand_over((["--check"] if check else []) + list(argv))
