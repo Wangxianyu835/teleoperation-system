@@ -10,9 +10,13 @@
 
 PyCharm 怎么配（和你上次那个一样，只换 Script path）
 --------------------------------------------------
-    Script path        = F:\\simulation_platform_cs\\devtools\\run_realtime_arm_elbow_follow_windows.py
-    Working directory  = F:\\simulation_platform_cs
+    Script path        = <仓库根>\\devtools\\run_realtime_arm_elbow_follow_windows.py
+    Working directory  = <仓库根>
     Python interpreter = E:\\python3.11.7\\python.exe   <- 必须是一个装齐 cv2/mediapipe/pybullet 的解释器
+
+<仓库根> = 含 ``src\\teleoperation`` 的那一层（本文件所在目录的上一级）。本机同时存在
+``F:\\simulation_platform`` 与 ``F:\\simulation_platform_cs`` 两个 worktree：按 PyCharm 里
+实际打开的那个填，不要照抄另一个，否则点 Run 跑的是那边那份代码。
     Parameters         = （留空 = 这一版；想左右对照就填 --off）
 
 命令行等价写法::

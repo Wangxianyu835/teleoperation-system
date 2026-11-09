@@ -13,9 +13,12 @@
 
 用法::
 
-    cd F:\\simulation_platform_cs
-    set PYTHONPATH=F:\\simulation_platform_cs\\src
+    cd <仓库根>
+    set PYTHONPATH=<仓库根>\\src
     E:\\python3.11.7\\python.exe devtools\\verify_camera_record.py --seconds 10
+
+<仓库根> = 含 ``src\\teleoperation`` 的那一层（本文件所在目录的上一级）。本机同时存在
+``F:\\simulation_platform`` 与 ``F:\\simulation_platform_cs`` 两个 worktree，按你实际用哪个填。
 
 退出码：0 = 全部应过的判据都过；1 = 有判据失败（逐条打印原因）。
 """
