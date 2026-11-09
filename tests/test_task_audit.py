@@ -249,5 +249,75 @@ class SceneLayerTests(unittest.TestCase):
 
 
 
+class TrialRunnerTests(unittest.TestCase):
+    """``run_trial`` 对 callable 策略的支持（摄像头档的动作只能边走边算）与离屏取证图。"""
+
+    def _env(self):
+        from teleoperation.simulation.environment import SimulationEnv
+        data_dir = EVAL.ROOT / "outputs" / "tmp_task_eval"
+        env = SimulationEnv(robot_type="h1_2", task_name="pushcube", render=False,
+                            record=False, data_dir=str(data_dir))
+        env.reset(randomize=False)
+        return env
+
+    def test_run_trial_accepts_a_callable_policy(self):
+        """callable 策略必须与"整段先算好"的数组策略走出同一条轨迹。"""
+        env = self._env()
+        try:
+            actions = np.zeros((120, env.action_dim), dtype=np.float64)
+            expected = EVAL.run_trial(env, actions, 120)
+        finally:
+            env.close()
+        env = self._env()
+        try:
+            seen = []
+
+            def policy(step):
+                seen.append(step)
+                return actions[min(step, len(actions) - 1)]
+
+            result = EVAL.run_trial(env, policy, 120)
+        finally:
+            env.close()
+        self.assertEqual(len(seen), result["steps"])
+        self.assertEqual(result["steps"], expected["steps"])
+        self.assertIn("wall_limit_hit", result)
+        self.assertFalse(result["wall_limit_hit"])
+        self.assertAlmostEqual(result["joint_travel_rad"], expected["joint_travel_rad"],
+                               places=3)
+
+    def test_run_trial_stops_when_the_policy_asks(self):
+        env = self._env()
+        try:
+            class Stopping:
+                stopped = False
+
+                def __init__(self):
+                    self.calls = 0
+
+                def __call__(self, step):
+                    self.calls += 1
+                    if self.calls >= 10:
+                        self.stopped = True
+                    return np.zeros(env.action_dim, dtype=np.float64)
+
+            policy = Stopping()
+            result = EVAL.run_trial(env, policy, 480)
+        finally:
+            env.close()
+        self.assertTrue(result["wall_limit_hit"], "用户按 q 应当结束 trial")
+        self.assertLessEqual(result["steps"], 13, result)
+
+    def test_snapshot_writes_a_real_png(self):
+        env = self._env()
+        try:
+            target = EVAL.ROOT / "outputs" / "tmp_task_eval" / "snapshot_test.png"
+            self.assertTrue(EVAL.snapshot(env, target), "离屏渲染要能出图")
+            self.assertGreater(target.stat().st_size, 1000)
+        finally:
+            env.close()
+        target.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     unittest.main()

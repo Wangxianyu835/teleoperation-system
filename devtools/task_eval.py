@@ -46,6 +46,10 @@
     # 回放现成的原生动作文件（契约 H）
     E:\\python3.11.7\\python.exe devtools\\task_eval.py --policy replay --actions datasets\\actions\\x.h5
 
+    # 摄像头实时驱动（现场用：右手举到胸前 -> 机器人右臂跟；先站好 1.5 s 做中性标定）
+    E:\\python3.11.7\\python.exe devtools\\task_eval.py --task pushcube --policy camera ^
+        --side right --max-wall-s 40 --render
+
 退出码：0 = 全部 trial 按预期（有成功或空转时 0 成功都可以，看 ``--expect``）；1 = 有一项检查失败
 （假成功 / 场景不 statble / 判据被场景层破坏）；2 = 工具自身异常（任务名写错、连不上 PyBullet）。
 
@@ -750,11 +754,236 @@ def measure_arm(robot: str) -> dict:
             "shoulders": {name: [round(float(v), 4) for v in point]
                           for name, point in shoulders.items()}}
 
+#: 摄像头帧率的名义值（`frame_dt` 拿不到真实间隔时才用）：媒体管道实测 19-21 fps
+CAMERA_NOMINAL_FPS = 20.0
+#: 一个摄像头帧对应多少个物理步（12 步 = 0.05 s 仿真，与 20 fps 的相机同节奏）
+CAMERA_SUBSTEPS = 12
 
-def build_actions(policy: str, env, path: str = None, steps: int = None):
-    """按 policy 造动作流；``None`` = 每步不下发动作（idle）。"""
+
+class CameraPolicy:
+    """摄像头 -> pose 手臂 -> 相对重定向 -> PyBulletArmIK -> 原生动作向量。
+
+    一条正在用的链路一行都不重写，只把它们接在 ``SimulationEnv`` 上::
+
+        CameraFrameSource.next_frame()      # MediaPipe 手 21 点 + pose 肩/肘/腕
+          -> RealtimeArmBridge.update()     # 相对重定向（默认 posture 方向口径）
+          -> PyBulletArmIK.solve()          # 每侧 7 个臂关节角
+          -> 按 env.action_joint_names 落位 -> env.task.apply_action()
+
+    为什么每 ``substeps`` 步才读一次摄像头：MediaPipe 一帧要 30-50 ms，而 DIRECT 模式的
+    物理步是 0.1 ms 级；每步读一次摄像头会把"你手的 1 秒"变成机器人的 0.02 秒。12 步 =
+    0.05 s 仿真/帧，正好与 20 fps 的相机同节奏（实测 19.2 fps）。
+
+    手部关节保持 reset 时的角度：pushcube 只需要手臂推；18 维手角度是另一条链路
+    （``realtime_hand_sim``），混进来只会让失败原因难分辨。
+    """
+
+    def __init__(self, env, side: str = "right", camera_index: int = 0,
+                 substeps: int = CAMERA_SUBSTEPS, calibrate_frames: int = 30,
+                 arm_map: str = "posture", hand_model=None, pose_model=None,
+                 preview: bool = False):
+        from teleoperation.simulation.arm_ik import PyBulletArmIK
+        from teleoperation.simulation.arm_profiles import profile_for
+        from teleoperation.simulation.arm_realtime import RealtimeArmBridge
+        from teleoperation.simulation.realtime_teleop import CameraFrameSource
+
+        self.env = env
+        self.side = str(side)
+        self.substeps = max(1, int(substeps))
+        self.arm_map = str(arm_map)
+        self.preview = bool(preview)
+        self._window = "task_eval camera (q/Esc quits)"
+        missing_names = []
+        hand_model = Path(hand_model or (ROOT / "datasets" / "hand_landmarker.task"))
+        pose_model = Path(pose_model or (ROOT / "datasets" / "pose_landmarker_lite.task"))
+        self.source = CameraFrameSource(
+            model_asset_path=hand_model, camera_index=int(camera_index),
+            width=640, height=480, fps=30, landmark_space="world",
+            pose_model_asset_path=pose_model if pose_model.is_file() else None)
+        profile = profile_for(env.robot_type)
+        self.adapter = PyBulletArmIK(env.robot_id, env.client,
+                                     robot_type=env.robot_type, sides=(self.side,),
+                                     rest_poses="current")
+        # 方向口径要的「机器人自己的量」：连杆长 + 加载时的肩/肘/腕（基座系）
+        points = self.adapter.arm_points(self.side)
+        shoulder = np.asarray(points["upper"], dtype=np.float64)
+        elbow = np.asarray(points["elbow"], dtype=np.float64)
+        wrist = np.asarray(points["wrist"], dtype=np.float64)
+        links = {env.robot_type: {self.side: {
+            "upper": float(np.linalg.norm(elbow - shoulder)),
+            "fore": float(np.linalg.norm(wrist - elbow))}}}
+        anchors = {env.robot_type: {self.side: {
+            "shoulder": list(self.adapter.to_base(shoulder)),
+            "elbow": list(self.adapter.to_base(elbow)),
+            "wrist": list(self.adapter.to_base(wrist))}}}
+        self.bridge = RealtimeArmBridge(
+            [profile], sides=(self.side,), map_mode=self.arm_map,
+            robot_links=links, anchors=anchors, orientation="off",
+            calibration_frames=int(calibrate_frames), calibrate_mode="hold")
+        self.names = {name: index for index, name in enumerate(env.action_joint_names)}
+        for name in self.adapter.joint_values(self.side):
+            if name not in self.names:
+                missing_names.append(name)
+        self.action = joint_positions(env)
+        self.steps = 0
+        self.frames = 0
+        self.hand_frames = {"left": 0, "right": 0}
+        self.bad_sides = 0
+        self.last_target = None
+        self.last_info = {}
+        self.last_frame_at = None
+        self.unmapped = missing_names
+        self.stopped = False
+        self.calibrated = False
+        print("[camera] 机器人这一侧臂由你的右手驱动（--side 可换）："
+              "手往画面右侧移 = 机器人往它自己左边移（方块在它左边，y 从 -0.20 到 +0.30）；"
+              "手往镜头方向收 = 机器人往前伸。看 PyBullet 窗口跟，别盯着字", flush=True)
+
+    # ------------------------------------------------------------------ #
+    def _draw_preview(self, raw, upper, target) -> bool:
+        """现场对位窗口：手点 + 肩/肘/腕 + 目标是否解出来。返回 False = 用户按了 q。"""
+        import cv2
+
+        bgr = getattr(getattr(self.source, "_input", None), "last_bgr", None)
+        if bgr is None:
+            return True
+        image = np.array(bgr, copy=True)
+        height, width = image.shape[:2]
+        for side, color in (("left", (0, 255, 0)), (self.side, (255, 0, 255))):
+            points = (raw or {}).get(side)
+            if points is None:
+                continue
+            for x, y in np.asarray(points, dtype=np.float64)[:, :2]:
+                cv2.circle(image, (int(x * width), int(y * height)), 3, color, -1)
+        arms = getattr(upper, "arms", {}) or {}
+        for side in ("left", "right"):
+            points = arms.get(side)
+            if points is None:
+                continue
+            xy = np.asarray(points, dtype=np.float64)
+            for index in range(2):
+                cv2.line(image,
+                         (int(xy[index, 0] * width), int(xy[index, 1] * height)),
+                         (int(xy[index + 1, 0] * width), int(xy[index + 1, 1] * height)),
+                         (0, 255, 255), 2)
+        hits = {side: int((raw or {}).get(side) is not None) for side in ("left", "right")}
+        text = "L=%d R=%d target=%s" % (
+            hits["left"], hits["right"],
+            "ok" if (target is not None and target.position is not None)
+            else (target.reason if target is not None else "none"))
+        cv2.rectangle(image, (0, 0), (width, 26), (0, 0, 0), -1)
+        cv2.putText(image, text, (6, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                    (0, 255, 0) if (hits["left"] or hits["right"]) else (0, 0, 255), 1)
+        cv2.putText(image, "stand ~1 m, palm to camera | q/Esc quits",
+                    (6, height - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+        cv2.imshow(self._window, image)
+        return (cv2.waitKey(1) & 0xFF) not in (ord("q"), 27)
+
+    def _read_frame(self) -> None:
+        """读一帧摄像头 -> 重定向 -> IK -> 写进 ``self.action``。"""
+        self.source.next_frame()
+        self.frames += 1
+        upper = self.source.arms()
+        raw = self.source.last_raw_frame or {}
+        for side in ("left", "right"):
+            self.hand_frames[side] += int(raw.get(side) is not None)
+        now = time.time()
+        delta = None if self.last_frame_at is None else max(now - self.last_frame_at, 1e-3)
+        self.last_frame_at = now
+        targets = self.bridge.update(arms_world=upper, hands=raw, frame_dt=delta)
+        target = targets[self.env.robot_type][self.side]
+        self.last_target = target.describe()
+        self._note_progress(raw, target)
+        if self.preview and not self._draw_preview(raw, upper, target):
+            self.stopped = True
+        if target.position is None:
+            self.bad_sides += 1
+            return
+        values = self.adapter.solve(self.side, target.position, source="base",
+                                    elbow=target.elbow)
+        action = np.array(self.action, dtype=np.float64, copy=True)
+        for name, value in values.items():
+            slot = self.names.get(name)
+            if slot is not None and slot < action.size:
+                action[slot] = float(value)
+        self.action = action
+        self.last_info = {
+            "valid": bool(target.valid), "held": bool(target.held),
+            "reason": target.reason, "source": target.source,
+            "left_ratio": round(self.hand_frames["left"] / max(self.frames, 1), 3),
+            "right_ratio": round(self.hand_frames["right"] / max(self.frames, 1), 3),
+            "unmapped_joints": list(self.unmapped),
+        }
+
+    def _note_progress(self, raw, target) -> None:
+        """现场提示：第一帧说清怎么站，标定中报进度，标定好之后只在掉线时提示。"""
+        if self.frames == 1:
+            print("[camera] 站到摄像头前约 1.0-1.5 m，上半身（肩到指尖）完整入镜；"
+                  "手举到胸前别乱动，等下面出现 cal=ok 再开始动", flush=True)
+        status = self.bridge.status()
+        if status != "cal=ok":
+            if self.frames % 5 == 0:
+                print("[camera] %s  %d frames  hands L=%d R=%d" % (
+                    status, self.frames,
+                    int(raw.get("left") is not None),
+                    int(raw.get("right") is not None)), flush=True)
+            return
+        if not self.calibrated:
+            self.calibrated = True
+            print("[camera] cal=ok（%d 帧标定完成）-> 机器人这一侧臂开始跟手" % self.frames,
+                  flush=True)
+        if target.position is None and (self.frames % 10) == 0:
+            print("[camera] 这一帧没跟手：%s（%d 帧里 %d 次）" % (
+                target.reason, self.frames, self.bad_sides), flush=True)
+
+    def __call__(self, step: int):
+        """``run_trial`` 每步调一次；每 ``substeps`` 步读一帧摄像头。"""
+        self.steps = int(step) + 1
+        if (int(step) % self.substeps) == 0:
+            self._read_frame()
+        return self.action
+
+    def meta(self) -> dict:
+        return {"camera": {"side": self.side, "substeps": self.substeps,
+                           "arm_map": self.arm_map,
+                           "calibration_frames": self.bridge.calibration_frames,
+                           "unmapped_joints": list(self.unmapped)}}
+
+    def report(self) -> dict:
+        """trial 结束时落盘的摄像头侧证据（判据之外，用来解释失败）。"""
+        return {"frames": self.frames, "steps": self.steps,
+                "hand_frames": dict(self.hand_frames),
+                "held_frames": self.bad_sides,
+                "left_ratio": round(self.hand_frames["left"] / max(self.frames, 1), 3),
+                "right_ratio": round(self.hand_frames["right"] / max(self.frames, 1), 3),
+                "bridge_counts": {key: (dict(value) if isinstance(value, dict) else value)
+                                  for key, value in self.bridge.counts.items()},
+                "last_target": self.last_target, "last_info": self.last_info}
+
+    def close(self) -> None:
+        try:
+            if self.preview:
+                import cv2
+
+                cv2.destroyAllWindows()
+                cv2.waitKey(1)
+            self.source.release(close_landmarker=False)
+        except Exception:  # noqa: BLE001 - 关摄像头失败不该盖住 trial 结果
+            pass
+
+
+def build_actions(policy: str, env, path: str = None, steps: int = None,
+                  **options):
+    """按 policy 造动作流；``None`` = 每步不下发动作（idle）。
+
+    ``camera`` 返回的不是数组而是 ``CameraPolicy``（可调用对象）：它每读一帧摄像头就
+    解一次 IK，动作在本步才算得出来，见 ``run_trial`` 对 callable 的支持。
+    """
     if policy == "idle":
         return None, {"policy": "idle"}
+    if policy == "camera":
+        live = CameraPolicy(env, **options)
+        return live, dict({"policy": "camera", "source": "mediapipe_pose"}, **live.meta())
     from teleoperation.applications.replay.replay_actions import (
         make_dummy_actions, validate_dim)
     if policy == "dummy":
@@ -781,22 +1010,38 @@ def joint_positions(env) -> np.ndarray:
                      for index in indices])
 
 
-def run_trial(env, actions, max_steps: int) -> dict:
-    """逐步推进并每帧查判据；**自己算仿真时间**（baseline 用 time.time()，空转也要等 300 s）。"""
+def run_trial(env, actions, max_steps: int, max_wall_s: float = None) -> dict:
+    """逐步推进并每帧查判据；**自己算仿真时间**（baseline 用 time.time()，空转也要等 300 s）。
+
+    ``actions`` 可以是动作数组，也可以是 ``callable(step) -> action``：摄像头策略的动作
+    只能边走边算（``CameraPolicy``），所以这里不要求整段先算出来。
+    """
     progress = max(1, int(max_steps) // 10)
     success = False
     completion = None
     step = 0
+    wall_hit = False
     before = joint_positions(env)
     t0 = time.time()
     for step in range(int(max_steps)):
-        if actions is not None:
-            env.task.apply_action(actions[min(step, len(actions) - 1)],
-                                  joint_indices=env.action_joint_indices)
+        if callable(actions):
+            action = actions(step)
+            if getattr(actions, "stopped", False):
+                wall_hit = True
+                break
+        elif actions is not None:
+            action = actions[min(step, len(actions) - 1)]
+        else:
+            action = None
+        if action is not None:
+            env.task.apply_action(action, joint_indices=env.action_joint_indices)
         p.stepSimulation(physicsClientId=env.client)
         if env.task.check_success():
             success = True
             completion = (step + 1) * DT
+            break
+        if max_wall_s is not None and (step % 24) == 23 and time.time() - t0 > max_wall_s:
+            wall_hit = True
             break
         if env._render and step % progress == 0:
             time.sleep(DT)
@@ -808,7 +1053,8 @@ def run_trial(env, actions, max_steps: int) -> dict:
             "steps": int(step + 1),
             "sim_time_s": round((step + 1) * DT, 3),
             "joint_travel_rad": round(travel, 4),
-            "wall_s": round(time.time() - t0, 2)}
+            "wall_s": round(time.time() - t0, 2),
+            "wall_limit_hit": bool(wall_hit)}
 
 
 def object_positions(env) -> dict:
@@ -816,17 +1062,47 @@ def object_positions(env) -> dict:
             for key, body in env.task.objects.items()}
 
 
+def snapshot(env, path, target=None, yaw: float = 55.0, pitch: float = -22.0,
+             distance: float = 1.9, width: int = 640, height: int = 480) -> bool:
+    """离屏渲染一张 PNG（与 ``verify_three_robot_scene.render`` 同一套取景参数）。
+
+    现场看 GUI 窗口之外还要一份可以贴进文档/报告的静态图；``ER_TINY_RENDERER`` 在
+    DIRECT 与 GUI 两个客户端上都能出图，所以 ``--render`` 与否都能拍。
+    """
+    import cv2
+
+    if target is None:
+        positions = object_positions(env)
+        target = positions.get("cube") or positions.get("table") or [0.4, 0.0, 0.9]
+    view = p.computeViewMatrixFromYawPitchRoll(
+        cameraTargetPosition=list(target), distance=float(distance), yaw=float(yaw),
+        pitch=float(pitch), roll=0, upAxisIndex=2)
+    projection = p.computeProjectionMatrixFOV(
+        fov=60.0, aspect=width / float(height), nearVal=0.1,
+        farVal=float(distance) * 4.0 + 10.0)
+    image = p.getCameraImage(width, height, viewMatrix=view, projectionMatrix=projection,
+                             renderer=p.ER_TINY_RENDERER, physicsClientId=env.client)
+    rgba = np.asarray(image[2]).reshape(height, width, 4).astype(np.uint8)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return bool(cv2.imwrite(str(path), cv2.cvtColor(rgba[:, :, :3], cv2.COLOR_RGB2BGR)))
+
+
 def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                   actions_path: str = None, max_steps: int = 14400,
                   settle_steps: int = SETTLE_STEPS, scene: bool = True,
-                  render: bool = False, verbose: bool = True) -> dict:
+                  render: bool = False, verbose: bool = True,
+                  policy_options: dict = None, max_wall_s: float = None,
+                  snapshot_dir: str = None) -> dict:
     """一个任务跑 N 个 trial，返回 report（含每个 trial 的 JSON 段）。"""
     from teleoperation.simulation.environment import SimulationEnv
 
+    options = dict(policy_options or {})
     arm = measure_arm(robot) if scene else {}
     report = {"meta": {"robot": robot, "task": task_name, "trials": int(trials),
                        "policy": policy, "scene": bool(scene),
                        "settle_steps": int(settle_steps), "max_steps": int(max_steps),
+                       "max_wall_s": max_wall_s,
                        "criteria_invalid": task_name in CRITERIA_INVALID,
                        "criteria_note": CRITERIA_INVALID.get(task_name),
                        "arm": {key: arm.get(key) for key in
@@ -837,6 +1113,7 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
         env = SimulationEnv(robot_type=robot, task_name=task_name, render=render,
                             record=False,
                             data_dir=str(ROOT / "outputs" / "tmp_task_eval"))
+        live = None
         try:
             env.reset(randomize=False)
             scene_report = None
@@ -846,10 +1123,18 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                          reach=arm.get("reach_m"),
                                          name=task_name,
                                          robot_id=env.robot_id).prepare(settle_steps)
-            actions, policy_meta = build_actions(policy, env, actions_path, max_steps)
-            result = run_trial(env, actions, max_steps)
+            actions, policy_meta = build_actions(policy, env, actions_path, max_steps,
+                                                 **options)
+            live = actions if callable(actions) else None
+            result = run_trial(env, actions, max_steps, max_wall_s=max_wall_s)
             trial = dict(result, trial=index, **policy_meta,
                          scene=scene_report, final_objects=object_positions(env))
+            if live is not None:
+                trial["camera"] = live.report()
+            if snapshot_dir:
+                shot = Path(snapshot_dir) / ("%s_%s_t%d.png" % (task_name, robot, index))
+                if snapshot(env, shot):
+                    trial["snapshot"] = str(shot)
             report["trials"].append(trial)
             if verbose:
                 print("[%s] %s/%s trial %d: %s" % (
@@ -858,6 +1143,8 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                     if trial["success"] else
                     "no success in %.1f s" % trial["sim_time_s"]), flush=True)
         finally:
+            if live is not None:
+                live.close()
             env.close()
     successes = [item for item in report["trials"] if item["success"]]
     times = [item["completion_time_s"] for item in successes]
@@ -992,9 +1279,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--robot", default="h1_2", choices=list(ROBOTS) + ["all"],
                         help="机器人（--verify 时 all = 三台全跑）")
     parser.add_argument("--trials", type=int, default=1, help="每个任务跑几个 trial")
-    parser.add_argument("--policy", default="idle", choices=["idle", "dummy", "replay"],
-                        help="idle=不下发动作（查假成功）；dummy=正弦假动作；replay=契约H 动作文件")
+    parser.add_argument("--policy", default="idle",
+                        choices=["idle", "dummy", "replay", "camera"],
+                        help="idle=不下发动作（查假成功）；dummy=正弦假动作；"
+                             "replay=契约H 动作文件；camera=摄像头实时驱动（现场用）")
     parser.add_argument("--actions", default=None, help="--policy replay 的动作文件")
+    parser.add_argument("--camera-index", type=int, default=0, help="--policy camera 的相机编号")
+    parser.add_argument("--side", default="right", choices=["left", "right"],
+                        help="--policy camera 驱动哪一侧手臂（默认 right）")
+    parser.add_argument("--arm-map", default="posture",
+                        choices=["chain", "segments", "posture"],
+                        help="--policy camera 的重定向口径（默认 posture = 方向口径）")
+    parser.add_argument("--substeps", type=int, default=CAMERA_SUBSTEPS,
+                        help="--policy camera 一个摄像头帧对应几个物理步（默认 12 = 20 fps 同节奏）")
+    parser.add_argument("--calibrate-frames", type=int, default=30,
+                        help="--policy camera 的中性姿势标定帧数（默认 30，约 1.5 s）")
+    parser.add_argument("--max-wall-s", type=float, default=None,
+                        help="一个 trial 最多多少**墙钟**秒（--policy camera 建议 30-60）")
+    parser.add_argument("--preview", action="store_true",
+                        help="--policy camera 时弹摄像头预览窗（看手点/骨架/目标状态；q 退出）")
     parser.add_argument("--max-sim-s", type=float, default=DEFAULT_MAX_SIM_S,
                         help="一个 trial 最多多少**仿真**秒（默认 60）")
     parser.add_argument("--settle-steps", type=int, default=SETTLE_STEPS,
@@ -1004,6 +1307,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="跑四项检查（30 个任务过场景层），不跑 trial")
     parser.add_argument("--render", action="store_true", help="GUI 渲染（默认 DIRECT）")
     parser.add_argument("--json", default=None, help="报告落盘路径")
+    parser.add_argument("--snapshot-dir", default=None,
+                        help="每个 trial 结束时离屏渲染一张 PNG 到这个目录（现场取证用）")
     return parser
 
 
@@ -1056,12 +1361,18 @@ def main(argv=None) -> int:
         print("[FAIL] unknown task(s): %s" % unknown)
         return 2
     max_steps = max(1, int(round(args.max_sim_s / DT)))
+    options = {"side": args.side, "camera_index": args.camera_index,
+               "substeps": args.substeps, "calibrate_frames": args.calibrate_frames,
+               "arm_map": args.arm_map, "preview": args.preview}
     reports = []
     for name in tasks:
         report = evaluate_task(args.robot, name, args.trials, args.policy,
                                actions_path=args.actions, max_steps=max_steps,
                                settle_steps=args.settle_steps,
-                               scene=not args.no_scene, render=args.render)
+                               scene=not args.no_scene, render=args.render,
+                               policy_options=options,
+                               max_wall_s=args.max_wall_s,
+                               snapshot_dir=args.snapshot_dir)
         reports.append(report)
         summary = report["summary"]
         print("[%s] %s/%s: %d/%d success, mean %s s" % (

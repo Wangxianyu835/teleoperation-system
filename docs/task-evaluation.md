@@ -216,6 +216,55 @@ settle / in_reach 全在里面），trial 报告默认 `outputs/task_eval/<robot
 `drawer` / `cabinet` 那组还有一条几何硬伤：抽屉的 box 半宽 0.14 比柜体半宽 0.15 大，
 实心体必然互穿（我们只能换成薄面板绕开）。
 
+### 4.6 批次 3 第一步：摄像头现场档（`--policy camera`）
+
+`task_eval.py --policy camera` 把**正在用的那条链路**原样接到任务上，一行都没重写：
+
+```text
+CameraFrameSource.next_frame()   # MediaPipe 手 21 点 + pose 肩/肘/腕（米制）
+  -> RealtimeArmBridge.update()  # 相对重定向，默认 --arm-map posture（方向口径）
+  -> PyBulletArmIK.solve()       # 每侧 7 个臂关节角（腕 + 肘两个位置任务）
+  -> 按 env.action_joint_names 落位 -> env.task.apply_action()
+```
+
+命令行（默认 DIRECT，加 `--render` 开 PyBullet 窗口，加 `--preview` 同时开摄像头预览窗）：
+
+```powershell
+E:\python3.11.7\python.exe devtools\task_eval.py --task pushcube --policy camera `
+    --side right --render --preview --max-wall-s 60 `
+    --json outputs\task_eval\camera_pushcube.json --snapshot-dir outputs\task_eval\snapshots
+```
+
+要点（都是代码里写死的原因，改之前先读这一段）：
+
+* **一个摄像头帧 = 12 个物理步**（`--substeps`，默认 12 = 0.05 s 仿真）。MediaPipe 一帧
+  30-50 ms，物理步是 0.1 ms 级；每步读一次摄像头会把"你手的 1 秒"压成机器人的 0.02 秒。
+  12 步正好和实测 19-21 fps 的相机同节奏。
+* **动作不是数组而是 callable**：`run_trial` 支持 `callable(step) -> action`，动作边走边算
+  （`CameraPolicy`）。数组策略的老路径行为不变（用例
+  `tests/test_task_audit.py::TrialRunnerTests` 用"两者同轨迹"钉住）。
+* **手关节不动**：只驱动 `--side` 那一条 7 DoF 臂，18 维手角度保持 reset 值。pushcube 只需要
+  手臂推；混进手部链路只会让失败原因难分辨。
+* **现场先标定**：起手 1.5 s（30 帧）记中性姿势，控制台打 `cal=right=12/30` -> `cal=ok`，
+  这段期间机器人不动。`cal=ok` 之后才开始跟手。
+* **两个窗口各管一件事**：摄像头预览窗看骨架/手点有没有检到（左上角 `L=1 R=1`），
+  PyBullet 窗口看机器人跟得对不对（方向反了调 `--arm-axis-order/signs`，不用改代码）。
+* **证据字段**：trial 里多一段 `camera`：`frames` / `hand_frames{L,R}`（检到手的帧数）/
+  `held_frames`（这一帧没跟手，含 `held_reason` 分类）/ `bridge_counts`（valid / posture /
+  direction_glitch...）/ `last_target`（最后一帧目标 + gain 与姿态度量）。`--snapshot-dir`
+  另外每 trial 落一张离屏 PNG（`task_eval.snapshot()`，`ER_TINY_RENDERER`，DIRECT 也出图）。
+
+2026-11-09 实测（同一台机，摄像头 19.2 fps）：
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| 管线 | 通 | 238 帧、`joint_travel_rad = 1.16`（`--policy idle` 空跑只有 0.0165）|
+| `pushcube` 成功 | 否 | 台面被抬到 1.34 m，方块离肩 0.51 m / 臂展 0.553 m（92%），要"先够到再推 0.54 m"，第一次试跑没做到 |
+| 手部检到率 | 0/238 | 试跑时没人站到镜头前，pose 仍给出（多半是幻检）；现场必须先看 `L=1 R=1` 与 `cal=ok` |
+
+结论口径：**链路已通、任务未解**。下一档要解决的是"够得着"（换更近的台面摆放或更简单的
+任务），不是链路本身。
+
 ## 5. 与论文的偏差（写进任何对外材料，不要含糊）
 
 
