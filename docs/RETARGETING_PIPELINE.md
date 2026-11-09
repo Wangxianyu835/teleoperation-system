@@ -9,6 +9,10 @@
 > `arm_ik._level_elbow_pose` 现在把这类关节对 0（= 伸直位）取反：同一个弯角、换到另一侧；启动行
 > 会打印 `elbow pose: gr1_t2:l +1.20->-1.20 rad, ...`，报告里看
 > `/arm/robots/<robot>/elbow_pose_fix`，细节见 `multi-robot-arm.md` §8.17.11。
+> **2026-11-09 追加（任务评估开工）**：论文「仿真任务的测试与评估」拆成四个批次，批次 1（30 任务可评测性
+> 审计）已落地 —— `devtools/audit_tasks.py` 实测 **19/30 通过**（3 个任务判据在 reset 就成立、1 个判据
+> 不可触发、10 个场景物体自己乱飞、三台机器人 **0/57** 个可搬物体在手臂可达半径内）。口径、30 行结果表
+> 与批次 2 的输入见 [`task-evaluation.md`](task-evaluation.md)。
 > [`contracts.md`](contracts.md)（H5 / 命令契约，字段以它为准）· [`architecture.md`](architecture.md)（模块层次）·
 > 注意：`docs/archive/`（旧布局手册，只读参考）已随上游 `10ebd9f` 被整体删除，
 > 旧布局的对照表保留在 §5（本文档内，自足）。
