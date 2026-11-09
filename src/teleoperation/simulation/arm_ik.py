@@ -735,8 +735,23 @@ class PyBulletArmIK:
         return values
 
     def _arm_values(self, side: str, solution) -> dict:
-        return {name: solution[self.position_of[index]]
-                for index, name in self.arm[side]}
+        """Return named arm angles with tolerance-sized overshoot pulled onto the bounds.
+
+        The wrist branch above accepts a value up to 1e-5 rad outside the URDF limits so a
+        saturated pose is not rejected on every frame, while command validation requires the
+        exact limits (1e-6). Return only in-range values; keep larger violations untouched so
+        the existing rejection path still refuses them.
+        """
+        values = {}
+        for index, name in self.arm[side]:
+            position = self.position_of[index]
+            value = float(solution[position])
+            low = float(self.limits["lower"][position])
+            high = float(self.limits["upper"][position])
+            if np.isfinite(value) and low - 1e-5 <= value <= high + 1e-5:
+                value = min(max(value, low), high)
+            values[name] = value
+        return values
 
     def _teleport(self, side: str, solution) -> None:
         """Temporarily set arm joint positions for the next IK pass, without stepping physics."""

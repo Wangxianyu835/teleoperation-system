@@ -19,8 +19,9 @@ class L21CollisionGuard:
     """Check the actual URDF collision meshes along a sampled joint-space path.
 
 Same-finger and palm pairs are excluded. The shipped neighboring metacarpal
-meshes already touch at zero pose; only those tiny initial contacts receive a
-recorded 0.1 mm tolerance. New/deeper inter-finger contacts remain forbidden.
+meshes already touch at zero pose; those tiny initial contacts get the caller's
+margin (``--collision-margin-mm``, 1 mm by default) instead of a fixed 0.1 mm.
+New/deeper inter-finger contacts remain forbidden.
 """
 
     def __init__(self, scene, side, margin=0.001, sample_step=0.02):
@@ -52,7 +53,7 @@ recorded 0.1 mm tolerance. New/deeper inter-finger contacts remain forbidden.
             names = (self.link_names[a], self.link_names[b])
             if not all(name.endswith("_metacarpals") for name in names) or distance < -0.0002:
                 raise RuntimeError(f"Initial L21 pose is inside collision margin: {names}, {distance}")
-            self.floors[a, b] = distance - 0.0001
+            self.floors[a, b] = distance - self.margin
             self.baseline_contacts.append({"links": list(names), "initial_distance_m": distance,
                                            "allowed_distance_m": self.floors[a, b]})
         self.blocked = 0
