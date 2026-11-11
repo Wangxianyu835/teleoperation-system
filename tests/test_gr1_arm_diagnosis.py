@@ -6,7 +6,8 @@ import unittest
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from devtools.gr1_arm_diagnosis import ControlledArmModel, generate_cases, pose_error, BulletSolver, PinkSolver
+from devtools.gr1_arm_diagnosis import (ControlledArmModel, generate_cases, pose_error,
+                                       BulletSolver, PinkSolver, measure_candidate, candidate_status)
 
 
 UPSTREAM = Path('D:/2026/code/TeleOpBench-reference')
@@ -26,6 +27,12 @@ class PoseMetricTests(unittest.TestCase):
         for bad in (np.diag([2., 1, 1, 1]), np.full((4, 4), np.nan)):
             with self.assertRaises(ValueError):
                 pose_error(np.eye(4), bad)
+
+    def test_distinguishes_invalid_and_out_of_limit_candidates(self):
+        low, high = np.array([-1., -1.]), np.array([1., 1.])
+        self.assertEqual(candidate_status(np.array([0., .5]), low, high), 'within_limits')
+        self.assertEqual(candidate_status(np.array([0., 1.1]), low, high), 'out_of_limits')
+        self.assertEqual(candidate_status(np.array([np.nan, 0.]), low, high), 'nonfinite')
 
 
 class ControlledKinematicsTests(unittest.TestCase):
@@ -92,6 +99,25 @@ class ControlledKinematicsTests(unittest.TestCase):
                     self.assertLess(deg, 5.)
                     inactive = [i for i,n in enumerate(self.model.names) if not n.startswith(side+'_')]
                     np.testing.assert_array_equal(command[inactive], q[inactive])
+
+    def test_native_candidate_measurement_preserves_all_positions_and_velocities(self):
+        solver = BulletSolver(self.model, pose=True)
+        a = solver.adapter
+        self.model.set_bullet(self.model.reference)
+        before = self.model.bullet_state()
+        candidate = [before[self.model.names.index(a.name_of[k]), 0] + .02 for k in a.indices]
+        t = measure_candidate(a, 'left', candidate)
+        self.assertEqual(t.shape, (4, 4))
+        np.testing.assert_array_equal(self.model.bullet_state(), before)
+
+    def test_far_target_is_reported_as_not_reached_not_proven_unreachable(self):
+        solver = BulletSolver(self.model, pose=True)
+        target = self.model.pin_fk(self.model.reference, 'left')
+        target[:3, 3] = [10., 10., 10.]
+        q, details = solver.solve(self.model.reference, target, 'left')
+        mm, _ = pose_error(self.model.pin_fk(q, 'left'), target)
+        self.assertGreater(mm, 1000.)
+        self.assertTrue(details['production']['wrist_rejection'])
 
 
 if __name__ == '__main__':

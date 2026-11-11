@@ -42,6 +42,30 @@ def pose_error(actual, target):
             float(np.rad2deg(Rotation.from_matrix(actual[:3, :3] @ target[:3, :3].T).magnitude())))
 
 
+def candidate_status(q, lower, upper):
+    if not np.isfinite(q).all(): return 'nonfinite'
+    if np.any(q < lower - 1e-6) or np.any(q > upper + 1e-6): return 'out_of_limits'
+    return 'within_limits'
+
+
+def measure_candidate(adapter, side, values):
+    """Read an IK candidate in world coordinates without changing live state."""
+    if len(values) != len(adapter.indices) or not np.isfinite(values).all():
+        raise ValueError('Candidate must cover every movable joint with finite values')
+    p = adapter.p
+    saved = [p.getJointState(adapter.body, k, physicsClientId=adapter.cid)[:2] for k in adapter.indices]
+    try:
+        adapter._teleport(side, values)
+        position, quat = adapter.measure(side)
+        t = np.eye(4)
+        t[:3, 3] = position
+        t[:3, :3] = Rotation.from_quat(quat).as_matrix()
+        return t
+    finally:
+        for k, (q, v) in zip(adapter.indices, saved):
+            p.resetJointState(adapter.body, k, q, targetVelocity=v, physicsClientId=adapter.cid)
+
+
 def arm_name(name):
     return name.startswith(('left_', 'right_')) and any(k in name for k in ('shoulder', 'elbow', 'wrist'))
 
@@ -292,9 +316,77 @@ def run_matrix(model):
     return summary
 
 
+def run_probes(model):
+    solver = BulletSolver(model, True)
+    rng = np.random.RandomState(20261111)
+    records = []
+    for index in range(48):
+        goal = model.lower + (.15 + .7 * rng.uniform(size=14)) * (model.upper - model.lower)
+        for side in SIDES:
+            target = model.pin_fk(goal, side)
+            command, details = solver.solve(model.reference.copy(), target, side)
+            old_mm, _ = pose_error(model.pin_fk(model.reference, side), target)
+            mm, deg = pose_error(model.pin_fk(command, side), target)
+            for candidate in details['candidates']:
+                candidate['status'] = candidate_status(np.array(candidate['q']), model.lower, model.upper)
+                candidate['error_mm'], candidate['error_deg'] = pose_error(np.array(candidate['fk']), target)
+            records.append({'case': index, 'side': side, 'goal_q': goal.tolist(),
+                            'target': target.tolist(), 'before_error_mm': old_mm,
+                            'accepted_error_mm': mm, 'accepted_error_deg': deg,
+                            'command_q': command.tolist(), **details})
+    rejection_counts = {}
+    for record in records:
+        reason = record['production'].get('wrist_rejection') or 'accepted'
+        rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+    witnesses = []
+    for record in records:
+        if record['production'].get('wrist_rejection') != 'pose_position_conflict': continue
+        for gain in np.arange(.1, 1.01, .1):
+            goal = model.reference + gain * (np.array(record['goal_q']) - model.reference)
+            target = model.pin_fk(goal, record['side'])
+            command, detail = solver.solve(model.reference.copy(), target, record['side'])
+            if detail['production'].get('wrist_rejection') == 'pose_position_conflict':
+                old_mm, _ = pose_error(model.pin_fk(model.reference, record['side']), target)
+                witnesses.append((old_mm, record['case'], record['side'], float(gain), goal, target, detail))
+    if witnesses:
+        old_mm, case, side, gain, goal, target, detail = min(witnesses, key=lambda item: item[0])
+        result = {'case': case, 'side': side, 'gain': gain, 'before_mm': old_mm,
+                  'start_q': model.reference.tolist(), 'goal_q': goal.tolist(),
+                  'target': target.tolist(), 'first_call': detail, 'after_60': {}}
+        for name, method in [('bullet', solver), ('pink', PinkSolver(model, True))]:
+            q = model.reference.copy()
+            for step in range(60): q, final = method.solve(q, target, side)
+            result['after_60'][name] = {'q': q.tolist(), 'error': pose_error(model.pin_fk(q, side), target),
+                                        'last': final['production']}
+        # Explicit counterfactual experiment, never a production acceptance override.
+        q = model.reference.copy()
+        history = []
+        for step in range(60):
+            command, detail = solver.solve(q, target, side)
+            used = False
+            if detail['production'].get('wrist_rejection') == 'pose_position_conflict':
+                position = np.array(detail['candidates'][0]['q'])
+                if candidate_status(position, model.lower, model.upper) == 'within_limits':
+                    delta = position-q
+                    command = q+delta*min(1., .35/max(np.max(np.abs(delta)), 1e-12))
+                    used = True
+            mm, deg = pose_error(model.pin_fk(command, side), target)
+            history.append({'step': step, 'position_mm': mm, 'orientation_deg': deg,
+                            'diagnostic_position_candidate_used': used})
+            q = command
+        result['diagnostic_position_progress'] = history
+        (model.work/'witness.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
+    (model.work/'probe.json').write_text(json.dumps(records, indent=2), encoding='utf-8')
+    summary = {'known_reachable_cases': len(records), 'rejection_counts': rejection_counts,
+               'minimized_witness_available': bool(witnesses),
+               'note': 'All goals are FK of valid joints; solver failure does not prove unreachable.'}
+    (model.work/'probe-summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+    return summary
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--stage', required=True, choices=('fk', 'matrix'))
+    parser.add_argument('--stage', required=True, choices=('fk', 'matrix', 'probe'))
     parser.add_argument('--upstream', required=True, type=Path)
     parser.add_argument('--input', type=Path)
     parser.add_argument('--output', required=True, type=Path)
@@ -309,6 +401,7 @@ def main(argv=None):
                           'max_position_mm': max(r['position_mm'] for r in rows),
                           'max_orientation_deg': max(r['orientation_deg'] for r in rows)}), flush=True)
         if args.stage == 'matrix': print(json.dumps(run_matrix(model), indent=2), flush=True)
+        if args.stage == 'probe': print(json.dumps(run_probes(model), indent=2), flush=True)
     finally:
         model.close()
     return 0
