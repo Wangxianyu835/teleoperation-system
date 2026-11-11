@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -166,9 +168,133 @@ def run_fk(model):
     return rows
 
 
+class BulletSolver:
+    def __init__(self, model, pose):
+        from teleoperation.simulation.arm_ik import PyBulletArmIK
+        self.model, self.pose = model, pose
+        self.candidates = []
+        owner = self
+
+        class TracedIK(PyBulletArmIK):
+            def _ik_call(self, side, world, orientation, arguments):
+                values = super()._ik_call(side, world, orientation, arguments)
+                q = np.array([values[self.position_of[model.indices[name]]] for name in model.names])
+                owner.candidates.append({'kind': 'position' if orientation is None else 'pose',
+                                         'q': q.tolist(), 'fk': model.pin_fk(q, side).tolist()})
+                return values
+
+        with model.restored():
+            model.set_bullet(model.reference)
+            self.adapter = TracedIK(model.body, model.cid, robot_type='gr1_t2',
+                                    ik_mode='position', rest_poses='loaded', lock_others=True,
+                                    elbow_recovery_deg=0)
+            self.adapter.ee = {s: (model.links[f], f) for s, f in model.frames.items()}
+            self.adapter.neutral_orientation = {s: self.adapter._orientation(s) for s in SIDES}
+
+    def solve(self, q, target, side, dt=1/30):
+        pose_error(target, target)
+        self.candidates = []
+        start = time.perf_counter()
+        with self.model.restored():
+            self.model.set_bullet(q)
+            values = self.adapter.solve(side, target[:3, 3],
+                orientation=Rotation.from_matrix(target[:3, :3]).as_quat() if self.pose else None,
+                source='world')
+        command = np.array(q, copy=True)
+        for name, value in values.items(): command[self.model.names.index(name)] = value
+        return command, {'candidates': list(self.candidates),
+                         'production': dict(self.adapter.last_solve[side]),
+                         'solve_ms': (time.perf_counter()-start)*1000}
+
+
+class PinkSolver:
+    def __init__(self, model, pose):
+        sys.path.insert(0, str(DEPENDENCIES))
+        import pink
+        import qpsolvers
+        from pink.tasks import FrameTask, PostureTask
+        self.model, self.pink = model, pink
+        self.qp = qpsolvers.available_solvers[0]
+        self.sides = {}
+        for side in SIDES:
+            inactive = [i for i,n in enumerate(model.model.names) if i and not n.startswith(side+'_')]
+            reduced = model.pin.buildReducedModel(model.model, inactive, model.reference)
+            data = reduced.createData()
+            ids = [model.names.index(name) for name in reduced.names[1:]]
+            config = pink.Configuration(reduced, data, model.reference[ids].copy())
+            frame = FrameTask(frame=model.frames[side], position_cost=1., orientation_cost=1. if pose else 0., lm_damping=.5)
+            posture = PostureTask(cost=.001, lm_damping=1., gain=.1)
+            posture.set_target(model.reference[ids].copy())
+            self.sides[side] = (config, frame, posture, ids)
+
+    def solve(self, q, target, side, dt=1/30):
+        pose_error(target, target)
+        config, frame, posture, ids = self.sides[side]
+        config.update(q[ids].copy())
+        frame.set_target(self.model.pin.SE3(target[:3, :3], target[:3, 3]))
+        start = time.perf_counter()
+        velocity = self.pink.solve_ik(config, [frame, posture], dt, solver=self.qp)
+        config.integrate_inplace(velocity, dt)
+        command = np.array(q, copy=True)
+        command[ids] = config.q
+        return command, {'candidates': [], 'production': {},
+                         'solve_ms': (time.perf_counter()-start)*1000, 'qp': self.qp}
+
+
+def summarize(rows):
+    result = {}
+    for group in sorted({r['group'] for r in rows}):
+        subset = [r for r in rows if r['group'] == group and r['step'] == 59]
+        result[group] = {'cases': len(subset),
+            'position_median_mm': float(np.median([r['position_mm'] for r in subset])),
+            'position_p95_mm': float(np.percentile([r['position_mm'] for r in subset], 95)),
+            'orientation_median_deg': float(np.median([r['orientation_deg'] for r in subset])),
+            'passes_position_10mm': sum(r['position_mm'] <= 10 for r in subset),
+            'passes_pose_10mm_5deg': sum(r['position_mm'] <= 10 and r['orientation_deg'] <= 5 for r in subset),
+            'rejected_updates': sum(bool(r['rejection']) for r in rows if r['group'] == group)}
+    return result
+
+
+def run_matrix(model):
+    rows, traces = [], []
+    for group, factory, pose, dt in [('A_position_bullet', BulletSolver, False, 1/30),
+                                    ('B_pose_bullet', BulletSolver, True, 1/30),
+                                    ('C_position_pink', PinkSolver, False, 1/30),
+                                    ('D_pose_pink', PinkSolver, True, 1/30),
+                                    ('C_position_pink_5ms', PinkSolver, False, .005),
+                                    ('D_pose_pink_5ms', PinkSolver, True, .005)]:
+        solver = factory(model, pose)
+        for case, goal_q in generate_cases(model):
+            for side in SIDES:
+                target = model.pin_fk(goal_q, side)
+                q = model.reference.copy()
+                for step in range(60):
+                    command, detail = solver.solve(q, target, side, dt)
+                    mm, deg = pose_error(model.pin_fk(command, side), target)
+                    production = detail['production']
+                    row = {'group': group, 'case': case, 'side': side, 'step': step, 'dt': dt,
+                           'position_mm': mm, 'orientation_deg': deg,
+                           'joint_step_deg': float(np.rad2deg(np.max(np.abs(command-q)))),
+                           'limit_excess_rad': float(max(0., np.max(model.lower-command), np.max(command-model.upper))),
+                           'rejection': production.get('wrist_rejection') or '', 'solve_ms': detail['solve_ms']}
+                    rows.append(row)
+                    if step == 0 or row['rejection']:
+                        traces.append({'group': group, 'case': case, 'side': side, 'step': step,
+                                       'start_q': q.tolist(), 'target': target.tolist(), 'command': command.tolist(),
+                                       **detail})
+                    q = command
+        print('matrix complete', group, flush=True)
+    with (model.work/'matrix.csv').open('w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows)
+    (model.work/'candidates.json').write_text(json.dumps(traces, indent=2), encoding='utf-8')
+    summary = summarize(rows)
+    (model.work/'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+    return summary
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--stage', required=True, choices=('fk',))
+    parser.add_argument('--stage', required=True, choices=('fk', 'matrix'))
     parser.add_argument('--upstream', required=True, type=Path)
     parser.add_argument('--input', type=Path)
     parser.add_argument('--output', required=True, type=Path)
@@ -182,6 +308,7 @@ def main(argv=None):
         print(json.dumps({'stage': args.stage, 'fk_cases': len(rows),
                           'max_position_mm': max(r['position_mm'] for r in rows),
                           'max_orientation_deg': max(r['orientation_deg'] for r in rows)}), flush=True)
+        if args.stage == 'matrix': print(json.dumps(run_matrix(model), indent=2), flush=True)
     finally:
         model.close()
     return 0

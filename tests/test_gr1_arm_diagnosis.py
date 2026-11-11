@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from devtools.gr1_arm_diagnosis import ControlledArmModel, generate_cases, pose_error
+from devtools.gr1_arm_diagnosis import ControlledArmModel, generate_cases, pose_error, BulletSolver, PinkSolver
 
 
 UPSTREAM = Path('D:/2026/code/TeleOpBench-reference')
@@ -62,6 +62,36 @@ class ControlledKinematicsTests(unittest.TestCase):
         q = generate_cases(self.model)[3][1]
         self.model.bullet_fk(q, 'left')
         np.testing.assert_array_equal(self.model.bullet_state(), before)
+
+    def test_position_solver_tracing_preserves_every_joint_state(self):
+        solver = BulletSolver(self.model, pose=False)
+        self.model.set_bullet(self.model.reference)
+        for name in self.model.names:
+            k = self.model.indices[name]
+            q = self.model.p.getJointState(self.model.body, k, physicsClientId=self.model.cid)[0]
+            self.model.p.resetJointState(self.model.body, k, q, targetVelocity=.017, physicsClientId=self.model.cid)
+        before = self.model.bullet_state()
+        target = self.model.pin_fk(generate_cases(self.model)[2][1], 'left')
+        q, details = solver.solve(self.model.reference, target, 'left')
+        np.testing.assert_array_equal(self.model.bullet_state(), before)
+        self.assertTrue(details['candidates'])
+        mm, _ = pose_error(self.model.pin_fk(q, 'left'), target)
+        self.assertLess(mm, 10)
+
+    def test_both_solvers_keep_reached_pose_within_declared_diagnostic_gate(self):
+        for solver in (BulletSolver(self.model, pose=True), PinkSolver(self.model, pose=True)):
+            for side in ('left', 'right'):
+                with self.subTest(solver=type(solver).__name__, side=side):
+                    q = self.model.reference.copy()
+                    target = self.model.pin_fk(q, side)
+                    command, _ = solver.solve(q, target, side)
+                    mm, deg = pose_error(self.model.pin_fk(command, side), target)
+                    # This tests the plan's fixed screening gate, not exact solver identity.
+                    # Bullet's null-space/pose pass can move even an already reached target.
+                    self.assertLess(mm, 10.)
+                    self.assertLess(deg, 5.)
+                    inactive = [i for i,n in enumerate(self.model.names) if not n.startswith(side+'_')]
+                    np.testing.assert_array_equal(command[inactive], q[inactive])
 
 
 if __name__ == '__main__':
