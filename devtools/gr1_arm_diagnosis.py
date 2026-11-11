@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 from contextlib import contextmanager
+from collections import Counter
 import hashlib
 import json
 from pathlib import Path
@@ -165,7 +166,8 @@ class ControlledArmModel:
                 'derived_model_sha256': digest(self.work / 'controlled_model.urdf'),
                 'joint_names': self.names, 'lower': self.lower.tolist(), 'upper': self.upper.tolist(),
                 'reference': self.reference.tolist(), 'frames': self.frames,
-                'dt': 1/30, 'hold_seconds': 2, 'position_gate_mm': 10, 'orientation_gate_deg': 5,
+                'dt': 1/30, 'updates_per_case': 60, 'input_hold_seconds': 2,
+                'clock_contrast_integrated_seconds': .3, 'position_gate_mm': 10, 'orientation_gate_deg': 5,
                 'diagnostic_overrides': ['non-arm joints fixed at zero', 'central 90 percent arm limits',
                                          'geometry removed', 'same endpoint in both engines']}
 
@@ -384,14 +386,200 @@ def run_probes(model):
     return summary
 
 
+def distribution(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if not len(values): return {}
+    return {'median': float(np.median(values)), 'p95': float(np.percentile(values, 95)),
+            'max': float(np.max(values))}
+
+
+def run_replay(input_path, output, mode='both', max_frames=0):
+    """Native recording ablation: change orientation input only, preserve all other code."""
+    import h5py
+    from teleoperation.robots.control_spec import load_robot_control_spec
+    from teleoperation.simulation.robot_backends import SimulationGroup
+    from teleoperation.simulation.robot_part_scene import RobotPartSceneBuilder
+    from teleoperation.applications.robot_session import RobotControlSession
+    from teleoperation.inputs.visionpro import VisionProReplayInput
+    from teleoperation.paths import ROBOTS_ROOT
+    with h5py.File(input_path, 'r') as handle:
+        stamps = handle['timestamps'][:]
+        heads = handle['head_transform'][:]
+        wrists = np.stack([handle[s+'_wrist_transform'][:] for s in SIDES], axis=1)
+    if not np.isfinite(stamps).all() or not np.all(np.diff(stamps) > 0):
+        raise ValueError('Recording timestamps must be finite and strictly increasing')
+    n = len(stamps) if max_frames == 0 else min(len(stamps), max_frames)
+    modes = ('baseline', 'position') if mode == 'both' else (mode,)
+    manifest = {'input': str(input_path.resolve()), 'input_sha256': digest(input_path),
+                'source_frames': len(stamps), 'requested_frames': n,
+                'native_urdf_sha256': digest(ROBOTS_ROOT/'gr1/urdf/robot.urdf'),
+                'modes': modes, 'changed_variable': 'orientation argument to driver.solve_each only',
+                'common_model_control': False,
+                'note': 'Native replay ablation; distinct from common-model matrix experiment.'}
+    (output/'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+    summaries = {}
+    for mode in modes:
+        spec = load_robot_control_spec('gr1_t2', resource_overrides={'parts': 'arms', 'side': 'both'})
+        group = SimulationGroup(gui=False)
+        try:
+            backend = RobotPartSceneBuilder().build(spec, group=group)
+            session = RobotControlSession({'gr1_t2': backend}, source_kind='visionpro')
+            source = VisionProReplayInput(input_path, 'both')
+            adapter = backend.driver.ik['gr1_t2']
+            original_call = adapter._ik_call
+            calls = {s: [] for s in SIDES}
+            latest_solutions = {}
+            original_arm_solve = adapter.solve
+            def traced_solve(side, *args, **kwargs):
+                result = original_arm_solve(side, *args, **kwargs)
+                latest_solutions[side] = dict(result)
+                return result
+            adapter.solve = traced_solve
+
+            def traced(side, world, orientation, arguments):
+                values = original_call(side, world, orientation, arguments)
+                candidate = {name: values[adapter.position_of[k]] for k,name in adapter.arm[side]}
+                lower = np.array([spec.parts[side+'_arm'].limits[j][0] for j in range(7)])
+                upper = np.array([spec.parts[side+'_arm'].limits[j][1] for j in range(7)])
+                status = candidate_status(np.array(list(candidate.values())), lower, upper)
+                measured = measure_candidate(adapter, side, values) if status != 'nonfinite' else None
+                calls[side].append({'kind': 'position' if orientation is None else 'pose',
+                                    'joint_names': list(candidate), 'q': list(candidate.values()),
+                                    'status': status, 'world_fk': None if measured is None else measured.tolist()})
+                return values
+
+            adapter._ik_call = traced
+            if mode == 'position':
+                original_solve_each = backend.driver.solve_each
+                def position_call(*args, **kwargs):
+                    kwargs['orientation'] = None
+                    return original_solve_each(*args, **kwargs)
+                backend.driver.solve_each = position_call
+            arrays = {k: np.full(shape, np.nan) for k,shape in {
+                'target': (n,2,3), 'command_fk': (n,2,3), 'actual': (n,2,3), 'q': (n,14),
+                'upper': (n,2,3), 'elbow': (n,2,3), 'orientation_error_deg': (n,2),
+                'head_reference_target': (n,2,3)}.items()}
+            rows, rejected = [], Counter()
+            improved_but_held = Counter()
+            processed = 0
+            failure = None
+            phase = 'acquisition'
+            trace_file = (output/(mode+'-candidates.jsonl')).open('x', encoding='utf-8')
+            try:
+                for i in range(n):
+                    phase = 'acquisition'
+                    raw = source.next_observation()
+                    seconds = float(stamps[i]-stamps[0])
+                    calls = {s: [] for s in SIDES}
+                    before = {s: adapter.measure(s) for s in SIDES}
+                    started = time.perf_counter()
+                    phase = 'command_generation'
+                    batch = session.next_batch(raw, i, seconds)
+                    elapsed = (time.perf_counter()-started)*1000
+                    controller = session.wrists['gr1_t2']
+                    for j,side in enumerate(SIDES):
+                        tracker = controller.trackers[side]
+                        anchor = controller.anchors.get(('gr1_t2', side))
+                        if anchor is None: continue
+                        target_base = anchor[0]+tracker.displacement
+                        target_world = np.asarray(adapter.to_world(target_base))
+                        orientation = controller.orientations[side]['gr1_t2']
+                        accepted = batch['gr1_t2'].parts[side+'_arm']
+                        qdict = dict(zip(accepted.joint_names, accepted.positions))
+                        values = [qdict.get(adapter.name_of[k], adapter.p.getJointState(
+                            adapter.body,k,physicsClientId=adapter.cid)[0]) for k in adapter.indices]
+                        command_fk = measure_candidate(adapter, side, values)
+                        arrays['q'][i,j*7:(j+1)*7] = accepted.positions
+                        arrays['target'][i,j] = target_base
+                        arrays['command_fk'][i,j] = adapter.to_base(command_fk[:3,3])
+                        detail = dict(adapter.last_solve.get(side, {}))
+                        reason = detail.get('wrist_rejection') or ''
+                        if reason: rejected[side+':'+reason] += 1
+                        mm = float(1000*np.linalg.norm(command_fk[:3,3]-target_world))
+                        old_mm = float(1000*np.linalg.norm(np.asarray(before[side][0])-target_world))
+                        deg = (float(np.rad2deg((Rotation.from_matrix(command_fk[:3,:3]) *
+                            Rotation.from_quat(orientation).inv()).magnitude())) if orientation is not None else float('nan'))
+                        arrays['orientation_error_deg'][i,j] = deg
+                        for candidate in calls[side]:
+                            if candidate['world_fk'] is not None:
+                                t = np.array(candidate['world_fk'])
+                                candidate['error_mm'] = float(1000*np.linalg.norm(t[:3,3]-target_world))
+                                candidate['error_deg'] = (float(np.rad2deg((Rotation.from_matrix(t[:3,:3]) *
+                                    Rotation.from_quat(orientation).inv()).magnitude())) if orientation is not None else None)
+                        valid_positions = [c for c in calls[side] if c['kind']=='position' and c['status']=='within_limits']
+                        better = bool(reason and valid_positions and valid_positions[0]['error_mm'] < old_mm)
+                        if better: improved_but_held[side] += 1
+                        arrays['head_reference_target'][i,j] = 1.25*(
+                            np.array([wrists[i,j,1,3]-heads[i,1,3], -wrists[i,j,0,3]+heads[i,0,3],
+                                      wrists[i,j,2,3]-heads[i,2,3]])+np.array([0,0,.42]))
+                        rows.append({'frame': i, 'time_s': seconds, 'side': side, 'observed': accepted.observed,
+                                     'position_mm': mm, 'orientation_deg': deg, 'before_position_mm': old_mm,
+                                     'position_candidate_mm': valid_positions[0]['error_mm'] if valid_positions else float('nan'),
+                                     'rejection': reason, 'better_position_candidate_held': better,
+                                     'solve_ms_both_arms': elapsed, 'tracker_state': tracker.status})
+                        trace_file.write(json.dumps({'frame': i, 'side': side, 'target_world': target_world.tolist(),
+                            'target_orientation': orientation, 'command': accepted.positions.tolist(),
+                            'production': detail, 'candidates': calls[side]})+'\n')
+                    dt = 1/30 if i==0 else float(stamps[i]-stamps[i-1])
+                    try:
+                        session.output.submit(batch, steps=max(1,min(24,round(min(dt,.1)*240))))
+                    except (ValueError, RuntimeError) as error:
+                        failure = {'frame': i, 'error': str(error), 'phase': 'RobotOutput.submit'}
+                        break
+                    for j,side in enumerate(SIDES):
+                        arrays['actual'][i,j] = adapter.to_base(adapter.measure(side)[0])
+                        points = adapter.arm_points(side)
+                        arrays['upper'][i,j] = adapter.to_base(points['upper'])
+                        arrays['elbow'][i,j] = adapter.to_base(points['elbow'])
+                    processed = i+1
+                    if i % 400 == 0: print(mode, i, n, flush=True)
+            except (ValueError, RuntimeError) as error:
+                actual_q = {name: adapter.p.getJointState(adapter.body, k, physicsClientId=adapter.cid)[0]
+                            for name,k in adapter.index_of.items()}
+                failure = {'frame': i, 'error': str(error), 'phase': phase,
+                           'actual_joint_positions': actual_q, 'returned_solutions': latest_solutions,
+                           'production': adapter.last_solve, 'candidates': calls}
+                trace_file.write(json.dumps({'failure': failure})+'\n')
+                print(mode, 'stopped with recorded failure', i, str(error), flush=True)
+            finally:
+                trace_file.close(); source.close(); session.close()
+            arrays['timestamps'] = stamps[:n]
+            np.savez_compressed(output/(mode+'.npz'), **arrays)
+            with (output/(mode+'.csv')).open('w', newline='', encoding='utf-8') as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(rows[0]) if rows else ['frame'])
+                writer.writeheader(); writer.writerows(rows)
+            summary = {'frames_processed': processed, 'requested_frames': n, 'failure': failure,
+                       'rejections': dict(rejected), 'better_position_candidate_held': dict(improved_but_held),
+                       'ends': list(adapter.ee.values()), 'sides': {}}
+            for side in SIDES:
+                subset = [r for r in rows if r['side']==side and r['time_s']>=2]
+                summary['sides'][side] = {key: distribution([r[key] for r in subset]) for key in
+                    ('position_mm','orientation_deg','position_candidate_mm','solve_ms_both_arms')}
+            summaries[mode] = summary
+            (output/(mode+'-summary.json')).write_text(json.dumps(summary, indent=2), encoding='utf-8')
+        finally:
+            group.close()
+    return summaries
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--stage', required=True, choices=('fk', 'matrix', 'probe'))
+    parser.add_argument('--stage', required=True, choices=('fk', 'matrix', 'probe', 'replay'))
     parser.add_argument('--upstream', required=True, type=Path)
     parser.add_argument('--input', type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--mode', choices=('both', 'baseline', 'position'), default='both')
+    parser.add_argument('--frames', type=int, default=0)
     args = parser.parse_args(argv)
+    if args.frames < 0: parser.error('--frames must be nonnegative')
+    if args.stage == 'replay' and (args.input is None or not args.input.is_file()):
+        parser.error('--stage replay requires an existing --input H5')
     args.output.mkdir(parents=True, exist_ok=False)
+    if args.stage == 'replay':
+        results = run_replay(args.input, args.output, args.mode, args.frames)
+        print(json.dumps(results, indent=2), flush=True)
+        return int(any(row['failure'] is not None for row in results.values()))
     model = ControlledArmModel(args.upstream, args.output)
     try:
         rows = run_fk(model)

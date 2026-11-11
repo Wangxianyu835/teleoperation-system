@@ -1,6 +1,8 @@
 # GR1-T2 手臂位置与朝向冲突诊断 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+执行状态（2026-11-11）：Tasks 1–4 已完成。见[诊断结果](../../research/2026-11-11-gr1-arm-diagnosis-results.md)。第二段原模式按原保护停止，作为失败证据保存；未将它伪装为完整运行。实际操作、视觉和业务修复仍为后续阶段。
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 在相同机器人模型、末端和目标下，确定当前 GR1-T2 手臂大量保持旧命令的原因，给出下一次业务修改所需的证据。
 
@@ -44,6 +46,7 @@ datasets/raw/visionpro_hand_arm_20261012_213812_live.h5  # 164.984 秒，独立�
 |---|---|
 | `devtools/gr1_arm_diagnosis.py` | 固定模型、生成 FK 可达目标、运行求解矩阵、采样拒绝前后结果、输出数据 |
 | `tests/test_gr1_arm_diagnosis.py` | 验证模型/参考点一致、目标生成、分组隔离和指标计算 |
+| `devtools/gr1_arm_diagnosis_plots.py` | 从结果独立生成曲线、参考选择对照与动作预览，避免重复运行控制算法 |
 | `outputs/acceptance/gr1-arm-diagnosis-<session>/` | 每次独立保存配置、逐帧 CSV/NPZ、日志、图和预览 |
 | `docs/research/2026-11-11-gr1-arm-diagnosis-results.md` | 记录实验结果、限制、根因判断和业务修改建议 |
 
@@ -55,12 +58,12 @@ datasets/raw/visionpro_hand_arm_20261012_213812_live.h5  # 164.984 秒，独立�
 
 **Interfaces:** 诊断脚本接受 `--stage fk|matrix|replay --upstream PATH --input PATH --output PATH`。`--output` 已存在则报错。FK 阶段不需要 input；matrix 使用生成的目标；replay 必须提供 H5。
 
-- [ ] 核验官方提交、源文件和模型哈希；输出当前源码提交、模型、末端、14 个活动关节、有效限位和包版本。
-- [ ] 用官方 URDF 建立 Pinocchio 与 PyBullet 运动学；PyBullet 派生副本只移除 visual/collision，不改 origin、axis、limit、inertial 或父子关系。
-- [ ] 生成一个中间关节姿态：其余关节零值裁到有效区间，双肘请求 -0.8 rad 后再裁到有效区间内部。将最终值完整记录。
-- [ ] 单个关节依次增加/减小 0.1 rad，裁到有效区间内部。用这一组已知关节状态的 FK 生成目标，同时保存原始 q、位置和旋转；不将未知可达性的笛卡尔点当成正例。
-- [ ] 验证两套 FK 在同状态、同链接原点的误差：位置不超过 `1e-5 m`、旋转不超过 `1e-4 rad`。先校验旋转正交性再计算角度。
-- [ ] 原样 VR 源码产生的非正交矩阵只进入原样基线，不进入有效旋转诊断正例；不得用静默 SVD 修复掩盖输入问题。
+- [x] 核验官方提交、源文件和模型哈希；输出当前源码提交、模型、末端、14 个活动关节、有效限位和包版本。
+- [x] 用官方 URDF 建立 Pinocchio 与 PyBullet 运动学；PyBullet 派生副本只移除 visual/collision，不改 origin、axis、limit、inertial 或父子关系。
+- [x] 生成一个中间关节姿态：其余关节零值裁到有效区间，双肘请求 -0.8 rad 后再裁到有效区间内部。将最终值完整记录。
+- [x] 单个关节依次增加/减小 0.1 rad，裁到有效区间内部。用这一组已知关节状态的 FK 生成目标，同时保存原始 q、位置和旋转；不将未知可达性的笛卡尔点当成正例。
+- [x] 验证两套 FK 在同状态、同链接原点的误差：位置不超过 `1e-5 m`、旋转不超过 `1e-4 rad`。先校验旋转正交性再计算角度。
+- [x] 原样 VR 源码产生的非正交矩阵只进入原样基线，不进入有效旋转诊断正例；不得用静默 SVD 修复掩盖输入问题。
 
 测试的数值断言使用以下定义，避免只检查返回类型：
 
@@ -96,13 +99,13 @@ $python = '.venv/dex-native/Scripts/python.exe'
 | C | PINK | 只用位置 |
 | D | PINK | 同一位置 + 合法目标朝向 |
 
-- [ ] 每组独立实例，从同一 q 开始；相同关节约束、参考姿态。初始状态不得从上一组继承。
-- [ ] 对位置模式，当前 adapter 明确 `ik_mode='position'` 且 `orientation=None`；PINK 腕朝向代价置零。只传 None 不足以保证所有 profile 关闭朝向约束。
-- [ ] 对位姿模式，使用同一个 FK 生成的合法位置和旋转。PINK 按记录的任务代价求解；当前算法使用其原有候选与接受过程。
-- [ ] 分开记录单次调用和静态目标保持 2 秒的结果。PINK 是速度积分算法，不能只比较一次调用与多次内部迭代算法。
-- [ ] 共同诊断时钟为 30 Hz，每次积分使用 `dt=1/30`；官方原样 `dt=0.005` 另外作为时钟对照，标签分别保存，不能混在同一结果行。
-- [ ] 两组求解器先保持纯运动学评估，排除电机误差；连续序列用上一条接受命令推进状态，静态 case 之间重新初始化。
-- [ ] 两侧分别报告位置/朝向误差、限位、单步变化、成功/保持原因。姿态任务结果不以“没抛异常”作为通过条件。
+- [x] 每组独立实例，从同一 q 开始；相同关节约束、参考姿态。初始状态不得从上一组继承。
+- [x] 对位置模式，当前 adapter 明确 `ik_mode='position'` 且 `orientation=None`；PINK 腕朝向代价置零。只传 None 不足以保证所有 profile 关闭朝向约束。
+- [x] 对位姿模式，使用同一个 FK 生成的合法位置和旋转。PINK 按记录的任务代价求解；当前算法使用其原有候选与接受过程。
+- [x] 分开记录单次调用和静态目标保持 2 秒的结果。PINK 是速度积分算法，不能只比较一次调用与多次内部迭代算法。
+- [x] 共同诊断时钟为 30 Hz，每次积分使用 `dt=1/30`；官方原样 `dt=0.005` 另外作为时钟对照，标签分别保存，不能混在同一结果行。
+- [x] 两组求解器先保持纯运动学评估，排除电机误差；连续序列用上一条接受命令推进状态，静态 case 之间重新初始化。
+- [x] 两侧分别报告位置/朝向误差、限位、单步变化、成功/保持原因。姿态任务结果不以“没抛异常”作为通过条件。
 
 位置及旋转误差统一计算：
 
@@ -130,12 +133,12 @@ orientation_error_deg = np.rad2deg(
 
 **Interfaces:** 每个更新记录位置候选、位姿候选、最终命令三份 q，以及它们各自的 FK、限位状态、最大关节变化和拒绝原因。记录四个阶段的误差，不能复用临时状态恢复后的错误测量。
 
-- [ ] 针对 B 组，采样 `_ik_sequence` 中的位置候选与加入朝向候选。
-- [ ] 记录 `position_candidate_residual_mm`、`pose_candidate_residual_mm`、`position_fallback`、`wrist_rejection`、`wrist_joint_step_scaled` 与候选关节是否有限/越限。
-- [ ] 对采样前后完整关节位置和速度作比较，确保诊断没有改变下一帧初始状态。
-- [ ] 为几何可达但被保持的 case 保存可独立复现的模型哈希、q_start、p_target、R_target、限位和原始候选。
-- [ ] 统计候选比旧姿态改善的位置误差、损失的朝向误差以及实际被拒绝比例。不能把“拒绝少”单独作为更好。
-- [ ] 加入不可达目标、非法旋转、非有限解、明显越限解作为负例，验证诊断能正确分类；此阶段不使生产代码接受它们。
+- [x] 针对 B 组，采样 `_ik_sequence` 中的位置候选与加入朝向候选。
+- [x] 记录 `position_candidate_residual_mm`、`pose_candidate_residual_mm`、`position_fallback`、`wrist_rejection`、`wrist_joint_step_scaled` 与候选关节是否有限/越限。
+- [x] 对采样前后完整关节位置和速度作比较，确保诊断没有改变下一帧初始状态。
+- [x] 为几何可达但被保持的 case 保存可独立复现的模型哈希、q_start、p_target、R_target、限位和原始候选。
+- [x] 统计候选比旧姿态改善的位置误差、损失的朝向误差以及实际被拒绝比例。不能把“拒绝少”单独作为更好。
+- [x] 加入不可达目标、非法旋转、非有限解、明显越限解作为负例，验证诊断能正确分类；此阶段不使生产代码接受它们。
 
 **完成条件：** 至少为每类实际出现的保持原因提供可复现 case；若没有合成可达 case 被误拒绝，就不能直接得出拒绝逻辑有 bug。检查真实输入目标可达性、朝向参考和初始化差异。
 
@@ -145,13 +148,13 @@ orientation_error_deg = np.rad2deg(
 
 **Files:** 诊断脚本、报告与本轮独立产物目录。
 
-- [ ] 先用 103 秒录制复现首轮原配置；报告是否重现左右约 2,867/2,865 次冲突，若有版本/初始化差异先解释差异。
-- [ ] 在当前同一模型、同一目标位置上，只关闭朝向约束，比较目标到接受命令的误差、实际运动幅度和保持原因。它是原因隔离实验，不直接作为上线方案。
-- [ ] 对实际目标逐帧检查是否在有效限位下有可行解；未求到解标为“本求解未找到”，不能当作数学不可达证明。
-- [ ] 头部参考和初始腕参考分别产生目标，单独画出目标差；本步骤不同时更换模型和求解器。
-- [ ] 不对 SDK/WebXR 未验证腕局部轴作完整位姿公平排名。需要原生 WebXR 同步录制或有依据的固定局部轴适配后，另做位姿复现。
-- [ ] 配置锁定后，用 165 秒录制独立运行；不再依据第二段结果调参。
-- [ ] 输出三份便于人看的结果：相同坐标视角的动作视频、误差/拒绝统计表、典型失败帧及解释。单独标出预热、缺失、恢复、限位和静态保持。
+- [x] 先用 103 秒录制复现首轮原配置；报告是否重现左右约 2,867/2,865 次冲突，若有版本/初始化差异先解释差异。
+- [x] 在当前同一模型、同一目标位置上，只关闭朝向约束，比较目标到接受命令的误差、实际运动幅度和保持原因。它是原因隔离实验，不直接作为上线方案。
+- [x] 对实际目标逐帧检查是否在有效限位下有可行解；未求到解标为“本求解未找到”，不能当作数学不可达证明。
+- [x] 头部参考和初始腕参考分别产生目标，单独画出目标差；本步骤不同时更换模型和求解器。
+- [x] 不对 SDK/WebXR 未验证腕局部轴作完整位姿公平排名。需要原生 WebXR 同步录制或有依据的固定局部轴适配后，另做位姿复现。
+- [x] 配置锁定后，用 165 秒录制独立运行；不再依据第二段结果调参。
+- [x] 输出三份便于人看的结果：相同坐标视角的动作视频、误差/拒绝统计表、典型失败帧及解释。单独标出预热、缺失、恢复、限位和静态保持。
 
 ```powershell
 & $python devtools/gr1_arm_diagnosis.py --stage replay --upstream D:/2026/code/TeleOpBench-reference --input datasets/raw/visionpro_hand_arm_20261012_215137_live.h5 --output outputs/acceptance/gr1-arm-diagnosis-replay103
@@ -198,5 +201,5 @@ $env:PYTHONPATH = "$PWD/src"
 
 - 文档修改前提交：`f116e1c22f37c931b8ba8ae597be9a95b738255c`。
 - 文档修改前标签：`checkpoint-20261111-2009-gr1-diagnosis-plan`。
-- 当前仅写计划；未创建诊断工具，未执行新实验，未修改业务代码。
+- 初次提交仅写计划；其后执行状态及具体结果见文首链接，业务代码仍未修改。
 - 执行时在本 chat 逐项进行，沿用用户已指定的目录和范围；无需重新询问使用何种执行方式。

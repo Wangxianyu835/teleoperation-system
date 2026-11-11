@@ -1,12 +1,13 @@
 """The controlled arm experiment must measure the same physical frames."""
 from pathlib import Path
+import importlib.util
 import tempfile
 import unittest
 
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from devtools.gr1_arm_diagnosis import (ControlledArmModel, generate_cases, pose_error,
+from devtools.gr1_arm_diagnosis import (ControlledArmModel, generate_cases, pose_error, DEPENDENCIES,
                                        BulletSolver, PinkSolver, measure_candidate, candidate_status)
 
 
@@ -35,6 +36,10 @@ class PoseMetricTests(unittest.TestCase):
         self.assertEqual(candidate_status(np.array([np.nan, 0.]), low, high), 'nonfinite')
 
 
+@unittest.skipUnless((UPSTREAM / 'assets/GRX/GR1/GR1T2/urdf/GR1T2_inspire_hand.urdf').is_file()
+                     and importlib.util.find_spec('pinocchio') is not None
+                     and importlib.util.find_spec('pybullet') is not None,
+                     'Controlled FK tests require the external pinned GR1 model, Pinocchio and PyBullet')
 class ControlledKinematicsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -85,6 +90,7 @@ class ControlledKinematicsTests(unittest.TestCase):
         mm, _ = pose_error(self.model.pin_fk(q, 'left'), target)
         self.assertLess(mm, 10)
 
+    @unittest.skipUnless((DEPENDENCIES / 'pink/__init__.py').is_file(), 'Isolated PINK diagnostic dependencies required')
     def test_both_solvers_keep_reached_pose_within_declared_diagnostic_gate(self):
         for solver in (BulletSolver(self.model, pose=True), PinkSolver(self.model, pose=True)):
             for side in ('left', 'right'):
