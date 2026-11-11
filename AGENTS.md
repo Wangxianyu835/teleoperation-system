@@ -51,8 +51,8 @@ Keep current public input, window and result interfaces compatible. Adapt
 resource management, explicit device/hand selection and CLI wiring at the
 boundary. Document these adaptations separately from the upstream algorithm.
 Do not silently apply camera preprocessing to VR data or rewrite checkpoint
-metadata to claim compatibility. Keep the upstream VR route explicit, and
-verify existing camera workflows after changes to shared interfaces.
+metadata to claim compatibility. Verify existing camera workflows after
+changes to shared interfaces.
 
 ## Implementation and Communication
 
