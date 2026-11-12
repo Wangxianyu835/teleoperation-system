@@ -123,7 +123,32 @@ class ControlledKinematicsTests(unittest.TestCase):
         q, details = solver.solve(self.model.reference, target, 'left')
         mm, _ = pose_error(self.model.pin_fk(q, 'left'), target)
         self.assertGreater(mm, 1000.)
-        self.assertTrue(details['production']['wrist_rejection'])
+        self.assertEqual(candidate_status(q,self.model.lower,self.model.upper),'within_limits')
+
+    def test_known_reachable_stall_makes_progress_without_counterfactual_override(self):
+        # Fixed-seed case from the wide-range diagnosis, reduced to its right-arm target.
+        goal=self.model.reference.copy()
+        goal[7:]=[-.794696868144565,-.9830452799871301,-1.0808504028971584,
+                  1.342007358718132,1.7881337663923755,-.06845737307204447,.19986256320259999]
+        target=self.model.pin_fk(goal,'right')
+        q=self.model.reference.copy()
+        solver=BulletSolver(self.model,pose=True)
+        before=self.model.bullet_state()
+        initial_mm,_=pose_error(self.model.pin_fk(q,'right'),target)
+        self.assertGreater(initial_mm,160.)
+        accepted_fallbacks=0
+        for _ in range(10):
+            next_q,detail=solver.solve(q,target,'right')
+            d=detail['production']
+            np.testing.assert_array_equal(self.model.bullet_state(),before)
+            self.assertLessEqual(np.max(np.abs(next_q-q)),.35+1e-9)
+            if d['position_fallback'] and d['wrist_rejection'] is None:
+                accepted_fallbacks+=1
+                self.assertLess(d['fallback_position_after_mm'],d['fallback_position_before_mm'])
+            q=next_q
+        self.assertGreater(accepted_fallbacks,0)
+        final_mm,_=pose_error(self.model.pin_fk(q,'right'),target)
+        self.assertLess(final_mm,10.)
 
 
 if __name__ == '__main__':

@@ -18,10 +18,11 @@ IK_ITERATIONS = 200
 IK_RESIDUAL_THRESHOLD = 1e-5
 #: 手臂关节限位容差（rad）：IK 解落在 URDF 边界外这么一点点以内就**夹到边界**，不是丢整帧。
 #: 三机 900 帧实测（2026-11-09，h1_2 + g1 + gr1_t2）：全部 209 次限位拒绝的超限量都在
-#: 0.1~7.8 mrad，且都只落在腕关节（wrist_yaw / wrist_pitch / wrist_roll），属数值噪声；
-#: 按 1e-5 拒绝等于让手臂在这些帧卡住上一姿势。真正不可达的目标不会走这条路 —— 它落在
-#: ``pose_position_conflict``（位置残差 50~100 mm），不受本容差影响。
+#: 0.1~7.8 mrad，且都只落在腕关节（wrist_yaw / wrist_pitch / wrist_roll），属数值噪声。
+#: 大于该容差的关节解仍被拒绝；位置候选另检查最终输出是否取得位置进展。
 ARM_LIMIT_TOLERANCE = 1e-2
+#: Require one micrometre of position progress to exclude FK roundoff from fallback acceptance.
+FALLBACK_PROGRESS_EPS_M = 1e-6
 SHOULDER_KEYWORD = "shoulder"
 ELBOW_KEYWORD = "elbow"
 #: 「肘跟手」（``posture_from_bend``）在加载时量肘关节正方向用的探针角（度）：把该关节拧
@@ -975,25 +976,58 @@ class PyBulletArmIK:
                     self.p.configureDebugVisualizer(self.p.COV_ENABLE_RENDERING, 1, physicsClientId=self.cid)
         if orientation is not None:
             previous = {i: q for i, (q, _v) in saved}
-            rejection = "pose_position_conflict" if details.get("position_fallback") else None
+            rejection = None
             largest_step = 0.
             for index, _name in self.arm[side]:
                 k = self.position_of[index]
                 value = solution[k]
                 if not np.isfinite(value) or not self.limits["lower"][k] - ARM_LIMIT_TOLERANCE <= value <= self.limits["upper"][k] + ARM_LIMIT_TOLERANCE:
                     rejection = "nonfinite_or_limit"
-                largest_step = max(largest_step, abs(value - previous[index]))
-            if rejection:
-                if rejection == "nonfinite_or_limit":
-                    details["limit_violation"] = self._limit_violation(side, solution)
-                solution = [previous[index] for index in self.indices]
-            elif largest_step > .35:
+                else:
+                    # Clamp numerical limit noise before scaling and measuring the final step.
+                    solution[k] = min(max(value, self.limits['lower'][k]), self.limits['upper'][k])
+                largest_step = max(largest_step, abs(solution[k] - previous[index]))
+            if rejection is None and largest_step > .35:
                 # Bound a branch-sized step without permanently rejecting an
                 # otherwise reachable target on every subsequent frame.
                 fraction = .35 / largest_step
                 solution = [previous[i] + fraction * (value - previous[i])
                             for i, value in zip(self.indices, solution)]
                 details["wrist_joint_step_scaled"] = fraction
+            if rejection is None:
+                # A scaled step from a physically overshot state can remain outside the bounds.
+                for index, _name in self.arm[side]:
+                    k = self.position_of[index]
+                    if not self.limits['lower'][k] <= solution[k] <= self.limits['upper'][k]:
+                        rejection = 'nonfinite_or_limit'
+                        break
+            if rejection is None and details.get('position_fallback'):
+                before_position = self.measure(side)[0]
+                before_error = float(np.linalg.norm(np.asarray(before_position) - world))
+                if gui:
+                    self.p.configureDebugVisualizer(self.p.COV_ENABLE_RENDERING, 0, physicsClientId=self.cid)
+                try:
+                    self._teleport(side, solution)
+                    final_position, final_orientation = self.measure(side)
+                    after_error = float(np.linalg.norm(np.asarray(final_position) - world))
+                    details['fallback_position_before_mm'] = before_error * 1000
+                    details['fallback_position_after_mm'] = after_error * 1000
+                    dot = float(np.dot(final_orientation, orientation))
+                    details['fallback_orientation_after_deg'] = degrees(2 * acos(min(1., abs(dot))))
+                    if not np.isfinite(after_error) or before_error - after_error <= FALLBACK_PROGRESS_EPS_M:
+                        rejection = 'position_fallback_no_progress'
+                finally:
+                    try:
+                        for index, (position_before, velocity_before) in saved:
+                            self.p.resetJointState(self.body, index, position_before,
+                                targetVelocity=velocity_before, physicsClientId=self.cid)
+                    finally:
+                        if gui:
+                            self.p.configureDebugVisualizer(self.p.COV_ENABLE_RENDERING, 1, physicsClientId=self.cid)
+            if rejection:
+                if rejection == 'nonfinite_or_limit':
+                    details['limit_violation'] = self._limit_violation(side, solution)
+                solution = [previous[index] for index in self.indices]
             details["wrist_rejection"] = rejection
             details["wrist_pose_requested"] = True
         self.last_target_world[side] = world

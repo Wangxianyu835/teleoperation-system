@@ -205,7 +205,7 @@ class ArmSolveStateTests(unittest.TestCase):
                     adapter.p.resetJointState(adapter.body, index, q, targetVelocity=velocity,
                                              physicsClientId=adapter.cid)
 
-    def test_unreachable_wrist_orientation_does_not_sacrifice_position(self):
+    def test_conflicting_wrist_orientation_requires_bounded_position_progress(self):
         adapter = self.driver.ik["h1_2"]
         for side in ("left", "right"):
             with self.subTest(side=side):
@@ -216,10 +216,14 @@ class ArmSolveStateTests(unittest.TestCase):
                 np.testing.assert_array_equal(self.states(adapter), before)
                 details = adapter.last_solve[side]
                 if details["pose_candidate_residual_mm"] > adapter.profile.max_residual_mm:
-                    self.assertTrue(details["position_fallback"])
-                    self.assertIn(details['wrist_rejection'], ('pose_position_conflict', 'nonfinite_or_limit'))
-                    for index, name in adapter.arm[side]:
-                        self.assertEqual(values[name], before[adapter.position_of[index]][0])
+                    if details['wrist_rejection']:
+                        self.assertIn(details['wrist_rejection'], ('position_fallback_no_progress', 'nonfinite_or_limit'))
+                        for index, name in adapter.arm[side]:
+                            self.assertEqual(values[name], before[adapter.position_of[index]][0])
+                    elif details['position_fallback']:
+                        self.assertLess(details['fallback_position_after_mm'],details['fallback_position_before_mm'])
+                        for index,name in adapter.arm[side]:
+                            self.assertLessEqual(abs(values[name]-before[adapter.position_of[index]][0]),.35+1e-9)
 
 
 
