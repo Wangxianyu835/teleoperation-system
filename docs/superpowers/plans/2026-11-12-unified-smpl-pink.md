@@ -42,7 +42,7 @@
 - [x] Unified robot backend/output integration, migrating TRON2A and native camera routes.
 - [x] Real-model and PyBullet acceptance artifacts: single/dual/multi-target runs, tracking errors, joint velocity, expiration/hold behavior and timing.
 - [x] Old camera entry migration, deletion of dead camera logic, VR regression.
-- [ ] Full regression, diff review, final commit and integration into the original project.
+- [x] Full regression, diff review, final commit and integration into the original project.
 
 ## Rulings
 
@@ -76,3 +76,9 @@ Updated as implementation and real validation finish. No unexecuted test is coun
 - Real S32 image inference: passed after initialization warmup. Actual first/steady real frames 157..250 ms on RTX4050. No operator identity policy was weakened. This is image inference, not a live-camera or hardware acceptance claim.
 - `git diff --check`: clean.
 - Runtime retains the known limits above; the software path passes without claiming all performance and physical-quality targets pass.
+
+### Local integration
+
+Implementation commit `3e2c5f8` was fast-forwarded into the original `wrist-input-arm-follow` branch. No push occurred. The original project's working tree stayed clean. Accepted fit/report artifacts were copied to its ignored `outputs/acceptance/unified-smpl-pink` and the official SMPL-X package to `outputs/unified-arm-runtime`.
+
+Post-integration verification imported the original project's source: 19 solver/pipeline/session/warmup tests passed. A real all-four CLI replay then completed four submitted control frames from one raw-pose reconstruction without solver errors, using the original project paths and the explicitly simplified TRON geometry. Evidence remains in the implementation worktree's ignored acceptance directory as `integrated-main-check.log` and `integrated-main-control.json`.
