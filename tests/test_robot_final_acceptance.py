@@ -104,6 +104,7 @@ class RobotFinalAcceptanceTests(unittest.TestCase):
                         bindings={name:RobotPartSceneBuilder().build(load_robot_control_spec(name),group=group,base_pose=(i*2.2,0,.8)) for i,name in enumerate(names)}
                         session=RobotControlSession(bindings,backend=method,checkpoints=weights if method=='nn' else {},device='cpu',source_kind='visionpro')
                         before=session.output.read_state();last=None
+                        accepted_arms={name:0 for name in names}
                         for i in range(20):
                             raw=capture.next_observation()
                             with patch.object(group.scene.p,'setJointMotorControl2',wraps=group.scene.p.setJointMotorControl2) as motors:
@@ -113,12 +114,23 @@ class RobotFinalAcceptanceTests(unittest.TestCase):
                                 for frame in batch.values():
                                     self.assertFalse(frame.parts['left_arm'].observed)
                                     self.assertFalse(frame.parts['left_hand'].observed)
-                                    self.assertTrue(frame.parts['right_arm'].observed)
+                                    reason=bindings[frame.robot_id].driver.ik[frame.robot_id].last_solve['right'].get('wrist_rejection')
+                                    self.assertEqual(frame.parts['right_arm'].observed,reason is None)
+                            for name,frame in batch.items():
+                                arm=frame.parts['right_arm']
+                                if arm.observed:accepted_arms[name]+=1
+                                elif last is not None:
+                                    np.testing.assert_array_equal(arm.positions,last[name].parts['right_arm'].positions)
+                                    self.assertEqual(arm.source_timestamp,last[name].parts['right_arm'].source_timestamp)
                             session.output.submit(batch,steps=8);last=batch
                         after=session.output.read_state()
                         for name in names:
-                            for part in ('right_hand','right_arm'):
+                            for part in ('right_hand',):
                                 self.assertGreater(np.linalg.norm(after[name][part]-before[name][part]),1e-6,(method,name,part))
-                            self.assertEqual(last[name].parts['right_arm'].source_timestamp,raw.wrists['right'].timestamp)
+                            if accepted_arms[name]:
+                                self.assertGreater(np.linalg.norm(after[name]['right_arm']-before[name]['right_arm']),1e-6)
+                            else:self.assertEqual(last[name].parts['right_arm'].status,'initialized')
+                            if last[name].parts['right_arm'].observed:
+                                self.assertEqual(last[name].parts['right_arm'].source_timestamp,raw.wrists['right'].timestamp)
                         self.assertEqual(group.scene.frames,20)
                     finally:capture.close();group.close()

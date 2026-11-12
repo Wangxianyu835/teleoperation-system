@@ -87,6 +87,8 @@ class RobotControlSession:
                     source_time=None if wrist is None else wrist.timestamp
                     timebase='visionpro_wrist_s'
                 if report is None or source_time is None:continue
+                # Omit rejected updates so the assembler retains its last legal command.
+                if not report.get('accepted',True):continue
                 if self.source_kind=='camera' and not raw.upper_body.valid.get(side,False):continue
                 if self.source_kind=='visionpro':
                     tracker=self.wrists[name].trackers[side]

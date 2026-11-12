@@ -2,6 +2,9 @@ import tempfile
 from pathlib import Path
 import unittest
 import numpy as np
+from types import SimpleNamespace
+from dataclasses import replace
+from unittest.mock import patch
 from teleoperation.robots.control_spec import load_robot_control_spec
 from teleoperation.simulation.robot_backends import SimulationGroup
 from teleoperation.simulation.robot_part_scene import RobotPartSceneBuilder
@@ -9,6 +12,94 @@ from teleoperation.applications.robot_session import RobotControlSession
 
 
 class RobotControlSessionTests(unittest.TestCase):
+    def test_rejected_arm_update_holds_last_legal_command_not_measured_overshoot(self):
+        from tests.smplerx_fixtures import observation
+        from teleoperation.contracts.observations import RawHandFrame
+        from teleoperation.inputs.wrist import vr_wrist
+        from teleoperation.applications.accepted_robot_output import AcceptedRobotOutput
+        for source in ('visionpro', 'camera', 'adapter'):
+            with self.subTest(source=source):
+                group = SimulationGroup(gui=False)
+                try:
+                    spec = load_robot_control_spec('gr1_t2', resource_overrides={'parts':'arms','side':'both'})
+                    backend = RobotPartSceneBuilder().build(spec, group=group)
+                    if source == 'adapter':
+                        owner = AcceptedRobotOutput({'gr1_t2':backend})
+                    else:
+                        owner = RobotControlSession({'gr1_t2':backend}, source_kind=source)
+                    names = spec.parts['left_arm'].joint_names
+                    index = names.index('left_wrist_roll_joint')
+                    safe = list(owner.assembler.previous['gr1_t2'].parts['left_arm'].positions)
+                    safe[index] = .585
+                    right = list(owner.assembler.previous['gr1_t2'].parts['right_arm'].positions)
+                    if source == 'visionpro':
+                        matrix = np.eye(4); matrix[:3,3] = [.1,.2,.3]
+                        wrists = {s:vr_wrist(matrix, 1.) for s in ('left','right')}
+                        raw = RawHandFrame({'left':None,'right':None},1.,'visionpro',wrists=wrists)
+                        owner.wrists['gr1_t2'].trackers = {s:SimpleNamespace(status='tracking') for s in wrists}
+                    elif source == 'camera': raw,_ = observation(0)
+                    def reports(left, accepted=True):
+                        return {'left':{'gr1_t2':{'joints':dict(zip(names,left)), 'accepted':accepted,
+                                                 'rejection_reason':None if accepted else 'pose_position_conflict'}},
+                                'right':{'gr1_t2':{'joints':dict(zip(spec.parts['right_arm'].joint_names,right)),
+                                                  'accepted':True,'rejection_reason':None}}}
+                    def tick(i, produced):
+                        if source == 'adapter':
+                            owner.submit(i,i/30,arms=produced,source_timestamp=1.+i/30)
+                            return owner.assembler.previous['gr1_t2']
+                        if source == 'visionpro':
+                            fresh=replace(raw,timestamp=1.+i/30,wrists={
+                                s:replace(w,timestamp=1.+i/30) for s,w in raw.wrists.items()})
+                            with patch.object(owner.wrists['gr1_t2'],'solve_vr',return_value=produced):
+                                return owner.next_batch(fresh,i,i/30)['gr1_t2']
+                        fresh,_=observation(i)
+                        with patch('teleoperation.applications.camera_scene_arm.solve_camera_arm_frame',
+                                   return_value=({},produced)):
+                            return owner.next_batch(fresh,i,i/30)['gr1_t2']
+                    initial=owner.assembler.previous['gr1_t2'].parts['left_arm']
+                    overshoot=safe.copy();overshoot[index]=.624
+                    uninitialized=tick(0,reports(overshoot,False)).parts['left_arm']
+                    self.assertEqual(uninitialized.status,'initialized')
+                    self.assertFalse(uninitialized.observed)
+                    np.testing.assert_array_equal(uninitialized.positions,initial.positions)
+                    first = tick(1,reports(safe))
+                    for i in (2,3):
+                        overshoot = safe.copy(); overshoot[index] = .624
+                        group.scene.p.resetJointState(backend.robot['body'],backend.names[names[index]],
+                                                      .624,physicsClientId=group.scene.cid)
+                        held = tick(i,reports(overshoot,False))
+                        part = held.parts['left_arm']
+                        np.testing.assert_array_equal(part.positions,first.parts['left_arm'].positions)
+                        self.assertFalse(part.observed)
+                        self.assertEqual(part.status,'holding')
+                        self.assertEqual(part.source_timestamp,first.parts['left_arm'].source_timestamp)
+                        self.assertTrue(held.parts['right_arm'].observed)
+                        if source != 'adapter':  # submit() advances physics; next_batch() does not.
+                            self.assertAlmostEqual(group.scene.p.getJointState(backend.robot['body'],
+                                backend.names[names[index]],physicsClientId=group.scene.cid)[0],.624)
+                    restored=safe.copy();restored[index]=.4
+                    final=tick(4,reports(restored))
+                    self.assertTrue(final.parts['left_arm'].observed)
+                    self.assertAlmostEqual(final.parts['left_arm'].positions[index],.4)
+                    with self.assertRaisesRegex(ValueError,'Part exceeds joint limits'):
+                        tick(5,reports(overshoot,True))
+                finally: group.close()
+
+    def test_scene_report_distinguishes_rejected_solution(self):
+        group=SimulationGroup(gui=False)
+        try:
+            spec=load_robot_control_spec('gr1_t2',resource_overrides={'parts':'arms','side':'right'})
+            backend=RobotPartSceneBuilder().build(spec,group=group)
+            adapter=backend.driver.ik['gr1_t2']
+            q=dict(zip(spec.parts['right_arm'].joint_names,spec.parts['right_arm'].reference))
+            for reason in ('pose_position_conflict','nonfinite_or_limit',None):
+                adapter.last_solve['right']={'wrist_rejection':reason}
+                with patch.object(adapter,'solve',return_value=q):
+                    report=backend.driver.solve_each('right',{'gr1_t2':[.2,-.2,.3]})['gr1_t2']
+                self.assertEqual(report['accepted'],reason is None)
+                self.assertEqual(report['rejection_reason'],reason)
+        finally: group.close()
+
     def test_source_specific_ik_matches_existing_wrist_and_camera_commands(self):
         from teleoperation.simulation.wrist_control import vr_arm_controller
         for source in ('visionpro', 'camera'):

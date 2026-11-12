@@ -67,6 +67,7 @@ class ArmOrientationRoutingTests(unittest.TestCase):
             adapter.ee = {side: (0, "wrist") for side in self.driver.sides}
             adapter.ik_mode = "pose" if name == "h1_2" else "position"
             adapter.solve.return_value = {"joint": 0.0}
+            adapter.last_solve = {side: {'wrist_rejection':None} for side in self.driver.sides}
             self.driver.ik[name] = adapter
         self.positions = {"g1": (0.16, 0.1, 0.1), "h1_2": (0.24, 0.05, 0.19)}
 

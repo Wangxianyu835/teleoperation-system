@@ -54,6 +54,7 @@ class AcceptedRobotOutput:
                 source_timestamp,source_timebase,valid,'tracking' if valid else 'holding')
         for side,reports in (arms or {}).items():
             for key,report in reports.items():
+                if not report.get('accepted',True):continue
                 part=self.specs[key].parts[side+'_arm']
                 valid=source_timestamp is not None and (observed is None or observed.get((key,side+'_arm'),False))
                 updates[key][side+'_arm']=RobotPartCommand(part.joint_names,

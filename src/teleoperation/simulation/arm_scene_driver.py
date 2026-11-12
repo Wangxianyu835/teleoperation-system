@@ -280,6 +280,8 @@ class ArmSceneDriver:
                                                     else orientation),
                                        source=source, **solve_options)
             reports[robot_type] = {"ee": adapter.ee[side][1],
+                                   "accepted": adapter.last_solve[side].get('wrist_rejection') is None,
+                                   "rejection_reason": adapter.last_solve[side].get('wrist_rejection'),
                                    "ik_mode": adapter.ik_mode,
                                    "shoulder_shift_mm": getattr(self, "shoulder_shift_mm", {}).get(
                                        robot_type, {}).get(side, 0.0),
