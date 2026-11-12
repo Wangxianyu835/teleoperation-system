@@ -320,6 +320,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--side", choices=("left", "right", "both"), default="both")
     parser.add_argument("--robot", action="append", choices=loadable_robots(), default=None,
                         help="explicit target (required at run time; repeat for comparison)")
+    parser.add_argument('--arm-fitting-dir',type=Path,help='explicit fitted SMPL/PINK profiles; required for arms')
+    parser.add_argument('--control-hz',type=float,default=100.)
+    parser.add_argument('--target-max-age',type=float,default=.3)
+    parser.add_argument('--body-device',choices=('cpu','cuda'),default='cpu')
+    parser.add_argument('--smplx-module-dir',type=Path)
+    parser.add_argument('--record-results',type=Path)
     parser.add_argument("--no-arms", action="store_true",
                         help="baseline behaviour: drive the hands only, arms stay held")
     # Accepted only so existing launcher argument lists still parse. Wrist
@@ -596,62 +602,58 @@ def _save_arm_frames(path, arrays) -> Path:
 
 
 def run(args) -> int:
-    """采集 -> 手 + 臂 -> 仿真；0 = 至少一侧给出过输出，1 = 全程没有手也没有臂。"""
+    """Compatibility entry; every production camera target uses robot control."""
     if not args.robot or len(set(args.robot))!=len(args.robot):
+        raise ValueError('Choose distinct targets explicitly with --robot NAME')
+    if args.no_arms:
+        return _run_hands(args)
+    if args.input_npz is not None:
+        raise ValueError('Arm replay requires raw SMPL pose parameters in --input-body; derived-point NPZ is unsupported')
+    from teleoperation.applications.arm_entry import run_camera_alias
+    return run_camera_alias(args,args.robot,'hands' if args.no_arms else 'both')
+
+
+def _run_hands(args) -> int:
+    """采集 -> 手 + 臂 -> 仿真；0 = 至少一侧给出过输出，1 = 全程没有手也没有臂。"""
+    if not args.robot or len(set(args.robot)) != len(args.robot):
         raise ValueError('Choose distinct targets explicitly with --robot NAME (repeat for comparison)')
-    sides = tuple(SIDES if args.side == "both" else (args.side,))
-    diagnostics_enabled = bool(getattr(args, "diagnostics", False) or getattr(args, "diagnostic_trace", None))
+    sides = tuple(SIDES if args.side == 'both' else (args.side,))
+    diagnostics_enabled = bool(getattr(args, 'diagnostics', False) or getattr(args, 'diagnostic_trace', None))
     if diagnostics_enabled:
-        trace_path = getattr(args, "diagnostic_trace", None)
-        protected = [getattr(args, key, None) for key in
-                     ("input_npz", "input_body", "dump_body", "model_asset_path", "smplerx_checkpoint", "smplx_model_dir", "neutral_json", "dump_npz", "save_neutral")]
-        protected.extend(path for _model, path in (args.hand_checkpoint or []))
+        trace_path = getattr(args, 'diagnostic_trace', None)
+        protected = [getattr(args, key, None) for key in ('input_npz', 'input_body', 'dump_body', 'model_asset_path', 'smplerx_checkpoint', 'smplx_model_dir', 'neutral_json', 'dump_npz', 'save_neutral')]
+        protected.extend((path for (_model, path) in args.hand_checkpoint or []))
         destinations = [value for value in (trace_path, args.report) if value is not None]
         if len({Path(path).resolve() for path in destinations}) != len(destinations):
-            raise ValueError("Diagnostic CSV and report paths must differ")
-        if any(Path(out).resolve() == Path(source).resolve() for out in destinations
-               for source in protected if source is not None):
-            raise ValueError("Diagnostic output must not overwrite an input or another output")
+            raise ValueError('Diagnostic CSV and report paths must differ')
+        if any((Path(out).resolve() == Path(source).resolve() for out in destinations for source in protected if source is not None)):
+            raise ValueError('Diagnostic output must not overwrite an input or another output')
     input_body = getattr(args, 'input_body', None)
     dump_body = getattr(args, 'dump_body', None)
     replaying = args.input_npz is not None or input_body is not None
-    outputs = [Path(value).resolve() for value in (dump_body, args.dump_npz, args.report,
-               getattr(args, 'diagnostic_trace', None), args.save_neutral, args.arm_frame_dump) if value is not None]
-    inputs = [Path(value).resolve() for value in (input_body, args.input_npz,
-              args.model_asset_path, args.neutral_json, args.smplerx_checkpoint) if value is not None]
-    inputs.extend(Path(path).resolve() for _model, path in (args.hand_checkpoint or []))
+    outputs = [Path(value).resolve() for value in (dump_body, args.dump_npz, args.report, getattr(args, 'diagnostic_trace', None), args.save_neutral, args.arm_frame_dump) if value is not None]
+    inputs = [Path(value).resolve() for value in (input_body, args.input_npz, args.model_asset_path, args.neutral_json, args.smplerx_checkpoint) if value is not None]
+    inputs.extend((Path(path).resolve() for (_model, path) in args.hand_checkpoint or []))
     if len(set(outputs)) != len(outputs) or set(outputs).intersection(inputs):
         raise ValueError('Output must not overwrite an input or another output')
     if args.input_npz is not None and input_body is not None:
         raise ValueError('Choose either --input-body or --input-npz')
-    if dump_body is not None and (replaying or args.no_arms):
+    if dump_body is not None and (replaying or True):
         raise ValueError('--dump-body requires live SMPL-X arm capture')
     asset = resolve_model_asset(args.model_asset_path) if not replaying else None
     robots = tuple(args.robot)
     profiles = {name: profile_for(name) for name in robots}
-    arms_wanted = not args.no_arms
+    arms_wanted = not True
     if args.pose_model_asset_path is not None or args.pose_min_visibility is not None:
-        raise ValueError("MediaPipe Pose arm options were removed; configure SMPLer-X")
-    if args.input_npz is not None and arms_wanted:
-        raise ValueError("Legacy NPZ arm replay is removed; replay an SMPL-X body recording")
-    if not replaying and arms_wanted:
-        for name in ("smplerx_worker_python", "smplerx_root", "smplerx_checkpoint", "smplx_model_dir"):
-            value = getattr(args, name, None)
-            if value is None:
-                raise ValueError(f"--{name.replace('_', '-')} is required when arms are enabled")
-            if not Path(value).exists():
-                raise FileNotFoundError(f"{name} not found: {value}")
-    if args.dump_npz is not None and arms_wanted:
-        raise ValueError("--dump-npz is a hands-only debug format; use SMPL-X body recording for arms")
+        raise ValueError('MediaPipe Pose arm options were removed; configure SMPLer-X')
     checkpoints = {}
-    for model, path in args.hand_checkpoint or []:
+    for (model, path) in args.hand_checkpoint or []:
         if model not in robots or model in checkpoints:
-            raise ValueError("Each --hand-checkpoint must name a distinct active robot")
+            raise ValueError('Each --hand-checkpoint must name a distinct active robot')
         checkpoints[model] = Path(path)
-    specs, retargeter = build_camera_retargeter(
-        robots, sides, args.backend, checkpoints=checkpoints or None, device=args.device)
+    (specs, retargeter) = build_camera_retargeter(robots, sides, args.backend, checkpoints=checkpoints or None, device=args.device)
     backend = args.backend
-    note = "target-native independent joints; palm-length normalized camera input"
+    note = 'target-native independent joints; palm-length normalized camera input'
     scene = camera = preview = driver = bridge = diagnostics = None
     transport = None
     wrist_control = None
@@ -668,187 +670,48 @@ def run(args) -> int:
     raw_seen = {side: 0 for side in sides}
     native_samples = {key: [] for key in specs}
     native_invalid = {key: 0 for key in specs}
-    dumped = {"hand": {side: [] for side in SIDES},
-              "world": {side: [] for side in SIDES},
-              "timestamps": []}
+    dumped = {'hand': {side: [] for side in SIDES}, 'world': {side: [] for side in SIDES}, 'timestamps': []}
     targets = {}
     try:
         if diagnostics_enabled:
             from teleoperation.simulation.arm_diagnostics import ArmDiagnostics
-            diagnostics = ArmDiagnostics(getattr(args, "diagnostic_trace", None))
-        args.scene = "robots"                      # 手臂只存在于机器人场景
+            diagnostics = ArmDiagnostics(getattr(args, 'diagnostic_trace', None))
+        args.scene = 'robots'
         scene = build_scene(args, sides)
-        commands = JointCommandPipeline(specs, args.joint_filter, args.filter_alpha,
-                                        args.joint_max_velocity, args.kalman_q, args.kalman_r)
-        appearance = apply_appearance(
-            scene, None if args.original_g1_color else args.g1_color,
-            args.light_position, args.shadows)
-        if hasattr(scene, "frame_scene"):
+        commands = JointCommandPipeline(specs, args.joint_filter, args.filter_alpha, args.joint_max_velocity, args.kalman_q, args.kalman_r)
+        appearance = apply_appearance(scene, None if args.original_g1_color else args.g1_color, args.light_position, args.shadows)
+        if hasattr(scene, 'frame_scene'):
             scene.frame_scene(args.view)
-        if arms_wanted:
-            fixed_slew_m = (None if args.arm_slew_mm is None
-                            else max(0.0, float(args.arm_slew_mm)) / 1000.0)
-            slew_speed_m_per_s = (0.0 if fixed_slew_m is not None
-                                  else max(0.0, float(args.arm_slew_mm_s)) / 1000.0)
-            driver = ArmSceneDriver(scene, sides=sides, robots=robots,
-                                    ik_iterations=args.arm_ik_iterations,
-                                    residual_threshold=args.arm_ik_residual_threshold,
-                                    rest_poses=args.arm_rest_poses,
-                                    diagnostics=diagnostics,
-                                    slew_m=(0.0 if fixed_slew_m is None else fixed_slew_m),
-                                    slew_m_per_s=slew_speed_m_per_s,
-                                    slew_pair_floor_ratio=args.arm_slew_pair_floor,
-                                    elbow_pass=args.arm_elbow_pass,
-                                    elbow_recovery_deg=args.arm_elbow_recovery_deg,
-                                    elbow_recovery_margin_deg=args.arm_elbow_recovery_margin_deg,
-                                    elbow_recovery_cooldown=args.arm_elbow_recovery_frames,
-                                    shoulder_anchor_key=args.arm_anchor,
-                                    lock_others=(args.arm_ik_scope == "arm"))
-            robot_links, robot_anchors = {}, {}
-            if args.arm_map in ("segments", "posture"):
-                from teleoperation.applications.camera_scene_arm import measure_camera_arm_geometry
-                robot_links, robot_anchors = measure_camera_arm_geometry(driver, args.arm_anchor)
-                if not args.arm_no_shoulder_follow:
-                    # 肘/腕目标按「当前肩 - 加载锚点」平移（见 ArmSceneDriver._shoulder_shift）：
-                    # 躯干被手臂反作用力推着走时，目标仍然落在「离当前肩正好一根上臂」的球面上。
-                    driver.set_shoulder_anchors(robot_anchors)
-                elbow_note = ("elbow task: built by the direction recipe (pass "
-                              f"{args.arm_elbow_pass})"
-                              if args.arm_map == "posture" else
-                              f"elbow task {'on' if args.arm_elbow_task else 'off'}")
-                pass_note = ("" if args.arm_map == "posture" else
-                             (f" (pass {args.arm_elbow_pass})"
-                              if args.arm_elbow_task else ""))
-                frame_note = ("" if args.arm_posture_frame != "auto" else
-                              " (" + ", ".join(f"{name}:{profiles[name].posture_frame}"
-                                               for name in robots) + ")")
-
-                print(f"arm map: {args.arm_map} | shoulder end = {args.arm_anchor} "
-                      f"({'rigid: the elbow parent link' if args.arm_anchor == 'upper' else 'historical name-matched link'})"
-                      f" | ik scope = {args.arm_ik_scope}"
-                      f" | rest poses = {args.arm_rest_poses}"
-                      f" | elbow follow = {args.arm_elbow_follow}"
-                      f" | posture frame = {args.arm_posture_frame}{frame_note}"
-                      f" | measured links (m) "
-                      + " ".join(f"{name}:{side[0]}" +
-                                 f" {robot_links[name][side]['upper']:.3f}"
-                                 f"+{robot_links[name][side]['fore']:.3f}"
-                                 for name in robots for side in sides)
-                      + f" | {elbow_note}"
-                      + pass_note
-                      + (f" | elbow branch recovery: >{args.arm_elbow_recovery_deg:.0f} deg"
-                         f" (margin {args.arm_elbow_recovery_margin_deg:.0f} deg,"
-                         f" retry every {args.arm_elbow_recovery_frames} frames)"
-
-                         if args.arm_elbow_recovery_deg > 0.0 else
-                         " | elbow branch recovery: off"),
-                      flush=True)
-            else:
-                print(f"arm map: chain (no elbow task: a wrist target only) | ik scope = "
-                      f"{args.arm_ik_scope} | in this recipe the upper arm cannot move on its "
-                      f"own and the per-axis travel clamp caps the arm (g1 40 mm); pass "
-                      f"--arm-map posture for the direction recipe", flush=True)
-            gains = {str(pair[0]): float(pair[1]) for pair in (args.arm_gain or [])}
-            axis_map = AxisMap()
-            if args.arm_axis_order and args.arm_axis_signs:
-                axis_map = AxisMap.parse(args.arm_axis_order, args.arm_axis_signs)
-            elif args.arm_axis_order:
-                axis_map = AxisMap.parse(args.arm_axis_order,
-                                         ",".join(f"{sign:+.0f}" for sign in axis_map.signs))
-            elif args.arm_axis_signs:
-                axis_map = AxisMap.parse("".join(axis_map.order), args.arm_axis_signs)
-            neutral = load_neutral(args.neutral_json) if args.neutral_json else None
-            bridge = RealtimeArmBridge(
-                [profiles[name] for name in robots], sides=sides, axis_map=axis_map,
-                calibration_frames=args.arm_calibrate_frames,
-                calibrate_mode=args.arm_calibrate_mode,
-                orientation="off", gains=gains,
-                max_travel_m=(None if args.arm_travel_mm is None
-                              else float(args.arm_travel_mm) / 1000.0),
-                travel_mode=args.arm_travel_mode,
-                lateral_guard_m=max(0.0, float(args.arm_lateral_guard_mm)) / 1000.0,
-                gain_quality_guard=not args.no_arm_gain_quality_guard,
-                neutral=neutral,
-                map_mode=args.arm_map, robot_links=robot_links,
-                elbow_task=args.arm_elbow_task, elbow_gain=args.arm_elbow_gain,
-                posture_gain=args.arm_posture_gain,
-                posture_frame=(None if args.arm_posture_frame == "auto"
-                               else args.arm_posture_frame),
-                max_direction_rate_deg_s=args.arm_direction_rate_deg_s,
-                anchors=robot_anchors)
-            from teleoperation.simulation.wrist_control import WristSceneController
-            wrist_control = WristSceneController(driver, axis_map.matrix())
-            print(f"arms: {', '.join(robots)} | ik_mode "
-                  f"{({name: profiles[name].ik_mode for name in robots})} | "
-                  f"orientation input wrist (automatic) | travel limit "
-                  f"{bridge.travel_limits()} m ({args.arm_travel_mode}) | "
-                  f"lateral guard {args.arm_lateral_guard_mm} mm | "
-                  f"neutral mode {args.arm_calibrate_mode} | "
-                  f"neutral {'reused from ' + str(args.neutral_json) if neutral else str(args.arm_calibrate_frames) + ' frames'} | "
-                  + (f"target slew {fixed_slew_m * 1000.0:.1f} mm/frame (fixed)"
-                     if fixed_slew_m is not None else
-                     f"target slew {args.arm_slew_mm_s:.0f} mm/s "
-                     f"(ceiling {SLEW_MAX_STEP_M * 1000.0:.0f} mm/frame)")
-                  + f" | pair floor {driver.slew_pair_floor_ratio:.2f}"
-                  + ("" if driver.slew_pair_floor_ratio > 0.0 else " (off)"),
-                  flush=True)
         if input_body is not None:
             camera = BodyReplayFrameSource(input_body, args.landmark_space)
         elif args.input_npz is not None:
             camera = ReplayFrameSource(args.input_npz, args.landmark_space)
-            print(f"replay: {args.input_npz} ({camera.frames} frames, "
-                  f"landmark_space={args.landmark_space}); no camera is opened", flush=True)
+            print(f'replay: {args.input_npz} ({camera.frames} frames, landmark_space={args.landmark_space}); no camera is opened', flush=True)
         else:
             transport = None
             client = None
-            if arms_wanted:
-                transport = SmplerXWorkerTransport(
-                    worker_python=args.smplerx_worker_python,
-                    smplerx_root=args.smplerx_root,
-                    checkpoint=args.smplerx_checkpoint,
-                    body_model_dir=args.smplx_model_dir,
-                    model=args.smplerx_model,
-                )
-                client = SmplerXClient(transport, session_id=f"realtime-{time.monotonic_ns()}")
-            camera = CameraFrameSource(asset, args.camera_index, args.width, args.height,
-                                       args.fps, args.landmark_space,
-                                       client, client.session_id if client is not None else "camera",
-                                       arms_wanted)
+            camera = CameraFrameSource(asset, args.camera_index, args.width, args.height, args.fps, args.landmark_space, client, client.session_id if client is not None else 'camera', False)
         preview = build_arm_preview(args, camera, sides)
         camera.diagnostics = diagnostics
         if not args.headless:
             print(PREVIEW_HINT_ROBOTS, flush=True)
-            print(f"camera window {ARM_PREVIEW_WINDOW!r}: raw frame + 21 hand points + both "
-                  f"arms (shoulder/elbow/wrist); the PyBullet window shows the three robots.",
-                  flush=True)
-        if bridge is not None:
-            if args.arm_calibrate_mode == "track":
-                print("keep a neutral arm pose (elbows slightly bent, hands in front of the "
-                      f"chest) for about {args.arm_calibrate_frames} frames per side; the arms "
-                      "already follow from the first frame that sees your arm, and the neutral "
-                      "keeps converging while you hold still.", flush=True)
-            else:
-                print("keep a neutral arm pose (elbows slightly bent, hands in front of the "
-                      f"chest) for about {args.arm_calibrate_frames} frames per side; until "
-                      "then the arms hold their working point.", flush=True)
+            print(f'camera window {ARM_PREVIEW_WINDOW!r}: raw frame + 21 hand points + both arms (shoulder/elbow/wrist); the PyBullet window shows the three robots.', flush=True)
         started = time.perf_counter()
-        simulation_clock = SimulationStepClock(args.sim_steps,
-            realtime=not replaying and not args.fixed_sim_steps)
+        simulation_clock = SimulationStepClock(args.sim_steps, realtime=not replaying and (not args.fixed_sim_steps))
         from teleoperation.applications.accepted_robot_output import AcceptedRobotOutput
-        robot_execution=AcceptedRobotOutput.native(scene,robots,args.side,driver)
-
+        robot_execution = AcceptedRobotOutput.native(scene, robots, args.side, None)
         while True:
             if args.frames and processed >= args.frames:
                 break
             if not scene.alive():
-                print("PyBullet window closed; stopping.", flush=True)
+                print('PyBullet window closed; stopping.', flush=True)
                 break
             if diagnostics is not None:
                 diagnostics.begin_frame()
                 capture_started = time.perf_counter()
             window = camera.next_frame()
-            if getattr(camera, "exhausted", False):
-                print("replay finished (all recorded frames were replayed).", flush=True)
+            if getattr(camera, 'exhausted', False):
+                print('replay finished (all recorded frames were replayed).', flush=True)
                 break
             processed += 1
             if dump_body is not None:
@@ -857,11 +720,10 @@ def run(args) -> int:
                 body_rows.append(capture_sample(source, camera.last_observation))
                 if source.last_result is not None:
                     result = source.last_result
-                    body_metadata = dict(source='smplerx', model_id=result.model_id,
-                                         model_hash=result.model_hash, time_unit='monotonic_s')
+                    body_metadata = dict(source='smplerx', model_id=result.model_id, model_hash=result.model_hash, time_unit='monotonic_s')
             if diagnostics is not None:
                 capture_ms = (time.perf_counter() - capture_started) * 1000
-                diagnostics.record_ms("capture_detection", max(0., capture_ms - diagnostics.frame_timings.get("hand_preprocessing", 0.)))
+                diagnostics.record_ms('capture_detection', max(0.0, capture_ms - diagnostics.frame_timings.get('hand_preprocessing', 0.0)))
                 hand_started = time.perf_counter()
             raw_frame = camera.last_raw_frame
             for side in sides:
@@ -872,12 +734,11 @@ def run(args) -> int:
             results = {} if window is None else retargeter.retarget(window)
             side_values = {side: [] for side in sides}
             side_valid = {side: True for side in sides}
-            accepted_hands={}
-            for key, spec in specs.items():
+            accepted_hands = {}
+            for (key, spec) in specs.items():
                 result = results.get(key)
-                command = (commands.missing(key, timestamp=command_timestamp) if result is None
-                           else commands.update(result, timestamp=command_timestamp))
-                accepted_hands[key]=command
+                command = commands.missing(key, timestamp=command_timestamp) if result is None else commands.update(result, timestamp=command_timestamp)
+                accepted_hands[key] = command
                 if result is None or not result.valid:
                     native_invalid[key] += 1
                     side_valid[key[1]] = False
@@ -891,79 +752,45 @@ def run(args) -> int:
                 else:
                     invalid[side] += 1
             targets = {}
-            accepted_arms={}
+            accepted_arms = {}
             if diagnostics is not None:
-                diagnostics.record_ms("hand_inference_output", (time.perf_counter() - hand_started) * 1000)
-            if bridge is not None:
-                frame_dt = (args.sim_steps / 240.0 if args.input_npz is not None else
-                            getattr(camera, 'frame_dt', None) or NOMINAL_FRAME_DT)
-                from teleoperation.applications.camera_scene_arm import solve_camera_arm_frame
-                def arm_error(side, error):
-                    if side not in arm_failures:
-                        arm_failures[side] = f'{type(error).__name__}: {error}'
-                        print(f'[WARN] {side}: arm command held: {arm_failures[side]}', flush=True)
-                with (nullcontext() if diagnostics is None else diagnostics.stage('arm_mapping')):
-                    targets,accepted_arms = solve_camera_arm_frame(bridge, driver, wrist_control, camera.arms(),
-                        camera.wrists(), frame_dt, elbow_follow=args.arm_elbow_follow, on_error=arm_error)
-            control_seconds=(processed-1)*args.sim_steps/240. if replaying else time.perf_counter()-started
-            stamp=None if raw_frame is None else float(raw_frame['timestamp'])
-            observed={(model,side+'_hand'):key in results and results[key].valid
-                      for key in specs for model,side in (key,)}
-            body=camera.arms()
+                diagnostics.record_ms('hand_inference_output', (time.perf_counter() - hand_started) * 1000)
+            control_seconds = (processed - 1) * args.sim_steps / 240.0 if replaying else time.perf_counter() - started
+            stamp = None if raw_frame is None else float(raw_frame['timestamp'])
+            observed = {(model, side + '_hand'): key in results and results[key].valid for key in specs for (model, side) in (key,)}
+            body = camera.arms()
             for model in robots:
                 for side in sides:
-                    observed[model,side+'_arm']=body is not None and body.valid.get(side,False)
-            with (nullcontext() if diagnostics is None else diagnostics.stage('physics')):
-                robot_execution.submit(processed-1,control_seconds,hands=accepted_hands,arms=accepted_arms,
-                    source_timestamp=stamp,observed=observed,steps=simulation_clock.next_steps())
-            if wrist_control is not None:wrist_control.record()
+                    observed[model, side + '_arm'] = body is not None and body.valid.get(side, False)
+            with nullcontext() if diagnostics is None else diagnostics.stage('physics'):
+                robot_execution.submit(processed - 1, control_seconds, hands=accepted_hands, arms=accepted_arms, source_timestamp=stamp, observed=observed, steps=simulation_clock.next_steps())
             if args.dump_npz is not None:
                 _record_frame(dumped, raw_frame, camera.arms())
             if preview is not None:
                 preview_started = time.perf_counter() if diagnostics is not None else None
                 body = camera.arms()
-                # 不在这里挑手臂点：arm_preview.update() 自己把形状不对 / 含 NaN 的一侧
-                # 当作"没有"（与桥的丢帧保持同口径），这里只负责把 None 原样传下去。
-                wrist_lines = arm_lines(bridge, sides)
-                if wrist_control is not None:
-                    for side in sides:
-                        wrist_lines[side] = wrist_lines.get(side, "") + " wrist=" + wrist_control.trackers[side].status
-                preview.update(raw_frame, latest, arm_hud(bridge, driver, targets),
-                               arms=None if body is None else body.arms,
-                               lines=wrist_lines)
+                wrist_lines = arm_lines(None, sides)
+                preview.update(raw_frame, latest, arm_hud(None, None, targets), arms=None if body is None else body.arms, lines=wrist_lines)
                 if diagnostics is not None:
-                    diagnostics.record_ms("preview", (time.perf_counter() - preview_started) * 1000)
+                    diagnostics.record_ms('preview', (time.perf_counter() - preview_started) * 1000)
             if diagnostics is not None:
-                diagnostics.capture(processed - 1, driver, bridge, targets, arms=camera.arms(),
-                    raw_timestamp=None if raw_frame is None else raw_frame.get("timestamp"),
-                    timestamp_unit="monotonic_s" if args.input_npz is None else "relative_seconds",
-                    sample_time_s=(camera._source.last_time_s - camera._start_timestamp if input_body is not None
-                                   else time.perf_counter() - started if args.input_npz is None else None))
+                diagnostics.capture(processed - 1, None, None, targets, arms=camera.arms(), raw_timestamp=None if raw_frame is None else raw_frame.get('timestamp'), timestamp_unit='monotonic_s' if args.input_npz is None else 'relative_seconds', sample_time_s=camera._source.last_time_s - camera._start_timestamp if input_body is not None else time.perf_counter() - started if args.input_npz is None else None)
             if preview is not None and preview.quit_requested:
-                print("camera window closed; stopping.", flush=True)
+                print('camera window closed; stopping.', flush=True)
                 break
             marks.append(time.perf_counter())
             if args.print_every and processed % args.print_every == 0:
-                counts = " ".join(f"{side}={len(samples[side])}" for side in sides)
-                print(f"frame={processed} fps={_loop_fps(marks):.1f} hand valid={counts} "
-                      f"invalid={sum(invalid.values())} | {arm_hud(bridge, driver, targets)}",
-                      flush=True)
-                if args.arm_trace and bridge is not None:
-                    print_arm_state(processed, bridge, driver, targets, profiles)
+                counts = ' '.join((f'{side}={len(samples[side])}' for side in sides))
+                print(f'frame={processed} fps={_loop_fps(marks):.1f} hand valid={counts} invalid={sum(invalid.values())} | {arm_hud(None, None, targets)}', flush=True)
         final = {side: scene.joint_values(side) for side in sides}
-        # 注意：这些都要在 finally 断开之前读 —— PyBullet 断连后再 getLinkState 会抛
-        # "Not connected to physics server"。
-        arm_residuals = {} if driver is None else driver.residuals_mm()
-        arm_hold_drift = {} if driver is None else driver.hold_drift()
-        arm_posture = {} if driver is None else driver.posture_summary()
-        arm_gap = {} if driver is None else driver.forearm_gap_summary()
-        arm_summary = None if driver is None else driver.summary()
-        wrist_summary = None if wrist_control is None else wrist_control.summary()
-        # --arm-frame-dump 的数据也必须在这里读（to_base 要查基座位姿）：
-        # 放在 finally 之后就是「断连后再问 PyBullet」，见 _collect_arm_frames 的说明。
-        arm_frames = (None if (args.arm_frame_dump is None or driver is None)
-                      else _collect_arm_frames(driver, robots, sides))
-        scene_summary = scene.summary() if hasattr(scene, "summary") else None
+        arm_residuals = {}
+        arm_hold_drift = {}
+        arm_posture = {}
+        arm_gap = {}
+        arm_summary = None
+        wrist_summary = None
+        arm_frames = None
+        scene_summary = scene.summary() if hasattr(scene, 'summary') else None
         elapsed = time.perf_counter() - started
     finally:
         failure = sys.exc_info()[1]
@@ -972,229 +799,74 @@ def run(args) -> int:
                 diagnostics.close()
         finally:
             if preview is not None:
-                _drain_in_background(preview.close, "camera preview close")
+                _drain_in_background(preview.close, 'camera preview close')
             if camera is not None:
-                _drain_in_background(camera.release, "camera release")
+                _drain_in_background(camera.release, 'camera release')
             elif transport is not None:
                 transport.close()
             if scene is not None:
-                _drain_in_background(scene.close, "PyBullet disconnect")
+                _drain_in_background(scene.close, 'PyBullet disconnect')
         if failure is not None and diagnostics is not None and args.report:
             path = Path(args.report)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"entry": ARM_ENTRY, "exit_reason": "error",
-                "error": f"{type(failure).__name__}: {failure}", "diagnostics": diagnostics.summary()},
-                indent=2, allow_nan=False), encoding="utf-8")
+            path.write_text(json.dumps({'entry': ARM_ENTRY, 'exit_reason': 'error', 'error': f'{type(failure).__name__}: {failure}', 'diagnostics': diagnostics.summary()}, indent=2, allow_nan=False), encoding='utf-8')
         if body_rows and body_metadata is not None:
             from teleoperation.data.body_recording import save_body_recording
             save_body_recording(dump_body, body_rows, body_metadata)
-
     fps = _loop_fps(marks)
-    print(f"\nprocessed={processed} frames in {elapsed:.2f} s  fps={fps:.1f}  "
-          f"median frame interval {_median_interval(marks) * 1000:.1f} ms")
-    body_worker = (camera._source.worker_summary() if hasattr(camera, '_source')
-                   and hasattr(camera._source, 'worker_summary') else None)
+    print(f'\nprocessed={processed} frames in {elapsed:.2f} s  fps={fps:.1f}  median frame interval {_median_interval(marks) * 1000:.1f} ms')
+    body_worker = camera._source.worker_summary() if hasattr(camera, '_source') and hasattr(camera._source, 'worker_summary') else None
     if body_worker is not None and body_worker['enabled']:
-        print(f"body worker: results={body_worker['results_received']} "
-              f"valid={body_worker['valid_results']} reasons={body_worker['result_reasons']} "
-              f"fault={body_worker['fault']}", flush=True)
+        print(f"body worker: results={body_worker['results_received']} valid={body_worker['valid_results']} reasons={body_worker['result_reasons']} fault={body_worker['fault']}", flush=True)
     if scene_summary is not None:
-        print(f"scene={scene_summary['scene']} sim_frames={scene_summary['sim_frames']} "
-              f"applied={scene_summary['applied_frames']}", flush=True)
-    for robot, entry in sorted(arm_residuals.items()):
+        print(f"scene={scene_summary['scene']} sim_frames={scene_summary['sim_frames']} applied={scene_summary['applied_frames']}", flush=True)
+    for (robot, entry) in sorted(arm_residuals.items()):
         if entry:
-            text = " ".join(f"{side}={value:.1f}" for side, value in sorted(entry.items()))
-            print(f"  arm {robot}: wrist residual mm {text}", flush=True)
-    for robot, per_side in sorted(arm_posture.items()):
-        for side, entry in sorted(per_side.items()):
-            if not entry or entry.get("frames", 0) < 2:
+            text = ' '.join((f'{side}={value:.1f}' for (side, value) in sorted(entry.items())))
+            print(f'  arm {robot}: wrist residual mm {text}', flush=True)
+    for (robot, per_side) in sorted(arm_posture.items()):
+        for (side, entry) in sorted(per_side.items()):
+            if not entry or entry.get('frames', 0) < 2:
                 continue
-            bend = entry["elbow_bend_deg"]
-            print(f"  arm {robot}/{side}: shoulder travel {entry['shoulder_travel_deg']:.1f} deg, "
-                  f"upper arm swept {entry['upper_arm_dir_travel_deg']:.1f} deg, "
-                  f"elbow moved {entry['elbow_span_mm']:.0f} mm, "
-                  f"elbow bend {bend['min']}-{bend['max']} deg", flush=True)
+            bend = entry['elbow_bend_deg']
+            print(f"  arm {robot}/{side}: shoulder travel {entry['shoulder_travel_deg']:.1f} deg, upper arm swept {entry['upper_arm_dir_travel_deg']:.1f} deg, elbow moved {entry['elbow_span_mm']:.0f} mm, elbow bend {bend['min']}-{bend['max']} deg", flush=True)
     if arm_gap:
-        text = " ".join(f"{robot}={value:.0f}" for robot, value in sorted(
-            (arm_gap.get("min_mm") or {}).items()))
-        print(f"  arm forearm gap (worst): {text} mm "
-              f"[worst {arm_gap.get('worst_mm')} mm over {arm_gap.get('frames')} frames]",
-              flush=True)
+        text = ' '.join((f'{robot}={value:.0f}' for (robot, value) in sorted((arm_gap.get('min_mm') or {}).items())))
+        print(f"  arm forearm gap (worst): {text} mm [worst {arm_gap.get('worst_mm')} mm over {arm_gap.get('frames')} frames]", flush=True)
     if arm_hold_drift:
-        print(f"  arm hold drift: {json.dumps(arm_hold_drift, ensure_ascii=False)}", flush=True)
-    if bridge is not None:
-        for side, entry in sorted((bridge.summary().get("arm_length_trust") or {}).items()):
-            if not entry.get("trusted"):
-                print(f"  arm gain guard [{side}]: {entry.get('reason')}; using "
-                      f"profile.metric_scale instead of arm-length normalisation", flush=True)
-        arm_guarded_total_print = sum((bridge.counts.get("guarded") or {}).values())
-        if arm_guarded_total_print:
-            print(f"  arm lateral guard: {arm_guarded_total_print} frames had a wrist target "
-                  f"pushed back to its own side "
-                  f"(limit {1000.0 * bridge.lateral_guard_m:.0f} mm)", flush=True)
+        print(f'  arm hold drift: {json.dumps(arm_hold_drift, ensure_ascii=False)}', flush=True)
     if preview is not None:
-        print(f"camera preview: window={'on' if preview.show else 'off'} "
-              f"mirror={'on' if preview.mirror else 'off'} "
-              f"arm_overlay={'on' if getattr(preview, 'overlay', False) else 'off'} "
-              f"dumped_png={preview.dumped}"
-              f"{'' if preview.rect is None else f' rect={preview.rect}'}"
-              f"{'' if not preview.note else ' note=' + preview.note}", flush=True)
-    arm_valid_total = 0 if bridge is None else sum(bridge.counts["valid"].values())
-    arm_clamped_total = 0 if bridge is None else sum(bridge.counts["clamped"].values())
-    arm_guarded_total = 0 if bridge is None else sum(bridge.counts["guarded"].values())
-    arm_gain_guarded_total = (0 if bridge is None
-                              else sum(bridge.counts["gain_guarded"].values()))
-    report = {
-        "entry": ARM_ENTRY,
-        "backend": backend,
-        "hand_commands": commands.summary(),
-        "landmark_space": args.landmark_space,
-        "length_unit": "m" if args.landmark_space == "world" else "normalized",
-        "backend_note": note,
-        "input_profile": PALM_LENGTH_PROFILE,
-        "hand_targets": {"/".join(key): {
-            "dof": spec.dof, "joint_names": list(spec.independent_joint_names),
-            "movable_joint_names": list(spec.joint_names), "spec_hash": spec.spec_hash,
-            "valid_frames": len(native_samples[key]), "invalid_frames": native_invalid[key],
-            "angles": _describe(native_samples[key], spec.independent_joint_names) if native_samples[key] else None,
-        } for key, spec in specs.items()},
-        "model_asset": None if asset is None else str(asset),
-        "smplerx_model": None if not arms_wanted else args.smplerx_model,
-        "smplerx_checkpoint": None if not arms_wanted or replaying else str(Path(args.smplerx_checkpoint).resolve()),
-        "input_body": None if input_body is None else str(input_body),
-        "body_source": camera._source.metrics.summary() if hasattr(camera, '_source') else None,
-        "body_worker": body_worker,
-        "camera_index": args.camera_index,
-        "input_npz": None if args.input_npz is None else str(args.input_npz),
-        "headless": bool(args.headless),
-        "scene": args.scene,
-        "scene_summary": scene_summary,
-        "appearance": appearance,
-        "arms_enabled": bool(arms_wanted),
-        "robots": list(robots),
-        "arm_failures": arm_failures,
-        "simulation_timing": {
-            "mode": "elapsed" if simulation_clock.realtime else "fixed",
-            "physics_steps": simulation_clock.total_steps,
-            "simulated_seconds": simulation_clock.total_steps / 240,
-            "capped_frames": simulation_clock.capped_frames,
-        },
-        "arm_targets_valid_frames": arm_valid_total,
-        "arm_clamped_frames": arm_clamped_total,
-        "arm_guarded_frames": arm_guarded_total,
-        "arm_gain_guarded_frames": arm_gain_guarded_total,
-        "arm_travel_mode": args.arm_travel_mode,
-        "arm_lateral_guard_mm": float(args.arm_lateral_guard_mm),
-        "arm_slew_mm_per_s": (None if fixed_slew_m is not None
-                              else float(args.arm_slew_mm_s)),
-        "arm_slew_mm_fixed": (None if fixed_slew_m is None else fixed_slew_m * 1000.0),
-        "arm_slew_ceiling_mm": SLEW_MAX_STEP_M * 1000.0,
-        "arm_slew_pair_floor_ratio": (None if driver is None
-                                      else round(driver.slew_pair_floor_ratio, 4)),
-        "arm_posture_frame": args.arm_posture_frame,
-        "arm_slew_mm_last_frame": (None if driver is None
-                                   else round(1000.0 * driver.slew_m, 3)),
-        "arm": arm_summary,
-        "wrists": wrist_summary,
-        "arm_posture": arm_posture,
-        "arm_forearm_gap_mm": arm_gap,
-        "bridge": (None if bridge is None else bridge.summary()),
-        "arm_last_targets": {
-            robot: {side: target.describe() for side, target in sorted(per_side.items())}
-            for robot, per_side in sorted(targets.items())},
-        "preview": None if preview is None else {
-            "window": bool(preview.show),
-            "mirrored": bool(preview.mirror),
-            "arm_overlay": bool(getattr(preview, "overlay", False)),
-            "dumped_png": int(preview.dumped),
-            "dump_dir": None if preview.dump_dir is None else str(preview.dump_dir),
-            "window_name": preview.window_name,
-            "window_pos": None if preview.window_pos is None else list(preview.window_pos),
-            "window_rect": None if preview.rect is None else list(preview.rect),
-            "topmost": bool(preview.topmost),
-            "note": preview.note,
-        },
-        "processed_frames": processed,
-        "elapsed_seconds": round(float(elapsed), 3),
-        "fps": round(float(fps), 2),
-        "median_frame_interval_ms": round(float(_median_interval(marks) * 1000), 2),
-        "sides": {
-            side: {
-                "raw_detected_frames": raw_seen[side],
-                "valid_frames": len(samples[side]),
-                "invalid_frames": invalid[side],
-                "angles": _describe(samples[side], [f"{model}.{name}" for (model, target_side), spec in specs.items()
-                                                           if target_side == side for name in spec.joint_names]) if samples[side] else None,
-                "final_joint_values": final.get(side),
-            }
-            for side in sides
-        },
-    }
+        print(f"camera preview: window={('on' if preview.show else 'off')} mirror={('on' if preview.mirror else 'off')} arm_overlay={('on' if getattr(preview, 'overlay', False) else 'off')} dumped_png={preview.dumped}{('' if preview.rect is None else f' rect={preview.rect}')}{('' if not preview.note else ' note=' + preview.note)}", flush=True)
+    arm_valid_total = 0
+    arm_clamped_total = 0
+    arm_guarded_total = 0
+    arm_gain_guarded_total = 0
+    report = {'entry': ARM_ENTRY, 'backend': backend, 'hand_commands': commands.summary(), 'landmark_space': args.landmark_space, 'length_unit': 'm' if args.landmark_space == 'world' else 'normalized', 'backend_note': note, 'input_profile': PALM_LENGTH_PROFILE, 'hand_targets': {'/'.join(key): {'dof': spec.dof, 'joint_names': list(spec.independent_joint_names), 'movable_joint_names': list(spec.joint_names), 'spec_hash': spec.spec_hash, 'valid_frames': len(native_samples[key]), 'invalid_frames': native_invalid[key], 'angles': _describe(native_samples[key], spec.independent_joint_names) if native_samples[key] else None} for (key, spec) in specs.items()}, 'model_asset': None if asset is None else str(asset), 'smplerx_model': None, 'smplerx_checkpoint': None, 'input_body': None if input_body is None else str(input_body), 'body_source': camera._source.metrics.summary() if hasattr(camera, '_source') else None, 'body_worker': body_worker, 'camera_index': args.camera_index, 'input_npz': None if args.input_npz is None else str(args.input_npz), 'headless': bool(args.headless), 'scene': args.scene, 'scene_summary': scene_summary, 'appearance': appearance, 'arms_enabled': bool(False), 'robots': list(robots), 'arm_failures': arm_failures, 'simulation_timing': {'mode': 'elapsed' if simulation_clock.realtime else 'fixed', 'physics_steps': simulation_clock.total_steps, 'simulated_seconds': simulation_clock.total_steps / 240, 'capped_frames': simulation_clock.capped_frames}, 'arm_targets_valid_frames': arm_valid_total, 'arm_clamped_frames': arm_clamped_total, 'arm_guarded_frames': arm_guarded_total, 'arm_gain_guarded_frames': arm_gain_guarded_total, 'arm_travel_mode': args.arm_travel_mode, 'arm_lateral_guard_mm': float(args.arm_lateral_guard_mm), 'arm_slew_mm_per_s': None if fixed_slew_m is not None else float(args.arm_slew_mm_s), 'arm_slew_mm_fixed': None if fixed_slew_m is None else fixed_slew_m * 1000.0, 'arm_slew_ceiling_mm': SLEW_MAX_STEP_M * 1000.0, 'arm_slew_pair_floor_ratio': None, 'arm_posture_frame': args.arm_posture_frame, 'arm_slew_mm_last_frame': None, 'arm': arm_summary, 'wrists': wrist_summary, 'arm_posture': arm_posture, 'arm_forearm_gap_mm': arm_gap, 'bridge': None, 'arm_last_targets': {robot: {side: target.describe() for (side, target) in sorted(per_side.items())} for (robot, per_side) in sorted(targets.items())}, 'preview': None if preview is None else {'window': bool(preview.show), 'mirrored': bool(preview.mirror), 'arm_overlay': bool(getattr(preview, 'overlay', False)), 'dumped_png': int(preview.dumped), 'dump_dir': None if preview.dump_dir is None else str(preview.dump_dir), 'window_name': preview.window_name, 'window_pos': None if preview.window_pos is None else list(preview.window_pos), 'window_rect': None if preview.rect is None else list(preview.rect), 'topmost': bool(preview.topmost), 'note': preview.note}, 'processed_frames': processed, 'elapsed_seconds': round(float(elapsed), 3), 'fps': round(float(fps), 2), 'median_frame_interval_ms': round(float(_median_interval(marks) * 1000), 2), 'sides': {side: {'raw_detected_frames': raw_seen[side], 'valid_frames': len(samples[side]), 'invalid_frames': invalid[side], 'angles': _describe(samples[side], [f'{model}.{name}' for ((model, target_side), spec) in specs.items() if target_side == side for name in spec.joint_names]) if samples[side] else None, 'final_joint_values': final.get(side)} for side in sides}}
     for side in sides:
-        entry = report["sides"][side]
-        print(f"  hand {side}: raw={entry['raw_detected_frames']}/{processed} "
-              f"valid={entry['valid_frames']} invalid={entry['invalid_frames']}")
-        if processed >= 30 and entry["raw_detected_frames"] < processed * 0.1:
-            print(f"[WARN] {side} hand detection is below 10%: keep the whole hand large "
-                  "enough in the color image, with visible fingers and good lighting.", flush=True)
-        elif processed >= 30 and entry["valid_frames"] == 0:
-            print(f"[WARN] {side} hand was detected but produced no angles: check valid "
-                  "valid three-frame windows and metric world landmarks.", flush=True)
-    if bridge is not None:
-        trace = bridge.trace()
-        for side, entry in sorted(trace.items()):
-            print(f"  arm  {side}: source={entry['source']} "
-                  f"delta_op_cm={entry['delta_op_cm']} reach_m={entry['operator_reach_m']} "
-                  f"elbow_deg={entry['elbow_bend_deg']}")
-    if bridge is not None:
-        held_reasons = bridge.counts["held_reason"]
-        if any(sum(kinds.values()) for kinds in held_reasons.values()):
-            shown = []
-            for side, kinds in sorted(held_reasons.items()):
-                counts = ", ".join(f"{kind}={count}" for kind, count in kinds.items() if count)
-                shown.append(f"{side} [{counts or 'none'}]")
-            print("  arm  held frames: " + " | ".join(shown), flush=True)
-        if bridge.calibrating:
-            if args.arm_calibrate_mode == "track":
-                # track 下「中性没攒够」不是故障：手臂已经在跟手，只是基准还是临时中位数。
-                print(f"[WARN] the neutral is still a temporary median ({bridge.status()}): the "
-                      f"arms follow anyway (--arm-calibrate-mode track); keep both arms visible "
-                      f"and hold still to finish it, or rerun with --arm-calibrate-mode hold to "
-                      f"gate on the full neutral.", flush=True)
-            else:
-                print(f"[WARN] the neutral calibration never completed ({bridge.status()}): "
-                      "check the held-frame breakdown above and keep both arms visible in the "
-                      "camera window.", flush=True)
-    if args.save_neutral and bridge is not None:
-        if bridge.calibrating:
-            print("[WARN] --save-neutral skipped: the neutral calibration never completed",
-                  flush=True)
-        else:
-            path = save_neutral(args.save_neutral, bridge.neutral_record(),
-                                {"entry": ARM_ENTRY, "axis_map": bridge.axis_map.describe()})
-            print(f"neutral pose saved: {path}", flush=True)
-    if args.dump_npz is not None and dumped["timestamps"]:
-        print(f"raw frames dumped: {_save_dump(args.dump_npz, dumped)} "
-              f"({len(dumped['timestamps'])} frames)", flush=True)
+        entry = report['sides'][side]
+        print(f"  hand {side}: raw={entry['raw_detected_frames']}/{processed} valid={entry['valid_frames']} invalid={entry['invalid_frames']}")
+        if processed >= 30 and entry['raw_detected_frames'] < processed * 0.1:
+            print(f'[WARN] {side} hand detection is below 10%: keep the whole hand large enough in the color image, with visible fingers and good lighting.', flush=True)
+        elif processed >= 30 and entry['valid_frames'] == 0:
+            print(f'[WARN] {side} hand was detected but produced no angles: check valid valid three-frame windows and metric world landmarks.', flush=True)
+    if args.dump_npz is not None and dumped['timestamps']:
+        print(f"raw frames dumped: {_save_dump(args.dump_npz, dumped)} ({len(dumped['timestamps'])} frames)", flush=True)
     if arm_frames is not None:
-        print(f"arm frames dumped: {_save_arm_frames(args.arm_frame_dump, arm_frames)}",
-              flush=True)
+        print(f'arm frames dumped: {_save_arm_frames(args.arm_frame_dump, arm_frames)}', flush=True)
     if args.report:
         if diagnostics is not None:
-            report["diagnostics"] = diagnostics.summary()
+            report['diagnostics'] = diagnostics.summary()
         path = Path(args.report)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"report written: {path}")
+        path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+        print(f'report written: {path}')
     if diagnostics is not None:
-        print(f"diagnostics: {diagnostics.frames} frames, {diagnostics.rows} arm rows; host processing timings only", flush=True)
-    if not any(samples[side] for side in sides) and arm_valid_total == 0:
-        if any(raw_seen[side] for side in sides):
-            print("[FAIL] MediaPipe detected a hand but produced no angles: put the whole hand "
-                  "in the middle of the frame with valid metric world landmarks for three frames.")
+        print(f'diagnostics: {diagnostics.frames} frames, {diagnostics.rows} arm rows; host processing timings only', flush=True)
+    if not any((samples[side] for side in sides)) and arm_valid_total == 0:
+        if any((raw_seen[side] for side in sides)):
+            print('[FAIL] MediaPipe detected a hand but produced no angles: put the whole hand in the middle of the frame with valid metric world landmarks for three frames.')
         else:
-            print("[FAIL] no raw hand detection at all: check the camera window - the hand must "
-                  "really be visible (lighting, distance, not only at the frame edge).")
+            print('[FAIL] no raw hand detection at all: check the camera window - the hand must really be visible (lighting, distance, not only at the frame edge).')
         return 1
     return 0
 

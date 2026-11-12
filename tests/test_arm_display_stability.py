@@ -9,6 +9,11 @@ from tests.smplerx_fixtures import observation
 
 
 class ArmDisplayStabilityTests(unittest.TestCase):
+    def camera_session(self):
+        from tests.test_robot_control_session import RobotControlSessionTests
+        pipeline,body=RobotControlSessionTests().fitted_camera_pipeline(self.backend.spec,self.backend)
+        return RobotControlSession({'g1':self.backend},arm_pipeline=pipeline),pipeline,body
+
     def setUp(self):
         self.group=SimulationGroup(gui=False)
         self.addCleanup(self.group.close)
@@ -16,7 +21,7 @@ class ArmDisplayStabilityTests(unittest.TestCase):
             resource_overrides={'parts':'arms'}),group=self.group)
 
     def test_missing_body_never_solves_or_temporarily_moves_arms(self):
-        session=RobotControlSession({'g1':self.backend},arm_calibrate_frames=1)
+        session,pipeline,body=self.camera_session()
         scene=self.group.scene;adapter=self.backend.driver.ik['g1']
         before=self.backend.read_state()
         with patch.object(adapter,'solve',wraps=adapter.solve) as solve, \
@@ -26,13 +31,14 @@ class ArmDisplayStabilityTests(unittest.TestCase):
                 raw.upper_body.valid.update(left=False,right=False)
                 raw.upper_body.arms.update(left=None,right=None)
                 raw.upper_body.world_arms.update(left=None,right=None)
-                batch=session.next_batch(raw,i,i/30)
+                batch=session.next_batch(raw,i,i*.01,source_now_s=raw.hands.timestamp)
                 for key,part in batch['g1'].parts.items():
                     self.assertFalse(part.observed)
                     np.testing.assert_array_equal(part.positions,before[key])
-                session.output.submit(batch,steps=8)
+                session.submit(batch,steps=8)
             self.assertEqual(solve.call_count,0)
             self.assertEqual(resets.call_count,0)
+        self.assertEqual(body.calls,0)
 
     def test_gui_solve_hides_temporary_states_and_restores_rendering_on_error(self):
         scene=self.group.scene;adapter=self.backend.driver.ik['g1']
@@ -63,16 +69,21 @@ class ArmDisplayStabilityTests(unittest.TestCase):
             np.testing.assert_array_equal(before,after)
 
     def test_missing_left_body_does_not_stop_right_arm(self):
-        session=RobotControlSession({'g1':self.backend},arm_calibrate_frames=1)
-        adapter=self.backend.driver.ik['g1']
-        with patch.object(adapter,'solve',wraps=adapter.solve) as solve:
+        from dataclasses import replace
+        from tests.test_arm_pipeline import result
+        session,pipeline,body=self.camera_session()
+        solver=pipeline.solvers['g1']
+        with patch.object(solver,'prepare',wraps=solver.prepare) as solve:
             for i in range(3):
                 raw,_=observation(i)
                 raw.upper_body.valid['left']=False
                 raw.upper_body.arms['left']=None
                 raw.upper_body.world_arms['left']=None
-                batch=session.next_batch(raw,i,i/30)
+                inferred=replace(result(i,stamp=raw.hands.timestamp),valid={'left':False,'right':True})
+                raw=replace(raw,body_result=inferred)
+                batch=session.next_batch(raw,i,i*.01,source_now_s=raw.hands.timestamp)
                 self.assertFalse(batch['g1'].parts['left_arm'].observed)
                 self.assertTrue(batch['g1'].parts['right_arm'].observed)
-                session.output.submit(batch,steps=8)
-            self.assertEqual([call.args[0] for call in solve.call_args_list],['right']*3)
+                session.submit(batch,steps=8)
+            self.assertEqual([call.kwargs['active_sides'] for call in solve.call_args_list],[('right',)]*3)
+        self.assertEqual(body.calls,3)

@@ -21,8 +21,18 @@ def preflight(args):
     arms=args.parts!='hands'
     if args.tron2a_calibration is not None and ('tron2a_l21' not in targets or not arms):
         raise ValueError('TRON2A calibration only applies to its enabled arms')
-    if 'tron2a_l21' in targets and arms and args.tron2a_calibration is None:
-        raise ValueError('TRON2A arms require --tron2a-calibration')
+    if args.source=='camera' and arms:
+        if args.tron2a_calibration is not None:
+            raise ValueError('Legacy TRON2A calibration is not used by unified camera arms; use the robot fitting specification')
+        if not np.isfinite([args.control_hz,args.target_max_age]).all() or not 50<=args.control_hz<=240 or args.target_max_age<=0:
+            raise ValueError('Camera control requires 50..240 Hz and a positive finite target age')
+        if not np.isfinite(args.body_startup_timeout) or args.body_startup_timeout<=0:
+            raise ValueError('Body startup timeout must be finite and positive')
+        if args.arm_fitting_dir is None:
+            raise ValueError('Camera arms require --arm-fitting-dir; run arm fit first')
+        for name in targets:
+            path=Path(args.arm_fitting_dir)/(name+'.json')
+            if not path.is_file():raise FileNotFoundError(path)
     pairs=args.hand_checkpoint or []
     if len(dict(pairs))!=len(pairs): raise ValueError('Duplicate hand checkpoints')
     checkpoints={name:Path(path) for name,path in pairs}
@@ -51,6 +61,9 @@ def run(args):
     from teleoperation.simulation.robot_part_scene import RobotPartSceneBuilder
     from .robot_session import RobotControlSession
     targets,checkpoints=preflight(args)
+    if args.source=='camera' and args.parts!='hands':
+        from .unified_camera_control import run_camera_control
+        return run_camera_control(args,targets,checkpoints)
     specs={n:load_robot_control_spec(n,resource_overrides={'parts':args.parts,'side':args.side,
              **({'urdf_path':args.tron2a_urdf} if n=='tron2a_l21' and args.tron2a_urdf else {})}) for n in targets}
     # Load/check weights before devices or GUI. The session reuses this selection.
@@ -106,7 +119,7 @@ def run(args):
                 else:seconds=time.monotonic()-started
                 batch=session.next_batch(raw,count,seconds)
                 dt=1/30 if previous is None else (stamp-previous if replaying else seconds-last_seconds)
-                try:receipt=session.output.submit(batch,steps=max(1,min(24,round(min(dt,.1)*240))))
+                try:receipt=session.submit(batch,steps=max(1,min(24,round(min(dt,.1)*240))))
                 except BaseException:
                     if writer is not None and session.output.last_receipt is not None and session.output.last_receipt.frame_id==count:
                         writer.append(batch,session.output.last_receipt)

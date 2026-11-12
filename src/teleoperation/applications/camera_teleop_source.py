@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import replace
 
 import numpy as np
 
@@ -75,7 +76,15 @@ class CameraTeleopSource:
         tracked = self.tracker.update(result, now_s=frame.timestamp)
         self.last_tracked = tracked
         self.metrics.update(tracked.body, frame.timestamp)
-        return RawTeleopObservation(hands, tracked.body, tracked.wrists)
+        accepted = None
+        if result is not None:
+            valid = {side: bool(result.valid.get(side, False) and tracked.fresh.get(side, False)
+                               and tracked.body.valid.get(side, False)
+                               and tracked.sample_id.get(side) == result.frame_id.sequence)
+                     for side in ('left', 'right')}
+            if any(valid.values()):
+                accepted = replace(result, valid=valid)
+        return RawTeleopObservation(hands, tracked.body, tracked.wrists, accepted)
 
     def worker_summary(self):
         """Retain original worker failures independently of tracker hold states."""

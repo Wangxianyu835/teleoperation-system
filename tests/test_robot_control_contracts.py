@@ -6,6 +6,20 @@ from teleoperation.robots.control_spec import load_robot_control_spec, resolve_r
 
 
 class RobotControlContractTests(unittest.TestCase):
+    def test_control_spec_accepts_actual_arm_joint_count_in_custom_urdf(self):
+        import tempfile
+        from pathlib import Path
+        import xml.etree.ElementTree as ET
+        source=load_robot_control_spec('g1',resource_overrides={'parts':'arms','side':'right'})
+        root=ET.parse(source.urdf_path).getroot()
+        root.find("joint[@name='right_wrist_yaw_joint']").set('type','fixed')
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'six_joint_arm.urdf'
+            ET.ElementTree(root).write(path)
+            spec=load_robot_control_spec('g1',resource_overrides={'parts':'arms','side':'right','urdf_path':path})
+            self.assertEqual(len(spec.parts['right_arm'].joint_names),6)
+            spec.validate_frame(spec.reference_frame(0,0.))
+
     def test_target_selection_is_explicit_and_unique(self):
         self.assertEqual(resolve_robot_targets(robot='g1'), ('g1',))
         self.assertEqual(resolve_robot_targets(robots=['g1', 'tron2a_l21']), ('g1', 'tron2a_l21'))

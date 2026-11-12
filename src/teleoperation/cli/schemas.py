@@ -220,7 +220,7 @@ def dual_calibrate_camera(parser):
 
 
 def dual_camera(parser):
-    parser.description = "Realtime camera SMPLer-X body -> selected robot simulation: arms only or dual arms and L21 hands. Requires real neutral calibration."
+    parser.description = "Realtime camera SMPLer-X body -> selected robot simulation: arms only or dual arms and L21 hands. Requires fitted SMPL/PINK profiles."
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--arms-only", action="store_true", help="arm-only simulation; no hand model required")
     modes.add_argument("--with-hands", action="store_true", help="full control using one canonical shared native L21 checkpoint")
@@ -229,7 +229,7 @@ def dual_camera(parser):
     parser.add_argument("--camera-index", type=int, default=RUNTIME.camera_index)
     parser.add_argument("--model-asset-path", type=Path, default=DEFAULT_MEDIAPIPE_ASSET, help="MediaPipe Hands detector .task")
     add_smplerx_arguments(parser)
-    parser.add_argument("--calibration", type=Path, required=True, help="real dual calibrate-camera JSON; synthetic fixtures are rejected")
+    parser.add_argument("--calibration", type=Path, required=False, help="real dual calibrate-camera JSON; synthetic fixtures are rejected")
     parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF)
     parser.add_argument("--orientation-mode", choices=("fixed", "forearm"), default="fixed")
     parser.add_argument("--display", choices=("full", "simplified"), default="full", help="full requires all meshes; explicitly choose simplified kinematic preview without contact acceptance")
@@ -242,6 +242,13 @@ def dual_camera(parser):
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument('--arm-fitting-dir',type=Path,help='explicit fitted SMPL/PINK profiles; required for arms')
+    parser.add_argument('--control-hz',type=float,default=100.)
+    parser.add_argument('--target-max-age',type=float,default=.3)
+    parser.add_argument('--body-device',choices=('cpu','cuda'),default='cpu')
+    parser.add_argument('--smplx-module-dir',type=Path)
+    parser.add_argument('--input-body',type=Path)
+    parser.add_argument('--record-results',type=Path)
     parser.set_defaults(_handler="teleoperation.applications.mediapipe_tron2a:run_camera")
 
 
@@ -393,3 +400,20 @@ def tools_visualize_l21_fk(parser):
         help="Label each point with its joint name instead of its index.",
     )
     parser.set_defaults(_handler="teleoperation.applications.diagnostics.visualize_l21_fk:main")
+
+
+def arm_fit(parser):
+    parser.description='Fit a shared SMPL-family model to selected robot arm geometries.'
+    parser.set_defaults(_handler='teleoperation.applications.arm_fit:run_cli')
+    from teleoperation.contracts.constants import ROBOT_TARGETS
+    parser.add_argument('--robots',choices=ROBOT_TARGETS,nargs='+',required=True)
+    parser.add_argument('--output-dir',type=Path,required=True)
+    parser.add_argument('--body-model-path',type=Path,required=True)
+    parser.add_argument('--smplx-module-dir',type=Path)
+    parser.add_argument('--body-model-type',choices=('smpl','smplh','smplx'),default='smplx')
+    parser.add_argument('--gender',choices=('neutral','male','female'),default='neutral')
+    parser.add_argument('--num-betas',type=int,required=True)
+    parser.add_argument('--fit-steps',type=int,default=1000)
+    parser.add_argument('--fit-learning-rate',type=float,default=.05)
+    parser.add_argument('--device',choices=('cpu','cuda'),default='cpu')
+    parser.add_argument('--report',type=Path)

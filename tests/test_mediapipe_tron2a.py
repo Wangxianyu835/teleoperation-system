@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from teleoperation.applications import mediapipe_tron2a as application
+from devtools import legacy_tron_camera_baseline as application
 from teleoperation.cli import build_parser
 from teleoperation.contracts.observations import RawHandFrame, RawTeleopObservation, UpperBodyObservation
 from teleoperation.data.calibration import read_calibration, write_calibration
@@ -464,7 +464,7 @@ class CameraArmMappingTests(unittest.TestCase):
 
 class ArmControlSafetyTests(unittest.TestCase):
     def setUp(self):
-        from teleoperation.applications.dual import Tron2ADualArmController
+        from devtools.legacy_dual_baseline import Tron2ADualArmController
         self.calibration = synthetic_calibration()
         self.controller = Tron2ADualArmController(self.calibration, DEFAULT_TRON2A_URDF, input_mode="smplerx")
 
@@ -490,7 +490,7 @@ class ArmControlSafetyTests(unittest.TestCase):
         self.assertGreater(self.controller.diagnostics["left"]["target_pose"][0], 1.)
 
     def test_native_dual_keeps_hand_inference_before_arm_control(self):
-        from teleoperation.applications.dual import DualTeleoperator
+        from devtools.legacy_dual_baseline import DualTeleoperator
         events = []
         hand = world_predictor()
         original = hand.retarget.side_effect
@@ -531,7 +531,7 @@ class ArmControlSafetyTests(unittest.TestCase):
                     self.assertFalse(self.controller.update_side(observation().upper_body, side, 1.))
 
     def test_mismatched_urdf_reference_and_unsafe_q_are_rejected(self):
-        from teleoperation.applications.dual import Tron2ADualArmController
+        from devtools.legacy_dual_baseline import Tron2ADualArmController
         poses = {s:p.copy() for s,p in self.calibration.robot_neutral_pose.items()}
         poses["left"][0] += .01
         with self.assertRaises(ValueError):
@@ -639,7 +639,7 @@ class CameraSimulationTests(unittest.TestCase):
         except ImportError:
             self.skipTest("pybullet not installed: actual simulator tracking unverified")
         from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
-        from teleoperation.applications.dual import Tron2ADualArmController
+        from devtools.legacy_dual_baseline import Tron2ADualArmController
         from teleoperation.retargeting.arm.ik import target_pose_from_matrix, _pose_matrix, _pose_error
         calibration = synthetic_calibration()
         for moving in (("left",), ("right",), ("left", "right")):
@@ -714,7 +714,7 @@ class CameraSimulationTests(unittest.TestCase):
         except ImportError:
             self.skipTest("pybullet not installed: complete pose-world pipeline unverified")
         from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
-        from teleoperation.applications.dual import Tron2ADualArmController
+        from devtools.legacy_dual_baseline import Tron2ADualArmController
         from teleoperation.retargeting.arm.ik import _pose_matrix, _pose_error
         calibration = synthetic_calibration()
         for moving in (("left",), ("right",), ("left", "right")):
@@ -769,7 +769,7 @@ class CameraRuntimeTests(unittest.TestCase):
         camera.assert_not_called()
 
     def test_preview_includes_actual_pose_and_separate_tracking_errors(self):
-        from teleoperation.applications.dual import Tron2ADualArmController
+        from devtools.legacy_dual_baseline import Tron2ADualArmController
         controller = Tron2ADualArmController(self.calibration, DEFAULT_TRON2A_URDF, input_mode="smplerx")
         raw = observation(invalid="left")
         controller.update(raw.upper_body, 0.)
@@ -788,8 +788,8 @@ class CameraRuntimeTests(unittest.TestCase):
             self.skipTest("pybullet not installed: runtime simulator unverified")
         camera = Mock()
         camera.next_teleop_observation.side_effect = [observation(), observation(1, invalid="left")]
-        with patch.object(application, "MediaPipeCameraInput", return_value=camera), patch("teleoperation.applications.dual.load_camera_hand_retargeter", side_effect=AssertionError("hand checkpoint loaded")), patch("teleoperation.applications.hand_processing.MediaPipePalmLocalPipeline", side_effect=AssertionError("hand window created")), patch.object(application.time, "sleep"):
-            self.assertEqual(application.run_camera(self.args), 0)
+        with patch.object(application, "MediaPipeCameraInput", return_value=camera), patch("devtools.legacy_dual_baseline.load_camera_hand_retargeter", side_effect=AssertionError("hand checkpoint loaded")), patch("teleoperation.applications.hand_processing.MediaPipePalmLocalPipeline", side_effect=AssertionError("hand window created")), patch.object(application.time, "sleep"):
+            self.assertEqual(application._run_camera_legacy_diagnostic(self.args), 0)
         camera.release.assert_called_once()
         report = read_calibration(self.args.report)
         self.assertEqual(report["frames"], 2)
@@ -807,7 +807,7 @@ class CameraRuntimeTests(unittest.TestCase):
             old = getattr(self.args, name)
             setattr(self.args, name, value)
             with patch.object(application, "MediaPipeCameraInput") as camera, patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld") as world:
-                self.assertEqual(application.run_camera(self.args), 1)
+                self.assertEqual(application._run_camera_legacy_diagnostic(self.args), 1)
                 camera.assert_not_called(); world.assert_not_called()
             setattr(self.args, name, old)
 
@@ -819,7 +819,7 @@ class CameraRuntimeTests(unittest.TestCase):
             camera.next_teleop_observation.side_effect = error
             world.reset_mock()
             with patch.object(application, "MediaPipeCameraInput", return_value=camera), patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", return_value=world):
-                self.assertEqual(application.run_camera(self.args), code)
+                self.assertEqual(application._run_camera_legacy_diagnostic(self.args), code)
             camera.release.assert_called_once(); world.close.assert_called_once()
             self.assertTrue(self.args.report.is_file())
         self.args.preview = True
@@ -827,13 +827,13 @@ class CameraRuntimeTests(unittest.TestCase):
             camera = Mock(); camera.next_teleop_observation.return_value = observation()
             world.reset_mock()
             with patch.object(application, "MediaPipeCameraInput", return_value=camera), patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", return_value=world), patch.object(application, "_runtime_preview", side_effect=result if isinstance(result, Exception) else None, return_value=True), patch("cv2.destroyWindow") as destroy:
-                self.assertEqual(application.run_camera(self.args), 1 if isinstance(result, Exception) else 0)
+                self.assertEqual(application._run_camera_legacy_diagnostic(self.args), 1 if isinstance(result, Exception) else 0)
             camera.release.assert_called_once(); world.close.assert_called_once(); destroy.assert_called_once()
 
     def test_camera_initialization_failure_and_simulation_window_close_release_world(self):
         world = Mock()
         with patch.object(application, "MediaPipeCameraInput", side_effect=RuntimeError("camera init failed")), patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", return_value=world):
-            self.assertEqual(application.run_camera(self.args), 1)
+            self.assertEqual(application._run_camera_legacy_diagnostic(self.args), 1)
         world.close.assert_called_once()
         self.assertEqual(read_calibration(self.args.report)["exit_reason"], "error")
         world.reset_mock()
@@ -841,7 +841,7 @@ class CameraRuntimeTests(unittest.TestCase):
         camera = Mock()
         camera.next_teleop_observation.side_effect = RuntimeError("window closed during capture")
         with patch.object(application, "MediaPipeCameraInput", return_value=camera), patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", return_value=world):
-            self.assertEqual(application.run_camera(self.args), 0)
+            self.assertEqual(application._run_camera_legacy_diagnostic(self.args), 0)
         camera.release.assert_called_once(); world.close.assert_called_once()
         self.assertEqual(read_calibration(self.args.report)["exit_reason"], "simulation_window_closed")
 
@@ -894,7 +894,7 @@ def write_canonical_checkpoint(path):
 
 class CameraDualTeleoperatorTests(unittest.TestCase):
     def setUp(self):
-        from teleoperation.applications.dual import DualTeleoperator
+        from devtools.legacy_dual_baseline import DualTeleoperator
         self.dual = DualTeleoperator(world_predictor(), "cpu", synthetic_calibration(), DEFAULT_TRON2A_URDF)
         self.addCleanup(self.dual.close)
 
@@ -962,7 +962,7 @@ class CameraDualTeleoperatorTests(unittest.TestCase):
         self.dual.update(dual_world_observation(2), control_seconds=.2)
 
     def test_bad_world_contract_and_model_alignment_refuse_normalized_fallback(self):
-        from teleoperation.applications.dual import DualTeleoperator
+        from devtools.legacy_dual_baseline import DualTeleoperator
         with self.assertRaisesRegex(TypeError, "RawTeleopObservation"):
             self.dual.update({}, control_seconds=0.)
         for kwargs in (dict(input_mode="smplerx"), dict(hand_preprocessing="palm-local")):
@@ -991,7 +991,7 @@ class CameraDualTeleoperatorTests(unittest.TestCase):
 
     def test_shared_model_matches_hand_and_dual_windows_flags_and_native_angles(self):
         from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
-        from teleoperation.applications.dual import load_camera_hand_retargeter
+        from devtools.legacy_dual_baseline import load_camera_hand_retargeter
         from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -1066,12 +1066,12 @@ class CameraFullRuntimeTests(unittest.TestCase):
             args = type(self.args)(**{**vars(self.args), **changes})
             with self.subTest(changes=changes), patch.object(application, "MediaPipeCameraInput") as camera, \
                  patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld") as world:
-                self.assertEqual(application.run_camera(args), 1)
+                self.assertEqual(application._run_camera_legacy_diagnostic(args), 1)
                 camera.assert_not_called(); world.assert_not_called()
-        with patch("teleoperation.applications.dual.load_camera_hand_retargeter", side_effect=ValueError("coordinate mismatch")), \
+        with patch("devtools.legacy_dual_baseline.load_camera_hand_retargeter", side_effect=ValueError("coordinate mismatch")), \
              patch.object(application, "MediaPipeCameraInput") as camera, \
              patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld") as world:
-            self.assertEqual(application.run_camera(self.args), 1)
+            self.assertEqual(application._run_camera_legacy_diagnostic(self.args), 1)
             camera.assert_not_called(); world.assert_not_called()
 
     def test_complete_apply_and_report_loss_recovery_statistics(self):
@@ -1080,10 +1080,10 @@ class CameraFullRuntimeTests(unittest.TestCase):
         camera.next_teleop_observation.side_effect = [dual_world_observation(i, left=i != 3) for i in range(7)]
         with patch.object(application, "MediaPipeCameraInput", return_value=camera), \
              patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", return_value=world) as factory, \
-             patch("teleoperation.applications.dual.load_camera_hand_retargeter", return_value=world_predictor()) as loader, \
+             patch("devtools.legacy_dual_baseline.load_camera_hand_retargeter", return_value=world_predictor()) as loader, \
              patch.object(application.RelativeControlClock, "next_seconds", side_effect=[i/30 for i in range(7)]), \
              patch.object(application.time, "sleep"):
-            self.assertEqual(application.run_camera(self.args), 0)
+            self.assertEqual(application._run_camera_legacy_diagnostic(self.args), 0)
         self.assertTrue(factory.call_args.kwargs["attach_hands"])
         self.assertFalse(factory.call_args.kwargs["hand_reference_only"])
         self.assertEqual(loader.call_args.args, (str(self.args.checkpoint.resolve()), "cpu"))
@@ -1107,7 +1107,7 @@ class CameraFullRuntimeTests(unittest.TestCase):
         camera.release.assert_called_once(); world.close.assert_called_once()
 
     def test_full_preview_shows_independent_hand_states_device_and_weights(self):
-        from teleoperation.applications.dual import DualTeleoperator
+        from devtools.legacy_dual_baseline import DualTeleoperator
         dual = DualTeleoperator(world_predictor(), "cpu", self.calibration, DEFAULT_TRON2A_URDF)
         self.addCleanup(dual.close)
         for i in range(3):
@@ -1124,7 +1124,7 @@ class CameraFullRuntimeTests(unittest.TestCase):
         self.assertIn(dual.hand_model_labels[0], messages)
 
     def test_full_lifecycle_initialization_failure_error_cancel_and_restart(self):
-        from teleoperation.applications.dual import DualTeleoperator
+        from devtools.legacy_dual_baseline import DualTeleoperator
         for failure in ("world", "camera", "capture", "interrupt", "preview", "exit", "cleanup", "report", "normal"):
             dual = DualTeleoperator(world_predictor(), "cpu", self.calibration, DEFAULT_TRON2A_URDF)
             camera, world = Mock(), self.fake_world()
@@ -1139,9 +1139,9 @@ class CameraFullRuntimeTests(unittest.TestCase):
             if failure == "cleanup":
                 camera.release.side_effect = RuntimeError("release failure")
             with self.subTest(failure=failure), \
-                 patch("teleoperation.applications.dual.DualTeleoperator", return_value=dual), \
+                 patch("devtools.legacy_dual_baseline.DualTeleoperator", return_value=dual), \
                  patch.object(dual, "close", wraps=dual.close) as close, \
-                 patch("teleoperation.applications.dual.load_camera_hand_retargeter", return_value=world_predictor()), \
+                 patch("devtools.legacy_dual_baseline.load_camera_hand_retargeter", return_value=world_predictor()), \
                  patch.object(application, "MediaPipeCameraInput", return_value=camera,
                               side_effect=RuntimeError("init failure") if failure == "camera" else None), \
                  patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", return_value=world,
@@ -1151,7 +1151,7 @@ class CameraFullRuntimeTests(unittest.TestCase):
                  patch("cv2.destroyWindow"), patch.object(application.time, "sleep"), \
                  patch.object(application.CameraRunReport, "write", side_effect=OSError("write failure") if failure == "report" else None):
                 expected = 130 if failure == "interrupt" else 0 if failure in ("normal", "exit") else 1
-                self.assertEqual(application.run_camera(self.args), expected)
+                self.assertEqual(application._run_camera_legacy_diagnostic(self.args), expected)
                 close.assert_called_once()
             if failure != "world":
                 world.close.assert_called_once()
@@ -1194,7 +1194,7 @@ class CameraFullRuntimeTests(unittest.TestCase):
              patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld", side_effect=create_world), \
              patch.object(application, "RelativeControlClock", return_value=control_clock), \
              patch.object(application.time, "sleep"):
-            self.assertEqual(application.run_camera(self.args), 0)
+            self.assertEqual(application._run_camera_legacy_diagnostic(self.args), 0)
         self.assertEqual(len(commands), 4)
         self.assertTrue(commands[-1].left_hand_valid and commands[-1].right_hand_valid)
         self.assertTrue(np.any(commands[-1].left_hand != 0))
@@ -1210,7 +1210,7 @@ class CameraFullRuntimeTests(unittest.TestCase):
 
     def test_real_shared_loader_rejects_legacy_and_wrong_profile_before_devices(self):
         import torch
-        from teleoperation.applications.dual import load_camera_hand_retargeter
+        from devtools.legacy_dual_baseline import load_camera_hand_retargeter
         path = write_canonical_checkpoint(self.directory / "valid.pth")
         shared = load_camera_hand_retargeter(path, "cpu")
         self.assertEqual(set(shared.specs), {("l21", "left"), ("l21", "right")})
@@ -1219,7 +1219,7 @@ class CameraFullRuntimeTests(unittest.TestCase):
             torch.save({**payload, **changes}, self.args.checkpoint)
             with self.subTest(changes=changes), patch.object(application, "MediaPipeCameraInput") as camera, \
                  patch("teleoperation.simulation.tron2a_world.Tron2ADualArmWorld") as world:
-                self.assertEqual(application.run_camera(self.args), 1)
+                self.assertEqual(application._run_camera_legacy_diagnostic(self.args), 1)
                 camera.assert_not_called(); world.assert_not_called()
 
 
@@ -1258,12 +1258,12 @@ class DualNativeExportTests(unittest.TestCase):
     def test_export_uses_checked_arm_controller_and_accepted_hands(self):
         from types import SimpleNamespace
         import h5py
-        from teleoperation.applications.dual_export import export_robot_commands
+        from devtools.legacy_dual_export_baseline import export_robot_commands
         output = Path(self.directory.name) / "commands.h5"
         calibration = Path(self.directory.name) / "calibration.json"
         write_calibration(calibration, synthetic_calibration().to_dict())
         raw = [dual_world_observation(i, invalid_pose="left" if i == 1 else None) for i in range(2)]
-        with patch("teleoperation.applications.dual_export._load_arm_observations", return_value=(self.ids, self.times, {}, {})), \
+        with patch("devtools.legacy_dual_export_baseline._load_arm_observations", return_value=(self.ids, self.times, {}, {})), \
              patch("teleoperation.data.body_recording.load_body_recording", return_value=SimpleNamespace(samples=raw)), \
              patch("teleoperation.data.body_recording.replay_observation", side_effect=lambda row: row):
             self.assertEqual(export_robot_commands("observations.h5", self.path, calibration, output, DEFAULT_TRON2A_URDF), 2)

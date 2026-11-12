@@ -230,7 +230,7 @@ class ArmSolveStateTests(unittest.TestCase):
 @unittest.skipUnless(ASSETS_AVAILABLE and PYBULLET_AVAILABLE, "robot assets and PyBullet required")
 class ArmRealtimeLoopTests(unittest.TestCase):
     def setUp(self):
-        from teleoperation.simulation import realtime_teleop as app
+        from devtools import legacy_camera_baseline as app
         from tests.test_native_hand_replay import stub_camera_backend
         backend = patch.object(app, 'build_camera_retargeter', side_effect=stub_camera_backend)
         backend.start()
@@ -239,7 +239,7 @@ class ArmRealtimeLoopTests(unittest.TestCase):
     def test_body_replay_commands_use_recorded_irregular_capture_times(self):
         from dataclasses import replace
         from types import SimpleNamespace
-        from teleoperation.simulation import realtime_teleop as app
+        from devtools import legacy_camera_baseline as app
         from teleoperation.contracts.observations import CameraFrame
         from teleoperation.data.body_recording import capture_sample, save_body_recording
         from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
@@ -267,11 +267,11 @@ class ArmRealtimeLoopTests(unittest.TestCase):
             with patch.object(app, 'JointCommandPipeline', AuditedCommands), \
                     patch.object(app, '_drain_in_background', side_effect=lambda action, label: action()), \
                     contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(app.run(args), 0)
+                self.assertEqual(app._run_legacy_hand_or_diagnostic(args), 0)
         np.testing.assert_allclose(sorted(set(timeline)), stamps)
 
     def test_replay_loop_routes_both_wrist_orientations_and_keeps_fixed_physics(self):
-        from teleoperation.simulation import realtime_teleop as app
+        from devtools import legacy_camera_baseline as app
         from tests.test_arm_realtime_bridge import arm, open_hand
 
         with tempfile.TemporaryDirectory() as folder:
@@ -287,7 +287,7 @@ class ArmRealtimeLoopTests(unittest.TestCase):
                 "--arm-orientation", "auto"])
             with patch.object(app, "_drain_in_background", side_effect=lambda action, label: action()), \
                     contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(app.run(args), 0)
+                self.assertEqual(app._run_legacy_hand_or_diagnostic(args), 0)
             result = json.loads(report.read_text(encoding="utf-8"))
         self.assertEqual(result["arm_failures"], {})
         self.assertEqual(result["simulation_timing"]["mode"], "fixed")

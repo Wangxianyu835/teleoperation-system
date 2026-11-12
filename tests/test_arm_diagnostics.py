@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 
 from teleoperation.simulation.arm_diagnostics import ArmDiagnostics, sample_seconds
-from teleoperation.simulation import realtime_teleop as app
+from devtools import legacy_camera_baseline as app
 from tests.test_arm_ik_multi_robot import ASSETS_AVAILABLE, PYBULLET_AVAILABLE
 from tests.test_native_hand_replay import stub_camera_backend
 
@@ -123,7 +123,7 @@ class DiagnosticLoopTests(unittest.TestCase):
                         patch.object(ArmSceneDriver, "step", step), patch.object(PyBulletArmIK, "_ik_call", ik), \
                         patch.object(PyBulletArmIK, "apply", apply), \
                         contextlib.redirect_stdout(io.StringIO()):
-                    self.assertEqual(app.run(args), 0)
+                    self.assertEqual(app._run_legacy_hand_or_diagnostic(args), 0)
                 snapshots.append(current)
                 reports.append(json.loads(report.read_text(encoding="utf-8")))
             with trace.open(encoding="utf-8", newline="") as handle:
@@ -168,7 +168,7 @@ class DiagnosticLoopTests(unittest.TestCase):
                     patch.object(app, "_drain_in_background", side_effect=lambda action, label: action()), \
                     contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(RuntimeError, "capture lost"):
-                    app.run(arguments(capture, report, "--diagnostic-trace", str(trace)))
+                    app._run_legacy_hand_or_diagnostic(arguments(capture, report, "--diagnostic-trace", str(trace)))
             self.assertTrue(objects[0].closed and objects[0].trace.file.closed)
             result = json.loads(report.read_text(encoding="utf-8"))
             self.assertEqual(result["exit_reason"], "error")
@@ -178,7 +178,7 @@ class DiagnosticLoopTests(unittest.TestCase):
         args = arguments("input.npz", "report.json", "--diagnostic-trace", "input.npz")
         with patch.object(app, "build_scene") as scene:
             with self.assertRaisesRegex(ValueError, "overwrite"):
-                app.run(args)
+                app._run_legacy_hand_or_diagnostic(args)
             scene.assert_not_called()
 
 

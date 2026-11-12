@@ -83,6 +83,36 @@ class SmplerXBackend:
         self.detect = inference_detector
         from utils.preprocessing import process_bbox, generate_patch_image
         self.process_bbox, self.generate_patch = process_bbox, generate_patch_image
+        self._warmup()
+
+    def _reconstruct_body(self, out, shape):
+        torch = self.torch
+        zeros = torch.zeros((1, 3), device=shape.device)
+        return self.model.module.smplx_layer(
+            betas=shape, global_orient=out['smplx_root_pose'],
+            body_pose=out['smplx_body_pose'], left_hand_pose=out['smplx_lhand_pose'],
+            right_hand_pose=out['smplx_rhand_pose'], jaw_pose=out['smplx_jaw_pose'],
+            leye_pose=zeros, reye_pose=zeros, expression=out['smplx_expr'],
+            return_full_pose=True)
+
+    def _warmup(self):
+        """Complete cold CUDA work before the worker accepts any operator frame.
+
+        Person selection timestamps represent real capture times. Cold neural
+        startup can exceed the identity absence window, so model readiness must
+        include detector, S32 and derived-body kernels without sampling a person.
+        """
+        import numpy as np
+        torch = self.torch
+        started = time.monotonic()
+        height, width = self.cfg.input_img_shape
+        with torch.inference_mode():
+            self.detect(self.detector, np.zeros((height, width, 3), dtype=np.uint8))
+            image = torch.zeros((1, 3, height, width), dtype=torch.float32, device='cuda')
+            out = self.model({'img': image}, {}, {}, 'test')
+            self._reconstruct_body(out, out['smplx_shape'])
+        torch.cuda.synchronize()
+        self.startup_warmup_s = time.monotonic() - started
 
     def _invalid(self, frame_id, reason, *, selection=None):
         from teleoperation.contracts.body import SmplerXResult
@@ -129,13 +159,7 @@ class SmplerXBackend:
                                          selection=self._operator.selection)
                 self._shape = torch.as_tensor(shape, device=image.device).reshape(1, 10)
             layer = self.model.module.smplx_layer
-            zeros = torch.zeros((1, 3), device=image.device)
-            derived = layer(
-                betas=self._shape, global_orient=out['smplx_root_pose'],
-                body_pose=out['smplx_body_pose'], left_hand_pose=out['smplx_lhand_pose'],
-                right_hand_pose=out['smplx_rhand_pose'], jaw_pose=out['smplx_jaw_pose'],
-                leye_pose=zeros, reye_pose=zeros, expression=out['smplx_expr'],
-                return_full_pose=True)
+            derived = self._reconstruct_body(out, self._shape)
         cpu = lambda tensor: tensor.detach().cpu().numpy()[0]
         parents = layer.parents.detach().cpu().numpy()
         arrays = derive_body_arrays(

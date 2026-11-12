@@ -16,6 +16,9 @@ class RobotPartCommand:
     source_timebase: str
     observed: bool
     status: str
+    target_sequence: int | None = None
+    target_expires_time: float | None = None
+    source_is_new: bool = True
 
     def __post_init__(self):
         names=tuple(self.joint_names)
@@ -31,7 +34,14 @@ class RobotPartCommand:
         if not isinstance(self.observed,(bool,np.bool_)) or self.status not in ('tracking','holding','initialized'):
             raise ValueError('Invalid part observation status')
         if self.observed != (self.status=='tracking') or (self.observed and self.source_timestamp is None):
-            raise ValueError('Tracking requires a source timestamp; held parts are not new observations')
+            raise ValueError('Tracking requires a current valid source target; held parts are not observed')
+        if self.target_sequence is not None and (isinstance(self.target_sequence,(bool,np.bool_)) or
+                not isinstance(self.target_sequence,(int,np.integer)) or self.target_sequence<0):
+            raise ValueError('Target sequence must be a nonnegative integer')
+        if self.target_expires_time is not None and (not np.isfinite(self.target_expires_time) or self.target_expires_time<0):
+            raise ValueError('Target expiry must be finite nonnegative control time')
+        if not isinstance(self.source_is_new,(bool,np.bool_)):
+            raise ValueError('Source freshness must be boolean')
         q.setflags(write=False)
         object.__setattr__(self,'joint_names',names)
         object.__setattr__(self,'positions',q)

@@ -16,6 +16,12 @@ class RobotBackend(Protocol):
 
 @dataclass(frozen=True)
 class OutputReceipt:
+    """Actual dispatch progress, including irreversible partial failures.
+
+    A failed target write may already have applied some joints. A physics step
+    count of None means advance was attempted but its completed count is unknown.
+    Zero means that group's advance was never attempted.
+    """
     frame_id: int
     timestamp: float
     statuses: object
@@ -48,13 +54,16 @@ class RobotOutput:
         advanced={k:0 for k in self.groups}
         try:
             for key,backend in self.backends.items():
+                statuses[key]='failed'  # A raising write may already have actuated some joints.
                 backend.write(batch[key]); statuses[key]='submitted'
             for key,group in self.groups.items():
+                advanced[key]=None  # A raising advance has an unknown completed step count.
                 group.advance(steps); advanced[key]=int(steps)
         except BaseException:
             self.last_receipt=OutputReceipt(frame_id,timestamp,MappingProxyType(statuses),
                 MappingProxyType(advanced),MappingProxyType({k:g.time_step for k,g in self.groups.items()}))
-            self.close()
+            try:self.close()
+            except Exception:pass  # Preserve the dispatch error and its receipt.
             raise
         self.last_time,self.last_frame=timestamp,frame_id
         self.last_receipt=OutputReceipt(frame_id,timestamp,MappingProxyType(statuses),

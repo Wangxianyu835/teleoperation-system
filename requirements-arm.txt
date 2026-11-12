@@ -1,0 +1,7 @@
+# Optional arm-control runtime, validated with the existing Pinocchio 3.3.1 environment.
+# Keep this separate from the SMPLer-X neural-network environment.
+smplx==0.1.28
+pin-pink==4.4.0
+qpsolvers==4.13.0
+quadprog==0.1.13
+loop-rate-limiters==1.2.0

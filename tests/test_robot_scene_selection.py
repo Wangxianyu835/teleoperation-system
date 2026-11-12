@@ -6,6 +6,63 @@ from teleoperation.simulation.robot_backends import SimulationGroup
 
 
 class RobotSceneSelectionTests(unittest.TestCase):
+    def test_output_only_all_robots_apply_commands_without_legacy_solvers(self):
+        from unittest.mock import patch
+        from dataclasses import replace
+        for name in ('h1_2','gr1_t2','g1','tron2a_l21'):
+            with self.subTest(robot=name):
+                group=SimulationGroup(gui=False)
+                try:
+                    spec=load_robot_control_spec(name,resource_overrides={'parts':'both','side':'right'})
+                    with patch('teleoperation.simulation.arm_scene_driver.ArmSceneDriver',side_effect=AssertionError('legacy IK created')), \
+                         patch('devtools.legacy_dual_baseline.Tron2ADualArmController',side_effect=AssertionError('legacy TRON IK created')):
+                        backend=RobotPartSceneBuilder().build(spec,group=group,solve_arms=False,geometry='simplified')
+                    self.assertIsNone(backend.driver)
+                    self.assertIsNone(getattr(backend,'arm_controller',None))
+                    frame=spec.reference_frame(0,0.)
+                    before=backend.read_state()
+                    arm=frame.parts['right_arm']
+                    q=before['right_arm'].copy();q[0]+=.05
+                    frame=replace(frame,parts={**frame.parts,'right_arm':replace(arm,positions=q)})
+                    backend.validate(frame)
+                    with patch.object(group.scene.p,'setJointMotorControl2',wraps=group.scene.p.setJointMotorControl2) as motors:
+                        backend.write(frame)
+                    hand=frame.parts['right_hand']
+                    if name=='tron2a_l21':
+                        hand_body=backend.part_bodies['right_hand'];joint_map=backend.names[hand_body]
+                    else:
+                        hand_body=backend.robot['body'];joint_map=backend.names
+                    emitted={(call.args[0],call.args[1]):call.kwargs['targetPosition'] for call in motors.call_args_list}
+                    for joint,value in zip(hand.joint_names,hand.positions):
+                        self.assertEqual(emitted[hand_body,joint_map[joint]],value)
+                    group.advance(24)
+                    self.assertGreater(np.linalg.norm(backend.read_state()['right_arm']-before['right_arm']),1e-5)
+                    if name=='tron2a_l21':
+                        self.assertEqual(set(backend.execution_config),{'safe_q','hand_mount_pose'})
+                        self.assertEqual(set(backend.execution_config['safe_q']),{'left','right'})
+                        self.assertEqual(backend.execution_config['hand_mount_pose']['right'],[0.,0.,0.,0.,0.,0.,1.])
+                    else:
+                        active={backend.names[n] for n in arm.joint_names}
+                        self.assertFalse(active.intersection(backend.robot['hold_ids']))
+                finally:group.close()
+
+    def test_output_only_tron_execution_configuration_replays_the_actual_initial_state(self):
+        spec=load_robot_control_spec('tron2a_l21',resource_overrides={'parts':'arms','side':'right'})
+        group=SimulationGroup(gui=False)
+        try:
+            backend=RobotPartSceneBuilder().build(spec,group=group,solve_arms=False,geometry='simplified')
+            config=backend.execution_config
+            initial=backend.read_state()['right_arm']
+        finally:group.close()
+        replay=SimulationGroup(gui=False)
+        try:
+            backend=RobotPartSceneBuilder().build(spec,group=replay,execution_only=True,
+                execution_config=config,geometry='simplified')
+            self.assertIsNone(backend.arm_controller)
+            np.testing.assert_array_equal(backend.read_state()['right_arm'],initial)
+            self.assertEqual(backend.execution_config,config)
+        finally:replay.close()
+
     def test_full_robots_clear_ground_and_keep_uncontrolled_joints_held(self):
         from dataclasses import replace
         for name in ('h1_2', 'gr1_t2'):

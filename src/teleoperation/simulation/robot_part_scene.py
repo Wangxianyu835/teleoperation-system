@@ -153,7 +153,7 @@ class RobotPartWorld:
 
 class RobotPartSceneBuilder:
     def build(self,spec,*,group,parts=None,side=None,base_pose=None,calibration=None,geometry='full',
-              execution_only=False,execution_config=None):
+              execution_only=False,execution_config=None,solve_arms=True):
         if parts is not None and parts!=spec.display or side is not None and side!=spec.side:
             raise ValueError('Scene selection must match the control specification')
         if spec.robot_id=='tron2a_l21':
@@ -161,10 +161,18 @@ class RobotPartSceneBuilder:
                 if execution_config is None:raise ValueError('Recorded TRON2A execution configuration is required')
                 from types import SimpleNamespace
                 calibration=SimpleNamespace(safe_q=execution_config['safe_q'],hand_mount_pose=execution_config['hand_mount_pose'])
-            return self._tron(spec,group,base_pose,calibration,geometry,execution_only)
+            elif not solve_arms and calibration is None and any(key.endswith('_arm') for key in spec.parts):
+                from types import SimpleNamespace
+                from teleoperation.robots.arm_spec import load_arm_spec
+                arms=load_arm_spec(spec.robot_id,spec.urdf_path)
+                calibration=SimpleNamespace(
+                    safe_q={side:np.array([arms.reference[name] for name in names])
+                            for side,names in arms.arm_joint_names.items()},
+                    hand_mount_pose={side:np.array([0.,0.,0.,0.,0.,0.,1.]) for side in arms.arm_joint_names})
+            return self._tron(spec,group,base_pose,calibration,geometry,execution_only or not solve_arms)
         group.scene.load_native(spec,base_pose)
         from .robot_backends import NativeRobotBackend
-        return NativeRobotBackend(spec,group.scene,group,create_driver=not execution_only)
+        return NativeRobotBackend(spec,group.scene,group,create_driver=solve_arms and not execution_only)
 
     def _tron(self,spec,group,base_pose,calibration,geometry,execution_only=False):
         from .robot_backends import Tron2AL21Backend

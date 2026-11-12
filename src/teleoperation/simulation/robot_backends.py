@@ -79,9 +79,10 @@ class Tron2AL21Backend:
         self.spec,self.scene,self.physics_group=spec,scene,physics_group
         self.robot,self.part_bodies,self.names,self.world=robot,part_bodies,names,world
         self.robot_id=spec.robot_id; self.driver=None; self.arm_controller=None
-        if world is not None and create_controller:
-            from teleoperation.applications.dual import Tron2ADualArmController
-            self.arm_controller=Tron2ADualArmController(calibration,spec.urdf_path,input_mode='smplerx')
+        self.execution_config=({name:{side:np.asarray(value,dtype=float).tolist() for side,value in getattr(calibration,name).items()}
+                                for name in ('safe_q','hand_mount_pose')} if calibration is not None else {})
+        # This binding executes accepted commands only. The shared ArmPipeline
+        # owns camera kinematics; VR TRON arms are rejected by preflight.
 
     def validate(self,frame):
         self.spec.validate_frame(frame)

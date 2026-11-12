@@ -1,5 +1,8 @@
 # 遥操作与运动重定向
 
+> Camera arm control uses the shared SMPL morphology / segment scaling / PINK pipeline for H1-2, GR1-T2, G1 and TRON2A. Start with [the implementation and measured validation guide](docs/unified-smpl-pink.md). Run `python -m teleoperation arm fit --help` to prepare morphology profiles; camera arms require `--arm-fitting-dir`. Historical camera controller details below are superseded by that guide.
+
+
 想从源码理解“相机数据如何变成机器人手动作”，先读[相机手部链路阅读说明](docs/hand-camera-reading-guide.md)：包含调用关系、数据形状和单位、类保存的状态，以及修改影响与对应测试。
 
 手部输入现按“RGB相机 / Vision Pro → 设备适配 → 同一手部契约 → NN或dex → 原生命令”组织。使用 `hand control --source camera|visionpro --backend nn|dex --hand-model ...`，设备与算法独立选择；`hand vr` 的 NN/dex 也复用此入口。完整命令、数值规范与旧权重边界见[统一手部输入](docs/unified-hand-input.md)。

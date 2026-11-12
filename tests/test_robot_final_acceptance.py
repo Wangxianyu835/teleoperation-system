@@ -67,7 +67,7 @@ class RobotFinalAcceptanceTests(unittest.TestCase):
                 raw=RawHandFrame({'left':None,'right':None},20.+i/30,'visionpro',
                     wrists={'right':vr_wrist(matrix,stamp)})
                 batch=session.next_batch(raw,i,i/30)
-                session.output.submit(batch,steps=8)
+                session.submit(batch,steps=8)
             part=batch['g1'].parts['right_arm']
             self.assertFalse(part.observed)
             self.assertEqual(part.status,'holding')
@@ -122,7 +122,7 @@ class RobotFinalAcceptanceTests(unittest.TestCase):
                                 elif last is not None:
                                     np.testing.assert_array_equal(arm.positions,last[name].parts['right_arm'].positions)
                                     self.assertEqual(arm.source_timestamp,last[name].parts['right_arm'].source_timestamp)
-                            session.output.submit(batch,steps=8);last=batch
+                            session.submit(batch,steps=8);last=batch
                         after=session.output.read_state()
                         for name in names:
                             for part in ('right_hand',):

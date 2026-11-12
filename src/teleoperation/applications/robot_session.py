@@ -1,5 +1,6 @@
 """One observation fans out to independent per-target command producers."""
 from dataclasses import replace
+from types import MappingProxyType
 from teleoperation.contracts.robot_control import RobotPartCommand
 from teleoperation.contracts.observations import RawTeleopObservation
 from teleoperation.applications.hand_processing import UnifiedHandPipeline
@@ -11,7 +12,7 @@ from teleoperation.simulation.robot_output import RobotOutput
 
 class RobotControlSession:
     def __init__(self,backends,*,backend='dex',checkpoints=None,device='cpu',
-                 arm_calibrate_frames=15,source_kind='camera',command_options=None,hand_selection=None):
+                 arm_calibrate_frames=15,source_kind='camera',command_options=None,hand_selection=None,arm_pipeline=None):
         self.backends=dict(backends); self.output=RobotOutput(backends)
         self.specs={n:b.spec for n,b in backends.items()}; self.source_kind=source_kind
         initial={}
@@ -28,31 +29,28 @@ class RobotControlSession:
                 p=initial[name].parts[side+'_hand']; named=dict(zip(p.joint_names,p.positions))
                 hand_initial[hand.key]=[named[n] for n in hand.independent_joint_names]
         self.commands=JointCommandPipeline(self.hand_specs,initial=hand_initial,**(command_options or {}))
-        self.bridges={}; self.wrists={}; self.previous_time=None
-        for name,b in backends.items():
-            if b.driver is None:continue
-            if source_kind=='visionpro':
-                b.driver.lock_others=True
-                for adapter in b.driver.ik.values():
-                    adapter.ik_lock_others=True
+        self.wrists={}; self.previous_time=None
+        self.arm_pipeline=arm_pipeline
+        self._pending_batch=None
+        self._pending_time=None
+        if source_kind=='camera' and any(k.endswith('_arm') for spec in self.specs.values() for k in spec.parts):
+            if arm_pipeline is None:
+                raise ValueError('Camera arms require fitted unified SMPL-PINK pipeline')
+        if source_kind=='visionpro':
             from teleoperation.simulation.wrist_control import WristSceneController
-            self.wrists[name]=WristSceneController(b.driver)
-            if source_kind=='camera':
-                from teleoperation.simulation.arm_realtime import RealtimeArmBridge
-                from teleoperation.simulation.arm_profiles import profile_for
-                from teleoperation.applications.camera_scene_arm import measure_camera_arm_geometry
-                links,anchors=measure_camera_arm_geometry(b.driver)
-                b.driver.set_shoulder_anchors(anchors)
-                self.bridges[name]=RealtimeArmBridge([profile_for(name)],sides=b.driver.sides,
-                    calibration_frames=arm_calibrate_frames,orientation='off',map_mode='posture',
-                    robot_links=links,anchors=anchors)
+            for name,b in backends.items():
+                if b.driver is None:continue
+                b.driver.lock_others=True
+                for adapter in b.driver.ik.values():adapter.ik_lock_others=True
+                self.wrists[name]=WristSceneController(b.driver)
 
-    def next_batch(self,raw,frame_id,control_seconds):
+    def next_batch(self,raw,frame_id,control_seconds,*,new_observation=True,source_now_s=None,integration_dt=None):
         hands=raw.hands if isinstance(raw,RawTeleopObservation) else raw
-        dt=1/30 if self.previous_time is None else control_seconds-self.previous_time
+        dt=.01 if self.previous_time is None else control_seconds-self.previous_time
+        if integration_dt is not None:dt=integration_dt
         if dt<=0:raise ValueError('Session control time must strictly increase')
         updates={n:{} for n in self.specs}
-        window=self.pipeline.process_window(hands) if self.hand_specs else None
+        window=self.pipeline.process_window(hands) if self.hand_specs and new_observation and hands is not None else None
         results={} if window is None else self.retargeter.retarget(window)
         for name,spec in self.specs.items():
             for side,hand in spec.hand_specs.items():
@@ -62,24 +60,11 @@ class RobotControlSession:
                 if valid:
                     updates[name][side+'_hand']=RobotPartCommand(command.joint_names,command.positions,
                         hands.timestamp,hands.metadata.get('timestamp_unit','sensor_seconds'),True,'tracking')
+            if self.source_kind=='camera':
+                continue
             b=self.backends[name]
-            if name=='tron2a_l21' and b.arm_controller is not None:
-                if not isinstance(raw,RawTeleopObservation):raise ValueError('TRON2A arms require body observations')
-                valid=b.arm_controller.update(raw.upper_body,control_seconds,raw.wrists)
-                for side in ('left','right'):
-                    key=side+'_arm'
-                    if key not in spec.parts:continue
-                    observed=bool(valid[side] and raw.upper_body.valid.get(side,False))
-                    updates[name][key]=RobotPartCommand(spec.parts[key].joint_names,b.arm_controller.controllers[side].q,
-                        raw.upper_body.timestamp,'body_monotonic_s',observed,'tracking' if observed else 'holding')
             if b.driver is None:continue
-            if self.source_kind=='visionpro':
-                produced=self.wrists[name].solve_vr(hands,dt)
-            else:
-                if not isinstance(raw,RawTeleopObservation):raise ValueError('Camera arm control requires body observations')
-                from teleoperation.applications.camera_scene_arm import solve_camera_arm_frame
-                _,produced=solve_camera_arm_frame(self.bridges[name],b.driver,self.wrists[name],raw.upper_body,raw.wrists,dt)
-                source_time=raw.upper_body.timestamp; timebase='body_monotonic_s'
+            produced=self.wrists[name].solve_vr(hands,dt)
             for side,reports in produced.items():
                 report=reports.get(name)
                 if self.source_kind=='visionpro':
@@ -97,8 +82,40 @@ class RobotControlSession:
                             or tracker.status not in ('tracking','reacquiring')):continue
                 names=spec.parts[side+'_arm'].joint_names
                 updates[name][side+'_arm']=RobotPartCommand(names,[report['joints'][n] for n in names],source_time,timebase,True,'tracking')
-        batch={n:self.assembler.assemble(n,frame_id,control_seconds,updates[n]) for n in self.specs}
-        self.previous_time=control_seconds
+        if self.arm_pipeline is not None:
+            if new_observation and isinstance(raw,RawTeleopObservation):
+                self.arm_pipeline.ingest(raw.body_result,
+                    now_s=control_seconds if source_now_s is None else source_now_s,
+                    control_time=control_seconds)
+            proposals=self.arm_pipeline.prepare(control_seconds,dt=dt)
+            for name,proposal in proposals.items():
+                spec=self.specs[name]
+                for side in proposal.active_sides:
+                    key=side+'_arm'
+                    if key not in spec.parts:continue
+                    names=spec.parts[key].joint_names
+                    values=proposal.candidate.joint_values[side]
+                    updates[name][key]=RobotPartCommand(names,[values[n] for n in names],
+                        proposal.source_time,'body_monotonic_s',True,'tracking',
+                        proposal.source_sequence,proposal.expires_time,proposal.source_is_new)
+        batch=MappingProxyType({n:self.assembler.prepare(n,frame_id,control_seconds,updates[n]) for n in self.specs})
+        self._pending_batch=batch
+        self._pending_time=control_seconds
         return batch
+
+    def submit(self,batch,*,steps):
+        if batch is not self._pending_batch:
+            raise ValueError('Submit the current prepared session batch')
+        try:
+            receipt=self.output.submit(batch,steps=steps)
+        except BaseException:
+            if self.arm_pipeline is not None:self.arm_pipeline.discard()
+            self._pending_batch=None
+            raise
+        for frame in batch.values():self.assembler.commit(frame)
+        if self.arm_pipeline is not None:self.arm_pipeline.commit()
+        self.previous_time=self._pending_time
+        self._pending_batch=None
+        return receipt
 
     def close(self):self.output.close()

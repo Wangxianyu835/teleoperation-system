@@ -13,6 +13,49 @@ def receipt(i,seconds,steps=8):
 
 
 class RobotRecordingTests(unittest.TestCase):
+    def test_target_metadata_round_trip_and_v1_without_invented_target_identity(self):
+        from teleoperation.data.robot_command_recording import RobotCommandWriter,load_robot_recording
+        spec=load_robot_control_spec('g1',resource_overrides={'parts':'hands','side':'right'})
+        frame=spec.reference_frame(0,.2)
+        part=replace(frame.parts['right_hand'],source_timestamp=123.,source_timebase='body_s',
+                     observed=True,status='tracking',target_sequence=19,target_expires_time=.5,source_is_new=False)
+        batch={'g1':replace(frame,parts={'right_hand':part})}
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'commands.h5'
+            with RobotCommandWriter(path,{'g1':spec},{}) as writer:
+                writer.append(batch,replace(receipt(0,.2),statuses={'g1':'submitted'}))
+            restored=next(load_robot_recording(path,('g1',)).iter_frames())[0]['g1'].parts['right_hand']
+            self.assertEqual(restored.target_sequence,19)
+            self.assertEqual(restored.target_expires_time,.5)
+            self.assertFalse(restored.source_is_new)
+            with h5py.File(path,'r+') as stream:
+                self.assertEqual(stream.attrs['schema_version'],2)
+                stream.attrs['schema']='robot_command_results_v1'
+                del stream.attrs['schema_version']
+                for field in ('target_sequence','target_expires_time','source_is_new'):
+                    del stream['robots/g1/parts/right_hand'][field]
+            restored=next(load_robot_recording(path,('g1',)).iter_frames())[0]['g1'].parts['right_hand']
+            self.assertIsNone(restored.target_sequence)
+            self.assertIsNone(restored.target_expires_time)
+            self.assertTrue(restored.source_is_new)
+
+    def test_failed_dispatch_keeps_receipt_in_unpublished_recording(self):
+        from teleoperation.data.robot_command_recording import RobotCommandWriter
+        spec=load_robot_control_spec('g1',resource_overrides={'parts':'hands','side':'right'})
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'commands.h5'
+            writer=RobotCommandWriter(path,{'g1':spec},{})
+            r=replace(receipt(0,0.),statuses={'g1':'failed'},steps={'world':None})
+            writer.append({'g1':spec.reference_frame(0,0.)},r)
+            writer.close()
+            self.assertFalse(path.exists())
+            with h5py.File(writer.temporary_path) as stream:
+                import json
+                saved=json.loads(stream['execution/receipts'][0])
+                self.assertEqual(saved['statuses'],{'g1':'failed'})
+                self.assertEqual(saved['steps'],{'world':None})
+                self.assertEqual(stream.attrs['recording_status'],'failed')
+
     def test_all_layouts_round_trip_source_clocks_and_holding(self):
         from teleoperation.data.robot_command_recording import RobotCommandWriter,load_robot_recording
         specs={n:load_robot_control_spec(n) for n in ('h1_2','gr1_t2','g1','tron2a_l21')}

@@ -13,7 +13,8 @@ from teleoperation.contracts.robot_control import RobotCommandFrame,RobotPartCom
 from teleoperation.robots.control_spec import load_robot_control_spec,enabled_parts
 from teleoperation.simulation.robot_output import OutputReceipt
 
-SCHEMA='robot_command_results_v1'
+SCHEMA='robot_command_results_v2'
+SCHEMA_VERSION=2
 TEXT=h5py.string_dtype('utf-8')
 
 
@@ -32,13 +33,13 @@ def _check_receipt(receipt,targets,frame_id,timestamp,*,complete=False):
         raise ValueError('Receipt identity differs from command frame')
     if not receipt.steps or set(receipt.steps)!=set(receipt.physics_dt):raise ValueError('Missing physics receipt')
     for key,steps in receipt.steps.items():
-        if isinstance(steps,bool) or not isinstance(steps,(int,np.integer)) or steps<0:
+        if steps is not None and (isinstance(steps,bool) or not isinstance(steps,(int,np.integer)) or steps<0):
             raise ValueError('Invalid recorded physics steps')
         if not np.isfinite(receipt.physics_dt[key]) or receipt.physics_dt[key]<=0:
             raise ValueError('Invalid recorded physics dt')
-    if any(s not in ('submitted','not_submitted') for s in receipt.statuses.values()):
+    if any(s not in ('submitted','not_submitted','failed') for s in receipt.statuses.values()):
         raise ValueError('Invalid target dispatch status')
-    if complete and (any(s!='submitted' for s in receipt.statuses.values()) or any(s<1 for s in receipt.steps.values())):
+    if complete and (any(s!='submitted' for s in receipt.statuses.values()) or any(s is None or s<1 for s in receipt.steps.values())):
         raise ValueError('Recording contains incomplete dispatch')
 
 
@@ -58,7 +59,7 @@ class RobotCommandWriter:
         self.count=0;self.last_time=self.last_frame=None;self.closed=self.failed=False
         self.stream=h5py.File(self.temporary_path,'x');self.datasets=[];self.groups={}
         try:
-            self.stream.attrs.update(schema=SCHEMA,angle_unit='rad',timestamp_unit='control_relative_seconds',
+            self.stream.attrs.update(schema=SCHEMA,schema_version=SCHEMA_VERSION,angle_unit='rad',timestamp_unit='control_relative_seconds',
                 recording_status='recording',targets_json=json.dumps(list(specs)),metadata_json=json.dumps(metadata))
             self._dataset(self.stream,'frame_ids',dtype='int64');self._dataset(self.stream,'control_timestamps')
             execution=self.stream.create_group('execution');self._dataset(execution,'receipts',dtype=TEXT)
@@ -80,6 +81,9 @@ class RobotCommandWriter:
                     self._dataset(child,'positions',(len(part.joint_names),))
                     self._dataset(child,'source_timestamp')
                     self._dataset(child,'observed',dtype='bool')
+                    self._dataset(child,'target_sequence',dtype='int64')
+                    self._dataset(child,'target_expires_time')
+                    self._dataset(child,'source_is_new',dtype='bool')
                     for field in ('source_timebase','status'):self._dataset(child,field,dtype=TEXT)
         except BaseException:
             self.abort('initialization failed');self.stream.close();self.closed=True
@@ -109,13 +113,16 @@ class RobotCommandWriter:
                 for name,part in frame.parts.items():
                     group=self.groups[key,name]
                     values=dict(positions=part.positions,source_timestamp=np.nan if part.source_timestamp is None else part.source_timestamp,
-                        source_timebase=part.source_timebase,observed=part.observed,status=part.status)
+                        source_timebase=part.source_timebase,observed=part.observed,status=part.status,
+                        target_sequence=-1 if part.target_sequence is None else part.target_sequence,
+                        target_expires_time=np.nan if part.target_expires_time is None else part.target_expires_time,
+                        source_is_new=part.source_is_new)
                     for field,value in values.items():group[field][self.count]=value
             self.stream.flush()
         except BaseException:
             self.abort('row write failed');raise
         self.count+=1;self.last_frame=frame_id;self.last_time=timestamp
-        if any(s!='submitted' for s in receipt.statuses.values()) or any(s<1 for s in receipt.steps.values()):
+        if any(s!='submitted' for s in receipt.statuses.values()) or any(s is None or s<1 for s in receipt.steps.values()):
             self.abort('dispatch incomplete')
 
     def abort(self,reason):
@@ -147,9 +154,17 @@ def _read_row(stream,index,targets):
         group=stream['robots'][key];parts={}
         for name,part in group['parts'].items():
             source=float(part['source_timestamp'][index])
+            extra={}
+            if stream.attrs['schema']==SCHEMA:
+                sequence=int(part['target_sequence'][index])
+                expiry=float(part['target_expires_time'][index])
+                if sequence < -1:raise ValueError('Invalid recorded target sequence')
+                extra=dict(target_sequence=None if sequence==-1 else sequence,
+                    target_expires_time=None if np.isnan(expiry) else expiry,
+                    source_is_new=bool(part['source_is_new'][index]))
             parts[name]=RobotPartCommand(tuple(json.loads(part.attrs['joint_names'])),part['positions'][index],
                 None if np.isnan(source) else source,_text(part['source_timebase'][index]),
-                bool(part['observed'][index]),_text(part['status'][index]))
+                bool(part['observed'][index]),_text(part['status'][index]),**extra)
             q=parts[name].positions;limits=np.asarray(json.loads(part.attrs['limits']))
             if limits.shape!=(len(q),2) or not np.isfinite(limits).all() or np.any(limits[:,0]>limits[:,1]):
                 raise ValueError('Invalid recorded joint limits')
@@ -186,9 +201,14 @@ def load_robot_recording(path,targets):
     if not targets or len(set(targets))!=len(targets):raise ValueError('Distinct replay targets required')
     with h5py.File(path,'r') as stream:
         try:
-            if (stream.attrs.get('schema')!=SCHEMA or stream.attrs.get('recording_status')!='complete'
+            schema=stream.attrs.get('schema')
+            if (schema not in (SCHEMA,'robot_command_results_v1') or stream.attrs.get('recording_status')!='complete'
                 or stream.attrs.get('angle_unit')!='rad' or stream.attrs.get('timestamp_unit')!='control_relative_seconds'):
                 raise ValueError('Unsupported or incomplete robot recording')
+            if schema==SCHEMA and stream.attrs.get('schema_version')!=SCHEMA_VERSION:
+                raise ValueError('Unsupported robot recording version')
+            if schema=='robot_command_results_v1' and stream.attrs.get('schema_version',1)!=1:
+                raise ValueError('Unsupported robot recording version')
             stored=json.loads(stream.attrs['targets_json'])
             if not stored or len(set(stored))!=len(stored) or set(stored)!=set(stream['robots']):raise ValueError('Invalid stored targets')
             if not set(targets)<=set(stored):raise ValueError('Requested robot is absent from recording')
@@ -207,6 +227,11 @@ def load_robot_recording(path,targets):
                         expected_shape=(count,len(names)) if field=='positions' else (count,)
                         if part[field].shape!=expected_shape:raise ValueError('Incomplete command datasets')
                     if part['observed'].dtype.kind!='b':raise ValueError('Invalid observed flags')
+                    if schema==SCHEMA:
+                        for field in ('target_sequence','target_expires_time','source_is_new'):
+                            if part[field].shape!=(count,):raise ValueError('Incomplete target metadata')
+                        if part['target_sequence'].dtype.kind not in 'iu' or part['source_is_new'].dtype.kind!='b':
+                            raise ValueError('Invalid target metadata types')
                 if key in targets:
                     options={'parts':group.attrs['parts'],'side':group.attrs['side']}
                     if key=='tron2a_l21' and group.attrs['urdf_path']:options['urdf_path']=group.attrs['urdf_path']

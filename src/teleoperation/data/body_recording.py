@@ -238,7 +238,8 @@ def capture_sample(source, raw):
 
     packet = encode_packet('observation', {
         'hands': {**vars(raw.hands), 'wrists': wrist_values(raw.hands.wrists)},
-        'upper_body': vars(raw.upper_body), 'wrists': wrist_values(raw.wrists)})
+        'upper_body': vars(raw.upper_body), 'wrists': wrist_values(raw.wrists),
+        'body_result': raw.body_result})
     row = {'sample_id': f'{source.session_id}:{frame.frame_id}',
            'capture_time_s': float(frame.timestamp), 'rgb': frame.rgb,
            'observation_packet': np.frombuffer(packet, dtype=np.uint8)}
@@ -250,6 +251,14 @@ def capture_sample(source, raw):
 
 
 def replay_observation(row):
+    """Restore raw arrays without running inference or inventing missing poses.
+
+    New packets distinguish no newly accepted result with an explicit None.
+    Legacy worker packets are admitted only where recorded tracker identities
+    and side validity demonstrate acceptance of that same worker result.
+    """
+    from dataclasses import replace
+    from teleoperation.contracts.body import SmplerXResult
     from teleoperation.inputs.smplerx import decode_packet
     from teleoperation.contracts.observations import RawHandFrame, UpperBodyObservation, RawTeleopObservation
     from teleoperation.contracts.wrist import WristObservation
@@ -267,4 +276,19 @@ def replay_observation(row):
     body = UpperBodyObservation(**values['upper_body'])
     if body.metadata.get('source') != 'smplerx':
         raise ValueError('Body replay requires explicit SMPL-X source')
-    return RawTeleopObservation(RawHandFrame(**hands), body, wrists(values.get('wrists')))
+    result = values.get('body_result')
+    if 'body_result' not in values and 'worker_packet' in row:
+        worker = decode_packet(np.asarray(row['worker_packet'], dtype=np.uint8).tobytes())
+        if worker['type'] != 'result':
+            raise ValueError('Body recording worker packet has wrong type')
+        result = worker['payload'].get('result')
+        if result is not None and not isinstance(result, SmplerXResult):
+            raise TypeError('Body recording worker result must be an SmplerXResult')
+        if result is not None:
+            ids = body.metadata.get('body_sample_ids', {})
+            fresh = body.metadata.get('body_fresh', {})
+            valid = {side: bool(result.valid.get(side, False) and body.valid.get(side, False)
+                               and ids.get(side) == result.frame_id.sequence
+                               and fresh.get(side, True)) for side in ('left', 'right')}
+            result = replace(result, valid=valid) if any(valid.values()) else None
+    return RawTeleopObservation(RawHandFrame(**hands), body, wrists(values.get('wrists')), result)

@@ -88,7 +88,7 @@ def load_robot_control_spec(robot_id,*,resource_overrides=None):
         else:
             joints={j.get('name'):j for j in root.findall('joint')}
             names=TRON2A_ARM_JOINTS[s] if robot_id=='tron2a_l21' else tuple(n for n,j in joints.items() if j.get('type')!='fixed' and _is_arm_joint(n,s))
-            if len(names)!=7: raise ValueError(f'{robot_id}/{s} must have seven arm joints')
+            if not names: raise ValueError(f'{robot_id}/{s} has no enabled arm joints')
             limits=tuple((float(joints[n].find('limit').get('lower')),float(joints[n].find('limit').get('upper'))) for n in names)
             parts[key]=PartSpec(tuple(names),limits,tuple(float(np.clip(0,*b)) for b in limits))
             identity[key]=hashlib.sha256(path.read_bytes()).hexdigest()
