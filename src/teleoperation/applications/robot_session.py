@@ -54,6 +54,10 @@ class RobotControlSession:
         results={} if window is None else self.retargeter.retarget(window)
         for name,spec in self.specs.items():
             for side,hand in spec.hand_specs.items():
+                # The assembler holds the accepted command between camera
+                # arrivals. Waiting must not reset filters or input timing.
+                if not new_observation:
+                    continue
                 result=results.get(hand.key)
                 command=self.commands.missing(hand.key,control_seconds) if result is None else self.commands.update(result,control_seconds)
                 valid=result is not None and result.valid

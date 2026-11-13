@@ -115,7 +115,8 @@ def run_camera_control(args,targets,checkpoints):
             first_live=None
             while time.perf_counter()<ready_deadline:
                 sample=pump.take()
-                if sample is not None and sample.body_result is not None:
+                if (sample is not None and sample.body_result is not None
+                        and any(sample.body_result.valid.values())):
                     first_live=sample
                     break
                 time.sleep(.01)

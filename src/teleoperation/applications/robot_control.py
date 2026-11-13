@@ -61,6 +61,12 @@ def run(args):
     from teleoperation.simulation.robot_part_scene import RobotPartSceneBuilder
     from .robot_session import RobotControlSession
     targets,checkpoints=preflight(args)
+    if args.source=='camera' and args.input_body is None:
+        from .realtime_hand_sim import resolve_model_asset
+        args.model_asset_path=resolve_model_asset(args.model_asset_path)
+        if args.parts!='hands':
+            for name in ('smplerx_worker_python','smplerx_root','smplerx_checkpoint','smplx_model_dir'):
+                if not Path(getattr(args,name)).exists():raise FileNotFoundError(getattr(args,name))
     if args.source=='camera' and args.parts!='hands':
         from .unified_camera_control import run_camera_control
         return run_camera_control(args,targets,checkpoints)
@@ -69,12 +75,6 @@ def run(args):
     # Load/check weights before devices or GUI. The session reuses this selection.
     from .hand_backend import build_target_hand_retargeters
     hand_selection=build_target_hand_retargeters(specs.values(),args.backend,checkpoints,args.device)
-    if args.source=='camera' and args.input_body is None:
-        from .realtime_hand_sim import resolve_model_asset
-        args.model_asset_path=resolve_model_asset(args.model_asset_path)
-        if args.parts!='hands':
-            for name in ('smplerx_worker_python','smplerx_root','smplerx_checkpoint','smplx_model_dir'):
-                if not Path(getattr(args,name)).exists():raise FileNotFoundError(getattr(args,name))
     calibration=None
     if args.tron2a_calibration is not None:
         from teleoperation.retargeting.arm.calibration import ArmCalibration

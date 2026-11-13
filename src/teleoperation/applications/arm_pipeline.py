@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from teleoperation.retargeting.arm.pink_ik import PinkArmIK
+from teleoperation.retargeting.arm.body_model import smplerx_pose_in_model_frame
 
 
 BODY_INDICES = {'pelvis': 0, 'head': 15, 'left_shoulder': 16,
@@ -25,6 +26,8 @@ class ArmPipeline:
                  max_age=.3, max_dt=.02, max_catchup=.1, solver='quadprog', enabled_sides=None):
         if set(specs) != set(profiles) or not specs:
             raise ValueError('Each selected robot requires a fitting profile')
+        if getattr(body_model.spec, 'model_type', 'smplx') != 'smplx':
+            raise ValueError('SMPLer-X camera arms require an SMPL-X (smplx) fitting and reconstruction model')
         if any(spec.task_config.shared_joint_names for spec in specs.values()):
             raise ValueError('Shared joints require a supported output command contract; keep shared_joint_names empty')
         if not np.isfinite([max_age, max_dt, max_catchup]).all() or min(max_age,max_dt,max_catchup)<=0:
@@ -84,7 +87,7 @@ class ArmPipeline:
                     raise ValueError(f'Body result lacks raw pose parameter {key}; re-record body input')
             names = tuple(self.specs)
             betas = np.stack([self.profiles[name].betas for name in names])
-            joints, rotations = self.body_model.reconstruct(result.arrays, betas)
+            joints, rotations = self.body_model.reconstruct(smplerx_pose_in_model_frame(result.arrays), betas)
             for index,name in enumerate(names):
                 spec, profile = self.specs[name], self.profiles[name]
                 transform = np.asarray(profile.body_to_robot)

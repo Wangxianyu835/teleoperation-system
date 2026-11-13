@@ -46,6 +46,8 @@ def run(args):
     spec=BodyModelSpec(str(args.body_model_path),getattr(args,'body_model_type','smplx'),
                        getattr(args,'gender','neutral'),getattr(args,'num_betas',20),
                        str(args.smplx_module_dir) if getattr(args,'smplx_module_dir',None) is not None else None)
+    if spec.model_type != 'smplx':
+        raise ValueError('SMPLer-X arm fitting requires an SMPL-X (smplx) model; cross-family pose conversion is unsupported')
     model=BodyModel(spec,device=getattr(args,'device','cpu'))
     specs={robot:load_arm_spec(robot,sides=('left','right')) for robot in robots}
     reference_joints,_=model.reconstruct({},np.zeros((1,spec.num_betas)))

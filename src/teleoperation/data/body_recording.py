@@ -253,9 +253,10 @@ def capture_sample(source, raw):
 def replay_observation(row):
     """Restore raw arrays without running inference or inventing missing poses.
 
-    New packets distinguish no newly accepted result with an explicit None.
-    Legacy worker packets are admitted only where recorded tracker identities
-    and side validity demonstrate acceptance of that same worker result.
+    None in new packets means no worker arrival. Invalid arrivals remain
+    explicit so replay can revoke targets. For legacy worker packets, recorded
+    tracker identities and validity gate each side; a rejected arrival is also
+    retained with false validity instead of being confused with waiting.
     """
     from dataclasses import replace
     from teleoperation.contracts.body import SmplerXResult
@@ -290,5 +291,5 @@ def replay_observation(row):
             valid = {side: bool(result.valid.get(side, False) and body.valid.get(side, False)
                                and ids.get(side) == result.frame_id.sequence
                                and fresh.get(side, True)) for side in ('left', 'right')}
-            result = replace(result, valid=valid) if any(valid.values()) else None
+            result = replace(result, valid=valid)
     return RawTeleopObservation(RawHandFrame(**hands), body, wrists(values.get('wrists')), result)

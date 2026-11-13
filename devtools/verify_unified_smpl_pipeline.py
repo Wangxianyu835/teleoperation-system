@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'src'))
@@ -33,7 +34,11 @@ def generate_body(path,profile_dir,frames):
         body=np.zeros((1,63),dtype=np.float32)
         body[0,15*3+2]=.1*np.sin(frame/30*2*np.pi)
         body[0,16*3+2]=-.1*np.sin(frame/30*2*np.pi)
-        params={'smplx_root_pose':np.zeros((1,3),dtype=np.float32),'smplx_body_pose':body,
+        # Use the estimator's actual camera convention: an upright operator
+        # facing the camera has Rx(pi), with a small changing native yaw.
+        yaw=.15*np.sin(frame/30*2*np.pi)
+        root=Rotation.from_matrix(np.diag([1.,-1.,-1.])@Rotation.from_euler('y',yaw).as_matrix()).as_rotvec()
+        params={'smplx_root_pose':root[None].astype(np.float32),'smplx_body_pose':body,
                 'smplx_lhand_pose':np.zeros((1,45),dtype=np.float32),
                 'smplx_rhand_pose':np.zeros((1,45),dtype=np.float32)}
         joints,rotations=model.reconstruct(params,np.zeros((1,profile.body_spec.num_betas)))
@@ -52,7 +57,7 @@ def generate_body(path,profile_dir,frames):
     save_body_recording(path,rows,{'source':'smplerx','model_id':'synthetic_pose_real_smplx',
         'model_hash':profile.body_spec_hash,'time_unit':'monotonic_s',
         'capture_kind':'synthetic_raw_pose_real_smpl_geometry','real_camera':False,
-        'source_hz':30.,'runtime_root_pose':'identity explicitly recorded; never replaced'})
+        'source_hz':30.,'runtime_root_pose':'camera Rx(pi) reference with changing native yaw; observed root retained'})
 
 
 def trace(path,robot):

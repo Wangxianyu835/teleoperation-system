@@ -10,6 +10,23 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 
+def smplerx_pose_in_model_frame(arrays):
+    """Express a front-facing camera pose in the native SMPL-X fitting axes.
+
+    Camera axes are x right, y down, z away from the camera. Native upright
+    SMPL-X has y up and faces the camera after Rx(pi). Undo that fixed camera
+    reference, preserving the observed root motion and every local rotation.
+    This assumes an upright camera facing the operator; it is not a dynamic
+    torso alignment or a replacement of the observed root with a T pose.
+    """
+    root = np.asarray(arrays['smplx_root_pose'], dtype=float)
+    if root.size != 3 or not np.isfinite(root).all():
+        raise ValueError('smplx_root_pose must contain three finite camera-frame values')
+    camera_to_model = np.diag([1., -1., -1.])
+    rotation = camera_to_model @ Rotation.from_rotvec(root.reshape(3)).as_matrix()
+    return {**arrays, 'global_orient': Rotation.from_matrix(rotation).as_rotvec()}
+
+
 def reference_pose():
     """Upright reference used for fitting; runtime poses must supply their own root."""
     return {'global_orient': Rotation.from_euler('xyz', [np.pi/2, 0, np.pi/2]).as_rotvec()}

@@ -77,13 +77,14 @@ class CameraTeleopSource:
         self.last_tracked = tracked
         self.metrics.update(tracked.body, frame.timestamp)
         accepted = None
-        if result is not None:
+        if result is not None and result.frame_id.capture_time_s <= frame.timestamp:
             valid = {side: bool(result.valid.get(side, False) and tracked.fresh.get(side, False)
                                and tracked.body.valid.get(side, False)
                                and tracked.sample_id.get(side) == result.frame_id.sequence)
                      for side in ('left', 'right')}
-            if any(valid.values()):
-                accepted = replace(result, valid=valid)
+            # A new rejected/lost sample revokes previous targets. None means
+            # no worker arrival, so it must not also represent explicit loss.
+            accepted = replace(result, valid=valid)
         return RawTeleopObservation(hands, tracked.body, tracked.wrists, accepted)
 
     def worker_summary(self):

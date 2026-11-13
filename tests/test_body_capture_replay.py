@@ -45,7 +45,10 @@ class BodyCaptureReplayTests(unittest.TestCase):
         np.testing.assert_array_equal(legacy.body_result.arrays['smplx_body_pose'],pose)
         packet['upper_body']['metadata']['body_sample_ids']={'left':0,'right':0}
         row['observation_packet']=np.frombuffer(encode_packet('observation',packet),dtype=np.uint8)
-        self.assertIsNone(replay_observation(row).body_result)
+        rejected=replay_observation(row).body_result
+        self.assertIsNotNone(rejected)
+        self.assertEqual(rejected.frame_id,result.frame_id)
+        self.assertEqual(rejected.valid,{'left':False,'right':False})
         packet['body_result']=None
         row['observation_packet']=np.frombuffer(encode_packet('observation',packet),dtype=np.uint8)
         self.assertIsNone(replay_observation(row).body_result)

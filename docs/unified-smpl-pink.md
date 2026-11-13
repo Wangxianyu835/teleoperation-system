@@ -74,12 +74,40 @@ initial/final RMS, point errors, and optimizer iteration count. Loading can
 require the expected body identity and robot specification hash. The report
 also records the fitted point names and residual errors after segment scaling.
 
-At runtime, reconstruct the observed root/body/hand pose with the fitted betas,
+Camera fitting and control require an SMPL-X model. Other SMPL-family models
+remain available through the generic `BodyModel` API, but `arm fit` and
+`ArmPipeline` reject them before control: converting SMPLer-X's 21 body joints
+to another family's pose and shape semantics has not been implemented.
+Beta count remains a validated model specification rather than a constant.
+
+At runtime, first express the observed camera root in the native fitting frame.
+An upright, front-facing operator has camera root `Rx(pi)`, whereas the native
+zero-pose model is y-up. `smplerx_pose_in_model_frame` left-multiplies the observed
+root rotation by `diag(1, -1, -1)`; local joint rotations remain intact. This is a
+proper fixed rotation, not a reflection or a reset of the observed root. Thus
+turning and leaning still affect both the reconstructed wrist positions and
+their global rotations. The camera must be upright and face the operator;
+arbitrary camera tilt requires separate extrinsic calibration.
+
+Reconstruct this pose with the fitted betas,
 subtract its declared human anchor, rotate it into robot coordinates once,
 scale the articulated segments, add the saved robot anchor, then
 provide positions and calibrated wrist orientations to the shared PINK solver.
 The saved reference pose describes calibration; it does not replace camera
 root or local joint rotations.
+
+The live entry resolves the default MediaPipe asset and validates worker paths
+before dispatching to unified control or opening a simulation/device. Replay
+bypasses these inference resources. Between new hand observations, control
+ticks hold the accepted hand command without resetting the hand filter or its
+last valid input time. A new invalid hand observation still applies the normal
+missing-hand policy.
+
+A body result with both sides invalid is an explicit revocation and is retained
+through capture, the observation pump, recording, and replay. It clears current
+arm targets without reconstructing a body. `None` means no new body arrival and
+allows an existing target to remain active only until its original expiry.
+Startup continues waiting for a result with at least one accepted side.
 
 ## Measured fitting quality
 
@@ -362,3 +390,37 @@ calibration; samples 4-6 produced valid bilateral output. The checkpoint hash
 was unchanged and the output includes 55 native joint positions/rotations plus
 raw root/body/hand parameters. This is successful real-model image inference,
 not proof of camera capture, live operator identity behavior, or hardware control.
+
+## Review fixes verified on 2026-11-13
+
+The checkpoint before these fixes is `checkpoint-20261113-review-fixes`, at
+`d386dc7`. Seven regression tests in `tests/test_arm_review_regressions.py`
+cover camera-axis correction with the real SMPL-X model and all four robot
+specifications, observed root rotation and local articulation, invalid-arrival
+revocation through recording/replay, family rejection at fit/control boundaries,
+default live asset dispatch, and preservation of hand filtering between samples.
+The existing future-timestamp rejection remains in effect. A rejected legacy
+worker arrival retains its original identity and false validity; an explicitly
+recorded `None` still means there was no body arrival.
+
+The final `python -m unittest discover -s tests` run completed 690 tests in
+167.017 seconds with `OK (skipped=2)`. The log is
+`outputs/review-fixes-full-tests-final.log`. A focused run covering the seven
+new regressions, body capture/replay and unified camera control also passed all
+16 tests. The first complete run exposed the future-timestamp boundary and an
+old replay assertion; both were resolved before this final full run.
+
+The updated integration generator now records camera `Rx(pi)` roots with changing
+yaw instead of identity roots. Running it with 12 source samples and the existing
+20-beta fitting profiles produced 38 control frames in each of five runs (all
+robots together and each robot alone), exactly 12 reconstructions per run, and
+zero joint-command difference between single and combined execution for all four
+robots. See `outputs/acceptance/review-fixes-pipeline/pipeline-report.json`.
+H1-2, GR1-T2 and G1 use their original mesh geometry; TRON2A uses the explicitly
+selected simplified proxy. This checks software integration and command
+equivalence, not physical tracking quality.
+
+The four-robot run missed all 38 target 10 ms deadlines while the full regression
+suite was also running (median 16.47 ms, p95 21.87 ms). This is not an isolated
+performance benchmark and does not establish 100 Hz operation. Arbitrary camera
+extrinsics, live operator trials and hardware motion remain outside this check.
