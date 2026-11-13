@@ -1,5 +1,7 @@
 # 遥操作与运动重定向
 
+当前版本的流程图、操作脚本、各条链路说明与最新审查限制，见[2026-11-13 使用报告](docs/current-teleoperation-usage-report-2026-11-13.md)；配套入口为 `devtools/current_teleoperation.ps1`。
+
 > Camera arm control uses the shared SMPL morphology / segment scaling / PINK pipeline for H1-2, GR1-T2, G1 and TRON2A. Start with [the implementation and measured validation guide](docs/unified-smpl-pink.md). Run `python -m teleoperation arm fit --help` to prepare morphology profiles; camera arms require `--arm-fitting-dir`. Historical camera controller details below are superseded by that guide.
 
 
