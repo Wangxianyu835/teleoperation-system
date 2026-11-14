@@ -1,0 +1,25 @@
+# Windows / Python 3.10: retain the repository's validated numerical stack.
+numpy==1.26.4
+scipy==1.13.1
+h5py==3.16.0
+pybullet==3.2.7
+torch==2.14.1+cu130
+torchvision==0.29.1+cu130
+einops==0.8.2
+timm==1.0.30
+urchin==0.0.30
+trimesh==5.1.1
+tensorboard==2.21.0
+matplotlib==3.10.9
+opencv-contrib-python==4.11.0.86
+roboticstoolbox-python==1.4.2
+spatialmath-python==1.1.18
+mediapipe==0.10.35
+# VR transport / codecs. Only one OpenCV distribution may be installed.
+avp-stream==2.51+opencvcontrib1
+aiortc==1.15.0
+av==17.1.0
+grpcio==1.84.0
+grpcio-tools==1.84.0
+protobuf==7.36.2
+mujoco==3.15.0
