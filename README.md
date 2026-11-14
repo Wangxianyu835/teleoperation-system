@@ -334,3 +334,5 @@ TRON2A 的 `dual camera --with-hands` 使用一份新版 L21 shared checkpoint�
 Windows三个启动脚本仍保留给既有IDE配置使用，共用`devtools/windows_runtime.py`，用于旧相机预览/诊断；必须显式`--robot`，`--check`核对当前后端依赖及SMPLer-X路径。手/臂正式验收推荐上面的统一机器人入口。
 
 仿真任务的判据、时间统计和已知限制见[仿真评估说明](docs/SIM_EVALUATION.md)。
+
+2026-11-14 的[分支集成记录](docs/branch-integration-2026-11-14.md)包含 GR1 参考姿态和拟合迁移要求；GR1 旧拟合需要重新生成。

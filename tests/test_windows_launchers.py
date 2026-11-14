@@ -46,6 +46,34 @@ class WindowsLaunchersTests(unittest.TestCase):
                 self.assertEqual(status,0)
                 self.assertEqual(run.call_args.args[0].arm_elbow_follow,mode)
 
+    def test_main_arm_launcher_accepts_presets_with_explicit_option_priority(self):
+        for extra, mode in (([], 'operator'), (['--off'], 'off'),
+                            (['--elbow-follow', 'off'], 'off'),
+                            (['--elbow-follow=off', '--arm-elbow-follow=operator'], 'operator')):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as folder:
+                status, run = self.invoke('run_realtime_arm_windows', [
+                    '--robot', 'g1', '--headless', '--no-preview',
+                    '--report', str(Path(folder)/'report.json'), *extra])
+                self.assertEqual(status, 0)
+                self.assertEqual(run.call_args.args[0].arm_elbow_follow, mode)
+
+    def test_window_layout_reserves_left_preview_and_right_simulation(self):
+        from argparse import Namespace
+        self.assertTrue(hasattr(self.runtime, 'planned_layout'))
+        args = Namespace(width=640, preview_window_pos=(20, 60))
+        self.assertEqual(self.runtime.planned_layout(args, (1920, 1080)),
+                         ((20, 60), (968, 40, 944, 960)))
+
+    def test_headless_preview_disabled_and_explicit_off_do_not_touch_windows(self):
+        from argparse import Namespace
+        self.assertTrue(hasattr(self.runtime, 'arrange_two_windows'))
+        cases = [(True, False, ''), (False, True, ''), (False, False, 'off')]
+        for headless, no_preview, env in cases:
+            with patch.dict(self.runtime.os.environ, {'TELEOP_WINDOW_LAYOUT':env}), \
+                 patch.object(self.runtime, '_win32', side_effect=AssertionError('native GUI touched')):
+                self.assertIsNone(self.runtime.arrange_two_windows(
+                    Namespace(headless=headless, no_preview=no_preview)))
+
     def test_no_target_fails_before_the_camera_or_simulation_entry(self):
         status,run=self.invoke('run_realtime_arm_windows',['--headless'])
         self.assertEqual(status,2)

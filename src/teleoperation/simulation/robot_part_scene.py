@@ -4,7 +4,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 import numpy as np
 from teleoperation.paths import ROBOTS_ROOT
-from teleoperation.robots.specification import ROBOT_SPECS,ARM_NEUTRAL
+from teleoperation.robots.specification import ROBOT_SPECS,arm_neutral_positions
 from teleoperation.contracts.hand_control import HandJointCommand
 
 
@@ -85,13 +85,14 @@ class RobotPartWorld:
 
     def _register(self,spec,body,visible):
         p=self.p; names={}; links={p.getBodyInfo(body,physicsClientId=self.cid)[0].decode():-1}
+        neutral = arm_neutral_positions(spec.robot_id, spec.urdf_path)
         movable={}
         for i in range(p.getNumJoints(body,physicsClientId=self.cid)):
             info=p.getJointInfo(body,i,physicsClientId=self.cid)
             name=info[1].decode(); names[name]=i; links[info[12].decode()]=i
             if info[2]!=p.JOINT_FIXED:
                 low,high=info[8:10]
-                movable[i]=float(np.clip(ARM_NEUTRAL.get(name,0.),low,high)) if low<=high else 0.
+                movable[i]=float(np.clip(neutral.get(name,0.),low,high)) if low<=high else 0.
         for key,part in spec.parts.items():
             for name,value in zip(part.joint_names,part.reference):
                 if key.endswith('_hand'):movable[names[name]]=value

@@ -18,6 +18,7 @@ import sys
 
 
 import time
+import threading
 
 
 from pathlib import Path
@@ -307,9 +308,173 @@ def check_arm_assets(args):
     return 0
 
 
+PYBULLET_WINDOW_CLASS = "DeviceWin32"
+
+PYBULLET_WINDOW_TITLE = "Bullet Physics"
+
+LAYOUT_ENV = "TELEOP_WINDOW_LAYOUT"
+
+LAYOUT_TIMEOUT_S = 30.0
+
+LAYOUT_POLL_S = 0.4
+
+def _win32():
+    """``(ctypes, wintypes)``；非 Windows / 取不到时 ``None``（摆窗口只是显示糖）。"""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        return ctypes, wintypes
+    except Exception:  # noqa: BLE001 - 摆不了就按系统默认位置跑，主链路不受影响
+        return None
+
+def screen_size():
+    """主屏像素 ``(宽, 高)``；拿不到时 ``None``（远程桌面 / 无桌面会话都可能拿不到）。"""
+    api = _win32()
+    if api is None:
+        return None
+    try:
+        width = int(api[0].windll.user32.GetSystemMetrics(0))
+        height = int(api[0].windll.user32.GetSystemMetrics(1))
+    except Exception:  # noqa: BLE001
+        return None
+    return (width, height) if width > 0 and height > 0 else None
+
+def find_pybullet_window():
+    """PyBullet GUI 窗口的 HWND；还没建出来 / 找不到时 ``None``。"""
+    api = _win32()
+    if api is None:
+        return None
+    ctypes, wintypes = api
+    user32 = ctypes.windll.user32
+    found = []
+
+    def callback(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        name = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, name, 256)
+        if name.value != PYBULLET_WINDOW_CLASS:
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        title = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, title, length + 1)
+        if not title.value.startswith(PYBULLET_WINDOW_TITLE):
+            return True
+        found.append(int(hwnd))
+        return False                     # 找到了就停，不再翻别的窗口
+
+    user32.EnumWindows(ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
+                                          wintypes.LPARAM)(callback), 0)
+    return found[0] if found else None
+
+def window_rect(hwnd):
+    """``(x, y, 宽, 高)``；取不到时 ``None``。"""
+    api = _win32()
+    if api is None:
+        return None
+    ctypes, wintypes = api
+    rect = wintypes.RECT()
+    if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+    return (int(rect.left), int(rect.top),
+            int(rect.right - rect.left), int(rect.bottom - rect.top))
+
+def move_window(hwnd, target) -> bool:
+    """把窗口挪/缩到 ``target=(x, y, 宽, 高)``；Windows 拒绝时 ``False``。"""
+    api = _win32()
+    if api is None:
+        return False
+    ctypes, _wintypes = api
+    x, y, width, height = (int(value) for value in target)
+    return bool(ctypes.windll.user32.MoveWindow(hwnd, x, y, width, height, True))
+
+def planned_layout(args, screen):
+    """``(摄像头位置, PyBullet 目标矩形)``：左摄像头、右 PyBullet，中间留 8 px。"""
+    width, height = screen
+    camera = getattr(args, "preview_window_pos", None)
+    capture_width = int(getattr(args, "width", 640) or 640)
+    # 分界线：至少让摄像头窗口（默认 640 宽）整块放进左半边；屏幕窄时保底给仿真留 320。
+    split = max(capture_width + 60, width // 2)
+    split = min(split, max(width - 320, 320))
+    rect = (split + 8, 40, max(width - split - 16, 320), max(height - 120, 320))
+    return camera, rect
+
+def arrange_two_windows(args):
+    """把 PyBullet 窗口摆到右半边（后台线程等它出现，不阻塞主链路）。"""
+    if os.environ.get(LAYOUT_ENV, "").strip().lower() in ("off", "0", "no", "false"):
+        log("INFO", f"window layout off ({LAYOUT_ENV}=off): drag the windows yourself")
+        return None
+    if getattr(args, "headless", False) or getattr(args, "no_preview", False):
+        return None
+    screen = screen_size()
+    if screen is None or _win32() is None:
+        log("INFO", "cannot query the screen size here: both windows stay where the "
+                         "system puts them (pass --preview-window-pos X,Y to move the camera one)")
+        return None
+    camera, target = planned_layout(args, screen)
+    where = ("where the system puts it" if camera is None
+             else f"at {camera[0]},{camera[1]}")
+    log("INFO", f"two windows side by side (screen {screen[0]}x{screen[1]}): camera preview "
+                     f"on the left {where}, PyBullet (three robots) on the right at "
+                     f"{target[0]},{target[1]} ({target[2]}x{target[3]})")
+    log("INFO", f"set {LAYOUT_ENV}=off to place the windows yourself")
+
+    def worker():
+        deadline = time.monotonic() + LAYOUT_TIMEOUT_S
+        while time.monotonic() < deadline:
+            hwnd = find_pybullet_window()
+            if hwnd:
+                before = window_rect(hwnd)
+                if before == target:
+                    log("OK", f"PyBullet window already at {target}")
+                elif move_window(hwnd, target):
+                    log("OK", f"PyBullet window {before} -> {target}")
+                else:
+                    log("WARN", f"cannot move the PyBullet window (stays {before})")
+                return
+            time.sleep(LAYOUT_POLL_S)
+        log("WARN", f"PyBullet window not found within {LAYOUT_TIMEOUT_S:.0f} s: "
+                         f"drag it next to the camera window yourself")
+
+    thread = threading.Thread(target=worker, name="pybullet-window-layout", daemon=True)
+    thread.start()
+    return thread
+
+
+def apply_elbow_preset(argv):
+    """Translate old launcher switches; explicit public options take priority."""
+    cleaned, wanted = [], 'operator'
+    i = 0
+    while i < len(argv):
+        item = argv[i]
+        if item == '--off':
+            wanted = 'off'
+        elif item == '--elbow-follow':
+            if i + 1 == len(argv) or argv[i + 1] not in ('operator', 'off'):
+                raise ValueError('--elbow-follow requires operator or off')
+            i += 1
+            wanted = argv[i]
+        elif item.startswith('--elbow-follow='):
+            wanted = item.split('=', 1)[1]
+            if wanted not in ('operator', 'off'):
+                raise ValueError('--elbow-follow requires operator or off')
+        else:
+            cleaned.append(item)
+        i += 1
+    if not any(v == '--arm-elbow-follow' or v.startswith('--arm-elbow-follow=') for v in cleaned):
+        cleaned.extend(('--arm-elbow-follow', wanted))
+    return cleaned
+
+
 def run_camera_launcher(argv, *, with_arms, script_path):
     """Keep diagnostic camera options while sharing launch orchestration."""
     argv = list(argv)
+    if with_arms:
+        argv = apply_elbow_preset(argv)
+        if any(v in ('--help', '-h') for v in argv):
+            log('INFO', 'launcher: --elbow-follow {operator,off}, --off, --check; explicit --arm-elbow-follow wins')
     check = '--check' in argv
     argv = [value for value in argv if value != '--check']
     prepare_environment()
@@ -337,6 +502,7 @@ def run_camera_launcher(argv, *, with_arms, script_path):
     log('INFO', f"targets: {', '.join(args.robot)}; backend={args.backend}; arms={not args.no_arms}")
     if wants_window(argv):
         log('INFO', 'camera preview and PyBullet enabled; q/Esc stops the preview')
+    arrange_two_windows(args)
     status = int(entry_main(args))
     if report is not None:
         summarise_camera_window(report, want_window=wants_window(argv))

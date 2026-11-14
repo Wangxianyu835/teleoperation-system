@@ -11,7 +11,7 @@ import json
 import xml.etree.ElementTree as ET
 import numpy as np
 from teleoperation.paths import ROBOTS_ROOT
-from .specification import ARM_NEUTRAL, ROBOT_SPECS, TRON2A_ARM_JOINTS
+from .specification import arm_neutral_positions, ROBOT_SPECS, TRON2A_ARM_JOINTS
 
 # Joint order is a model declaration, never inferred by a fixed-DOF solver.
 _ROBOT_ARMS = {
@@ -119,11 +119,12 @@ def load_arm_spec(robot_id, urdf_path=None, sides=('left','right')):
     names={s:tuple(TRON2A_ARM_JOINTS[s]) if robot_id=='tron2a_l21' else
            tuple(f'{s}_{stem}_joint' for stem in _ROBOT_ARMS[robot_id]) for s in sides}
     reference={}
+    neutral = arm_neutral_positions(robot_id, path)
     for jid in range(1,model.njoints):
         j=model.joints[jid]; name=model.names[jid]
         if j.nq!=1 or j.nv!=1:
             raise ValueError(f'URDF joint {name} must be scalar')
-        value=ARM_NEUTRAL.get(name,0.)
+        value=neutral.get(name,0.)
         if robot_id=='tron2a_l21':
             if name.startswith('proximal_pitch_'): value=-.3
             if name.startswith('elbow_'): value=-1.2

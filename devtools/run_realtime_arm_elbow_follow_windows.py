@@ -15,12 +15,7 @@ OFF_SWITCH = "--off"           # 本文件的糖，等价 --arm-elbow-follow off
 
 def apply_pin(argv: list[str]) -> list[str]:
     """把这一版的口径钉进参数表；``--off`` 与显式 ``--arm-elbow-follow`` 优先。"""
-    argv = list(argv)
-    wanted = "off" if OFF_SWITCH in argv else THIS_BUILD
-    argv = [item for item in argv if item != OFF_SWITCH]
-    if any(item == FLAG or item.startswith(FLAG + "=") for item in argv):
-        return argv                     # 你已经自己写了这一项，不插手
-    return argv + [FLAG, wanted]
+    return runtime.apply_elbow_preset(list(argv))
 
 
 def pinned_value(argv: list[str]) -> str:
