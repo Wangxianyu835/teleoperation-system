@@ -20,6 +20,28 @@
 5) 丢帧（None / NaN）时目标保持不变（同一位置），且 ``counts.held > 0``
 6) 未驱动关节（腿 / 腰 / 头 / 未驱动侧的手）漂移 <= --max-hold-drift-rad
 
+口径 A/B（§8.17 / §8.19 的离线复现）
+------------------------------------
+``realtime_teleop --input-npz`` 只做手指回放（带手臂会直接 raise），所以「换映射口径到底
+改善了哪台机器人」这类对照必须在这里做：``--arm-map`` / ``--arm-posture-frame`` /
+``--arm-elbow-follow`` 三个开关和实时入口同名同义，同一份 npz + 同一个 ``--calibrate-frames``
+跑两遍就只有被测那一档不同。
+
+注意中性标定：SMPLer-X 这条线上 ``load_neutral`` 会拒绝旧的 Pose 中性文件（要求
+``format=smplerx_arm_neutral_v1``），而 Pose 录制又不能冒充 SMPL-X，所以旧录制上的 A/B
+用**跑内标定**（``--calibrate-frames``）而不是 ``--neutral-json``；两条腿的标定完全相同，
+差就只来自口径。
+
+    E:\\python3.11.7\\python.exe devtools\\verify_realtime_arm_bridge.py \\
+        --input-npz outputs\\tmp_realtime\\live_long_frames.npz --frames 200 \\
+        --calibrate-frames 30 \\
+        --arm-map posture --arm-posture-frame auto --arm-elbow-follow operator \\
+        --report tmp_arm_main/auto.json
+
+报告里的 ``bridge`` 段带 ``posture_frame`` / ``posture_frame_by_robot``，``posture`` 段是逐机位
+的 ``operator_upper_deg`` 与 ``robot_upper_deg``（§8.19.3 那张表就是它们），因此两档的数字
+可以直接相减。判据仍然按 profile 的 ceiling 判，**A/B 只看同一档与另一档的差**。
+
 用法::
 
     E:\\python3.11.7\\python.exe devtools\\verify_realtime_arm_bridge.py
@@ -103,6 +125,23 @@ def build_parser() -> argparse.ArgumentParser:
                              "relative to the robot's build-time wrist pose (the default "
                              "and what the realtime app uses), 'absolute' = the raw "
                              "convention (only meaningful with --arm-orientation on)")
+    parser.add_argument("--arm-map", choices=("chain", "segments", "posture"),
+                        default="chain",
+                        help="arm recipe under test (default: chain, the bridge default); "
+                             "'posture' is the recipe docs/multi-robot-arm.md 8.11-8.20 measures")
+    parser.add_argument("--arm-posture-frame", choices=("auto", "mapped", "delta"),
+                        default="auto",
+                        help="only with --arm-map posture: 'auto' = each robot's profile, "
+                             "'mapped' = carry your absolute directions (historical), "
+                             "'delta' = apply your rotation to the robot's loaded directions")
+    parser.add_argument("--arm-anchor", choices=("upper", "shoulder"), default="upper",
+                        help="the shoulder anchor the direction recipe measures from "
+                             "(same choices as the realtime entry)")
+    parser.add_argument("--arm-no-shoulder-follow", action="store_true",
+                        help="do not translate elbow/wrist targets with the current FK shoulder")
+    parser.add_argument("--arm-elbow-follow", choices=("off", "operator"), default="off",
+                        help="'operator' uses your elbow bend as the null-space reference "
+                             "(the value run_realtime_arm_elbow_follow_windows.py pins)")
     parser.add_argument("--arm-ik-iterations", type=int, default=None,
                         help="forward to PyBulletArmIK (default 200); 60 is ~2x faster")
     parser.add_argument("--arm-ik-residual-threshold", type=float, default=None)
@@ -176,11 +215,55 @@ def _span_mm(points) -> float:
 
 
 
+def build_bridge(args, profiles, sides, robot_links=None, robot_anchors=None):
+    """Construct the bridge under test (pure numpy: no PyBullet, so tests can call it).
+
+    ``--arm-posture-frame auto`` is the entry point's word for "each robot's profile";
+    the bridge itself spells that as ``posture_frame=None``.
+
+    The direction recipes (``segments`` / ``posture``) also need the measured robot link
+    lengths and shoulder anchors: without them ``_posture_terms`` returns ``None`` on every
+    frame and the run silently degrades to the chain recipe (hence the identical numbers
+    an A/B used to produce).
+    """
+    from teleoperation.simulation.arm_realtime import RealtimeArmBridge, load_neutral
+
+    frame = None if args.arm_posture_frame == "auto" else args.arm_posture_frame
+    return RealtimeArmBridge([profiles[name] for name in profiles], sides=sides,
+                             calibration_frames=args.calibrate_frames,
+                             orientation=args.arm_orientation,
+                             map_mode=args.arm_map,
+                             posture_frame=frame,
+                             robot_links=robot_links,
+                             anchors=robot_anchors,
+                             neutral=(load_neutral(args.neutral_json)
+                                      if args.neutral_json else None))
+
+
+def elbow_plan(bridge, per_side, side, elbow_follow):
+    """``(elbows, baseline, bend)`` for one side's ``apply_each`` call.
+
+    Same three values ``applications/camera_scene_arm.apply_camera_arm_frame`` passes:
+    the operator's bend only replaces the null-space reference for robots whose
+    posture frame is ``delta`` (in ``mapped`` the historical reference already matches).
+    """
+    if elbow_follow != "operator":
+        return None, None, None
+    neutral = bridge.elbow_bend_neutral().get(side)
+    elbows = {name: target.elbow for name, target in per_side.items()
+              if target.elbow is not None} or None
+    baseline = None if neutral is None else {
+        name: (neutral if (target.info or {}).get("posture_frame") == "delta" else None)
+        for name, target in per_side.items()}
+    return elbows, baseline, bridge.elbow_bend_target().get(side)
+
+
 def drive(args) -> tuple:
     """建场景 + 桥，逐帧驱动，跑完判据；返回 ``(report, failures)``。"""
+    from teleoperation.applications.camera_scene_arm import (measure_camera_arm_geometry,
+                                                             rigid_elbow_robots)
     from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
     from teleoperation.simulation.arm_profiles import loadable_robots, profile_for
-    from teleoperation.simulation.arm_realtime import RealtimeArmBridge, load_neutral
     from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
 
     sides = tuple(SIDES if args.side == "both" else (args.side,))
@@ -195,13 +278,20 @@ def drive(args) -> tuple:
         driver = ArmSceneDriver(scene, sides=sides, robots=robots,
                                 ik_iterations=args.arm_ik_iterations,
                                 residual_threshold=args.arm_ik_residual_threshold)
-        bridge = RealtimeArmBridge([profiles[name] for name in robots], sides=sides,
-                                   calibration_frames=args.calibrate_frames,
-                                   orientation=args.arm_orientation,
-                                   neutral=(load_neutral(args.neutral_json)
-                                            if args.neutral_json else None))
+        robot_links = robot_anchors = None
+        if args.arm_map in ("segments", "posture"):
+            # 方向口径的基准：本机连杆长 + 加载姿势下的肩/肘/腕锚点（与实时入口同一段）。
+            robot_links, robot_anchors = measure_camera_arm_geometry(driver, args.arm_anchor)
+            if not args.arm_no_shoulder_follow:
+                driver.set_shoulder_anchors(robot_anchors)
+        bridge = build_bridge(args, profiles, sides, robot_links, robot_anchors)
         stream, source = frame_stream(args, sides, args.frames)
         report["source"] = source
+        report["arm_map"] = args.arm_map
+        report["arm_posture_frame"] = args.arm_posture_frame
+        report["arm_elbow_follow"] = args.arm_elbow_follow
+        report["arm_anchor"] = args.arm_anchor
+        report["arm_shoulder_follow"] = not args.arm_no_shoulder_follow
         residuals = {name: {side: [] for side in sides} for name in robots}
         measured = {name: {side: [] for side in sides} for name in robots}
         commanded = {name: {side: [] for side in sides} for name in robots}
@@ -219,9 +309,15 @@ def drive(args) -> tuple:
                              if target.position is not None}
                 if len(positions) != len(per_side):
                     continue
+                elbows, baseline, bend = elbow_plan(bridge, per_side, side,
+                                                    args.arm_elbow_follow)
                 driver.apply_each(side, positions, source="base",
                                   orientation=orientation_by_side[side],
-                                  orientation_frame=args.arm_orientation_frame)
+                                  orientation_frame=args.arm_orientation_frame,
+                                  elbows=elbows,
+                                  elbow_rigid=rigid_elbow_robots(per_side) or None,
+                                  elbow_bend_baseline=baseline,
+                                  elbow_bend_deg=bend)
                 for name in robots:
                     target = per_side[name]
                     if target.position is None:
@@ -257,6 +353,17 @@ def drive(args) -> tuple:
         report["hold_frames_identical"] = {
             "checked": len(held_flags), "all_identical": bool(all(held_flags))}
         report["bridge"] = bridge.summary()
+        # 中性标定质量：delta 档的每一步都依赖它（左右臂长差、方向），A/B 必须能审计。
+        report["neutral"] = {
+            side: {
+                "complete": bool(bridge.neutral[side]["complete"]),
+                "reach_m": (None if bridge.neutral[side]["reach"] is None
+                            else round(float(bridge.neutral[side]["reach"]), 4)),
+                "upper": (None if bridge.neutral[side]["upper"] is None
+                          else [round(float(v), 4) for v in bridge.neutral[side]["upper"]]),
+                "fore": (None if bridge.neutral[side]["fore"] is None
+                         else [round(float(v), 4) for v in bridge.neutral[side]["fore"]]),
+            } for side in sides}
         report["arm"] = {}
         for name, profile in profiles.items():
             report["arm"][name] = {}

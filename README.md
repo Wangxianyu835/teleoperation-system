@@ -332,3 +332,5 @@ TRON2A 的 `dual camera --with-hands` 使用一份新版 L21 shared checkpoint�
 机器人正式控制与回放使用`robot control/replay`；手部训练、导出和独立手场景继续使用`hand`命令。各入口的实现归属、保留诊断工具和录制格式见[代码归属表](docs/current-interfaces.md#当前代码归属)。本次清理没有改变重定向算法或训练数据契约。
 
 Windows三个启动脚本仍保留给既有IDE配置使用，共用`devtools/windows_runtime.py`，用于旧相机预览/诊断；必须显式`--robot`，`--check`核对当前后端依赖及SMPLer-X路径。手/臂正式验收推荐上面的统一机器人入口。
+
+仿真任务的判据、时间统计和已知限制见[仿真评估说明](docs/SIM_EVALUATION.md)。
