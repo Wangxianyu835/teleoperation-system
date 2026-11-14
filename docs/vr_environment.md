@@ -1,5 +1,8 @@
 # Windows VR + retargeting environment
 
+This guide records the isolated VR environment setup. For the current realtime
+VR-to-hand application, use [the unified hand input guide](unified-hand-input.md).
+
 Use a separate `teleoperation-vr` Conda environment. Keep the existing
 `teleoperation` environment available for ongoing training and camera work.
 Commands below run in PowerShell from this repository root.
@@ -66,8 +69,8 @@ python devtools/visionpro_check.py --ip $vrIp --frames 120
 ```
 
 The environment verification does not prove a live headset connection. A live
-connection needs the user's headset and its address. This setup also does not
-add the missing VR-to-L21 realtime application or its coordinate adapter.
+connection needs the user's headset and its address. Application and coordinate
+adapter behavior are covered separately in the unified hand input guide.
 
 Use this interpreter in PyCharm:
 `D:\Anaconda\envs\teleoperation-vr\python.exe`.
