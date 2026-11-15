@@ -1,7 +1,6 @@
 """Metre-preserving world hand pipeline, without cameras or long training."""
 
 import contextlib
-import csv
 import io
 from pathlib import Path
 import tempfile
@@ -15,26 +14,18 @@ import torch
 
 from teleoperation.applications.hand_align import align_h5
 from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
-from teleoperation.applications.hand_realtime import MediaPipeCameraWorkflow, load_palm_local_retargeter
+from teleoperation.applications.hand_realtime import MediaPipeCameraWorkflow
 from teleoperation.cli import build_parser, main
 from teleoperation.contracts.coordinates import (
     PALM_LOCAL_COORDINATE_ALIGNMENT, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
     WORLD_LANDMARK_SPACE, WORLD_PALM_LOCAL_METADATA, palm_local_metadata,
-    CANONICAL_ANGLE_CONVENTION,
-    LEGACY_WORLD_PALM_LOCAL_ALIGNMENT,
 )
 from teleoperation.contracts.observations import RawHandFrame
-from teleoperation.data.hand_body_recording import write_hand_body_recording
 from teleoperation.data.hand_h5 import load_twohand_h5
 from teleoperation.data.hand_recording import RawHandH5Writer
 from teleoperation.inputs.mediapipe import parse_result
 from teleoperation.learning.dataset import TwoHandH5Dataset
-from teleoperation.paths import DEFAULT_REALTIME_CHECKPOINT, DEFAULT_WORLD_REALTIME_CHECKPOINT
-from teleoperation.retargeting.hand.checkpoint import load_hand_checkpoint
 from teleoperation.retargeting.hand.config import L21
-from teleoperation.retargeting.hand.geometric import GeometricHandRetargeter
-from teleoperation.retargeting.hand.predictor import create_twohand_retargeter
-from teleoperation.retargeting.hand.transformer import PoseTransformer
 from tests.test_mediapipe_realtime import raw_frame
 
 SIDES = ("left", "right")
@@ -84,20 +75,6 @@ class WorldHandPipelineTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
 
-    def test_cli_defaults_and_explicit_legacy_selection(self):
-        parser = build_parser()
-        self.assertEqual(parser.parse_args(["hand", "record"]).landmark_space, "world")
-        default = parser.parse_args(["hand", "realtime"])
-        self.assertEqual(default.checkpoint, DEFAULT_WORLD_REALTIME_CHECKPOINT)
-        legacy = parser.parse_args(["hand", "realtime", "--landmark-space", "normalized"])
-        self.assertEqual(legacy.checkpoint, DEFAULT_REALTIME_CHECKPOINT)
-        paired = parser.parse_args(["hand", "realtime", "--left-checkpoint", "l.pth", "--right-checkpoint", "r.pth"])
-        self.assertIsNone(paired.checkpoint)
-        self.assertIsNone(parser.parse_args(["hand", "export", "--input", "data.h5", "--output", "out.h5", "--hand-model", "l21", "--backend", "nn"]).checkpoint)
-        aligned = parser.parse_args(["hand", "align", "--input", "raw.h5", "--output", "out.h5"])
-        self.assertIsNone(aligned.landmark_space)
-        from teleoperation.applications.realtime_hand_sim import build_parser as sim_parser
-        self.assertEqual(sim_parser().parse_args([]).landmark_space, "world")
 
     def test_canonical_world_processing_never_loads_robot_reference(self):
         with patch("teleoperation.retargeting.hand.processing.build_l21_reference_basis",
@@ -106,45 +83,6 @@ class WorldHandPipelineTests(unittest.TestCase):
             for index in range(3): window = pipeline.process_window(world_frame(index))
             self.assertIsNotNone(window)
 
-    def test_legacy_world_weights_and_h5_require_their_original_explicit_contract(self):
-        from tests.test_coordinate_pipeline import CountingModel
-        from teleoperation.retargeting.hand.topology import ensure_hand25
-        metadata = {"coordinate_frame": "l21", "coordinate_alignment": LEGACY_WORLD_PALM_LOCAL_ALIGNMENT,
-                    "source_landmark_space": WORLD_LANDMARK_SPACE, "length_unit": "m", "source_scale": 1.}
-        path = self.root / "legacy_world.h5"
-        with h5py.File(path, "w") as handle:
-            handle.attrs.update(metadata)
-            for side in SIDES:
-                points = ensure_hand25(world_frame(0)["world_" + side])
-                handle.create_dataset(side + "_hand_keypoints", data=np.repeat(points[None], 3, axis=0))
-        dataset = TwoHandH5Dataset(path)
-        self.assertTrue(dataset.is_world)
-        self.assertFalse(dataset.is_canonical)
-        self.assertEqual(dataset.coordinate_frame, "l21")
-        checkpoint = self.root / "legacy.pth"
-        torch.save({**metadata, "model_pos": CountingModel().state_dict()}, checkpoint)
-        load_hand_checkpoint(CountingModel(), str(checkpoint), "cpu", expected_coordinate_alignment=LEGACY_WORLD_PALM_LOCAL_ALIGNMENT)
-        with self.assertRaisesRegex(ValueError, "alignment mismatch"):
-            load_hand_checkpoint(CountingModel(), str(checkpoint), "cpu", expected_coordinate_alignment=WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT)
-
-    def test_realtime_and_batch_export_apply_identical_native_angle_signs(self):
-        from teleoperation.retargeting.hand.predictor import TwoHandRetargeter
-        from teleoperation.retargeting.hand.config import ANGLE_LIMITS
-        class ConstantModel(torch.nn.Module):
-            def forward(self, values):
-                limits = values.new_tensor(ANGLE_LIMITS)
-                return ((limits[:, 0] + limits[:, 1]) / 2 + values.new_tensor(
-                    [0, .03, 0, 0, .04, 0, 0, .05, 0, 0, .06, 0, 0, 0, 0, 0, 0, 0])).expand(len(values), -1)
-        model = TwoHandRetargeter(ConstantModel(), expected_coordinate_alignment=WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT)
-        pipeline = MediaPipePalmLocalPipeline("world")
-        for index in range(3): window = pipeline.process_window(world_frame(index))
-        realtime = model.predict(window.to_payload(), "cpu")["hands"]
-        for side in SIDES:
-            batch = torch.from_numpy(window.hands[side][None])
-            predicted = model.predict_side(batch,side).detach().numpy()[0]
-            np.testing.assert_array_equal(predicted,realtime[side])
-        signs = np.ones(18); signs[[1, 4, 7, 10]] = -1
-        np.testing.assert_array_equal(realtime["left"], realtime["right"] * signs)
 
     def test_single_detection_keeps_both_spaces_and_labels_in_either_order(self):
         for labels in (("Left", "Right"), ("Right", "Left")):
@@ -188,7 +126,7 @@ class WorldHandPipelineTests(unittest.TestCase):
 
     def test_record_single_side_dual_storage_auto_alignment_and_protection(self):
         from teleoperation.applications import offline_h5_record
-        for mode in ("world", "normalized"):
+        for mode in ("world",):
             frames = [world_frame(i) for i in range(4)]
             capture = Mock()
             capture.next_frame.side_effect = frames
@@ -322,8 +260,8 @@ class WorldHandPipelineTests(unittest.TestCase):
             del source.attrs["hand_processing_landmark_space"]
         with self.assertRaisesRegex(ValueError, "World alignment requires"):
             align_h5(raw, self.root / "world.h5", "world")
-        report = align_h5(raw, self.root / "legacy.h5")
-        self.assertEqual(report["coordinate_metadata"]["coordinate_alignment"], PALM_LOCAL_COORDINATE_ALIGNMENT)
+        with self.assertRaises(ValueError):
+            align_h5(raw,self.root / "legacy.h5","world")
 
     def test_existing_record_world_file_explicit_alignment_retains_body_fields(self):
         from tests.smplerx_fixtures import write
@@ -353,11 +291,7 @@ class WorldHandPipelineTests(unittest.TestCase):
                     source.attrs[key] = value
             with self.assertRaises(ValueError):
                 TwoHandH5Dataset(aligned)
-        align_h5(raw, aligned, "normalized")
-        with h5py.File(aligned, "r+") as source:
-            source.attrs["source_landmark_space"] = WORLD_LANDMARK_SPACE
-        with self.assertRaisesRegex(ValueError, "normalized alignment"):
-            TwoHandH5Dataset(aligned)
+
 
     def test_world_workflow_requests_same_detection_and_keeps_preview_normalized(self):
         frames = [world_frame(i) for i in range(3)]
@@ -374,81 +308,6 @@ class WorldHandPipelineTests(unittest.TestCase):
                     self.assertEqual(call.kwargs, {"include_world": True})
         capture.close.assert_called_once()
 
-    def test_world_checkpoint_requires_complete_metres_contract_before_weights(self):
-        state = torch.nn.Linear(1, 1).state_dict()
-        for key, value in (("source_landmark_space", "mediapipe_normalized"), ("length_unit", None),
-                           ("source_scale", 2.), ("source_scale", None)):
-            payload = {**WORLD_PALM_LOCAL_METADATA, "model_pos": state}
-            if value is None:
-                del payload[key]
-            else:
-                payload[key] = value
-            model = Mock()
-            with patch("teleoperation.retargeting.hand.checkpoint.read_checkpoint", return_value=payload):
-                with self.assertRaises(ValueError):
-                    load_hand_checkpoint(model, "bad.pth", "cpu", expected_coordinate_alignment=WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT)
-                model.load_state_dict.assert_not_called()
-
-    def test_models_windows_and_sim_backend_reject_cross_mode_use(self):
-        kwargs = small_model_kwargs()
-        for mode, other in (("world", "normalized"), ("normalized", "world")):
-            model = PoseTransformer(**kwargs)
-            checkpoint = self.root / (mode + ".pth")
-            torch.save({**palm_local_metadata(mode), "model_pos": model.state_dict(),
-                        "hand_side": "shared", "training_robot": "right", "angle_convention": CANONICAL_ANGLE_CONVENTION}, checkpoint)
-            retargeter = create_twohand_retargeter(kwargs, "cpu", checkpoint_path=str(checkpoint),
-                                                  expected_coordinate_alignment=palm_local_metadata(mode)["coordinate_alignment"])
-            pipeline = MediaPipePalmLocalPipeline(other)
-            for index in range(3):
-                window = pipeline.process_window(world_frame(index))
-            with self.assertRaisesRegex(ValueError, "alignment mismatch"):
-                retargeter.predict(window.to_payload(), "cpu")
-            with self.assertRaisesRegex(ValueError, "alignment mismatch"):
-                create_twohand_retargeter(kwargs, "cpu", checkpoint_path=str(checkpoint),
-                                         expected_coordinate_alignment=palm_local_metadata(other)["coordinate_alignment"])
-        from teleoperation.applications.realtime_hand_sim import build_retargeter
-        with patch("teleoperation.retargeting.hand.predictor.build_hand_model", side_effect=lambda _: PoseTransformer(**kwargs)):
-            with self.assertRaisesRegex(ValueError, "alignment mismatch"):
-                build_retargeter("auto", self.root / "normalized.pth", "cpu", 1, 0., "world")
-        geometric, backend, _ = build_retargeter("auto", self.root / "missing.pth", "cpu", 1, 0., "world")
-        self.assertEqual(backend, "geometric")
-        world_pipeline = MediaPipePalmLocalPipeline("world")
-        for index in range(3):
-            window = world_pipeline.process_window(world_frame(index))
-        result = geometric.retarget(window)
-        for side in SIDES:
-            self.assertTrue(np.isfinite(result[("l21", side)].positions).all())
-
-    def test_default_loader_uses_world_and_missing_model_gives_training_command(self):
-        with patch("teleoperation.retargeting.hand.predictor.create_twohand_retargeter") as create:
-            load_palm_local_retargeter()
-        self.assertEqual(create.call_args.kwargs["checkpoint_path"], str(DEFAULT_WORLD_REALTIME_CHECKPOINT))
-        self.assertEqual(create.call_args.kwargs["expected_coordinate_alignment"], WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT)
-        with patch("teleoperation.retargeting.hand.predictor.build_hand_model", return_value=torch.nn.Linear(1, 1)):
-            with self.assertRaisesRegex(FileNotFoundError, "world_canonical_shared_v1"):
-                load_palm_local_retargeter(self.root / "missing.pth")
-
-    def test_headless_world_render_uses_equal_screen_scales_without_changing_inputs(self):
-        from teleoperation.tools import hand_visualization as display
-        pipeline = MediaPipePalmLocalPipeline("world")
-        for index in range(3):
-            frame = world_frame(index)
-            window = pipeline.process_window(frame)
-        before = {side: window.hands[side].copy() for side in SIDES}
-        args = build_parser().parse_args(["hand", "realtime", "--visualize", "--headless"])
-        for zoom in (1., 2.):
-            with patch.object(display, "_plot", wraps=display._plot) as plot:
-                canvas = display.render(frame, pipeline.current_hands, window.to_payload(),
-                                        {side: np.zeros(18) for side in SIDES},
-                                        {side: np.zeros((23, 3)) for side in SIDES},
-                                        pipeline.valid_streak, pipeline.invalid_reasons, dict.fromkeys(SIDES, 0),
-                                        args, 3, 30., zoom=zoom)
-                self.assertEqual(canvas.shape, (740, 1260, 3))
-                self.assertEqual(len(plot.call_args_list), 8)
-                for call in plot.call_args_list:
-                    self.assertEqual(call.args[6], args.robot_radius / zoom)
-        for side in SIDES:
-            np.testing.assert_array_equal(window.hands[side], before[side])
 
     def test_cpu_shared_training_reload_and_left_export(self):
         from teleoperation.learning import trainer
@@ -484,7 +343,7 @@ class WorldHandPipelineTests(unittest.TestCase):
         self.assertEqual(result.positions.shape,(17,))
         output=self.root/'results.h5'
         self.assertEqual(main(['hand','export','--input',str(aligned),'--output',str(output),
-            '--hand-model','l21','--backend','nn','--hand','left','--checkpoint',str(checkpoint),'--device','cpu']),0)
+            '--hand-model','l21','--backend','nn','--hand','left','--checkpoint',str(checkpoint),'--device','cpu','--no-collision-guard']),0)
         with h5py.File(output,'r') as source:
             self.assertEqual(source.attrs['schema'],'hand_joint_results_v1')
             self.assertEqual(source['l21/left/raw_positions'].shape,(30,17))

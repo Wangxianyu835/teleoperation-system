@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
 
 import numpy as np
 
@@ -29,16 +28,3 @@ class Tron2AL21Command:
 
     def flatten(self) -> np.ndarray:
         return np.concatenate((self.left_arm, self.left_hand, self.right_arm, self.right_hand)).astype(np.float32)
-
-
-@dataclass(frozen=True)
-class H1JointTargets:
-    joints: Mapping[str, float]
-
-@dataclass(frozen=True)
-class GR1JointTargets:
-    joints: Mapping[str, float]
-
-@dataclass(frozen=True)
-class G1JointTargets:
-    joints: Mapping[str, float]

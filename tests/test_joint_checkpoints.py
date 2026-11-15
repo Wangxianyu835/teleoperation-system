@@ -10,8 +10,6 @@ from teleoperation.paths import training_run_directory
 from teleoperation.robots.hand_spec import load_hand_spec
 from teleoperation.retargeting.hand.predictor import build_joint_model
 from teleoperation.retargeting.hand.checkpoint import (
-    joint_checkpoint_payload,
-    load_joint_checkpoint,
     save_joint_checkpoint,
     shared_joint_checkpoint_payload,
     load_shared_joint_checkpoint,
@@ -29,19 +27,20 @@ class JointCheckpointTests(unittest.TestCase):
             model = build_joint_model(spec, SMALL).eval()
             values = torch.zeros((2, 3, 25, 3))
             self.assertEqual(model(values).shape, (2, dof))
-            payload = joint_checkpoint_payload(model, spec)
+            payload = shared_joint_checkpoint_payload(model, spec)
             with tempfile.TemporaryDirectory() as directory:
                 path = Path(directory)/"model.pth"
                 save_joint_checkpoint(path, payload)
-                loaded, metadata = load_joint_checkpoint(path, spec, "cpu")
+                loaded, metadata = load_shared_joint_checkpoint(path, spec, "cpu")
                 torch.testing.assert_close(model(values), loaded(values), atol=0, rtol=0)
+                self.assertEqual(metadata['side'], 'shared')
                 for changes in ({"hand_model":"other"}, {"spec_hash":"a"*64},
                                 {"joint_names":list(reversed(spec.independent_joint_names))},
                                 {"input_profile":"old_metres"},
                                 {"reference_geometry":{"root_link":"different_root"}}):
                     save_joint_checkpoint(path, {**payload, **changes})
                     with self.subTest(changes=changes), self.assertRaises(ValueError):
-                        load_joint_checkpoint(path, spec, "cpu")
+                        load_shared_joint_checkpoint(path, spec, "cpu")
 
     def test_new_twenty_one_dof_network_needs_no_l21_placeholder(self):
         spec = load_hand_spec("l21", "right")
@@ -87,13 +86,13 @@ class JointCheckpointTests(unittest.TestCase):
 
     def test_checkpoint_cannot_override_declared_effective_output_limits(self):
         spec=load_hand_spec('g1','right')
-        payload=joint_checkpoint_payload(build_joint_model(spec,SMALL),spec)
+        payload=shared_joint_checkpoint_payload(build_joint_model(spec,SMALL),spec)
         payload['state_dict']['angle_clamper.angle_min']=torch.full((spec.dof,),-100.)
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'bad.pth'
             save_joint_checkpoint(path,payload)
             with self.assertRaisesRegex(ValueError,'limits'):
-                load_joint_checkpoint(path,spec,'cpu')
+                load_shared_joint_checkpoint(path,spec,'cpu')
 
 
 if __name__ == "__main__":

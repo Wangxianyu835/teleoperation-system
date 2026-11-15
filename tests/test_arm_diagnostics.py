@@ -11,8 +11,9 @@ from unittest.mock import patch
 import numpy as np
 
 from teleoperation.simulation.arm_diagnostics import ArmDiagnostics, sample_seconds
-from teleoperation.simulation import realtime_teleop as app
+from devtools import legacy_camera_baseline as app
 from tests.test_arm_ik_multi_robot import ASSETS_AVAILABLE, PYBULLET_AVAILABLE
+from tests.test_native_hand_replay import stub_camera_backend
 
 
 def recording(path, frames=4):
@@ -33,8 +34,8 @@ def recording(path, frames=4):
 
 
 def arguments(capture, report, *extra):
-    return app.build_parser().parse_args(["--input-body", str(capture), "--report", str(report),
-        "--backend", "geometric", "--headless", "--no-preview", "--no-collision-guard",
+    return app.build_parser().parse_args(["--robot", "g1", "--robot", "h1_2", "--robot", "gr1_t2", "--input-body", str(capture), "--report", str(report),
+        "--backend", "dex", "--headless", "--no-preview", "--no-collision-guard",
         "--arm-calibrate-frames", "1", "--print-every", "0", *extra])
 
 
@@ -76,6 +77,11 @@ class DiagnosticUnitTests(unittest.TestCase):
 
 @unittest.skipUnless(ASSETS_AVAILABLE and PYBULLET_AVAILABLE, "robot assets and PyBullet required")
 class DiagnosticLoopTests(unittest.TestCase):
+    def setUp(self):
+        backend = patch.object(app, 'build_camera_retargeter', side_effect=stub_camera_backend)
+        backend.start()
+        self.addCleanup(backend.stop)
+
     def test_diagnostics_leave_targets_commands_states_and_step_counts_identical(self):
         from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
         from teleoperation.simulation.arm_ik import PyBulletArmIK
@@ -117,7 +123,7 @@ class DiagnosticLoopTests(unittest.TestCase):
                         patch.object(ArmSceneDriver, "step", step), patch.object(PyBulletArmIK, "_ik_call", ik), \
                         patch.object(PyBulletArmIK, "apply", apply), \
                         contextlib.redirect_stdout(io.StringIO()):
-                    self.assertEqual(app.run(args), 0)
+                    self.assertEqual(app._run_legacy_hand_or_diagnostic(args), 0)
                 snapshots.append(current)
                 reports.append(json.loads(report.read_text(encoding="utf-8")))
             with trace.open(encoding="utf-8", newline="") as handle:
@@ -162,7 +168,7 @@ class DiagnosticLoopTests(unittest.TestCase):
                     patch.object(app, "_drain_in_background", side_effect=lambda action, label: action()), \
                     contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(RuntimeError, "capture lost"):
-                    app.run(arguments(capture, report, "--diagnostic-trace", str(trace)))
+                    app._run_legacy_hand_or_diagnostic(arguments(capture, report, "--diagnostic-trace", str(trace)))
             self.assertTrue(objects[0].closed and objects[0].trace.file.closed)
             result = json.loads(report.read_text(encoding="utf-8"))
             self.assertEqual(result["exit_reason"], "error")
@@ -172,7 +178,7 @@ class DiagnosticLoopTests(unittest.TestCase):
         args = arguments("input.npz", "report.json", "--diagnostic-trace", "input.npz")
         with patch.object(app, "build_scene") as scene:
             with self.assertRaisesRegex(ValueError, "overwrite"):
-                app.run(args)
+                app._run_legacy_hand_or_diagnostic(args)
             scene.assert_not_called()
 
 

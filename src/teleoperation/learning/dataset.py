@@ -8,24 +8,14 @@ from typing import Iterator
 import h5py
 import numpy as np
 
-from teleoperation.retargeting.hand.processing import CanonicalHandProcessor
 from teleoperation.retargeting.hand.temporal import TemporalBuffer
-from teleoperation.contracts.observations import RawHandFrame
 from teleoperation.contracts.hand import CanonicalHandFrame
 from teleoperation.data.hand_h5 import load_twohand_h5, read_coordinate_alignment
 from teleoperation.contracts.constants import DEFAULT_MAX_CENTER_DISPLACEMENT, DEFAULT_MAX_SHAPE_RMSE
-from teleoperation.contracts.coordinates import (
-    COORDINATE_FRAME, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
-    coordinate_frame_for_alignment, is_world_alignment,
-    PALM_LENGTH_PROFILE, PALM_LENGTH_ALIGNMENT,
-)
+from teleoperation.contracts.coordinates import WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, coordinate_frame_for_alignment, is_world_alignment, PALM_LENGTH_PROFILE, PALM_LENGTH_ALIGNMENT
 
 
 HAND_SIDES = ("left", "right")
-_SIDE_KEYS = {
-    "left": "left_hand_keypoints",
-    "right": "right_hand_keypoints",
-}
 
 
 class TwoHandH5Dataset:
@@ -33,8 +23,8 @@ class TwoHandH5Dataset:
 
     The current camera recorder writes datasets at the H5 root:
     ``left_hand_keypoints`` and ``right_hand_keypoints`` with shape
-    ``(frames, 21, 3)``. The loader also accepts the older grouped schema
-    containing ``l_glove_pos`` and ``r_glove_pos``.
+    ``(frames, 25, 3)`` after explicit world alignment. Grouped glove and
+    image-normalized training recordings are rejected.
     """
 
     def __init__(
@@ -67,7 +57,7 @@ class TwoHandH5Dataset:
         self.coordinate_alignment = read_coordinate_alignment(self.path)
         self.is_world = is_world_alignment(self.coordinate_alignment)
         self.is_canonical = self.coordinate_alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
-        if input_profile == PALM_LENGTH_PROFILE and not self.is_canonical:
+        if not self.is_canonical:
             raise ValueError("Palm-length training requires canonical world metre H5")
         self.source_coordinate_alignment = self.coordinate_alignment
         self.units = "1" if input_profile == PALM_LENGTH_PROFILE else ("m" if self.is_world else "unknown")
@@ -118,13 +108,6 @@ class TwoHandH5Dataset:
     def _build_samples(self) -> list[dict]:
         samples: list[dict] = []
         previous_frame_id = None
-        processor = CanonicalHandProcessor(
-            scale_factor=self.scale_factor,
-            track_identity=self.track_identity,
-            max_center_displacement=self.max_center_displacement,
-            max_shape_rmse=self.max_shape_rmse,
-        )
-
         buffer = TemporalBuffer(self.receptive_field)
         for frame_index in range(self.frame_start, self.frame_end):
             frame_id = _scalar_or_none(self.frame_ids[frame_index])
@@ -134,7 +117,6 @@ class TwoHandH5Dataset:
                 and frame_id is not None
                 and frame_id != previous_frame_id + 1
             ):
-                processor.reset()
                 buffer.reset()
             previous_frame_id = frame_id
 
@@ -143,15 +125,12 @@ class TwoHandH5Dataset:
                 for side in HAND_SIDES
             }
             timestamp = _scalar_or_none(self.timestamps[frame_index])
-            if self.is_world:
-                hands = {}
-                for side, points in raw_hands.items():
-                    if points.shape != (25, 3):
-                        raise ValueError("Aligned world Dataset requires (25,3) hands")
-                    hands[side] = points if np.isfinite(points).all() and np.any(points) else None
-                canonical = CanonicalHandFrame(hands, timestamp, "h5", self.coordinate_metadata)
-            else:
-                canonical = processor.process_frame(RawHandFrame(raw_hands, timestamp, "h5", {"frame_index": frame_index}))
+            hands = {}
+            for side, points in raw_hands.items():
+                if points.shape != (25, 3):
+                    raise ValueError('Aligned world Dataset requires (25,3) hands')
+                hands[side] = points if np.isfinite(points).all() and np.any(points) else None
+            canonical = CanonicalHandFrame(hands, timestamp, 'h5', self.coordinate_metadata)
             if self.input_profile == PALM_LENGTH_PROFILE:
                 from teleoperation.retargeting.hand.normalization import validate_metric_hand_frame
                 canonical = validate_metric_hand_frame(canonical)
@@ -215,85 +194,8 @@ class TwoHandH5Dataset:
         yield from self.samples
 
 
-class TwoHandH5ChunkedGenerator:
-    """Batch generator for :class:`TwoHandH5Dataset`."""
-
-    def __init__(
-        self,
-        dataset: TwoHandH5Dataset,
-        batch_size: int,
-        shuffle: bool = True,
-        random_seed: int = 1234,
-        hand_side: str | None = None,
-    ):
-        self.dataset = dataset
-        self.batch_size = int(batch_size)
-        if self.batch_size < 1:
-            raise ValueError("batch_size must be positive")
-        self.shuffle = bool(shuffle)
-        self.random = np.random.RandomState(random_seed)
-        if hand_side is not None and hand_side not in HAND_SIDES:
-            raise ValueError(f"Unknown hand side: {hand_side!r}")
-        self.indices = np.asarray([
-            index for index, sample in enumerate(dataset.samples)
-            if hand_side is None or sample[f"{hand_side}_valid"]
-        ], dtype=np.int64)
-        self.num_batches = (
-            len(self.indices) + self.batch_size - 1
-        ) // self.batch_size
-
-    def num_frames(self) -> int:
-        return len(self.indices)
-
-    def next_epoch(self):
-        indices = self.indices.copy()
-        if self.shuffle:
-            self.random.shuffle(indices)
-
-        for start in range(0, len(indices), self.batch_size):
-            batch_indices = indices[start : start + self.batch_size]
-            samples = [self.dataset.samples[int(i)] for i in batch_indices]
-            yield {
-                "left_input": _stack(samples, "left_input"),
-                "right_input": _stack(samples, "right_input"),
-                "left_target": _stack(samples, "left_target"),
-                "right_target": _stack(samples, "right_target"),
-                "left_valid": _mask(samples, "left_valid"),
-                "right_valid": _mask(samples, "right_valid"),
-                "frame_index": np.asarray(
-                    [sample["frame_index"] for sample in samples],
-                    dtype=np.int64,
-                ),
-                "frame_id": np.asarray(
-                    [sample["frame_id"] for sample in samples],
-                ),
-                "timestamp": np.asarray(
-                    [sample["timestamp"] for sample in samples],
-                    dtype=np.float64,
-                ),
-            }
-
-
-def _is_valid_hand_frame(points: np.ndarray | None) -> bool:
-    if points is None:
-        return False
-    points = np.asarray(points)
-    return bool(np.isfinite(points).all() and not np.all(points == 0))
-
-
 def _scalar_or_none(value):
     if value is None:
         return None
     scalar = np.asarray(value).reshape(-1)
     return None if scalar.size == 0 else scalar[0].item()
-
-
-def _stack(samples: list[dict], key: str) -> np.ndarray:
-    return np.stack([sample[key] for sample in samples], axis=0).astype(
-        np.float32,
-        copy=False,
-    )
-
-
-def _mask(samples: list[dict], key: str) -> np.ndarray:
-    return np.asarray([sample[key] for sample in samples], dtype=bool)

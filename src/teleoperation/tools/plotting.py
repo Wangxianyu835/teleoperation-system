@@ -2,7 +2,6 @@
 
 import cv2
 import numpy as np
-from teleoperation.retargeting.hand.config import JOINT_EDGES, JOINT_NAMES
 
 SOURCE_EDGES = (
     (0, 1), (1, 2), (2, 3), (3, 4),
@@ -11,10 +10,6 @@ SOURCE_EDGES = (
     (9, 13), (13, 14), (14, 15), (15, 16),
     (13, 17), (17, 18), (18, 19), (19, 20), (0, 17),
 )
-NAME_INDEX = {name: i for i, name in enumerate(JOINT_NAMES)}
-ROBOT_EDGES = tuple((NAME_INDEX[a], NAME_INDEX[b]) for a, b in JOINT_EDGES)
-ROBOT_TIPS = tuple(NAME_INDEX[f"{finger}_tip"] for finger in
-                   ("thumb", "index", "middle", "ring", "pinky"))
 COLORS = {"left": (255, 145, 65), "right": (80, 220, 100)}  # BGR
 
 
@@ -48,3 +43,16 @@ def draw_skeleton(canvas, pixels, edges, color, tips, labels):
                    (0, 190, 255) if i in tips else color, -1, cv2.LINE_AA)
         if labels:
             text(canvas, str(i), (int(pixel[0]) + 4, int(pixel[1]) - 4), scale=0.35)
+
+
+def set_equal_axes(ax, points, *, padding, zero_radius):
+    """Set a cubic 3D view, preserving each caller's framing parameters."""
+    mins = points.min(axis=0)
+    maxs = points.max(axis=0)
+    center = (mins + maxs) * 0.5
+    radius = float(np.max(maxs - mins) * padding)
+    if radius <= 0:
+        radius = zero_radius
+    ax.set_xlim(center[0] - radius, center[0] + radius)
+    ax.set_ylim(center[1] - radius, center[1] + radius)
+    ax.set_zlim(center[2] - radius, center[2] + radius)

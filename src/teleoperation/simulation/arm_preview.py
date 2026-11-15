@@ -9,10 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from teleoperation.applications.realtime_hand_sim import (
-    CameraPreview,
-    attach_preview_capture,
-)
+from teleoperation.applications.camera_preview import CameraPreview, attach_preview_capture
 
 #: 窗口标题：与基线区分开，用户一眼能看出"这条预览额外画了手臂"。
 ARM_PREVIEW_WINDOW = "camera: hands + arms (q/Esc quits)"
@@ -109,7 +106,7 @@ class ArmCameraPreview(CameraPreview):
 def build_arm_preview(args, camera, sides):
     """按 ``args`` 建"手 + 手臂"预览；不需要窗口且不存 PNG 时返回 ``None``。
 
-    与基线 ``build_preview`` 同一套开关、同一套失败策略，只换窗口标题、类，并多透传
+    使用CameraPreview的窗口开关和失败策略，另加机械臂标题、类，并透传
     ``--no-arm-overlay``；输入层没暴露采集对象时打印一行 note 并返回 ``None``。
     """
     want_window = not args.headless and not args.no_preview

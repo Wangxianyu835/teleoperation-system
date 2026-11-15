@@ -9,51 +9,42 @@ from unittest.mock import patch
 import h5py
 import numpy as np
 
-from devtools import make_twohand_raw_sample as sample
 from devtools import run_retargeting_pipeline as pipeline
 from teleoperation.applications.hand_align import align_h5
 
 
 class CaptureBranchIntegrationTests(unittest.TestCase):
-    def test_generated_normalized_recording_aligns_without_changing_source(self):
-        left, right, ids, timestamps = sample.make_twohand_raw(6, 13)
+    def test_generated_world_recording_aligns_without_changing_source(self):
+        from tests.test_world_hand_pipeline import world_frame, save_raw
+        from teleoperation.contracts.coordinates import WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
+        frames=[world_frame(i) for i in range(6)]
         with tempfile.TemporaryDirectory() as folder:
-            raw, aligned = Path(folder) / "raw.h5", Path(folder) / "aligned.h5"
-            sample.write_raw_h5(raw, left, right, ids, timestamps, 13)
-            before = raw.read_bytes()
-            result = align_h5(raw, aligned)
-            self.assertEqual(raw.read_bytes(), before)
-            self.assertEqual(result["frames"], 6)
-            with h5py.File(aligned) as handle:
-                self.assertEqual(handle.attrs["source_landmark_space"], "mediapipe_normalized")
-                for side in ("left", "right"):
-                    points = handle[side + "_hand_keypoints"][:]
-                    self.assertEqual(points.shape, (6, 25, 3))
+            raw,aligned=Path(folder)/'raw.h5',Path(folder)/'aligned.h5'
+            save_raw(raw,frames)
+            before=raw.read_bytes()
+            result=align_h5(raw,aligned,'world')
+            self.assertEqual(raw.read_bytes(),before)
+            self.assertEqual(result['frames'],6)
+            with h5py.File(aligned) as target, h5py.File(raw) as source:
+                self.assertEqual(target.attrs['coordinate_alignment'],WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT)
+                for side in ('left','right'):
+                    points=target[side+'_hand_keypoints'][:]
+                    self.assertEqual(points.shape,(6,25,3))
                     self.assertTrue(np.isfinite(points).all())
                     self.assertTrue(np.any(points))
-                np.testing.assert_array_equal(handle["timestamps"][:], timestamps)
+                np.testing.assert_array_equal(target['timestamps'][:],source['timestamps'][:])
+                np.testing.assert_array_equal(target['frame_ids'][:],source['frame_ids'][:])
 
-    def test_sample_rejects_invalid_timing_before_generation(self):
-        for frames, fps in ((2, 30), (6, 0), (6, -1), (6, np.nan), (6, np.inf)):
-            with self.subTest(frames=frames, fps=fps), self.assertRaises(ValueError):
-                sample.make_twohand_raw(frames, fps)
-
-    def test_legacy_inspection_reports_nonfinite_predictions(self):
+    def test_native_inspection_rejects_nonfinite_valid_predictions(self):
         from teleoperation.applications.hand_inspect import inspect_angle_h5
+        from tests.test_hand_core_regression import write_native_recording
         with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "angles.h5"
-            with h5py.File(path, "w") as handle:
-                handle["frame_ids"] = np.arange(4)
-                handle['timestamps'] = np.arange(4)/30
-                for side in ("left", "right"):
-                    values = np.zeros((4, 18))
-                    values[2, 4] = np.nan
-                    handle[side + "_angles"] = values
-                    handle[side + "_valid"] = np.ones(4, dtype=bool)
-            with contextlib.redirect_stdout(io.StringIO()):
-                summary=inspect_angle_h5(path)
-                self.assertGreater(summary['left']['nonfinite'],0)
-                self.assertGreater(summary['right']['nonfinite'],0)
+            path = Path(folder) / 'joints.h5'
+            write_native_recording(path)
+            with h5py.File(path, 'r+') as handle:
+                handle['g1/right/raw_positions'][1, 0] = np.nan
+            with self.assertRaises(ValueError):
+                inspect_angle_h5(path)
 
     def test_explicit_missing_recording_is_not_replaced_with_synthetic_data(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -17,7 +17,6 @@ import numpy as np
 from .transaction import atomic_output
 
 
-FORMAT_VERSION = "hand_body_capture_h5_v1"
 POINT_DATASETS = (
     ("left_hand_keypoints", (21, 3)),
     ("right_hand_keypoints", (21, 3)),
@@ -48,21 +47,6 @@ def _stack_points(frames: list[Mapping], key: str, shape: tuple[int, int]) -> tu
     return values, valid
 
 
-def _stack_vector(frames: list[Mapping], key: str, width: int, default) -> tuple[np.ndarray, np.ndarray]:
-    values = np.full((len(frames), width), default, dtype=np.float32)
-    present = np.zeros(len(frames), dtype=bool)
-    for index, frame in enumerate(frames):
-        value = frame.get(key)
-        if value is None:
-            continue
-        array = np.asarray(value, dtype=np.float32).reshape(-1)
-        if array.shape != (width,):
-            raise ValueError(f"{key} frame {index} must have shape ({width},)")
-        if not np.isfinite(array).all():
-            raise ValueError(f"{key} frame {index} must be finite")
-        values[index] = array
-        present[index] = True
-    return values, present
 
 
 def write_hand_body_recording(

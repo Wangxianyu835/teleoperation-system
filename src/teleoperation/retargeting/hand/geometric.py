@@ -36,7 +36,7 @@ world 规范坐标先在 retarget 内转换回各侧原生根坐标；normalized
 轴测拇指会得到 -30.7 度且符号翻转，故拇指必须用自身轴。
 
 镜像输入（自拍镜像 / 图像翻转）会让上面这套量整体反号，所以保留一个**镜像
-自检**：L21 零位姿的拇指掌骨偏掌心一侧（``expected_thumb_lean``，实测约
+自检**：L21 零位姿的拇指掌骨偏掌心一侧（零位姿拇指倾斜量，实测约
 ±0.03），把输入拇指掌骨在法向上的投影取窗口内中位数，与它同号则为正常输入
 （系数 1.0），异号则判为镜像输入（系数 -1.0，屈曲维与拇指 yaw 整体取反）；
 证据不足时按正常输入处理（URDF 轴已在正常输入下给出正确符号）。
@@ -105,14 +105,13 @@ from collections import deque
 import numpy as np
 
 from teleoperation.contracts.hand import HandWindow
-from .angles import l21_joint_result
+from teleoperation.contracts.hand_control import HandJointResult
 from teleoperation.retargeting.hand.config import ANGLE_LIMITS, HAND_ANGLE_DIM, L21
 from teleoperation.retargeting.hand.interface import HandRetargeter
 
 SIDES = ("left", "right")
 
 # 25 点布局（与 retargeting/hand/topology.py 的 mediapipe21_to_hand25 一致）
-WRIST = 0
 THUMB = {"cmc": 1, "mcp": 2, "ip": 3, "tip": 4}
 FINGERS = {
     "index": (5, 6, 7, 8, 9),
@@ -122,7 +121,6 @@ FINGERS = {
 }
 
 # 18 维 L21 向量里的下标（0 是 hand_base_link 固定占位）
-ROLL_DIM = {"index": 1, "middle": 4, "ring": 7, "pinky": 10}
 PITCH_DIM = {"index": 2, "middle": 5, "ring": 8, "pinky": 11}
 PIP_DIM = {"index": 3, "middle": 6, "ring": 9, "pinky": 12}
 THUMB_ROLL_DIM, THUMB_YAW_DIM, THUMB_PITCH_DIM = 13, 14, 15
@@ -178,13 +176,6 @@ def bend_angle(parent: np.ndarray, child: np.ndarray, axis: np.ndarray, sign: fl
     return float(sign * np.arctan2(sine, circle))
 
 
-def _in_plane_angle(direction: np.ndarray, lateral: np.ndarray, longitudinal: np.ndarray) -> float:
-    """Angle of ``direction`` inside the palm plane, measured from +Y toward +X.
-
-    Kept for probing the palm-plane reading of the thumb metacarpal (the coarse
-    "in-plane yaw" the chain inversion replaced); no longer used by the pipeline.
-    """
-    return float(np.arctan2(float(np.dot(direction, lateral)), float(np.dot(direction, longitudinal))))
 
 
 def _rodrigues(axis: np.ndarray, angle: float) -> np.ndarray:
@@ -361,9 +352,6 @@ class GeometricHandRetargeter(HandRetargeter):
         """
         return self._robot_reference(side)[0]
 
-    def expected_thumb_lean(self, side: str) -> float:
-        """How this side's own zero-pose thumb metacarpal leans along the palm normal."""
-        return self._robot_reference(side)[1]
 
     def _robot_reference(self, side: str) -> tuple[dict[int, np.ndarray], float, np.ndarray]:
         """One FK pass over the zero pose: per-joint axes, thumb lean, node cloud.
@@ -427,7 +415,15 @@ class GeometricHandRetargeter(HandRetargeter):
             if values is None:
                 continue
             angles[side] = values if self.smoothing == 0.0 else self._smooth(side, values)
-        return {("l21", side): l21_joint_result(side, angles[side], hand_window.timestamp) for side in SIDES}
+        from teleoperation.robots.hand_spec import load_hand_spec
+        results = {}
+        for side in SIDES:
+            spec = load_hand_spec('l21', side)
+            values = angles[side]
+            results[spec.key] = HandJointResult(*spec.key, spec.spec_hash, spec.independent_joint_names,
+                None if values is None else values[1:].copy(), hand_window.timestamp,
+                values is not None, 'invalid geometry or unfinished calibration' if values is None else None)
+        return results
 
     # ------------------------------------------------------------------ #
     def _side_angles(self, side: str, points: np.ndarray) -> np.ndarray | None:
@@ -472,7 +468,7 @@ class GeometricHandRetargeter(HandRetargeter):
         """+1 for a normal source, -1 when the input hand looks mirrored.
 
         The L21 zero pose says which way its own thumb metacarpal leans along the
-        palm normal (``expected_thumb_lean``); a source whose thumb leans the
+        palm normal (零位姿拇指倾斜量); a source whose thumb leans the
         other way is a mirrored point cloud (selfie mirror, flipped image), and
         then every signed angle must be negated. Weak evidence falls back to +1
         because the URDF joint axes already carry the flexion sign.

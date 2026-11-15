@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
+from .plotting import set_equal_axes
 HAND21_CONNECTIONS = (
     (0, 1), (1, 2), (2, 3), (3, 4),
     (0, 5), (5, 6), (6, 7), (7, 8),
@@ -40,7 +41,7 @@ def _plot_hands(hands: dict, output_path: Path, title: str) -> None:
         raise ValueError("No valid hand keypoints found for the requested frame")
 
     all_points = np.concatenate(plotted_points, axis=0)
-    _set_equal_axes(ax, all_points)
+    set_equal_axes(ax, all_points, padding=0.55, zero_radius=1.0)
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
@@ -87,16 +88,6 @@ def _plot_one_hand(ax, points: np.ndarray, side: str) -> None:
         )
 
 
-def _set_equal_axes(ax, points: np.ndarray) -> None:
-    mins = points.min(axis=0)
-    maxs = points.max(axis=0)
-    center = (mins + maxs) * 0.5
-    radius = float(np.max(maxs - mins) * 0.55)
-    if radius <= 0:
-        radius = 1.0
-    ax.set_xlim(center[0] - radius, center[0] + radius)
-    ax.set_ylim(center[1] - radius, center[1] + radius)
-    ax.set_zlim(center[2] - radius, center[2] + radius)
 
 
 def _is_plottable(points: np.ndarray) -> bool:

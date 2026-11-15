@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import os
+import json
 import subprocess
 import sys
 import tempfile
@@ -32,21 +33,17 @@ class InspectEntrypointTests(unittest.TestCase):
     def test_valid_file_has_identical_summary_and_validity(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "angles.h5"
-            with h5py.File(path, "w") as f:
-                f["frame_ids"] = np.arange(3)
-                f["timestamps"] = np.arange(3) / 30
-                for side in ("left", "right"):
-                    f[f"{side}_angles"] = np.zeros((3, 18), dtype=np.float32)
-                    f[f"{side}_valid"] = [True, False, True]
-                f.attrs["alignment"] = "palm_local_to_l21_v1"
+            from tests.test_hand_core_regression import write_native_recording
+            write_native_recording(path)
             wrapper, canonical = self.commands("--angle-h5", str(path))
         self.assertEqual(wrapper.returncode, 0, wrapper.stderr)
         self.assertEqual(canonical.returncode, 0, canonical.stderr)
         self.assertEqual(wrapper.stdout, canonical.stdout)
-        self.assertIn("frames=3", wrapper.stdout)
-        self.assertIn("left_valid=2", wrapper.stdout)
-        self.assertIn("right_invalid=1", wrapper.stdout)
-        self.assertIn("attr.alignment=palm_local_to_l21_v1", wrapper.stdout)
+        summary = json.loads(wrapper.stdout)
+        self.assertEqual(summary['schema'], 'hand_joint_results_v1')
+        self.assertEqual(summary['frames'], 3)
+        self.assertEqual(summary['targets']['g1/right']['valid'], 1)
+        self.assertEqual(summary['targets']['g1/right']['invalid'], 2)
 
     def assert_same_failure(self, path, error, message):
         wrapper, canonical = self.commands("--angle-h5", str(path))
@@ -60,14 +57,14 @@ class InspectEntrypointTests(unittest.TestCase):
 
     def test_nonexistent_file_preserves_canonical_error(self):
         with tempfile.TemporaryDirectory() as temp:
-            self.assert_same_failure(Path(temp) / "missing.h5", "FileNotFoundError", "Angle H5 was not found")
+            self.assert_same_failure(Path(temp) / "missing.h5", "FileNotFoundError", "not found")
 
     def test_invalid_schema_preserves_canonical_error(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "invalid.h5"
             with h5py.File(path, "w") as f:
                 f["frame_ids"] = [0]
-            self.assert_same_failure(path, "ValueError", "Angle H5 is missing datasets")
+            self.assert_same_failure(path, "ValueError", "hand_joint_results_v1")
 
 
 if __name__ == "__main__":

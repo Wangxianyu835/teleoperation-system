@@ -10,17 +10,19 @@ from math import acos, degrees, pi, radians
 
 import numpy as np
 
-from teleoperation.simulation.arm_profiles import (
-    SIDES,
-    ArmProfile,
-    profile_for,
-    resolve_joint_names,
-)
+from teleoperation.simulation.arm_profiles import SIDES, profile_for, resolve_joint_names
 
 PHYSICS_DT = 1.0 / 240.0
 ARM_FORCE = 200.0
 IK_ITERATIONS = 200
 IK_RESIDUAL_THRESHOLD = 1e-5
+#: 手臂关节限位容差（rad）：IK 解落在 URDF 边界外这么一点点以内就**夹到边界**，不是丢整帧。
+#: 三机 900 帧实测（2026-11-09，h1_2 + g1 + gr1_t2）：全部 209 次限位拒绝的超限量都在
+#: 0.1~7.8 mrad，且都只落在腕关节（wrist_yaw / wrist_pitch / wrist_roll），属数值噪声。
+#: 大于该容差的关节解仍被拒绝；位置候选另检查最终输出是否取得位置进展。
+ARM_LIMIT_TOLERANCE = 1e-2
+#: Require one micrometre of position progress to exclude FK roundoff from fallback acceptance.
+FALLBACK_PROGRESS_EPS_M = 1e-6
 SHOULDER_KEYWORD = "shoulder"
 ELBOW_KEYWORD = "elbow"
 #: 「肘跟手」（``posture_from_bend``）在加载时量肘关节正方向用的探针角（度）：把该关节拧
@@ -740,8 +742,46 @@ class PyBulletArmIK:
         return values
 
     def _arm_values(self, side: str, solution) -> dict:
-        return {name: solution[self.position_of[index]]
-                for index, name in self.arm[side]}
+        """Return named arm angles with tolerance-sized overshoot pulled onto the bounds.
+
+        The wrist branch accepts a value up to ``ARM_LIMIT_TOLERANCE`` outside the URDF limits
+        so a saturated pose is not rejected on every frame, while command validation requires
+        the exact limits (1e-6). Return only in-range values; keep larger violations untouched
+        so the existing rejection path still refuses them.
+        """
+        values = {}
+        for index, name in self.arm[side]:
+            position = self.position_of[index]
+            value = float(solution[position])
+            low = float(self.limits["lower"][position])
+            high = float(self.limits["upper"][position])
+            if np.isfinite(value) and low - ARM_LIMIT_TOLERANCE <= value <= high + ARM_LIMIT_TOLERANCE:
+                value = min(max(value, low), high)
+            values[name] = value
+        return values
+
+    def _limit_violation(self, side: str, solution) -> dict:
+        """Worst out-of-limit arm joint of a rejected solution (report diagnostic).
+
+        The wrist branch rejects a pose whose arm values leave the URDF bounds by more than
+        ``ARM_LIMIT_TOLERANCE``. Recording which joint, its value and the excess lets a report
+        tell boundary noise (1e-6..1e-3 rad) from a genuinely unreachable target.
+        """
+        worst = None
+        for index, name in self.arm[side]:
+            position = self.position_of[index]
+            value = float(solution[position])
+            low = float(self.limits["lower"][position])
+            high = float(self.limits["upper"][position])
+            if not np.isfinite(value):
+                return {"joint": name, "value": None, "lower": round(low, 6),
+                        "upper": round(high, 6), "excess_rad": None}
+            excess = value - high if value > high else low - value
+            if excess > ARM_LIMIT_TOLERANCE and (worst is None or excess > worst["excess_rad"]):
+                worst = {"joint": name, "value": round(value, 6),
+                         "lower": round(low, 6), "upper": round(high, 6),
+                         "excess_rad": round(float(excess), 8)}
+        return worst or {}
 
     def _teleport(self, side: str, solution) -> None:
         """Temporarily set arm joint positions for the next IK pass, without stepping physics."""
@@ -910,6 +950,9 @@ class PyBulletArmIK:
         saved = [(index, self.p.getJointState(self.body, index,
                                             physicsClientId=self.cid)[:2])
                  for index in self.indices]
+        gui = self.p.getConnectionInfo(physicsClientId=self.cid).get('connectionMethod') == self.p.GUI
+        if gui:
+            self.p.configureDebugVisualizer(self.p.COV_ENABLE_RENDERING, 0, physicsClientId=self.cid)
         try:
             solution, target_orientation = self._ik_sequence(
                 side, world, elbow_world, orientation, arguments, elbow_pass, warm_start)
@@ -923,29 +966,68 @@ class PyBulletArmIK:
                     details = dict(self._sequence_details)
                 self.last_solution_cost[side] = self._branch_cost(side, world, elbow_world)
         finally:
-            for index, (position_before, velocity_before) in saved:
-                self.p.resetJointState(self.body, index, position_before,
-                                       targetVelocity=velocity_before,
-                                       physicsClientId=self.cid)
+            try:
+                for index, (position_before, velocity_before) in saved:
+                    self.p.resetJointState(self.body, index, position_before,
+                                           targetVelocity=velocity_before,
+                                           physicsClientId=self.cid)
+            finally:
+                if gui:
+                    self.p.configureDebugVisualizer(self.p.COV_ENABLE_RENDERING, 1, physicsClientId=self.cid)
         if orientation is not None:
             previous = {i: q for i, (q, _v) in saved}
-            rejection = "pose_position_conflict" if details.get("position_fallback") else None
+            rejection = None
             largest_step = 0.
             for index, _name in self.arm[side]:
                 k = self.position_of[index]
                 value = solution[k]
-                if not np.isfinite(value) or not self.limits["lower"][k] - 1e-5 <= value <= self.limits["upper"][k] + 1e-5:
+                if not np.isfinite(value) or not self.limits["lower"][k] - ARM_LIMIT_TOLERANCE <= value <= self.limits["upper"][k] + ARM_LIMIT_TOLERANCE:
                     rejection = "nonfinite_or_limit"
-                largest_step = max(largest_step, abs(value - previous[index]))
-            if rejection:
-                solution = [previous[index] for index in self.indices]
-            elif largest_step > .35:
+                else:
+                    # Clamp numerical limit noise before scaling and measuring the final step.
+                    solution[k] = min(max(value, self.limits['lower'][k]), self.limits['upper'][k])
+                largest_step = max(largest_step, abs(solution[k] - previous[index]))
+            if rejection is None and largest_step > .35:
                 # Bound a branch-sized step without permanently rejecting an
                 # otherwise reachable target on every subsequent frame.
                 fraction = .35 / largest_step
                 solution = [previous[i] + fraction * (value - previous[i])
                             for i, value in zip(self.indices, solution)]
                 details["wrist_joint_step_scaled"] = fraction
+            if rejection is None:
+                # A scaled step from a physically overshot state can remain outside the bounds.
+                for index, _name in self.arm[side]:
+                    k = self.position_of[index]
+                    if not self.limits['lower'][k] <= solution[k] <= self.limits['upper'][k]:
+                        rejection = 'nonfinite_or_limit'
+                        break
+            if rejection is None and details.get('position_fallback'):
+                before_position = self.measure(side)[0]
+                before_error = float(np.linalg.norm(np.asarray(before_position) - world))
+                if gui:
+                    self.p.configureDebugVisualizer(self.p.COV_ENABLE_RENDERING, 0, physicsClientId=self.cid)
+                try:
+                    self._teleport(side, solution)
+                    final_position, final_orientation = self.measure(side)
+                    after_error = float(np.linalg.norm(np.asarray(final_position) - world))
+                    details['fallback_position_before_mm'] = before_error * 1000
+                    details['fallback_position_after_mm'] = after_error * 1000
+                    dot = float(np.dot(final_orientation, orientation))
+                    details['fallback_orientation_after_deg'] = degrees(2 * acos(min(1., abs(dot))))
+                    if not np.isfinite(after_error) or before_error - after_error <= FALLBACK_PROGRESS_EPS_M:
+                        rejection = 'position_fallback_no_progress'
+                finally:
+                    try:
+                        for index, (position_before, velocity_before) in saved:
+                            self.p.resetJointState(self.body, index, position_before,
+                                targetVelocity=velocity_before, physicsClientId=self.cid)
+                    finally:
+                        if gui:
+                            self.p.configureDebugVisualizer(self.p.COV_ENABLE_RENDERING, 1, physicsClientId=self.cid)
+            if rejection:
+                if rejection == 'nonfinite_or_limit':
+                    details['limit_violation'] = self._limit_violation(side, solution)
+                solution = [previous[index] for index in self.indices]
             details["wrist_rejection"] = rejection
             details["wrist_pose_requested"] = True
         self.last_target_world[side] = world
@@ -1031,5 +1113,3 @@ class PyBulletArmIK:
             "limits_from_urdf": True,
             "last_solve": dict(self.last_solve),
         }
-
-

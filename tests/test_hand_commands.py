@@ -74,6 +74,13 @@ class L21CollisionGuardTests(unittest.TestCase):
         self.addCleanup(self.scene.close)
         self.guard = L21CollisionGuard(self.scene, "right")
 
+    def set_pose(self, positions):
+        from teleoperation.robots.hand_spec import load_hand_spec
+        from teleoperation.contracts.hand_control import HandJointCommand
+        spec = load_hand_spec('l21', 'right')
+        self.scene.apply_native(HandJointCommand(*spec.key, spec.spec_hash, spec.joint_names,
+                                                positions, 0.))
+
     def test_baseline_metacarpal_contacts_do_not_disable_the_guard(self):
         self.assertGreater(len(self.guard.pairs), 100)
         self.assertEqual(len(self.guard.baseline_contacts), 3)
@@ -87,19 +94,20 @@ class L21CollisionGuardTests(unittest.TestCase):
                               1.5013396, .4461958])
         # thumb_cmc_roll is fixed in this URDF.
         candidate[13] = 0.
+        candidate = candidate[1:]
         p, cid, body = self.scene.p, self.scene.cid, self.scene.bodies["right"]
-        self.scene.apply("right", candidate)
+        self.set_pose(candidate)
         self.assertIsNotNone(self.guard.violations())
-        self.scene.apply("right", np.zeros(18))
+        self.set_pose(np.zeros(17))
         before = p.getJointStates(body, self.guard.indices, physicsClientId=cid)
-        projected = self.guard.project(np.zeros(18), candidate)
+        projected = self.guard.project(np.zeros(17), candidate)
         self.assertEqual(before, p.getJointStates(body, self.guard.indices, physicsClientId=cid))
         self.assertFalse(np.allclose(projected, candidate))
-        self.assertGreater(projected[3], 0.1)  # feasible flexion is retained
-        self.scene.apply("right", projected)
+        self.assertGreater(projected[2], 0.1)  # feasible flexion is retained
+        self.set_pose(projected)
         self.assertIsNone(self.guard.violations())
         for fraction in np.linspace(0, 1, 60):
-            self.scene.apply("right", projected * fraction)
+            self.set_pose(projected * fraction)
             self.assertIsNone(self.guard.violations())
 
     def test_clear_endpoints_do_not_skip_an_unsafe_intermediate_pose(self):
@@ -111,10 +119,10 @@ class L21CollisionGuardTests(unittest.TestCase):
                                                physicsClientId=self.scene.cid)[0]
             return {"distance_m": -0.001} if 0.20 < angle < 0.40 else None
         self.guard.violations = contact
-        candidate = np.zeros(18); candidate[2] = 0.6
-        projected = self.guard.project(np.zeros(18), candidate)
-        self.assertLessEqual(projected[2], 0.20)
-        self.assertGreater(projected[2], 0.19)
+        candidate = np.zeros(17); candidate[1] = 0.6
+        projected = self.guard.project(np.zeros(17), candidate)
+        self.assertLessEqual(projected[1], 0.20)
+        self.assertGreater(projected[1], 0.19)
 
 
 if __name__ == "__main__":

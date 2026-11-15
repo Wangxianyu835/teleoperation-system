@@ -67,6 +67,7 @@ class ArmOrientationRoutingTests(unittest.TestCase):
             adapter.ee = {side: (0, "wrist") for side in self.driver.sides}
             adapter.ik_mode = "pose" if name == "h1_2" else "position"
             adapter.solve.return_value = {"joint": 0.0}
+            adapter.last_solve = {side: {'wrist_rejection':None} for side in self.driver.sides}
             self.driver.ik[name] = adapter
         self.positions = {"g1": (0.16, 0.1, 0.1), "h1_2": (0.24, 0.05, 0.19)}
 
@@ -204,7 +205,7 @@ class ArmSolveStateTests(unittest.TestCase):
                     adapter.p.resetJointState(adapter.body, index, q, targetVelocity=velocity,
                                              physicsClientId=adapter.cid)
 
-    def test_unreachable_wrist_orientation_does_not_sacrifice_position(self):
+    def test_conflicting_wrist_orientation_requires_bounded_position_progress(self):
         adapter = self.driver.ik["h1_2"]
         for side in ("left", "right"):
             with self.subTest(side=side):
@@ -215,17 +216,62 @@ class ArmSolveStateTests(unittest.TestCase):
                 np.testing.assert_array_equal(self.states(adapter), before)
                 details = adapter.last_solve[side]
                 if details["pose_candidate_residual_mm"] > adapter.profile.max_residual_mm:
-                    self.assertTrue(details["position_fallback"])
-                    self.assertIn(details['wrist_rejection'], ('pose_position_conflict', 'nonfinite_or_limit'))
-                    for index, name in adapter.arm[side]:
-                        self.assertEqual(values[name], before[adapter.position_of[index]][0])
+                    if details['wrist_rejection']:
+                        self.assertIn(details['wrist_rejection'], ('position_fallback_no_progress', 'nonfinite_or_limit'))
+                        for index, name in adapter.arm[side]:
+                            self.assertEqual(values[name], before[adapter.position_of[index]][0])
+                    elif details['position_fallback']:
+                        self.assertLess(details['fallback_position_after_mm'],details['fallback_position_before_mm'])
+                        for index,name in adapter.arm[side]:
+                            self.assertLessEqual(abs(values[name]-before[adapter.position_of[index]][0]),.35+1e-9)
 
 
 
 @unittest.skipUnless(ASSETS_AVAILABLE and PYBULLET_AVAILABLE, "robot assets and PyBullet required")
 class ArmRealtimeLoopTests(unittest.TestCase):
+    def setUp(self):
+        from devtools import legacy_camera_baseline as app
+        from tests.test_native_hand_replay import stub_camera_backend
+        backend = patch.object(app, 'build_camera_retargeter', side_effect=stub_camera_backend)
+        backend.start()
+        self.addCleanup(backend.stop)
+
+    def test_body_replay_commands_use_recorded_irregular_capture_times(self):
+        from dataclasses import replace
+        from types import SimpleNamespace
+        from devtools import legacy_camera_baseline as app
+        from teleoperation.contracts.observations import CameraFrame
+        from teleoperation.data.body_recording import capture_sample, save_body_recording
+        from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
+        from tests.smplerx_fixtures import observation, METADATA
+        timeline = []
+        class AuditedCommands(JointCommandPipeline):
+            def update(self, result, timestamp=None):
+                timeline.append(timestamp)
+                return super().update(result, timestamp)
+            def missing(self, key, timestamp=None):
+                timeline.append(timestamp)
+                return super().missing(key, timestamp)
+        stamps = [10., 10.01, 10.04, 10.05, 10.12]
+        rows = []
+        for index, stamp in enumerate(stamps):
+            raw, result = observation(index)
+            raw = replace(raw, hands=replace(raw.hands, timestamp=stamp))
+            source = SimpleNamespace(session_id='camera', last_result=result,
+                last_frame=CameraFrame(np.zeros((4,5,3), dtype=np.uint8), stamp, index))
+            rows.append(capture_sample(source, raw))
+        with tempfile.TemporaryDirectory() as folder:
+            path = save_body_recording(Path(folder)/'body.h5', rows, METADATA)
+            args = build_parser().parse_args(['--input-body', str(path), '--no-arms',
+                '--robot', 'g1', '--headless', '--no-preview', '--print-every', '0'])
+            with patch.object(app, 'JointCommandPipeline', AuditedCommands), \
+                    patch.object(app, '_drain_in_background', side_effect=lambda action, label: action()), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(app._run_legacy_hand_or_diagnostic(args), 0)
+        np.testing.assert_allclose(sorted(set(timeline)), stamps)
+
     def test_replay_loop_routes_both_wrist_orientations_and_keeps_fixed_physics(self):
-        from teleoperation.simulation import realtime_teleop as app
+        from devtools import legacy_camera_baseline as app
         from tests.test_arm_realtime_bridge import arm, open_hand
 
         with tempfile.TemporaryDirectory() as folder:
@@ -234,13 +280,14 @@ class ArmRealtimeLoopTests(unittest.TestCase):
             from tests.smplerx_fixtures import write
             write(capture, 18)
             args = build_parser().parse_args([
+                "--robot", "h1_2", "--robot", "gr1_t2", "--robot", "g1",
                 "--input-body", str(capture), "--report", str(report),
-                "--backend", "geometric", "--headless", "--no-preview",
+                "--backend", "dex", "--headless", "--no-preview",
                 "--no-collision-guard", "--arm-calibrate-frames", "1", "--print-every", "0",
                 "--arm-orientation", "auto"])
             with patch.object(app, "_drain_in_background", side_effect=lambda action, label: action()), \
                     contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(app.run(args), 0)
+                self.assertEqual(app._run_legacy_hand_or_diagnostic(args), 0)
             result = json.loads(report.read_text(encoding="utf-8"))
         self.assertEqual(result["arm_failures"], {})
         self.assertEqual(result["simulation_timing"]["mode"], "fixed")

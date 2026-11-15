@@ -23,16 +23,11 @@ Python 会直接抛：
     U+00B2 -> ^2        U+00B3 -> ^3         U+00B9 -> ^1
     U+25C0 -> <--       U+25B6 -> -->        U+FE0F -> 删除
 """
-import argparse
 import os
-import sys
 
-try:
-    sys.stdout.reconfigure(encoding='utf-8')
-except Exception:
-    pass
-
-SKIP_DIRS = {'lib', '.venv', '__pycache__', 'linkerhand_sdk', 'robots', '.git'}
+# Exclude generated and external trees; owned src/teleoperation/robots is scanned.
+SKIP_DIRS = {'lib', '.venv', '__pycache__', 'linkerhand_sdk', '.git',
+             'assets', 'third_party', 'outputs', '.pytest_cache'}
 
 SUGGEST = {
     '\u2713': '[OK]', '\u2717': '[FAIL]', '\u26a0': '注意',
@@ -101,5 +96,3 @@ def main(args=None):
     print('  提示：这些字符在中文 Windows 控制台 print() 时会抛 '
           'UnicodeEncodeError 导致崩溃')
     return 0
-
-

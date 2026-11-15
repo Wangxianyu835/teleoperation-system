@@ -3,8 +3,6 @@ from numbers import Real
 
 COORDINATE_FRAME = "l21"
 COORDINATE_ALIGNMENT = "source_to_l21_xyz"
-LEGACY_PALM_LOCAL_ALIGNMENT = "palm_local_to_l21_v1"
-LEGACY_WORLD_PALM_LOCAL_ALIGNMENT = "mediapipe_world_palm_local_to_l21_v1"
 PALM_LOCAL_COORDINATE_ALIGNMENT = "palm_local_to_l21_v2"
 WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT = "mediapipe_world_wrist_index_middle_canonical_right_v1"
 CANONICAL_HAND_FRAME = "hand_canonical_right"
@@ -13,10 +11,12 @@ NORMALIZED_LANDMARK_SPACE = "mediapipe_normalized"
 WORLD_LANDMARK_SPACE = "mediapipe_world_meters"
 PALM_LENGTH_PROFILE = "camera_palm_length_window3_v1"
 PALM_LENGTH_ALIGNMENT = "mediapipe_world_wrist_index_middle_canonical_right_palm_length_window3_v1"
+UNIFIED_HAND_PROFILE = "hand_palm_length_window3_v1"
+UNIFIED_METRIC_ALIGNMENT = "hand_wrist_index_middle_canonical_right_meters_v1"
+UNIFIED_HAND_ALIGNMENT = "hand_wrist_index_middle_canonical_right_palm_length_window3_v1"
 SUPPORTED_COORDINATE_ALIGNMENTS = frozenset({
     COORDINATE_ALIGNMENT, PALM_LOCAL_COORDINATE_ALIGNMENT, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
-    LEGACY_PALM_LOCAL_ALIGNMENT, LEGACY_WORLD_PALM_LOCAL_ALIGNMENT,
-    PALM_LENGTH_ALIGNMENT,
+    PALM_LENGTH_ALIGNMENT, UNIFIED_METRIC_ALIGNMENT, UNIFIED_HAND_ALIGNMENT,
 })
 
 
@@ -67,11 +67,11 @@ WORLD_PALM_LOCAL_METADATA = {
 
 
 def is_world_alignment(alignment: str) -> bool:
-    return alignment in (WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, LEGACY_WORLD_PALM_LOCAL_ALIGNMENT)
+    return alignment == WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT
 
 
 def coordinate_frame_for_alignment(alignment: str) -> str:
-    return CANONICAL_HAND_FRAME if alignment in (WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, PALM_LENGTH_ALIGNMENT) else COORDINATE_FRAME
+    return CANONICAL_HAND_FRAME if alignment in (WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, PALM_LENGTH_ALIGNMENT, UNIFIED_METRIC_ALIGNMENT, UNIFIED_HAND_ALIGNMENT) else COORDINATE_FRAME
 
 
 def landmark_source(landmark_space: str) -> str:
@@ -104,8 +104,13 @@ def validate_world_contract(metadata, context: str) -> None:
 
 
 def validate_landmark_contract(alignment, metadata, context):
-    if alignment == PALM_LENGTH_ALIGNMENT:
+    if alignment in (PALM_LENGTH_ALIGNMENT, UNIFIED_HAND_ALIGNMENT):
         validate_palm_length_contract(metadata, context)
+        return
+    if alignment == UNIFIED_METRIC_ALIGNMENT:
+        for name, expected in unified_metric_metadata().items():
+            if metadata.get(name) != expected:
+                raise ValueError(f'{context} requires {name}={expected!r}')
         return
     if is_world_alignment(alignment):
         validate_world_contract(metadata, context)
@@ -115,7 +120,7 @@ def validate_landmark_contract(alignment, metadata, context):
             if isinstance(value, bytes): value = value.decode("utf-8")
             if value != WORLD_PALM_LOCAL_METADATA[name]:
                 raise ValueError(f"{context} must declare {name}={WORLD_PALM_LOCAL_METADATA[name]!r}; got {value!r}")
-    elif alignment in (PALM_LOCAL_COORDINATE_ALIGNMENT, LEGACY_PALM_LOCAL_ALIGNMENT):
+    elif alignment == PALM_LOCAL_COORDINATE_ALIGNMENT:
         # Historical normalized checkpoints may omit provenance.
         space = metadata.get("source_landmark_space", NORMALIZED_LANDMARK_SPACE)
         if isinstance(space, bytes):
@@ -124,14 +129,28 @@ def validate_landmark_contract(alignment, metadata, context):
             raise ValueError(f"{context} normalized alignment requires source_landmark_space={NORMALIZED_LANDMARK_SPACE!r}")
 
 
-def palm_length_metadata():
-    """Static input identity shared by windows, training and checkpoints."""
+def unified_metric_metadata():
+    """Device-independent geometry; capture provenance stays on the frame."""
     return {
-        "coordinate_alignment": PALM_LENGTH_ALIGNMENT,
+        'coordinate_alignment': UNIFIED_METRIC_ALIGNMENT,
+        'coordinate_frame': CANONICAL_HAND_FRAME,
+        'source_landmark_space': 'canonical_hand_meters',
+        'units': 'm', 'length_unit': 'm', 'origin': 'wrist',
+        'canonical_hand': 'right', 'source_scale': 1.0,
+    }
+
+
+def palm_length_metadata(profile=PALM_LENGTH_PROFILE):
+    """Static input identity shared by windows, training and checkpoints."""
+    if profile not in (PALM_LENGTH_PROFILE, UNIFIED_HAND_PROFILE):
+        raise ValueError('Unknown hand normalization profile')
+    unified = profile == UNIFIED_HAND_PROFILE
+    return {
+        "coordinate_alignment": UNIFIED_HAND_ALIGNMENT if unified else PALM_LENGTH_ALIGNMENT,
         "coordinate_frame": CANONICAL_HAND_FRAME,
-        "input_profile": PALM_LENGTH_PROFILE,
+        "input_profile": profile,
         "units": "1", "length_unit": "1",
-        "source_landmark_space": WORLD_LANDMARK_SPACE,
+        "source_landmark_space": 'canonical_hand_meters' if unified else WORLD_LANDMARK_SPACE,
         "normalization": "palm_length_window_median",
         "normalization_version": 1, "temporal_window": 3,
         "palm_reference_indices": [0, 11],
@@ -139,7 +158,7 @@ def palm_length_metadata():
 
 
 def validate_palm_length_contract(metadata, context):
-    expected = palm_length_metadata()
+    expected = palm_length_metadata(metadata.get('input_profile', PALM_LENGTH_PROFILE))
     expected.pop("palm_reference_indices")
     for name, value in expected.items():
         actual = metadata.get(name)

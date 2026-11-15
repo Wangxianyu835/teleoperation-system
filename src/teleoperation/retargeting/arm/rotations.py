@@ -29,14 +29,3 @@ def rotation_matrix_to_quaternion(matrix) -> np.ndarray:
     if not np.isfinite(norm) or norm <= MIN_QUATERNION_NORM:
         return np.array([0.0, 0.0, 0.0, 1.0])
     return quaternion / norm
-
-
-def matrix_from_quaternion(quaternion) -> np.ndarray:
-    """Inverse of ``rotation_matrix_to_quaternion``."""
-    x, y, z, w = (float(value) for value in
-                  np.asarray(quaternion, dtype=np.float64).reshape(4))
-    return np.array([
-        [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
-        [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
-        [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
-    ], dtype=np.float64)

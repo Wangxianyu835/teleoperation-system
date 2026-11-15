@@ -6,6 +6,8 @@ With --frames 0, q/Esc, closing the preview or Ctrl+C finishes and aligns.
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import math
+import time
 
 from teleoperation.applications.hand_align import align_h5
 from teleoperation.data.hand_recording import RawHandH5Writer
@@ -13,7 +15,7 @@ from teleoperation.inputs.mediapipe import MediaPipeCameraInput
 
 
 def _output_paths(args, started_at):
-    stem = f"visual_hand_data_{args.hand_side}_{started_at:%Y%m%d_%H%M%S}"
+    stem = f"camera_world_hand_data_{args.hand_side}_{started_at:%Y%m%d_%H%M%S}"
     raw = (Path(args.output) if args.output is not None else
            Path(args.output_dir) / f"{stem}.h5")
     aligned = (Path(args.aligned_output) if args.aligned_output is not None else
@@ -43,8 +45,13 @@ def run(args):
         raise ValueError("--width, --height and --fps must be positive")
     if args.hand_side not in ("left", "right", "both"):
         raise ValueError("--hand-side must be left, right or both")
+    seconds = float(getattr(args, 'seconds', 0.))
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError('--seconds must be finite and nonnegative')
     started_at = datetime.now(timezone(timedelta(hours=8)))
     landmark_space = getattr(args, "landmark_space", "world")
+    if landmark_space != 'world':
+        raise ValueError('Camera recording requires world metre landmarks')
     raw_path, aligned_path = _output_paths(args, started_at)
     capture = MediaPipeCameraInput(
         model_asset_path=args.model_asset_path, camera_index=args.camera_index,
@@ -71,8 +78,12 @@ def run(args):
             if preview is not None:
                 print("Preview: q/Esc or close the window to stop and save.", flush=True)
             stop_reason = "frame_limit"
+            capture_started = time.monotonic()
             try:
                 while args.frames == 0 or writer.count < args.frames:
+                    if seconds and time.monotonic() - capture_started >= seconds:
+                        stop_reason = 'duration_limit'
+                        break
                     frame = capture.next_frame(include_world=True)
                     hands = {side: frame[side] if args.hand_side in (side, "both") else None
                              for side in ("left", "right")}

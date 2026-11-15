@@ -1,27 +1,28 @@
-"""Per-side recovery and offline/realtime equivalence for palm-local v2."""
+"""World coordinates, chronological windows and capture recovery without hardware."""
 
 import unittest
 from unittest.mock import Mock, patch
 
 import numpy as np
-import torch
 
-from teleoperation.contracts.coordinates import PALM_LOCAL_COORDINATE_ALIGNMENT
 from teleoperation.contracts.observations import RawHandFrame
-from teleoperation.retargeting.hand.coordinates import PalmBasisError, align_palm_local_coordinates, build_l21_reference_basis
 from teleoperation.applications.hand_realtime import (
     MediaPipeCameraWorkflow,
     MediaPipePalmLocalPipeline,
-    PALM_LOCAL_V2_CHECKPOINT,
-    load_palm_local_retargeter,
 )
-from teleoperation.retargeting.hand.topology import ensure_hand25
-from tests.test_coordinate_contracts import synthetic_hand_pair
-from tests.test_mediapipe_input import result as detection_result
-from teleoperation.inputs.mediapipe import parse_result
 
 
 SIDES = ("left", "right")
+
+
+def synthetic_hand_pair():
+    left = np.zeros((21, 3), dtype=np.float32)
+    bases = np.array([[.018, .008, .010], [.015, .030, 0], [0, .035, 0],
+                      [-.012, .030, 0], [-.022, .023, .005]], dtype=np.float32)
+    for finger, base in enumerate(bases):
+        left[1 + 4 * finger:5 + 4 * finger] = np.array([1, 1.35, 1.65, 2])[:, None] * base
+    right = left * np.array([-1, 1, 1], dtype=np.float32)
+    return left + np.array([-.2, .4, .1]), right + np.array([.2, .4, .1])
 
 
 def raw_frame(index, left=True, right=True):
@@ -39,339 +40,161 @@ def raw_frame(index, left=True, right=True):
     return frame
 
 
-def offline_reference(sequence, bases):
-    """Independent per-side reference lists; no realtime processor or buffer."""
-    histories = {side: [] for side in SIDES}
+def world_raw_frame(index, left=True, right=True):
+    frame = raw_frame(index,left,right)
+    for side in SIDES:
+        frame['world_'+side] = None if frame[side] is None else frame[side].copy()
+    frame['metadata'].update(world_landmark_space='mediapipe_world_meters',world_length_unit='m')
+    return frame
+
+
+def offline_reference(sequence, bases=None):
+    """Independent chronological lists using the world numerical transform."""
+    from teleoperation.retargeting.hand.coordinates import align_mediapipe_hand
+    histories = {side:[] for side in SIDES}
     outputs = []
     for frame in sequence:
         current, windows = {}, {}
         for side in SIDES:
-            raw = frame[side]
+            raw = frame['world_'+side]
             aligned = None
-            if raw is not None:
-                array = np.asarray(raw, dtype=np.float32)
-                if array.shape == (21, 3) and np.isfinite(array).all():
-                    candidate = align_palm_local_coordinates(ensure_hand25(array), bases[side])
+            try:
+                array = np.asarray(raw,dtype=np.float32)
+                if array.shape == (21,3) and np.isfinite(array).all():
+                    candidate = align_mediapipe_hand(array,side=side)
                     if np.isfinite(candidate).all() and np.any(candidate):
                         aligned = candidate
+            except ValueError:
+                pass
             current[side] = aligned
-            if aligned is None:
-                histories[side] = []
-            else:
-                histories[side] = (histories[side] + [aligned])[-3:]
-            windows[side] = np.stack(histories[side]) if len(histories[side]) == 3 else None
-        outputs.append((current, windows))
+            histories[side] = [] if aligned is None else (histories[side]+[aligned])[-3:]
+            windows[side] = np.stack(histories[side]) if len(histories[side])==3 else None
+        outputs.append((current,windows))
     return outputs
 
 
-def sequences():
-    left = [raw_frame(i, right=False) for i in range(7)]
-    right = [raw_frame(i, left=False) for i in range(7)]
-    dual = [raw_frame(i) for i in range(7)]
-    missing_left = [raw_frame(i, left=i not in (3, 4)) for i in range(10)]
-    missing_right = [raw_frame(i, right=i not in (3, 4)) for i in range(10)]
-    regression = [raw_frame(i, left=i != 2, right=False) for i in range(6)]
-    degenerate = [raw_frame(i) for i in range(9)]
-    degenerate[3]["left"] = np.arange(63, dtype=np.float32).reshape(21, 3) / 100
-    degenerate[4]["right"] = np.zeros((21, 3), dtype=np.float32)
-    invalid = [raw_frame(i) for i in range(9)]
-    invalid[3]["left"][7, 0] = np.nan
-    invalid[4]["right"][7, 2] = np.inf
-    return {
-        "continuous_left": left, "continuous_right": right, "both_hands": dual,
-        "left_missing_right_continuous": missing_left,
-        "right_missing_left_continuous": missing_right,
-        "A1_A2_None_A4_A5_A6": regression,
-        "degenerate_palms": degenerate, "nonfinite_sides": invalid,
-    }
-
-
 class MediaPipeRealtimeTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.bases = {side: build_l21_reference_basis(side) for side in SIDES}
-
-    def test_per_frame_coordinates_and_windows_match_offline_reference(self):
-        max_error = 0.0
-        for name, sequence in sequences().items():
-            with self.subTest(sequence=name):
-                processor = MediaPipePalmLocalPipeline()
-                reference = offline_reference(sequence, self.bases)
-                for frame, (expected_current, expected_windows) in zip(sequence, reference):
-                    payload = processor.process_frame(frame)
+    def test_world_frame_coordinates_and_windows_match_independent_reference(self):
+        for bad in ('missing','zero','degenerate','nan','inf'):
+            frames=[world_raw_frame(i) for i in range(9)]
+            values={'missing':None,'zero':np.zeros((21,3)),
+                    'degenerate':np.arange(63).reshape(21,3),
+                    'nan':np.full((21,3),np.nan),'inf':np.full((21,3),np.inf)}
+            frames[3]['world_left']=values[bad]
+            pipeline=MediaPipePalmLocalPipeline('world')
+            for index,(frame,(current,windows)) in enumerate(zip(frames,offline_reference(frames))):
+                with self.subTest(bad=bad,index=index):
+                    window=pipeline.process_window(frame)
                     for side in SIDES:
-                        expected = expected_current[side]
-                        actual = processor.current_hands[side]
-                        if expected is None:
+                        if current[side] is None:
+                            self.assertIsNone(pipeline.current_hands[side])
+                            self.assertEqual(pipeline.valid_streak[side],0)
+                        else:
+                            np.testing.assert_array_equal(pipeline.current_hands[side],current[side])
+                        actual=None if window is None else window.hands[side]
+                        if windows[side] is None:
                             self.assertIsNone(actual)
-                            self.assertEqual(processor.valid_streak[side], 0)
                         else:
-                            self.assertEqual(actual.shape, (25, 3))
-                            self.assertEqual(actual.dtype, np.float32)
-                            self.assertTrue(np.isfinite(actual).all())
-                            max_error = max(max_error, float(np.max(np.abs(actual - expected))))
-                            np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-7)
-                        window = None if payload is None else payload["hands"][side]
-                        if expected_windows[side] is None:
-                            self.assertIsNone(window)
-                        else:
-                            np.testing.assert_array_equal(window, expected_windows[side])
-                            self.assertEqual(window.shape, (3, 25, 3))
-                            self.assertTrue(np.isfinite(window).all())
-                    if payload is not None:
-                        self.assertEqual(payload["metadata"]["coordinate_frame"], "l21")
-                        self.assertEqual(payload["metadata"]["coordinate_alignment"], PALM_LOCAL_COORDINATE_ALIGNMENT)
-                        self.assertEqual(payload["metadata"]["source_landmark_space"], "mediapipe_normalized")
-                        self.assertIs(payload["metadata"]["identity_tracking"], False)
-                        self.assertEqual(payload["timestamp"], frame["timestamp"])
-        print(f"offline/realtime max palm-local coordinate error={max_error:.9g}")
+                            np.testing.assert_array_equal(actual,windows[side])
+                    if index in (3,4,5):
+                        self.assertIsNone(window.hands['left'])
+                        self.assertIsNotNone(window.hands['right'])
+                    if index==6:
+                        self.assertIsNotNone(window.hands['left'])
 
-    def test_A1_A2_None_A4_A5_A6_resets_immediately_and_keeps_only_new_frames(self):
-        processor = MediaPipePalmLocalPipeline()
-        frames = sequences()["A1_A2_None_A4_A5_A6"]
-        for frame in frames[:2]:
-            self.assertIsNone(processor.process_frame(frame))
-        self.assertIsNone(processor.process_frame(frames[2]))
-        self.assertEqual(len(processor.buffer._buffers["left"]), 0)
-        self.assertIsNone(processor.current_hands["left"])
-        self.assertIsNone(processor.process_frame(frames[3]))
-        self.assertIsNone(processor.process_frame(frames[4]))
-        window = processor.process_frame(frames[5])["hands"]["left"]
-        expected = np.stack([
-            align_palm_local_coordinates(ensure_hand25(frame["left"]), self.bases["left"])
-            for frame in frames[3:6]
-        ])
-        np.testing.assert_array_equal(window, expected)
-        old = align_palm_local_coordinates(ensure_hand25(frames[0]["left"]), self.bases["left"])
-        self.assertFalse(np.array_equal(window[0], old))
+    def test_palm_length_profile_matches_independent_median_and_recovers(self):
+        from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE, palm_length_metadata
+        frames=[world_raw_frame(i) for i in range(9)]
+        frames[3]['world_left']=None
+        # Vary world size to detect per-frame normalization instead of the causal median.
+        for index,frame in enumerate(frames):
+            for side in SIDES:
+                if frame['world_'+side] is not None:
+                    frame['world_'+side] *= 1.+index*.15
+        pipeline=MediaPipePalmLocalPipeline('world',input_profile=PALM_LENGTH_PROFILE)
+        for index,(frame,(_,expected)) in enumerate(zip(frames,offline_reference(frames))):
+            actual=pipeline.process_window(frame)
+            if actual is None:
+                self.assertLess(index,2)
+                continue
+            for name,value in palm_length_metadata().items():
+                self.assertEqual(actual.metadata[name],value)
+            for side in SIDES:
+                metric=expected[side]
+                if metric is None:
+                    self.assertIsNone(actual.hands[side])
+                    continue
+                metric=metric.astype(np.float64)
+                metric-=metric[:,0:1]
+                median=float(np.median(np.linalg.norm(metric[:,11],axis=1)))
+                np.testing.assert_array_equal(actual.hands[side],(metric/median).astype(np.float32))
+                self.assertAlmostEqual(actual.metadata['palm_length_m'][side],median)
+            if index in (3,4,5):
+                self.assertIsNone(actual.hands['left'])
+                self.assertIsNotNone(actual.hands['right'])
+            if index==6:
+                self.assertIsNotNone(actual.hands['left'])
 
-    def test_invalid_side_resets_without_clearing_other_side_and_recovers_after_three(self):
+    def test_reset_discards_all_history_and_requires_three_new_frames(self):
+        pipeline=MediaPipePalmLocalPipeline('world')
+        for index in range(3): pipeline.process_window(world_raw_frame(index))
+        pipeline.reset()
+        self.assertEqual(pipeline.valid_streak,dict.fromkeys(SIDES,0))
+        self.assertIsNone(pipeline.process_window(world_raw_frame(4)))
+        self.assertIsNone(pipeline.process_window(world_raw_frame(5)))
+        actual=pipeline.process_window(world_raw_frame(6))
+        expected=offline_reference([world_raw_frame(i) for i in (4,5,6)])[-1][1]
         for side in SIDES:
-            other = "right" if side == "left" else "left"
-            invalid_values = [None, np.zeros((21, 3), dtype=np.float32),
-                              np.arange(63, dtype=np.float32).reshape(21, 3),
-                              np.full((21, 3), np.nan), np.full((21, 3), np.inf),
-                              np.full((21, 3), 1e100), np.zeros((25, 3)), "invalid"]
-            for invalid in invalid_values:
-                with self.subTest(side=side, invalid=str(invalid)[:35]):
-                    processor = MediaPipePalmLocalPipeline()
-                    for i in range(3):
-                        processor.process_frame(raw_frame(i))
-                    missing = raw_frame(3)
-                    missing[side] = invalid
-                    payload = processor.process_frame(missing)
-                    self.assertIsNone(payload["hands"][side])
-                    self.assertEqual(processor.valid_streak[side], 0)
-                    self.assertEqual(len(processor.buffer._buffers[side]), 0)
-                    self.assertEqual(payload["hands"][other].shape, (3, 25, 3))
-                    self.assertEqual(processor.valid_streak[other], 3)
-                    recovered = []
-                    for i in (4, 5, 6):
-                        frame = raw_frame(i)
-                        recovered.append(align_palm_local_coordinates(ensure_hand25(frame[side]), self.bases[side]))
-                        payload = processor.process_frame(frame)
-                        self.assertEqual(payload["hands"][other].shape, (3, 25, 3))
-                        if i < 6:
-                            self.assertIsNone(payload["hands"][side])
-                        else:
-                            np.testing.assert_array_equal(payload["hands"][side], np.stack(recovered))
+            np.testing.assert_array_equal(actual.hands[side],expected[side])
 
-    def test_palm_basis_exception_is_side_local(self):
-        processor = MediaPipePalmLocalPipeline()
-        for i in range(3):
-            processor.process_frame(raw_frame(i))
-        right = align_palm_local_coordinates(ensure_hand25(raw_frame(3)["right"]), self.bases["right"])
-        with patch("teleoperation.retargeting.hand.processing.align_mediapipe_hand",
-                   side_effect=[PalmBasisError("degenerate source"), right]):
-            payload = processor.process_frame(raw_frame(3))
-        self.assertIsNone(payload["hands"]["left"])
-        self.assertIsNotNone(payload["hands"]["right"])
-        self.assertEqual(processor.valid_streak["left"], 0)
-
-    def test_each_basis_built_once_and_alignment_precedes_buffer_without_tracking(self):
-        events = []
-        with patch("teleoperation.retargeting.hand.processing.build_l21_reference_basis", side_effect=lambda side: self.bases[side]) as basis:
-            processor = MediaPipePalmLocalPipeline()
-            self.assertEqual(basis.call_count, 2)
-            self.assertEqual([call.args[0] for call in basis.call_args_list], list(SIDES))
-            original_append = processor.buffer.append
-            def convert(points):
-                events.append("convert")
-                return ensure_hand25(points)
-            def align(points, robot):
-                events.append("align_left" if robot is self.bases["left"] else "align_right")
-                return align_palm_local_coordinates(points, robot)
-            def append(frame):
-                events.append("append")
+    def test_world_alignment_precedes_buffer_and_never_loads_robot_basis(self):
+        with patch('teleoperation.retargeting.hand.processing.build_l21_reference_basis',side_effect=AssertionError('robot basis')):
+            pipeline=MediaPipePalmLocalPipeline('world')
+            append=pipeline.buffer.append
+            def observe(frame):
                 for side in SIDES:
-                    np.testing.assert_array_equal(frame.hands[side], processor.current_hands[side])
-                return original_append(frame)
-            with patch("teleoperation.retargeting.hand.topology.ensure_hand25", side_effect=convert), \
-                 patch("teleoperation.retargeting.hand.coordinates.align_palm_local_coordinates", side_effect=align), \
-                 patch.object(processor.buffer, "append", side_effect=append), \
-                 patch("teleoperation.retargeting.hand.tracking.HandIdentityTracker", side_effect=AssertionError("identity tracker called")), \
-                 patch("teleoperation.retargeting.hand.coordinates.align_source_hand_coordinates", side_effect=AssertionError("legacy alignment called")):
-                for i in range(5):
-                    processor.process_frame(raw_frame(i))
-            self.assertEqual(events, ["convert", "align_left", "convert", "align_right", "append"] * 5)
-            self.assertEqual(basis.call_count, 2)
+                    np.testing.assert_array_equal(frame.hands[side],pipeline.current_hands[side])
+                return append(frame)
+            with patch.object(pipeline.buffer,'append',side_effect=observe) as buffered:
+                for index in range(3): pipeline.process_window(world_raw_frame(index))
+                self.assertEqual(buffered.call_count,3)
 
-    def test_media_pipe_sides_are_trusted_after_label_swap_or_position_jump(self):
-        processor = MediaPipePalmLocalPipeline()
-        for i in range(3):
-            processor.process_frame(raw_frame(i))
-        frame = raw_frame(3)
-        frame["left"], frame["right"] = frame["right"] + 5, frame["left"] - 5
-        payload = processor.process_frame(frame)
-        for side in SIDES:
-            expected = align_palm_local_coordinates(ensure_hand25(frame[side]), self.bases[side])
-            np.testing.assert_array_equal(payload["hands"][side][-1], expected)
+    def test_capture_error_clears_history_and_releases_camera(self):
+        capture=Mock()
+        frames=[world_raw_frame(i) for i in range(3)]
+        capture.next_observation.side_effect=[RawHandFrame(
+            {s:f[s] for s in SIDES},f['timestamp'],'mediapipe_approx',f['metadata'],
+            world_hands={s:f['world_'+s] for s in SIDES}) for f in frames]+[RuntimeError('capture failed')]
+        with patch('teleoperation.applications.hand_realtime.MediaPipeCameraInput',return_value=capture):
+            workflow=MediaPipeCameraWorkflow('model.task',landmark_space='world')
+            for _ in frames: workflow.next_window()
+            with self.assertRaisesRegex(RuntimeError,'capture failed'): workflow.next_window()
+        self.assertEqual(workflow.processor.valid_streak,dict.fromkeys(SIDES,0))
+        self.assertIsNone(workflow.last_raw_frame)
+        capture.close.assert_called_once()
 
-    def test_adapter_composes_raw_input_and_preserves_relative_timestamp_semantics(self):
-        raw = Mock()
-        frames = [raw_frame(i) for i in range(3)]
-        for i, frame in enumerate(frames):
-            frame["timestamp"] = 100000 + i * 33
-            frame["metadata"]["timestamp_unit"] = "unix_ms"
-        raw.next_observation.side_effect = [
-            RawHandFrame(
-                {side: frame[side] for side in SIDES},
-                frame["timestamp"],
-                "mediapipe_approx",
-                dict(frame["metadata"]),
-            )
-            for frame in frames
-        ]
-        with patch("teleoperation.applications.hand_realtime.MediaPipeCameraInput", return_value=raw) as camera, \
-             patch("teleoperation.applications.hand_realtime.time.time", side_effect=[100, 100.1, 100.2, 100.3]):
-            with MediaPipeCameraWorkflow("model.task", camera_index=2, landmark_space="normalized") as adapter:
-                self.assertIsNone(adapter.next_input())
-                self.assertIsNone(adapter.next_input())
-                payload = adapter.next_input()
-                self.assertEqual(payload["timestamp"], 0.3)
-                self.assertEqual(payload["metadata"]["raw_timestamp_ms"], 100066)
-                self.assertEqual(payload["metadata"]["timestamp_unit"], "relative_seconds")
-                self.assertEqual(adapter.last_raw_frame["timestamp"], frames[-1]["timestamp"])
-                self.assertEqual(adapter.last_raw_frame["metadata"], frames[-1]["metadata"])
-                for side in SIDES:
-                    np.testing.assert_array_equal(adapter.last_raw_frame[side], frames[-1][side])
-            camera.assert_called_once_with(model_asset_path="model.task", camera_index=2,
-                                           width=640, height=480, fps=30, invalid_hand_as_missing=True)
-        raw.close.assert_called_once()
-        self.assertEqual(adapter.processor.valid_streak, {"left": 0, "right": 0})
-
-    def test_capture_error_does_not_leave_old_windows(self):
-        raw = Mock()
-        raw.next_observation.side_effect = [
-            RawHandFrame(
-                {side: frame[side] for side in SIDES},
-                frame["timestamp"],
-                "mediapipe_approx",
-                dict(frame["metadata"]),
-            )
-            for frame in (raw_frame(i) for i in range(3))
-        ] + [RuntimeError("capture failed")]
-        with patch("teleoperation.applications.hand_realtime.MediaPipeCameraInput", return_value=raw):
-            adapter = MediaPipeCameraWorkflow("model.task", landmark_space="normalized")
-            for _ in range(3):
-                adapter.next_input()
-            with self.assertRaisesRegex(RuntimeError, "capture failed"):
-                adapter.next_input()
-        self.assertEqual(adapter.processor.valid_streak, {"left": 0, "right": 0})
-        self.assertIsNone(adapter.last_raw_frame)
-        raw.close.assert_called_once()
-
-    def test_duplicate_raw_labels_clear_history_and_restart_three_valid_frames(self):
-        processor = MediaPipePalmLocalPipeline()
-        for i in range(3):
-            processor.process_frame(raw_frame(i))
-        duplicate = parse_result(detection_result(["Right", "Right"]), 1000,
-                                 invalid_hand_as_missing=True)
-        self.assertIsNone(processor.process_frame(duplicate))
-        self.assertEqual(processor.valid_streak, {"left": 0, "right": 0})
-        self.assertIn("Duplicate handedness", processor.invalid_reasons["right"])
-        self.assertIsNone(processor.process_frame(raw_frame(4)))
-        self.assertIsNone(processor.process_frame(raw_frame(5)))
-        payload = processor.process_frame(raw_frame(6))
-        for side in SIDES:
-            expected = np.stack([align_palm_local_coordinates(ensure_hand25(raw_frame(i)[side]), self.bases[side])
-                                 for i in (4, 5, 6)])
-            np.testing.assert_array_equal(payload["hands"][side], expected)
-
-    def test_robot_reference_failure_is_fatal_before_camera_open(self):
-        with patch("teleoperation.retargeting.hand.processing.build_l21_reference_basis", side_effect=PalmBasisError("robot reference")), \
-             patch("teleoperation.applications.hand_realtime.MediaPipeCameraInput") as camera:
-            with self.assertRaisesRegex(PalmBasisError, "robot reference"):
-                MediaPipeCameraWorkflow("model.task", landmark_space="normalized")
-        camera.assert_not_called()
-
-    def test_scale_normalization_and_changed_capture_confidence_are_rejected(self):
-        for kwargs in ({"scale_factor": 2}, {"min_confidence": 0.9}):
-            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
-                MediaPipeCameraWorkflow("model.task", **kwargs)
-
-    def test_checkpoint_loader_always_requests_palm_local_alignment(self):
-        with patch("teleoperation.retargeting.hand.predictor.create_twohand_retargeter") as create:
-            load_palm_local_retargeter(landmark_space="normalized")
-        self.assertEqual(create.call_args.kwargs["checkpoint_path"], str(PALM_LOCAL_V2_CHECKPOINT))
-        self.assertEqual(create.call_args.kwargs["expected_coordinate_alignment"], PALM_LOCAL_COORDINATE_ALIGNMENT)
-
-    def test_legacy_missing_and_unknown_checkpoint_alignment_fail_before_state_loading(self):
-        for alignment in ("source_to_l21_xyz", None, "palm_local_to_l21_v1", "palm_local_to_l21_v999"):
-            with self.subTest(alignment=alignment), \
-                 patch("teleoperation.retargeting.hand.predictor.build_hand_model", return_value=torch.nn.Linear(1, 1)), \
-                 patch("teleoperation.retargeting.hand.checkpoint.read_checkpoint", return_value={"coordinate_alignment": alignment}):
-                with self.assertRaisesRegex(ValueError, "alignment"):
-                    load_palm_local_retargeter(landmark_space="normalized")
+    def test_world_workflow_preserves_raw_timestamp_and_uses_relative_output(self):
+        capture=Mock()
+        frames=[world_raw_frame(i) for i in range(3)]
+        for index,frame in enumerate(frames):
+            frame['timestamp']=100000+index*33
+            frame['metadata']['timestamp_unit']='unix_ms'
+        capture.next_observation.side_effect=[RawHandFrame(
+            {s:f[s] for s in SIDES},f['timestamp'],'mediapipe_approx',f['metadata'],
+            world_hands={s:f['world_'+s] for s in SIDES}) for f in frames]
+        with patch('teleoperation.applications.hand_realtime.MediaPipeCameraInput',return_value=capture), patch(
+                'teleoperation.applications.hand_realtime.time.time',side_effect=[100,100.1,100.2,100.3]):
+            with MediaPipeCameraWorkflow('model.task',landmark_space='world') as workflow:
+                self.assertIsNone(workflow.next_window())
+                self.assertIsNone(workflow.next_window())
+                window=workflow.next_window()
+                self.assertEqual(window.timestamp,.3)
+                self.assertEqual(window.metadata['raw_timestamp_ms'],100066)
+                self.assertEqual(workflow.last_raw_frame['timestamp'],100066)
+                for call in capture.next_observation.call_args_list:
+                    self.assertEqual(call.kwargs,{'include_world':True})
+        capture.close.assert_called_once()
 
 
-@unittest.skipUnless(PALM_LOCAL_V2_CHECKPOINT.is_file(), "local palm_local_v2 checkpoint unavailable")
-class PalmLocalV2AngleEquivalenceTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.previous_threads = torch.get_num_threads()
-        torch.set_num_threads(1)
-        cls.model = load_palm_local_retargeter(landmark_space="normalized")
-        cls.bases = {side: build_l21_reference_basis(side) for side in SIDES}
-
-    @classmethod
-    def tearDownClass(cls):
-        del cls.model
-        torch.set_num_threads(cls.previous_threads)
-
-    def test_same_checkpoint_batched_offline_and_streaming_realtime_angles(self):
-        max_error = 0.0
-        compared = 0
-        for name, sequence in sequences().items():
-            with self.subTest(sequence=name):
-                references = offline_reference(sequence, self.bases)
-                expected_angles = {side: {} for side in SIDES}
-                for side in SIDES:
-                    indices = [i for i, (_, windows) in enumerate(references) if windows[side] is not None]
-                    if indices:
-                        batch = np.stack([references[i][1][side] for i in indices])
-                        with torch.no_grad():
-                            predicted = self.model.model(torch.from_numpy(batch)).cpu().numpy()
-                        self.assertEqual(predicted.shape, (len(indices), 18))
-                        self.assertTrue(np.isfinite(predicted).all())
-                        expected_angles[side] = dict(zip(indices, predicted))
-                processor = MediaPipePalmLocalPipeline()
-                for index, frame in enumerate(sequence):
-                    payload = processor.process_frame(frame)
-                    actual = {side: None for side in SIDES} if payload is None else self.model.predict(payload, "cpu")["hands"]
-                    for side in SIDES:
-                        if index not in expected_angles[side]:
-                            self.assertIsNone(actual[side])
-                        else:
-                            self.assertEqual(actual[side].shape, (18,))
-                            self.assertTrue(np.isfinite(actual[side]).all())
-                            error = float(np.max(np.abs(actual[side] - expected_angles[side][index])))
-                            max_error = max(max_error, error)
-                            np.testing.assert_allclose(actual[side], expected_angles[side][index], atol=1e-5, rtol=1e-5)
-                            compared += 1
-        self.assertGreater(compared, 0)
-        print(f"palm_local_v2 offline/realtime angles compared={compared} max angle error={max_error:.9g} radians")
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

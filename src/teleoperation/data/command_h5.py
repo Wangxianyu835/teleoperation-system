@@ -5,7 +5,10 @@ def _load_arm_observations(path: str | Path):
     from .body_recording import load_body_recording, replay_observation
     recording = load_body_recording(path)
     bodies = [replay_observation(row).upper_body for row in recording.samples]
-    frame_ids = np.arange(len(bodies), dtype=np.int64)
+    with h5py.File(path, "r") as stream:
+        frame_ids = np.asarray(stream["frame_ids"]) if "frame_ids" in stream else np.arange(len(bodies), dtype=np.int64)
+    if frame_ids.shape != (len(bodies),) or frame_ids.dtype.kind not in "iu" or np.any(np.diff(frame_ids) <= 0):
+        raise ValueError("Observation frame_ids must be ordered unique integers matching body frames")
     timestamps = np.asarray([row['capture_time_s'] for row in recording.samples])
     arms = {side: np.asarray([(body.world_arms or {}).get(side) if (body.world_arms or {}).get(side) is not None
                              else np.full((3, 3), np.nan) for body in bodies]) for side in ('left', 'right')}
@@ -19,24 +22,33 @@ def _load_arm_observations(path: str | Path):
     return frame_ids, timestamps, arms, valid
 
 
-def _load_hand_angles(path: str | Path, expected_ids: np.ndarray, expected_timestamps: np.ndarray):
-    with h5py.File(Path(path), "r") as h5_file:
-        required = ["frame_ids", "timestamps"] + [f"{side}_{suffix}" for side in ("left", "right") for suffix in ("angles", "valid")]
-        missing = [name for name in required if name not in h5_file]
-        if missing:
-            raise ValueError(f"Angle H5 is missing datasets: {', '.join(missing)}")
-        if not np.array_equal(np.asarray(h5_file["frame_ids"][:]).reshape(-1), expected_ids):
-            raise ValueError("Angle H5 frame_ids do not match observation H5")
-        timestamps = np.asarray(h5_file["timestamps"][:], dtype=np.float64).reshape(-1)
-        if not np.allclose(timestamps, expected_timestamps, atol=1e-6):
-            raise ValueError("Angle H5 timestamps do not match observation H5")
+def _load_hand_commands(path: str | Path, expected_ids: np.ndarray, expected_timestamps: np.ndarray):
+    """Read accepted native L21 commands with strict frame and asset identity."""
+    from .hand_joint_recording import iter_joint_commands
+    from teleoperation.robots.hand_spec import load_hand_spec
+    specs = {("l21", side): load_hand_spec("l21", side) for side in ("left", "right")}
+    count = len(expected_ids)
+    with h5py.File(path, "r") as stream:
+        if stream.attrs.get("schema") != "hand_joint_results_v1":
+            raise ValueError("Expected hand_joint_results_v1 accepted commands")
+        ids, times = np.asarray(stream["frame_ids"]), np.asarray(stream["timestamps"])
+        if ids.shape != (count,) or not np.array_equal(ids, expected_ids):
+            raise ValueError("Hand command frame_ids do not match observation H5")
+        if (times.shape != (count,) or not np.isfinite(times).all()
+                or not np.isfinite(expected_timestamps).all()
+                or not np.allclose(times, expected_timestamps, atol=1e-6, rtol=0)):
+            raise ValueError("Hand command timestamps do not match observation H5")
         data = {}
         for side in ("left", "right"):
-            angles = np.asarray(h5_file[f"{side}_angles"][:], dtype=np.float32)
-            if angles.shape != (expected_ids.shape[0], 18):
-                raise ValueError(f"{side}_angles has unexpected shape: {angles.shape}")
-            data[f"{side}_angles"] = angles
-            data[f"{side}_valid"] = np.asarray(h5_file[f"{side}_valid"][:], dtype=bool).reshape(-1)
+            valid = np.asarray(stream[f"l21/{side}/valid"])
+            if valid.shape != (count,) or valid.dtype.kind != "b":
+                raise ValueError(f"{side} validity must be a boolean per frame")
+            data[f"{side}_valid"] = valid
+            data[f"{side}_q"] = np.empty((count, 17), dtype=np.float32)
+    for index, (_, commands) in enumerate(iter_joint_commands(path, specs)):
+        for key, command in commands.items():
+            named = command.named_positions()
+            data[f"{key[1]}_q"][index] = [named[n] for n in specs[key].independent_joint_names]
     return data
 
 

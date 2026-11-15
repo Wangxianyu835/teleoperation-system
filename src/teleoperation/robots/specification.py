@@ -1,4 +1,6 @@
 import os
+import hashlib
+from pathlib import Path
 from teleoperation.paths import ROBOTS_ROOT
 DEFAULT_ROBOTS_ROOT = str(ROBOTS_ROOT)
 TRON2A_ARM_JOINTS = {
@@ -44,6 +46,22 @@ ARM_NEUTRAL = {
     'right_elbow_pitch_joint': 1.2,
     'right_elbow_joint': 1.2,
 }
+
+
+def arm_neutral_positions(robot_id, urdf_path=None):
+    """Return model-specific references shared by scene loading and PINK.
+
+    GR1's elbow direction was measured against this exact official asset.
+    A modified GR1 model needs its own verified reference declaration.
+    """
+    values = dict(ARM_NEUTRAL)
+    if robot_id == 'gr1_t2':
+        path = Path(urdf_path or (Path(DEFAULT_ROBOTS_ROOT) / ROBOT_SPECS[robot_id]['urdf']))
+        if hashlib.sha256(path.read_bytes()).hexdigest() != '5686e0189a9277c5fa01e67e5b0048581e1c7719fb37063f13e53e5a1d123ae0':
+            raise ValueError('Neutral reference requires the verified GR1 URDF; verify custom elbow geometry first')
+        for side in ('left', 'right'):
+            values[side + '_elbow_pitch_joint'] = -1.2
+    return values
 
 
 def _is_arm_joint(name, side):

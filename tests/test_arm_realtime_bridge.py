@@ -701,10 +701,11 @@ class EntryAndReplayTests(unittest.TestCase):
         import time
         from tests.test_world_hand_pipeline import world_frame, observation
         from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
+        from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
         from teleoperation.simulation.realtime_teleop import CameraFrameSource, _record_frame, _save_dump
 
         source = CameraFrameSource.__new__(CameraFrameSource)
-        source.pipeline = MediaPipePalmLocalPipeline("world")
+        source.pipeline = MediaPipePalmLocalPipeline("world", input_profile=PALM_LENGTH_PROFILE)
         source.pose_enabled = True
         source._start_timestamp = None
         source._source = Mock()
@@ -715,7 +716,7 @@ class EntryAndReplayTests(unittest.TestCase):
         for frame in frames:
             source._source.next_teleop_observation.return_value = SimpleNamespace(
                 hands=observation(frame), upper_body=None)
-            source.next_frame()
+            live_window = source.next_frame()
             _record_frame(dumped, source.last_raw_frame, None)
         with tempfile.TemporaryDirectory() as folder:
             path = _save_dump(Path(folder) / "frames.npz", dumped)
@@ -723,7 +724,9 @@ class EntryAndReplayTests(unittest.TestCase):
             for _ in frames:
                 window = replay.next_frame()
             self.assertIsNotNone(window)
+            self.assertEqual(window.metadata['input_profile'], PALM_LENGTH_PROFILE)
             for side in SIDES:
+                np.testing.assert_array_equal(window.hands[side], live_window.hands[side])
                 np.testing.assert_array_equal(replay.data["world_" + side + "_hand"],
                                               np.stack([frame["world_" + side] for frame in frames]))
 
@@ -735,6 +738,7 @@ class EntryAndReplayTests(unittest.TestCase):
         self.assertEqual(args.arm_calibrate_frames, 30)
         self.assertFalse(args.no_arms)
         self.assertIsNone(args.input_npz)
+        self.assertEqual(args.backend, 'dex')
 
     def test_replay_source_feeds_frames_then_stops(self):
         frames = 3
@@ -749,7 +753,7 @@ class EntryAndReplayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "frames.npz"
             np.savez_compressed(path, **payload)
-            source = ReplayFrameSource(path, "normalized")
+            source = ReplayFrameSource(path, "world")
             self.assertEqual(source.frames, frames)
             for index in range(frames):
                 source.next_frame()            # 手部窗口可能为 None，但不应抛异常
@@ -1399,10 +1403,66 @@ class ElbowFollowLauncherTests(unittest.TestCase):
         self.assertEqual(args.arm_elbow_follow, self.launcher.THIS_BUILD)
 
 
+def load_arm_verifier():
+    """按路径加载 ``devtools/verify_realtime_arm_bridge.py``（它不在安装包里）。"""
+    if str(DEVTOOLS) not in sys.path:
+        sys.path.insert(0, str(DEVTOOLS))
+    spec = importlib.util.spec_from_file_location(
+        "verify_realtime_arm_bridge", DEVTOOLS / "verify_realtime_arm_bridge.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ArmVerifierRecipeTests(unittest.TestCase):
+    """离线验收脚本要能复现 §8.17 / §8.19 的口径 A/B。
+
+    ``realtime_teleop --input-npz`` 带手臂会直接 raise，所以 A/B 只能在验收脚本里跑；
+    这两个纯函数（建桥 / 肘跟随三条值）就是那条链路里唯一需要单独钉住的地方。
+    """
+
+    def setUp(self):
+        self.verifier = load_arm_verifier()
+
+    def profiles(self):
+        return {name: profile_for(name) for name in PAPER_ROBOTS}
+
+    def test_defaults_match_the_realtime_entry(self):
+        args = self.verifier.build_parser().parse_args([])
+        self.assertEqual((args.arm_map, args.arm_posture_frame, args.arm_elbow_follow),
+                         ("chain", "auto", "off"))
+
+    def test_auto_keeps_each_robot_profile(self):
+        args = self.verifier.build_parser().parse_args(["--arm-map", "posture"])
+        summary = self.verifier.build_bridge(args, self.profiles(), ("right",)).summary()
+        self.assertEqual(summary["posture_frame"], "profile")
+        self.assertEqual(summary["posture_frame_by_robot"],
+                         {name: profile_for(name).posture_frame for name in PAPER_ROBOTS})
+
+    def test_a_forced_frame_reaches_every_robot(self):
+        args = self.verifier.build_parser().parse_args(
+            ["--arm-map", "posture", "--arm-posture-frame", "mapped"])
+        bridge = self.verifier.build_bridge(args, self.profiles(), ("right",))
+        self.assertEqual(bridge.summary()["posture_frame"], "mapped")
+
+    def test_the_elbow_plan_only_reframes_delta_robots(self):
+        from types import SimpleNamespace
+
+        bridge = SimpleNamespace(elbow_bend_neutral=lambda: {"right": 100.0},
+                                 elbow_bend_target=lambda: {"right": 120.0})
+        per_side = {
+            "h1_2": SimpleNamespace(elbow=(0.1, 0.2, 0.3), info={"posture_frame": "mapped"}),
+            "gr1_t2": SimpleNamespace(elbow=(0.2, 0.2, 0.3), info={"posture_frame": "delta"}),
+        }
+        elbows, baseline, bend = self.verifier.elbow_plan(bridge, per_side, "right", "operator")
+        self.assertEqual(set(elbows), {"h1_2", "gr1_t2"})
+        self.assertEqual(baseline, {"h1_2": None, "gr1_t2": 100.0})
+        self.assertEqual(bend, 120.0)
+
+    def test_elbow_follow_off_passes_nothing(self):
+        self.assertEqual(self.verifier.elbow_plan(object(), {}, "right", "off"),
+                         (None, None, None))
+
+
 if __name__ == "__main__":
     unittest.main()
-
-
-
-
-

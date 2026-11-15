@@ -18,7 +18,6 @@ from teleoperation.retargeting.hand.coordinates import (
 )
 from teleoperation.retargeting.hand.angles import canonical_to_native_angles
 from teleoperation.learning.dataset import TwoHandH5Dataset
-from teleoperation.applications.hand_processing import CanonicalHandPipeline
 from teleoperation.retargeting.hand.topology import ensure_hand25
 from teleoperation.applications.diagnostics.diagnose_hand_coordinates import signed_hand_volume, transform_diagnostics
 
@@ -106,21 +105,19 @@ class CoordinateContractTests(unittest.TestCase):
         native.sum().backward()
         np.testing.assert_array_equal(values.grad.numpy(), canonical_to_native_angles(np.ones(18), "left"))
 
-    def test_training_fk_and_human_targets_use_the_same_fixed_axes(self):
-        from teleoperation.applications.diagnostics.legacy_hand_training import create_legacy_hand_fks
-        native = create_legacy_hand_fks("cpu", ("right",))["right"]
-        canonical = create_legacy_hand_fks("cpu", ("right",), canonical=True)["right"]
-        pose = torch.zeros((1, 23))
-        raw_positions = native.forward(pose)[2][0].numpy()
-        human = np.zeros((21, 3), dtype=np.float32)
-        human[[0, 5, 9]] = raw_positions[[0, 1, 4]]
-        targets = align_mediapipe_hand(human, side="right")
-        actual = canonical.forward(pose)[2][0].numpy()
-        np.testing.assert_allclose(actual[[0, 1, 4]], targets[[0, 6, 11]], atol=1e-7)
-        np.testing.assert_allclose(np.linalg.norm(actual[:, None] - actual[None], axis=-1),
-                                   np.linalg.norm(raw_positions[:, None] - raw_positions[None], axis=-1), atol=1e-7)
-        rotations = canonical.forward(pose)[1][0].numpy()
-        np.testing.assert_allclose(np.linalg.det(rotations), np.ones(23), atol=1e-6)
+
+    def test_native_training_geometry_has_gradients_and_current_input_axes(self):
+        from teleoperation.robots.hand_spec import load_hand_spec
+        from teleoperation.retargeting.hand.hand_model import DifferentiableHandModel
+        spec = load_hand_spec('l21', 'right')
+        fk = DifferentiableHandModel(spec)
+        q = torch.tensor(spec.q_reference[None], dtype=torch.float32, requires_grad=True)
+        points = fk.positions(q, spec.tip_frames)
+        self.assertEqual(tuple(points.shape), (1, 5, 3))
+        self.assertTrue(torch.isfinite(points).all())
+        points.sum().backward()
+        self.assertTrue(torch.isfinite(q.grad).all())
+        self.assertGreater(float(q.grad.abs().sum()), 0.)
 
     def test_basis_directions_match_declared_transform(self):
         np.testing.assert_array_equal(
@@ -151,25 +148,6 @@ class CoordinateContractTests(unittest.TestCase):
             volumes.append(after)
         self.assertLess(volumes[0] * volumes[1], 0)
 
-    def test_both_chiralities_survive_conversion_alignment_and_identity_processing(self):
-        raw = dict(zip(("left", "right"), synthetic_hand_pair()))
-        canonical = {side: ensure_hand25(points) for side, points in raw.items()}
-        self.assertLess(signed_hand_volume(canonical["left"]) * signed_hand_volume(canonical["right"]), 0)
-        aligned = {side: align_source_hand_coordinates(points) for side, points in canonical.items()}
-        processor = CanonicalHandPipeline()
-        for _ in range(3):
-            payload = processor.update(aligned["left"], aligned["right"])
-        for side in ("left", "right"):
-            self.assertAlmostEqual(signed_hand_volume(aligned[side]), signed_hand_volume(canonical[side]))
-            np.testing.assert_allclose(payload["hands"][side][-1], aligned[side], atol=1e-7)
-        # Absolute source positions disambiguate a label exchange. Wrist-relative
-        # H5 points discard that evidence; do not claim an ambiguous swap is solved.
-        raw_processor = CanonicalHandPipeline()
-        for _ in range(3):
-            raw_processor.update(raw["left"], raw["right"])
-        payload = raw_processor.update(raw["right"], raw["left"])
-        for side in ("left", "right"):
-            np.testing.assert_allclose(payload["hands"][side][-1], canonical[side], atol=1e-7)
 
     def test_rotation_and_wrist_subtraction_preserve_measured_lengths(self):
         for hand in synthetic_hand_pair():
@@ -178,23 +156,6 @@ class CoordinateContractTests(unittest.TestCase):
             np.testing.assert_allclose(np.linalg.norm(canonical[SOURCE_JOINTS["TIP_dic"]], axis=-1), original, rtol=1e-6)
             np.testing.assert_array_equal(canonical[0], np.zeros(3))
 
-    def test_configured_source_scale_reaches_h5_model_window_and_target(self):
-        left, right = synthetic_hand_pair()
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "hands.h5"
-            with h5py.File(path, "w") as handle:
-                handle.attrs["coordinate_frame"] = "l21"
-                handle.attrs["coordinate_alignment"] = "source_to_l21_xyz"
-                for side, points in (("left", left), ("right", right)):
-                    aligned = align_source_hand_coordinates(ensure_hand25(points))
-                    handle.create_dataset(f"{side}_hand_keypoints", data=np.repeat(aligned[None], 3, axis=0))
-            unscaled = TwoHandH5Dataset(path).samples[0]
-            scaled = TwoHandH5Dataset(path, scale_factor=2.5).samples[0]
-            for side in ("left", "right"):
-                self.assertTrue(scaled[f"{side}_valid"])
-                self.assertEqual(scaled[f"{side}_input"].shape, (3, 25, 3))
-                np.testing.assert_allclose(scaled[f"{side}_input"], unscaled[f"{side}_input"] * 2.5)
-                np.testing.assert_allclose(scaled[f"{side}_target"], unscaled[f"{side}_target"] * 2.5)
 
     def test_fk_robot_scale_is_explicit_for_both_sides(self):
         for side in ("left", "right"):

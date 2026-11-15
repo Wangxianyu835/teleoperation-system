@@ -5,10 +5,16 @@ from teleoperation.contracts.hand import CanonicalHandFrame, HandWindow
 
 
 class TemporalBuffer:
+    """分别保存左右手的最近 N 帧；默认三帧，缺手时仅清空该侧历史。
+
+    本类只组合帧，不改变坐标或单位。应在逐帧循环外创建并反复 append，
+    否则每次只有一帧，默认三帧配置无法得到完整窗口。
+    """
     def __init__(self, receptive_field=3, reset_on_missing=True):
         self.receptive_field = int(receptive_field)
         if self.receptive_field < 1: raise ValueError("receptive_field must be positive")
         self.reset_on_missing = reset_on_missing
+        # deque(maxlen=N) 装满后自动丢掉最旧一帧；左右手互不占用历史。
         self._buffers = {side: deque(maxlen=self.receptive_field) for side in ("left", "right")}
 
     def append(self, frame: CanonicalHandFrame):
@@ -26,6 +32,7 @@ class TemporalBuffer:
     def _window_or_none(self, side):
         buffer = self._buffers[side]
         if len(buffer) != self.receptive_field: return None
+        # stack 在最前面增加时间维：(25,3) 的 N 帧 → (N,25,3)。
         return np.stack(tuple(buffer), axis=0).astype(np.float32, copy=False)
 
     def reset(self):

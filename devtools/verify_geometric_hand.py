@@ -150,8 +150,7 @@ def measure_side(side: str, poses: dict[str, dict[int, float]],
             # 与实时循环一致：每帧都要 retarget，零位标定才可能攒够帧数。
             frame_values = retargeter.retarget(window)[("l21", side)]
             if frame_values.valid:
-                from teleoperation.retargeting.hand.angles import l21_legacy_values
-                values = np.asarray(l21_legacy_values(frame_values), dtype=np.float64)
+                values = np.asarray(frame_values.positions, dtype=np.float64)
         if window is None:
             raise AssertionError(f"{side}:{name} produced no window; the synthetic frame is unusable")
         if values is None:
@@ -168,7 +167,7 @@ def check_rows(side: str, rows: list) -> list[str]:
     for name, truth, values in rows:
         for dim in range(1, 18):
             expected = float(truth.get(dim, 0.0))
-            got = float(values[dim])
+            got = float(values[dim - 1])
             if expected == 0.0:
                 if abs(got) > ZERO_TOLERANCE:
                     failures.append(f"{side}:{name} dim{dim} target 0 -> {got:+.3f}")
@@ -180,13 +179,13 @@ def check_rows(side: str, rows: list) -> list[str]:
 def report_side(side: str, rows: list) -> None:
     print(f"\n---- {side}")
     for name, truth, values in rows:
-        pairs = [f"dim{dim} {float(truth[dim]):.3f} -> {float(values[dim]):+.3f}"
+        pairs = [f"dim{dim} {float(truth[dim]):.3f} -> {float(values[dim - 1]):+.3f}"
                  for dim in sorted(truth) if float(truth[dim]) != 0.0]
-        worst = max([abs(float(values[dim]) - float(truth[dim])) for dim in truth] or [0.0])
+        worst = max([abs(float(values[dim - 1]) - float(truth[dim])) for dim in truth] or [0.0])
         print(f"  {name:14s} | " + ("; ".join(pairs) if pairs else "(all dims target 0)")
               + f"  max_err={worst:.3f}")
-        leaked = [f"dim{dim}={float(values[dim]):+.3f}" for dim in range(1, 18)
-                  if float(truth.get(dim, 0.0)) == 0.0 and abs(float(values[dim])) > ZERO_TOLERANCE]
+        leaked = [f"dim{dim}={float(values[dim - 1]):+.3f}" for dim in range(1, 18)
+                  if float(truth.get(dim, 0.0)) == 0.0 and abs(float(values[dim - 1])) > ZERO_TOLERANCE]
         if leaked:
             print(f"     泄漏到未驱动的维: {', '.join(leaked)}")
 
@@ -204,7 +203,7 @@ def main() -> int:
         for _, truth, values in rows:
             for dim in range(1, 18):
                 worst_per_dim[dim] = max(
-                    worst_per_dim[dim], abs(float(values[dim]) - float(truth.get(dim, 0.0))))
+                    worst_per_dim[dim], abs(float(values[dim - 1]) - float(truth.get(dim, 0.0))))
     print("\n---- 各维最大绝对误差（左右手全部姿态）")
     print("  " + " ".join(f"d{dim}:{worst_per_dim[dim]:.3f}" for dim in range(1, 18)))
     if failures:

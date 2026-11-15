@@ -49,15 +49,16 @@ class DexInputTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             HandJointResult("g1", "left", "a"*64, ("a", "a"), np.zeros(2), 0.)
     def test_camera_and_explicit_vr_profiles_produce_equivalent_geometry(self):
-        camera = DexInputAdapter("camera").adapt(camera_observation())
+        from teleoperation.retargeting.hand.processing import MediaPipePalmLocalProcessor
+        camera = MediaPipePalmLocalProcessor('world').process_frame(camera_observation())
         vr = DexInputAdapter("visionpro").adapt(vr_observation())
         for side in ("left", "right"):
             np.testing.assert_allclose(camera.hands[side], vr.hands[side], atol=1e-5)
-        self.assertNotEqual(camera.metadata["dex_input_profile"], vr.metadata["dex_input_profile"])
+        self.assertNotIn("dex_input_profile", camera.metadata)
 
     def test_translation_and_rotation_do_not_change_local_hand_geometry(self):
         rotation = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
-        for source, make in (("camera", camera_observation), ("visionpro", vr_observation)):
+        for source, make in (("visionpro", vr_observation),):
             adapter = DexInputAdapter(source)
             first = adapter.adapt(make())
             second = adapter.adapt(make(open_points() @ rotation.T + [2, -3, 5]))
@@ -80,8 +81,8 @@ class DexInputTests(unittest.TestCase):
             self.assertIsNotNone(result.hands["right"])
 
     def test_calibration_is_fixed_persisted_and_never_overwrites(self):
-        adapter = DexInputAdapter("camera")
-        frames = [adapter.adapt(camera_observation(timestamp=i / 30)) for i in range(61)]
+        adapter = DexInputAdapter("visionpro")
+        frames = [adapter.adapt(vr_observation(timestamp=i / 30)) for i in range(61)]
         calibration = DexCalibration.fit(frames, 0.)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "calibration.json"
@@ -158,7 +159,7 @@ class NativeCommandTests(unittest.TestCase):
             for index in range(10):
                 # Host clock has no role when recording timestamps are passed.
                 from unittest.mock import patch
-                with patch("teleoperation.simulation.hand_commands.time.monotonic", return_value=index*host_interval):
+                with patch("teleoperation.retargeting.hand.joint_commands.time.monotonic", return_value=index*host_interval):
                     before = pipeline.previous[key].copy()
                     named = pipeline.update(result, timestamp=index/30).named_positions()
                 after = pipeline.previous[key]
@@ -176,35 +177,35 @@ class NativeCommandTests(unittest.TestCase):
 
     def test_native_h5_round_trip_and_config_rejection(self):
         import h5py
-        from teleoperation.data.hand_recording import LegacyNativeResultWriter, iter_legacy_native_commands
+        from teleoperation.data.hand_joint_recording import HandJointResultWriter, iter_joint_commands
         model = self.model()
         key = (model.robot_type, model.side)
         named = model.expand(model.bounds.mean(1))
         spec = load_hand_spec(*key)
         result = HandJointResult(*key, spec.spec_hash, spec.independent_joint_names, model.bounds.mean(1), 0.)
         path = Path(self.directory.name) / "native.h5"
-        with LegacyNativeResultWriter(path, {key:model}, {}, specs={key:spec}) as writer:
+        with HandJointResultWriter(path, {key:spec}, {}) as writer:
             command = HandJointCommand(*key, spec.spec_hash, spec.joint_names, np.array([named[n] for n in spec.joint_names]), 0.)
-            writer.append(0., {key:result}, {key:command}, {key:np.zeros((5,3))})
+            writer.append(0, 0., {key:result}, {key:command})
             with self.assertRaises(ValueError):
-                writer.append(0., {key:result}, {key:named}, {key:None})
-        rows = list(iter_legacy_native_commands(path, {key:model}, specs={key:spec}))
+                writer.append(1, 0., {key:result}, {key:command})
+        rows = list(iter_joint_commands(path, {key:spec}))
         np.testing.assert_array_equal(rows[0][1][key].positions, command.positions)
         with h5py.File(path,"r+") as stream:
-            stream["/".join(key)].attrs["config_hash"]="bad"
+            stream["/".join(key)].attrs["spec_hash"]="bad"
         with self.assertRaises(ValueError):
-            list(iter_legacy_native_commands(path,{key:model},specs={key:spec}))
+            list(iter_joint_commands(path,{key:spec}))
 
     def test_scene_writes_only_selected_named_hand_and_rejects_bad_commands(self):
         from unittest.mock import Mock
         from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
-        from teleoperation.robots.native_hand import build_mapping
         model = self.model()
         key = (model.robot_type, model.side)
         names = {n:i for i,n in enumerate(model.joint_names)}
         scene = object.__new__(ThreeRobotHandScene)
         scene.p=Mock(); scene.cid=1; scene.sides=("right",); scene.alive=lambda:True
-        scene.robots=[{"type":"h1_2","body":42,"plans":{"right":(build_mapping("h1_2","right",model.limits),names)}}]
+        scene.robots=[{"type":"h1_2","body":42,"plans":{"right":(load_hand_spec(*key),names)}}]
+        scene.applied={"right":0}
         named=model.expand(model.bounds.mean(1))
         spec = load_hand_spec(*key)
         result=HandJointCommand(*key, spec.spec_hash, model.joint_names,np.array([named[n] for n in model.joint_names]),0.)
@@ -216,43 +217,16 @@ class NativeCommandTests(unittest.TestCase):
 
 
 class DexRealtimeTests(unittest.TestCase):
-    def test_latest_source_drops_backlog_and_closes(self):
-        import threading
-        from unittest.mock import Mock
-        from teleoperation.applications.dex_native import LatestCameraInput
-        source=Mock()
-        produced=threading.Event()
-        allow=threading.Event()
-        release=threading.Event()
-        count=[0]
-        def read(**kwargs):
-            count[0]+=1
-            if count[0]==2:
-                allow.wait(2.)
-            if count[0]==5:
-                produced.set()
-                release.wait(2.)
-            return count[0]
-        source.next_observation.side_effect=read
-        source.release.side_effect=lambda **kwargs:release.set()
-        source._cap.release.side_effect=lambda:release.set()
-        wrapper=LatestCameraInput(source)
-        first=wrapper.next_observation(include_world=True)
-        allow.set()
-        self.assertTrue(produced.wait(2.))
-        self.assertEqual(wrapper.next_observation(include_world=True),4)
-        self.assertEqual(first,1)
-        wrapper.close()
-        self.assertFalse(wrapper.thread.is_alive())
 
     def test_dex_cli_and_factory_reject_wrong_profile_without_loading_devices(self):
         from teleoperation.cli import build_parser
-        from teleoperation.applications.realtime_hand_sim import build_retargeter
+        from teleoperation.applications.hand_control import _selection
         args=build_parser().parse_args(["hand","vr","--backend","dex","--input-h5","unused.h5",
             "--dex-calibration","unused.json","--scene","robots","--hand","both","--hand-mapping","same"])
         self.assertIsNone(args.checkpoint)
         with self.assertRaisesRegex(ValueError,"requires"):
-            build_retargeter("dex",Path("unused"),"cpu",15,0.,"normalized")
+            from types import SimpleNamespace
+            _selection(SimpleNamespace(input_profile="normalized"))
 
     def test_existing_vr_route_requires_checkpoint_before_opening_devices(self):
         from teleoperation.cli import build_parser
@@ -260,3 +234,14 @@ class DexRealtimeTests(unittest.TestCase):
         args=build_parser().parse_args(["hand","vr","--ip","unused"])
         with self.assertRaisesRegex(ValueError,"requires --checkpoint"):
             run(args)
+
+
+class DexVRRecordingTests(unittest.TestCase):
+    def test_camera_fixed_calibration_rejected_before_reading_input(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from teleoperation.applications.dex_native import calibrate
+        with patch("teleoperation.applications.dex_native.recording_frames") as read:
+            with self.assertRaisesRegex(ValueError, "visionpro only"):
+                calibrate(SimpleNamespace(source="camera"))
+            read.assert_not_called()

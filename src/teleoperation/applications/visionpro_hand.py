@@ -1,4 +1,4 @@
-"""Upstream TransHandR Vision Pro -> compatible hand result -> existing scene."""
+"""VR shortcut to common NN/dex control, plus explicit upstream compatibility."""
 import argparse
 from contextlib import ExitStack
 import json
@@ -11,24 +11,35 @@ from teleoperation.applications.visionpro_processing import TransHandRVisionProP
 from teleoperation.applications.visionpro_results import VRResultWriter
 from teleoperation.inputs.visionpro import VisionProInput, VisionProReplayInput
 from teleoperation.retargeting.hand.transhandr_vr import load_transhandr_vr_model, TransHandRVRRetargeter
-from teleoperation.retargeting.hand.angles import canonical_to_native_angles
-from teleoperation.retargeting.hand.angles import l21_legacy_values
 from teleoperation.contracts.hand_control import valid_joint_result
-from teleoperation.simulation.hand_commands import build_hand_commands, apply_legacy_l21_mapping
+from teleoperation.simulation.hand_commands import build_hand_commands
 from teleoperation.cli.visionpro_options import configure
 
 
 def build_parser(parser=None):
-    parser = parser or argparse.ArgumentParser(description="TransHandR upstream Vision Pro hand pipeline")
+    parser = parser or argparse.ArgumentParser(description="Vision Pro input with shared NN/dex hand retargeting")
     return configure(parser)
 
 
 def run(args):
-    if getattr(args, "backend", "transhandr") == "dex":
-        from teleoperation.applications.dex_native import visionpro_run
-        return visionpro_run(args)
+    if args.backend in ('nn', 'dex'):
+        from argparse import Namespace
+        from teleoperation.applications.hand_control import run as unified_run
+        if args.dex_calibration is not None or args.scale_factor != 1.:
+            raise ValueError('Unified NN/dex uses shared palm normalization, no fixed VR calibration/scale')
+        if args.source_hand not in (None, args.hand) or args.hand_mapping not in (None, 'same'):
+            raise ValueError('Unified hand control uses anatomical same-side routing')
+        values = vars(args).copy()
+        values['record_results'] = args.output_h5 or (args.report.with_suffix('.h5') if args.report else None)
+        return unified_run(Namespace(**values))
+    if args.hand_model != 'l21':
+        raise ValueError('Upstream TransHandR weights target L21; use shared NN/dex for other hands')
+    if args.scene == 'auto':
+        args.scene = 'hands'
+    if args.scene != "hands":
+        raise ValueError("TransHandR VR requires --scene hands; use native dex for robots")
     if args.checkpoint is None:
-        raise ValueError("TransHandR VR requires --checkpoint; native dex uses --backend dex --dex-calibration")
+        raise ValueError("TransHandR VR requires --checkpoint")
     if args.frames < 0 or not np.isfinite(args.fps) or args.fps < 0:
         raise ValueError("frames and fps must be nonnegative")
     mapping = getattr(args, "hand_mapping", None)
@@ -114,7 +125,8 @@ def run(args):
                     counts[side]["input_valid_frames"] += int(input_valid)
                     results = None if window is None else retargeters[side].retarget(window)
                     angles = valid_joint_result(results, "l21", side)
-                    raw = native = np.full(18, np.nan)
+                    raw = np.full(18, np.nan)
+                    native = np.full(17, np.nan)
                     if angles is None:
                         counts[side]["missing_or_warmup_frames"] += 1
                         accepted = commands.missing(('l21',side),timestamp=timestamp if args.input_h5 else None)
@@ -123,12 +135,11 @@ def run(args):
                         counts[side]["angle_frames"] += 1
                         raw = np.asarray(retargeters[side].last_raw_angles, dtype=np.float64)
                         # The adapter has already converted to the selected native hand.
-                        native = l21_legacy_values(angles)
+                        native = angles.positions.copy()
                         accepted = commands.update(angles, timestamp=timestamp if args.input_h5 else None)
-                        apply_legacy_l21_mapping(scene, accepted)
-                    command = np.r_[0.,accepted.positions]  # Historical VR diagnostic H5 only.
+                    scene.apply_native(accepted)
                     records[side] = {"input_valid": input_valid, "model_valid": angles is not None,
-                                     "raw_angles": raw, "native_angles": native, "command_angles": command}
+                                     "raw_angles": raw, "native_positions": native, "command_positions": accepted.positions}
                 if writer is not None:
                     frame_id = observation.metadata.get("frame_id", processed) if observation is not None else processed
                     writer.append(frame_id, timestamp, records)
@@ -154,6 +165,7 @@ def run(args):
               "angle_frames": angle_frames, "missing_or_warmup_frames": missing,
               "elapsed_seconds": time.monotonic() - started,
               "input_shape": [1, 3, 25, 3], "output_shape": [18],
+              "native_command_shape": [17],
               "preprocessing": "axis remap -> wrist relative -> chronological three frames -> fixed scale",
               "hand_commands": None if commands is None else commands.summary()}
     if args.report:

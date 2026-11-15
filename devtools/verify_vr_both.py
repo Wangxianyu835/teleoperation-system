@@ -116,13 +116,16 @@ def verify(args):
                     with torch.no_grad():
                         raw = reference(torch.from_numpy(expected)).numpy()[0]
                     adapter = TransHandRVRRetargeter(model, source_side=side, target_side=side)
-                    adapter.retarget(window)
+                    native_result = adapter.retarget(window)[("l21", side)]
+                    np.testing.assert_array_equal(
+                        native_result.positions, canonical_to_native_angles(raw, side)[1:])
+                    assert native_result.positions.shape == (17,)
                     ported = adapter.last_raw_angles
                     np.testing.assert_array_equal(ported, raw)
                     input_error = max(input_error, float(np.max(np.abs(actual - expected))))
                     output_error = max(output_error, float(np.max(np.abs(ported - raw))))
             report["branches"][side] = {"windows": len(starts) * 2, "scales": [1., 1.7],
-                "input_max_difference": input_error, "output_max_difference": output_error,
+                "input_max_difference": input_error, "output_max_difference": output_error, "raw_output_shape": [18], "native_result_shape": [17],
                 "reference": "executed worker" if side == "left" else "activated upstream commented right branch"}
     upstream_urdf = root / "dataset/robot/l21_right/linkerhand_l21_right.urdf"
     reference_fk = create_hand_kinematics(str(upstream_urdf), upstream_cfg, "cpu")

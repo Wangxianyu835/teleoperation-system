@@ -4,6 +4,11 @@ from teleoperation.data.body_recording import load_body_recording, replay_observ
 
 
 class BodyReplaySource:
+    """Read raw body arrivals, including loss, on their timeline without inference.
+
+    body_result is populated only on recorded arrivals. The control pipeline
+    owns target retention and reconstruction from the preserved SMPL-X pose.
+    """
     def __init__(self, path):
         self.recording = load_body_recording(path)
         self.index = 0

@@ -24,44 +24,8 @@ from teleoperation.data.hand_body_recording import (
     write_hand_body_recording,
 )
 from teleoperation.data.hand_h5 import load_twohand_h5
-from teleoperation.data.world_landmark_recording import (
-    read_world_landmark_recording,
-    write_world_landmark_recording,
-)
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def points(value):
-    return np.full((21, 3), value, dtype=np.float32)
-
-
-def frame(index, world_left=None, world_right=None):
-    return {
-        "frame_id": index,
-        "timestamp": 1000 + index,
-        "world_left": world_left,
-        "world_right": world_right,
-    }
-
-
-class LegacyWorldRecordingTests(unittest.TestCase):
-    def test_legacy_round_trip_still_works(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "world.h5"
-            write_world_landmark_recording(
-                path,
-                [
-                    frame(0, world_left=points(0.01)),
-                    frame(1, world_right=points(0.02)),
-                ],
-                metadata={"camera_index": 1},
-            )
-            arrays, attributes = read_world_landmark_recording(path)
-
-        self.assertEqual(arrays["left_valid"].tolist(), [True, False])
-        self.assertEqual(arrays["right_valid"].tolist(), [False, True])
-        self.assertEqual(attributes["source_landmark_space"], "mediapipe_world_meters")
 
 
 class CombinedCaptureTests(unittest.TestCase):

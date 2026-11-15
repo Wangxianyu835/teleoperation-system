@@ -5,7 +5,6 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 ARM_DOF = 7
 import xml.etree.ElementTree as XmlET
-from typing import Protocol
 from roboticstoolbox import ERobot, ET, ETS
 from teleoperation.contracts.arm import ArmIKResult, ArmTargetPose
 from teleoperation.robots.specification import TRON2A_ARM_JOINTS, TRON2A_EE_LINKS
@@ -18,11 +17,6 @@ class ArmSpecification:
     upper: np.ndarray
     velocity: np.ndarray
     robot: ERobot
-
-
-class ArmIK(Protocol):
-    def solve(self, target_pose: ArmTargetPose, q_previous: np.ndarray, q_reference: np.ndarray) -> ArmIKResult:
-        """Solve one 7-DOF arm target while preserving continuity."""
 
 
 def load_arm_specification(urdf_path: str | Path, side: str) -> ArmSpecification:

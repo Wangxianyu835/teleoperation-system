@@ -17,7 +17,7 @@ from teleoperation.paths import L21_ROOT
 from .l21 import L21_JOINT_ORDER
 
 
-from teleoperation.contracts.hand_models import HAND_MODELS
+from teleoperation.contracts.constants import HAND_MODELS
 
 
 @dataclass(frozen=True)

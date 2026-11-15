@@ -15,7 +15,7 @@ from teleoperation.retargeting.hand.hand_model import DifferentiableHandModel, b
 class NormalizedDexTests(unittest.TestCase):
     def test_reachable_l21_target_and_nn_share_native_result_identity(self):
         from teleoperation.retargeting.hand.dex_native import NormalizedDexRetargeter
-        from teleoperation.retargeting.hand.interface import JointNNRetargeter
+        from teleoperation.retargeting.hand.interface import SharedJointNNRetargeter
         from teleoperation.retargeting.hand.predictor import build_joint_model
         from tests.test_joint_checkpoints import SMALL
         torch.set_num_threads(1)
@@ -37,7 +37,9 @@ class NormalizedDexTests(unittest.TestCase):
             actual=fk.vectors(torch.tensor(solved.positions[None].copy(),dtype=torch.float64)).detach().numpy()[0]
             residual=np.linalg.norm((actual-target.vectors)*spec.reference_palm_length_m,axis=1)
             self.assertLess(float(residual.max()),.005)
-            nn=JointNNRetargeter({spec.key:spec},{spec.key:build_joint_model(spec,SMALL)})
+            canonical_spec=load_hand_spec('l21','right')
+            nn=SharedJointNNRetargeter({spec.key:spec},build_joint_model(canonical_spec,SMALL),
+                                      canonical_spec=canonical_spec)
             neural=nn.retarget(window)[spec.key]
             self.assertEqual((neural.key,neural.spec_hash,neural.joint_names),(solved.key,solved.spec_hash,solved.joint_names))
             self.assertEqual(neural.positions.shape,solved.positions.shape)

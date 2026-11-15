@@ -2,35 +2,10 @@ import numpy as np
 from teleoperation.contracts.constants import HAND_ANGLE_DIM, FK_FIXED_TIPS
 
 
-def l21_joint_result(side, angles, timestamp):
-    """Convert a historical 18D inference value to the common native result."""
-    from teleoperation.contracts.hand_control import HandJointResult
-    from teleoperation.robots.hand_spec import load_hand_spec
-
-    spec = load_hand_spec("l21", side)
-    if angles is not None:
-        angles = np.asarray(angles)
-        if angles.shape != (18,) or not np.isfinite(angles).all():
-            raise ValueError("Historical L21 inference requires 18 finite values")
-    return HandJointResult("l21", side, spec.spec_hash, spec.independent_joint_names,
-                           None if angles is None else angles[1:], timestamp,
-                           valid=angles is not None,
-                           error="missing input or unfinished calibration" if angles is None else None)
 
 
-def l21_legacy_values(result):
-    """Serialize common L21 independent coordinates into historical 18D layout."""
-    if result.hand_model != "l21" or result.positions is None or result.positions.shape != (17,):
-        raise ValueError("Historical L21 output requires a valid L21 joint result")
-    return np.concatenate((np.zeros(1, dtype=result.positions.dtype), result.positions))
 
 
-def legacy_l21_dofs(row):
-    """Read historical 18D storage/FK layout without reducing float64 precision."""
-    values = np.asarray(row)
-    if values.shape != (18,) or not np.isfinite(values).all():
-        raise ValueError("Historical L21 layout must contain 18 finite values")
-    return values[1:].copy()
 
 
 def canonical_to_native_angles(angles, side: str):
@@ -81,20 +56,3 @@ def canonical_to_native_target_angles(angles, canonical_spec, target_spec):
             signs[index] = -1
     multiplier = angles.new_tensor(signs) if hasattr(angles, "new_tensor") else signs
     return angles * multiplier
-def angle18_to_dofs(angle: np.ndarray) -> np.ndarray:
-    value = _angle18(angle)
-    return value[1:].copy()
-
-
-def angle18_to_nodes(angle: np.ndarray) -> np.ndarray:
-    value = _angle18(angle)
-    return np.concatenate((value, np.zeros(FK_FIXED_TIPS, dtype=np.float32)))
-
-
-def _angle18(angle: np.ndarray) -> np.ndarray:
-    value = np.asarray(angle, dtype=np.float32).reshape(-1)
-    if value.shape != (HAND_ANGLE_DIM,):
-        raise ValueError(f"Expected 18 hand angles, got {value.shape}")
-    if not np.isfinite(value).all():
-        raise ValueError("Hand angles contain NaN or Inf")
-    return value

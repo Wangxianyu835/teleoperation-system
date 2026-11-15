@@ -7,7 +7,7 @@
     python -m teleoperation replay actions --dummy --robot h1_2 --task pushcube --no-render
 
     # ② 导出「契约H 示例文件」给队友A 照着写
-    python -m teleoperation replay actions --dummy --save-actions datasets/samples/actions_demo_h1_2.h5
+    python -m teleoperation replay actions --dummy --save-actions outputs/actions_h1_2.h5
 
     # ③ 回放真实数据
     python -m teleoperation replay actions --file datasets/actions/pushcube_h1_2.h5
@@ -20,16 +20,10 @@
 
 支持格式：.npz / .h5 / .hdf5
 """
-import argparse
-import os
 import sys
 import time
 
 import numpy as np
-
-# 默认资源由仓库路径模块定位
-from teleoperation.paths import PROJECT_ROOT
-ROOT = str(PROJECT_ROOT)
 
 try:
     sys.stdout.reconfigure(encoding='utf-8')
@@ -138,9 +132,7 @@ def main(args=None):
     if args is None:
         raise TypeError("Use teleoperation.cli.main() to parse command arguments")
 
-    from teleoperation.applications.simulation import create_environment as SimulationEnv, run_episode, evaluate_task, benchmark_all_tasks
-    import teleoperation.simulation.tasks          # noqa: F401  <- 触发 30 个任务注册
-    from teleoperation.simulation.tasks import get_task      # noqa: F401
+    from teleoperation.applications.simulation import create_environment as SimulationEnv
 
     # ---- describe：只打印动作空间定义
     if args.describe:

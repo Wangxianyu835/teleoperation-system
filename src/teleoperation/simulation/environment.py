@@ -8,10 +8,13 @@ import pybullet_data
 from .robot_loader import RobotLoader
 from .randomization import DomainRandomizer
 from .urdf_loader import create_ground
-from teleoperation.simulation.tasks import get_task, list_tasks
+from teleoperation.simulation.tasks import get_task
 from teleoperation.simulation.tasks import register_builtin_tasks
 register_builtin_tasks()          # noqa: F401  ★ 触发 30 个任务注册
 from teleoperation.evaluation import MetricsTracker
+
+
+DEFAULT_DT = 1.0 / 240.0     # 物理步长（reset() 里也按这个 setTimeStep）
 
 
 class SimulationEnv:
@@ -64,6 +67,14 @@ class SimulationEnv:
         self.action_joint_names = []
         self.action_joint_indices = []
 
+        # 仿真时钟与「连续成立窗口」的占位值：同上面的理由，reset() 之前访问
+        # 也要有确定值（例如步数用尽时 _finalize_episode() 会读 self.sim_time）。
+        self.dt = DEFAULT_DT
+        self.sim_time = 0.0
+        self._success_streak = 0
+        self._success_hold_steps = 1
+        self._episode_finalized = False
+
     def _init_modules(self, data_dir: str):
         """初始化各模块"""
         self.robot_loader = RobotLoader(self.client)
@@ -101,14 +112,30 @@ class SimulationEnv:
         self.task.set_robot(self.robot_id)
         self.task.reset()
 
-        # 域随机化
+        # 域随机化（关节体不参与：门/抽屉的位姿由关节决定，硬搬会撕开铰链）
         if randomize:
-            self.randomizer.randomize(self.task.objects, self.client)
+            self.randomizer.randomize(self.task.objects, self.client,
+                                      skip_names=self.task.jointed_objects)
+            # 随机化会带来 ±1 cm 的 z 抖动，可能又把物体压进桌面，
+            # 所以再吸附一次，并把结果记为「初始位姿」（相对判据的基准）
+            self.task.snap_to_supports()
+            self.task.capture_initial_state()
 
         # 重置记录器
         if self.recording is not None: self.recording.reset()
+
+        # 时间口径：sim_time 是仿真时间（超时判据 + 报表主口径，与机器快慢无关）；
+        # task_start_time 只用来算墙钟 elapsed（接口契约里的返回值，看实时因子）。
+        self.dt = DEFAULT_DT
+        self.sim_time = 0.0
         self.start_time = time.time()
         self.task_start_time = time.time()
+
+        # 判据需连续成立的步数（仿真时间换算）：0.1 s @ 240 Hz = 24 步
+        self._success_streak = 0
+        self._episode_finalized = False
+        hold = getattr(self.task, 'hold_steps', None)
+        self._success_hold_steps = max(1, int(hold(self.dt))) if callable(hold) else 1
 
         self.episode_count += 1
 
@@ -121,9 +148,11 @@ class SimulationEnv:
         执行一步仿真
         Args:
             action: 按当前机器人 action_joint_names 排列的完整原生动作
-            duration: 步长时间
+            duration: 保留参数（本实现每次只推进 1 个物理步，不按 duration 细分）
         Returns:
             obs, success, done, elapsed
+            elapsed 是**墙钟**秒数（接口契约不变，用来算实时因子）；
+            仿真时间见 env.sim_time，它才是超时判据与报表的口径。
         """
         # 应用动作（★ 必须用 action_joint_indices 映射，绝不能按位置映射到关节索引）
         if action is not None:
@@ -135,17 +164,26 @@ class SimulationEnv:
 
         # 物理步进
         p.stepSimulation(physicsClientId=self.client)
+        self.sim_time += self.dt
 
-        # 检查成功
-        success = self.task.check_success()
-        elapsed = time.time() - self.task_start_time
+        # 成功判定：判据必须**连续成立** N 步（默认 0.1 s 仿真时间）才算成功。
+        # 只判一步会收下瞬时状态 —— 例如物体被弹起来从目标区上空飞过、
+        # 抽屉被撞得短暂到位又弹回，这些都不是「做成了」。
+        if self.task.check_success():
+            self._success_streak += 1
+        else:
+            self._success_streak = 0
+        success = self._success_streak >= self._success_hold_steps
+
+        elapsed = time.time() - self.task_start_time        # 墙钟（参考用）
 
         # 记录数据
         if self.record:
             self.recording.capture(self.robot_id, self.task.objects, self.client, elapsed)
 
-        # 判断结束
-        timeout = elapsed > self.task.max_time
+        # 判断结束：超时按**仿真时间**比（旧版比墙钟，慢机器上会提前超时，
+        # 同一策略在快慢不同的机器上成绩不同）
+        timeout = self.sim_time > self.task.max_time
         done = success or timeout
 
         if success and self.recording is not None and self.recording.completion_time == 0.0:
@@ -163,16 +201,30 @@ class SimulationEnv:
             'robot_type': self.robot_type,
         }
         if self.task is not None:
-            for name, obj_id in self.task.objects.items():
-                pos, orn = p.getBasePositionAndOrientation(
-                    obj_id, physicsClientId=self.client)
+            for name in self.task.objects:
+                pos, orn = self.task.get_object_pose(name)
                 obs[f'{name}_pos'] = pos
                 obs[f'{name}_orn'] = orn
         return obs
 
-    def _finalize_episode(self, success: bool, elapsed: float):
-        """结束episode，保存数据"""
-        self.metrics.record(self.task_name, success, elapsed)
+    def _finalize_episode(self, success: bool, elapsed: float = None,
+                          wall_elapsed: float = None):
+        """结束 episode：记一次试验（仿真时间与墙钟都记）
+
+        Args:
+            success: 是否成功
+            elapsed: 兼容旧调用点的墙钟读数（applications/simulation.py 在步数用尽时
+                     传进来的是 time.time() 之差）。**完成时间一律取 self.sim_time**：
+                     仿真时间不随机器快慢变，成绩才可比。
+            wall_elapsed: 显式墙钟（优先于 elapsed），只用于报表的 WallT 列
+        """
+        if self._episode_finalized:
+            return
+        self._episode_finalized = True
+        if wall_elapsed is None and elapsed is not None:
+            wall_elapsed = float(elapsed)
+        self.metrics.record(self.task_name, success, self.sim_time,
+                            wall_time=wall_elapsed)
 
         if self.record:
             self.recording.save_episode(self.episode_count)

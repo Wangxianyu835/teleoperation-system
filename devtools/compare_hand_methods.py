@@ -3,7 +3,7 @@ import argparse
 import json
 from pathlib import Path
 
-from teleoperation.contracts.hand_models import HAND_MODELS
+from teleoperation.contracts.constants import HAND_MODELS
 from teleoperation.robots.hand_spec import load_hand_spec
 from teleoperation.learning.hand_evaluation import compare_hand_methods
 

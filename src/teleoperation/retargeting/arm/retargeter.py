@@ -1,9 +1,6 @@
 from __future__ import annotations
-from dataclasses import dataclass
-from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
-ARM_DOF = 7
 from .calibration import ArmCalibration
 from teleoperation.contracts.observations import UpperBodyObservation
 from teleoperation.contracts.arm import ArmTargetPose

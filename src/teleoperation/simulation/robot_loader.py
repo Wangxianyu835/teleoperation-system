@@ -23,7 +23,7 @@ import os
 import pybullet as p
 
 # 项目内机器人资产根目录（相对本文件定位，不依赖盘符）
-from teleoperation.robots.specification import DEFAULT_ROBOTS_ROOT, ROBOT_SPECS, ARM_NEUTRAL, _is_arm_joint, _is_hand_joint
+from teleoperation.robots.specification import DEFAULT_ROBOTS_ROOT, ROBOT_SPECS, arm_neutral_positions, _is_arm_joint, _is_hand_joint
 from .urdf_loader import load_urdf
 
 class RobotLoader:
@@ -128,24 +128,14 @@ class RobotLoader:
 
     def _apply_neutral_pose(self):
         """把手臂摆到中性姿态（只影响名字匹配的关节）"""
-        for name, val in ARM_NEUTRAL.items():
+        path = os.path.join(self.robots_root, ROBOT_SPECS[self.robot_type]['urdf'])
+        for name, val in arm_neutral_positions(self.robot_type, path).items():
             idx = self.all_joints.get(name)
             if idx is not None:
                 p.resetJointState(self.robot_id, idx, val,
                                   physicsClientId=self.client)
 
     # ------------------------------------------------------------------ #
-    def set_arm_pose(self, side, angles):
-        """按「关节名后缀」设置手臂姿态（兼容旧代码）"""
-        prefix = side + '_'
-        for k, v in angles.items():
-            jname = k if k.startswith(prefix) else prefix + k
-            idx = self.all_joints.get(jname)
-            if idx is not None:
-                p.setJointMotorControl2(
-                    self.robot_id, idx, p.POSITION_CONTROL,
-                    targetPosition=v, force=200,
-                    physicsClientId=self.client)
 
     # ------------------------------------------------------------------ #
     def describe_action_space(self):

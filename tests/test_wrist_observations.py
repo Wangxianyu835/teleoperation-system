@@ -11,6 +11,61 @@ from teleoperation.retargeting.arm.wrist_orientation import WristTracker
 
 
 class WristObservationTests(unittest.TestCase):
+    def test_cached_packets_preserve_calibration_until_distinct_samples_align(self):
+        tracker = WristTracker(np.eye(3), calibration_frames=10)
+        matrix = np.eye(4)
+        matrix[:3, 3] = [.1, .2, .3]
+        for i in range(9):
+            sample = vr_wrist(matrix, 1. + i / 5)
+            tracker.update(sample, .1)
+            tracker.update(sample, .1)
+        self.assertIsNone(tracker.neutral)
+        tracker.update(vr_wrist(matrix, 1. + 9/5), .1)
+        self.assertIsNotNone(tracker.neutral)
+
+    def test_cached_packets_expire_pending_calibration_and_allow_restart(self):
+        tracker = WristTracker(np.eye(3), calibration_frames=3)
+        matrix = np.eye(4)
+        matrix[:3, 3] = [.1, .2, .3]
+        sample = vr_wrist(matrix, 1.)
+        tracker.update(sample, .03)
+        tracker.update(sample, .1)
+        self.assertEqual(len(tracker.samples), 1)
+        self.assertIsNone(tracker.neutral)
+        tracker.update(sample, .41)
+        self.assertFalse(tracker.samples)
+        for i in range(3):
+            tracker.update(vr_wrist(matrix, 2. + i/30), .03)
+        self.assertIsNotNone(tracker.neutral)
+
+    def test_cached_packets_hold_aligned_output_and_timeout(self):
+        tracker = WristTracker(np.eye(3), calibration_frames=1)
+        matrix = np.eye(4)
+        matrix[:3, 3] = [.1, .2, .3]
+        tracker.update(vr_wrist(matrix, 1.), .03)
+        matrix[:3, :3] = Rotation.from_euler('z', .1).as_matrix()
+        matrix[0, 3] += .02
+        sample = vr_wrist(matrix, 1.1)
+        tracker.update(sample, .03)
+        delta, position = tracker.delta.as_quat().copy(), tracker.displacement.copy()
+        tracker.update(sample, .1)
+        self.assertEqual(tracker.status, 'hold')
+        tracker.update(sample, .41)
+        self.assertEqual(tracker.status, 'lost_hold')
+        np.testing.assert_array_equal(tracker.delta.as_quat(), delta)
+        np.testing.assert_array_equal(tracker.displacement, position)
+        tracker.update(vr_wrist(matrix, 2.), .03)
+        self.assertEqual(tracker.status, 'reacquiring')
+
+    def test_backwards_wrist_timestamp_still_discards_pending_calibration(self):
+        tracker = WristTracker(np.eye(3), calibration_frames=3)
+        matrix = np.eye(4)
+        matrix[:3, 3] = [.1, .2, .3]
+        tracker.update(vr_wrist(matrix, 2.), .03)
+        tracker.update(vr_wrist(matrix, 1.), .03)
+        self.assertFalse(tracker.samples)
+        self.assertIsNone(tracker.neutral)
+
     def test_vr_accepts_sdk_singleton_and_rejects_reflection(self):
         matrix = np.eye(4)
         matrix[:3, 3] = [.1, .2, .3]

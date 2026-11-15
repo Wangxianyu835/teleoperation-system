@@ -9,6 +9,53 @@ from teleoperation.data.body_recording import save_body_recording, load_body_rec
 
 
 class BodyCaptureReplayTests(unittest.TestCase):
+    def test_camera_attaches_only_new_accepted_sides_and_rejects_future_results(self):
+        from dataclasses import replace
+        client=FakeClient(body_result())
+        source=CameraTeleopSource(FakeCamera(),FakeHands(),client,session_id='camera')
+        first=source.next_teleop_observation()
+        self.assertEqual(first.body_result.frame_id.sequence,1)
+        self.assertIsNone(source.next_teleop_observation().body_result)
+        changed=body_result(2)
+        points=changed.arrays['joints_root_m'].copy();points[:3]+=.5
+        client.result=replace(changed,arrays={**changed.arrays,'joints_root_m':points})
+        half=source.next_teleop_observation()
+        self.assertEqual(half.body_result.valid,{'left':False,'right':True})
+        client.result=body_result(3,timestamp=2.)
+        self.assertIsNone(source.next_teleop_observation().body_result)
+
+    def test_pose_arrays_round_trip_without_inference_and_legacy_worker_recovery_is_gated(self):
+        from dataclasses import replace
+        from teleoperation.data.body_recording import capture_sample,replay_observation
+        from teleoperation.inputs.smplerx import encode_packet,decode_packet
+        result=body_result()
+        pose=np.arange(63,dtype=np.float32).reshape(21,3)/100
+        result=replace(result,arrays={**result.arrays,'smplx_body_pose':pose,'smplx_root_pose':np.zeros((1,3),dtype=np.float64)})
+        source=CameraTeleopSource(FakeCamera(),FakeHands(),FakeClient(result),session_id='camera')
+        raw=source.next_teleop_observation()
+        row=capture_sample(source,raw)
+        restored=replay_observation(row)
+        np.testing.assert_array_equal(restored.body_result.arrays['smplx_body_pose'],pose)
+        self.assertEqual(restored.body_result.arrays['smplx_body_pose'].dtype,np.float32)
+        self.assertEqual(restored.body_result.frame_id,result.frame_id)
+        packet=decode_packet(row['observation_packet'].tobytes())['payload']
+        del packet['body_result']
+        row['observation_packet']=np.frombuffer(encode_packet('observation',packet),dtype=np.uint8)
+        legacy=replay_observation(row)
+        np.testing.assert_array_equal(legacy.body_result.arrays['smplx_body_pose'],pose)
+        packet['upper_body']['metadata']['body_sample_ids']={'left':0,'right':0}
+        row['observation_packet']=np.frombuffer(encode_packet('observation',packet),dtype=np.uint8)
+        rejected=replay_observation(row).body_result
+        self.assertIsNotNone(rejected)
+        self.assertEqual(rejected.frame_id,result.frame_id)
+        self.assertEqual(rejected.valid,{'left':False,'right':False})
+        packet['body_result']=None
+        row['observation_packet']=np.frombuffer(encode_packet('observation',packet),dtype=np.uint8)
+        self.assertIsNone(replay_observation(row).body_result)
+        del row['worker_packet'];del packet['body_result']
+        row['observation_packet']=np.frombuffer(encode_packet('observation',packet),dtype=np.uint8)
+        self.assertIsNone(replay_observation(row).body_result)
+
     def test_live_and_replay_keep_identical_irregular_capture_intervals(self):
         from dataclasses import replace
         from unittest.mock import Mock
@@ -68,7 +115,9 @@ class BodyCaptureReplayTests(unittest.TestCase):
             save_body_recording(path, [capture_sample(source, raw)],
                                 {'source': 'smplerx', 'model_id': 's32', 'model_hash': 'h', 'time_unit': 'monotonic_s'})
             ids, times, hands = load_twohand_h5(path, require_aligned=False)
-            replay = BodyReplayFrameSource(path, 'normalized')
+            with self.assertRaisesRegex(ValueError, 'world metre'):
+                BodyReplayFrameSource(path, 'normalized')
+            replay = BodyReplayFrameSource(path, 'world')
             replay.next_frame()
             np.testing.assert_array_equal(replay.arms().world_arms['left'], raw.upper_body.world_arms['left'])
             self.assertEqual(replay.wrists()['left'].source, 'smplerx')

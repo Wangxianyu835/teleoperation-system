@@ -311,12 +311,12 @@ class CameraRunReport:
 
 
 def _runtime_configuration(args):
-    from teleoperation.contracts.checkpoints import validate_checkpoint_selection
     with_hands = getattr(args, "with_hands", False)
     if bool(args.arms_only) == bool(with_hands):
         raise ValueError("Select exactly one of --arms-only or --with-hands")
     paths = [getattr(args, name, None) for name in ("checkpoint", "left_checkpoint", "right_checkpoint")]
-    validate_checkpoint_selection(*paths, required=with_hands)
+    if any(path is not None for path in paths[1:]) or (with_hands and paths[0] is None):
+        raise ValueError("Camera hands require one shared --checkpoint; side checkpoints are unsupported")
     if with_hands and args.attach_hands is False:
         raise ValueError("--with-hands conflicts with --no-attach-hands")
     if args.attach_hands is None:
@@ -395,133 +395,6 @@ def _runtime_preview(camera, raw, controller, actual, window, teleoperator=None)
 
 
 def run_camera(args):
-    from teleoperation.applications.dual import Tron2ADualArmController, DualTeleoperator
-    from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
-    camera = source = world = report = teleoperator = transport = None
-    preview_open = False
-    window = "TRON2A camera arms simulation"
-    code = 0
-    try:
-        calibration = _runtime_configuration(args)
-        report = CameraRunReport(args)
-        with_hands = getattr(args, "with_hands", False)
-        if with_hands:
-            from .hand_realtime import load_palm_local_retargeter
-            from .hand_checkpoints import checkpoint_options, checkpoint_metadata, checkpoint_description
-            options = checkpoint_options(args)
-            options = {name: None if path is None else str(Path(path).resolve()) for name, path in options.items()}
-            model = load_palm_local_retargeter(device=args.device, landmark_space="world", **options)
-            teleoperator = DualTeleoperator(model, args.device, calibration, args.urdf,
-                                           input_mode="smplerx", orientation_mode=args.orientation_mode)
-            teleoperator.hand_model_labels = [f"{name}: {'/'.join(Path(path).parts[-4:])}"
-                                              for name, path in checkpoint_metadata(options).items()]
-            controller = teleoperator.arms
-            window = "TRON2A camera dual arms and hands simulation"
-            report.data.update(hand_checkpoints=checkpoint_metadata(options), inference_device=str(args.device),
-                               hand_coordinate_alignment=model.coordinate_alignment, hand_landmark_space="world")
-            print(f"World hand model: {checkpoint_description(options)} device={args.device}", flush=True)
-        else:
-            controller = Tron2ADualArmController(calibration, args.urdf, input_mode="smplerx", orientation_mode=args.orientation_mode)
-        report.data.update(orientation_mode=args.orientation_mode, attach_hands=args.attach_hands,
-                           hand_reference_only=not with_hands,
-                           extrinsics_calibrated=calibration.metadata.get("extrinsics_calibrated", False))
-        world = Tron2ADualArmWorld(args.urdf, gui=args.gui, display=args.display,
-                                  attach_hands=args.attach_hands, safe_q=controller.safe_q,
-                                  hand_mount_pose=calibration.hand_mount_pose, hand_reference_only=not with_hands)
-        camera = MediaPipeCameraInput(model_asset_path=args.model_asset_path, camera_index=args.camera_index,
-                    width=args.width, height=args.height, fps=args.fps, invalid_hand_as_missing=True)
-        transport = SmplerXWorkerTransport(
-            worker_python=args.smplerx_worker_python, smplerx_root=args.smplerx_root,
-            checkpoint=args.smplerx_checkpoint, body_model_dir=args.smplx_model_dir,
-            model=args.smplerx_model,
-        )
-        client = SmplerXClient(transport, session_id=f"camera-{time.monotonic_ns()}")
-        source = CameraTeleopSource(camera, camera, client, session_id=client.session_id)
-        clock = RelativeControlClock()
-        print(f"TRON2A {'dual arms and hands' if with_hands else 'arm-only'} simulation. Start neutral; rotation/scale are configured, not estimated. q/Esc exits preview.", flush=True)
-        while args.frames == 0 or report.data["frames"] < args.frames:
-            if not world.is_connected():
-                report.data["exit_reason"] = "simulation_window_closed"
-                break
-            started = time.perf_counter()
-            raw = source.next_teleop_observation()
-            captured = time.perf_counter()
-            metadata = raw.hands.metadata
-            if (raw.upper_body.metadata.get("source") != "smplerx"
-                    or raw.upper_body.metadata.get("source_coordinate_frame") != "smplx_camera_root_relative_m"
-                    or raw.upper_body.metadata.get("source_units") != "m"
-                    or metadata.get("timestamp_unit") != "monotonic_s"
-                    or (raw.upper_body.timestamp is not None and not np.isfinite(raw.upper_body.timestamp))
-                    or raw.hands.timestamp is None or not np.isfinite(raw.hands.timestamp)):
-                raise ValueError("Camera observation source/units are not valid SMPL-X contracts")
-            seconds = clock.next_seconds()
-            if teleoperator is not None:
-                command = teleoperator.update(raw, control_seconds=seconds)
-            else:
-                controller.update(raw.upper_body, seconds, raw.wrists)
-            controlled = time.perf_counter()
-            if teleoperator is not None:
-                world.apply(command)
-            else:
-                world.apply_arms({side: safety.q for side, safety in controller.controllers.items()})
-            for _ in range(args.simulation_steps):
-                world.step()
-            actual = world.actual_state()
-            simulated = time.perf_counter()
-            durations = dict(capture_detection_ms=captured-started,
-                       retarget_ik_control_ms=controlled-captured, simulation_state_ms=simulated-controlled,
-                       capture_to_actual_ms=simulated-started)
-            if teleoperator is not None:
-                durations["hand_processing_ms"] = teleoperator.hand_processing_seconds
-                report.add_hands(teleoperator)
-            report.add(raw, seconds, controller, actual, durations)
-            if args.preview:
-                preview_open = True
-                preview_options = {} if teleoperator is None else dict(teleoperator=teleoperator)
-                if _runtime_preview(camera, raw, controller, actual, window, **preview_options):
-                    report.data["exit_reason"] = "preview_exit"
-                    break
-            # GUI and DIRECT both run at capture cadence, without accumulating
-            # a control-time jump after an overdue frame.
-            delay = 1 / args.fps - (time.perf_counter() - started)
-            if delay > 0:
-                time.sleep(delay)
-        else:
-            report.data["exit_reason"] = "frame_limit"
-    except KeyboardInterrupt:
-        code = 130
-        if report is not None:
-            report.data["exit_reason"] = "keyboard_interrupt"
-    except Exception as error:
-        if world is not None and not world.is_connected():
-            if report is not None:
-                report.data["exit_reason"] = "simulation_window_closed"
-        else:
-            code = 1
-            print(f"Camera TRON2A simulation failed: {error}", flush=True)
-            if report is not None:
-                report.data.update(exit_reason="error", error=str(error))
-    finally:
-        # Every owned resource is closed even if another cleanup operation fails.
-        for resource, method in ((source if source is not None else camera, "release"),
-                                 (transport if source is None else None, 'close'),
-                                 (teleoperator, "close"), (world, "close")):
-            if resource is not None:
-                try:
-                    getattr(resource, method)()
-                except Exception as error:
-                    print(f"Cleanup failed: {error}")
-                    code = 1
-        if preview_open:
-            import cv2
-            try:
-                cv2.destroyWindow(window)
-            except cv2.error:
-                pass
-        if report is not None:
-            try:
-                report.write(args.report)
-            except Exception as error:
-                print(f"Report write failed: {error}")
-                code = 1
-    return code
+    """Compatibility CLI alias using the same fitted solver as every robot."""
+    from .arm_entry import run_camera_alias
+    return run_camera_alias(args,('tron2a_l21',),'both' if args.with_hands else 'arms')

@@ -62,7 +62,19 @@ def run_episode(env, controller=None, max_steps: int = 10000,
         if env._render:
             time.sleep(1.0 / 240.0)
 
-    return False, env.task.max_time
+    # 注意 步数用尽也必须**记一次试验**。旧代码直接 `return False, task.max_time`：
+    #    timeout 判据比的是墙钟（task.max_time=300 s），而 max_steps=10000 在 240 Hz 下
+    #    只跑 ~42 s 仿真就退出了，于是 done 永远为 False、MetricsTracker 一行都不记，
+    #    `sim run --benchmark` 打印的是只有表头的空成绩单（2026-11-02 实测确认）。
+    #    同时 elapsed 用真实的墙钟读数，不要伪造 task.max_time。
+    elapsed = time.time() - env.task_start_time
+    env._finalize_episode(False, elapsed)
+    if verbose:
+        # 注意 这里不能打 "[FAIL] ..."：队友的 tests/test_application_entrypoints.py 会把
+        #    stdout 里的 "[FAIL]" 当成评估失败信号（它故意用 max_steps=5 跑有界试验）。
+        print(f"[{env.task_name}] Episode {env.episode_count}: step budget exhausted "
+              f"| Time: {elapsed:.2f}s | Steps: {max_steps}")
+    return False, elapsed
 
 
 def evaluate_task(env, num_trials: int = 5, controller=None):

@@ -5,8 +5,7 @@ import time
 
 import numpy as np
 
-from teleoperation.cli.hand_joint_options import LEGACY_WORLD_PROFILE, LEGACY_NORMALIZED_PROFILE
-from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE, palm_length_metadata, palm_local_metadata
+from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE, UNIFIED_HAND_PROFILE, palm_length_metadata
 from teleoperation.contracts.hand import HandWindow
 from teleoperation.data.hand_joint_recording import HandJointResultWriter, iter_joint_commands
 from teleoperation.robots.hand_spec import HAND_MODELS, load_hand_spec
@@ -19,80 +18,22 @@ def _sides(hand):
 
 
 def _selection(args):
-    """Validate weights and preprocessing before any device or GUI is opened."""
-    from teleoperation.retargeting.hand.device import resolve_device
-    sides = _sides(args.hand)
-    specs = {(args.hand_model,s):load_hand_spec(args.hand_model,s) for s in sides}
-    paths = (args.checkpoint,args.left_checkpoint,args.right_checkpoint)
-    if args.backend != 'nn' and any(p is not None for p in paths):
-        raise ValueError('Checkpoint arguments only apply to --backend nn')
+    """Validate source/CLI options before constructing a shared native backend."""
+    from .hand_backend import build_hand_retargeter_from_specs
+    if args.input_profile not in (PALM_LENGTH_PROFILE, UNIFIED_HAND_PROFILE):
+        raise ValueError('Hand control requires a declared palm-length window profile')
+    specs = {(args.hand_model, side): load_hand_spec(args.hand_model, side) for side in _sides(args.hand)}
     if args.backend == 'dex':
-        if args.input_profile != PALM_LENGTH_PROFILE:
-            raise ValueError('Camera dex requires the palm-length input profile; use hand vr for calibrated VR')
-        from teleoperation.retargeting.hand.dex_native import NormalizedDexRetargeter
-        retargeter = NormalizedDexRetargeter([args.hand_model],sides)
-    elif args.backend == 'geometric':
-        if args.hand_model != 'l21' or args.input_profile != LEGACY_NORMALIZED_PROFILE:
-            raise ValueError('Geometric supports L21 with --input-profile legacy_l21_normalized')
-        from teleoperation.retargeting.hand.geometric import GeometricHandRetargeter
-        retargeter = GeometricHandRetargeter()
-    elif args.input_profile == PALM_LENGTH_PROFILE:
-        from teleoperation.retargeting.hand.checkpoint import (
-            load_joint_checkpoint,
-            load_shared_joint_checkpoint,
-        )
-        from teleoperation.retargeting.hand.interface import (
-            JointNNRetargeter,
-            SharedJointNNRetargeter,
-        )
-        if args.hand == 'both':
-            if args.checkpoint is not None and args.left_checkpoint is None and args.right_checkpoint is None:
-                device = resolve_device(args.device)
-                canonical_spec = load_hand_spec(args.hand_model, 'right')
-                model, _ = load_shared_joint_checkpoint(args.checkpoint, canonical_spec, device)
-                return specs, SharedJointNNRetargeter(specs, model, device, canonical_spec=canonical_spec)
-            if args.checkpoint is not None or args.left_checkpoint is None or args.right_checkpoint is None:
-                raise ValueError('Dual-side NN requires one shared --checkpoint or both side checkpoints')
-            selected = {'left':args.left_checkpoint,'right':args.right_checkpoint}
-        else:
-            if args.checkpoint is None or args.left_checkpoint is not None or args.right_checkpoint is not None:
-                raise ValueError('Single-side NN requires exactly --checkpoint')
-            device = resolve_device(args.device)
-            canonical_spec = load_hand_spec(args.hand_model, 'right')
-            try:
-                model, _ = load_shared_joint_checkpoint(args.checkpoint, canonical_spec, device)
-            except ValueError as shared_error:
-                model, _ = load_joint_checkpoint(args.checkpoint, specs[(args.hand_model, args.hand)], device)
-                return specs, JointNNRetargeter(
-                    specs, {(args.hand_model, args.hand): model}, device,
-                )
-            else:
-                return specs, SharedJointNNRetargeter(
-                    specs, model, device, canonical_spec=canonical_spec,
-                )
-        device = resolve_device(args.device)
-        models = {key:load_joint_checkpoint(selected[key[1]],spec,device)[0] for key,spec in specs.items()}
-        retargeter = JointNNRetargeter(specs,models,device)
+        if any(getattr(args, name, None) is not None for name in ('checkpoint', 'left_checkpoint', 'right_checkpoint')):
+            raise ValueError('Checkpoint arguments only apply to --backend nn')
+        checkpoints = None
+    elif args.backend == 'nn':
+        if args.checkpoint is None or any(getattr(args, name, None) is not None for name in ('left_checkpoint', 'right_checkpoint')):
+            raise ValueError('NN requires --checkpoint (exactly one shared checkpoint for the selected target)')
+        checkpoints = {args.hand_model: args.checkpoint}
     else:
-        if args.hand_model != 'l21':
-            raise ValueError('Legacy NN checkpoints only support the L21 target')
-        if not any(p is not None for p in paths):
-            raise ValueError('Legacy NN requires explicit checkpoint selection')
-        if args.hand != 'both' and (args.checkpoint is None or args.left_checkpoint is not None or args.right_checkpoint is not None):
-            raise ValueError('Single-side legacy NN requires exactly --checkpoint')
-        from teleoperation.applications.hand_realtime import load_palm_local_retargeter
-        from teleoperation.retargeting.hand.interface import PoseTransformerRetargeter
-        device = resolve_device(args.device)
-        space = 'world' if args.input_profile == LEGACY_WORLD_PROFILE else 'normalized'
-        model = load_palm_local_retargeter(args.checkpoint,device,left_checkpoint=args.left_checkpoint,
-                                         right_checkpoint=args.right_checkpoint,landmark_space=space)
-        if args.hand == 'both' and args.checkpoint is not None:
-            from teleoperation.data.checkpoint import read_checkpoint
-            metadata = read_checkpoint(args.checkpoint,'cpu')
-            if metadata.get('hand_side') != 'shared':
-                raise ValueError('One checkpoint for both targets requires explicit shared-side metadata')
-        retargeter = PoseTransformerRetargeter(model,device)
-    return specs, retargeter
+        raise ValueError('Hand backend must be nn or dex, independently of source')
+    return specs, build_hand_retargeter_from_specs(specs, args.backend, checkpoints=checkpoints, device=args.device)
 
 
 def _commands(args, specs, scene=None):
@@ -122,13 +63,11 @@ def _scene(specs, headless):
 
 
 def _metadata(args, commands):
-    metadata = {'backend':args.backend,'input_profile':args.input_profile,'hand_model':args.hand_model,
+    metadata = {'source':getattr(args,'source','camera'),'backend':args.backend,'input_profile':args.input_profile,'hand_model':args.hand_model,
             'checkpoint':None if args.checkpoint is None else str(args.checkpoint),
-            'left_checkpoint':None if args.left_checkpoint is None else str(args.left_checkpoint),
-            'right_checkpoint':None if args.right_checkpoint is None else str(args.right_checkpoint),
             'command_policy':commands.summary()}
-    if args.input_profile == PALM_LENGTH_PROFILE:
-        metadata['input_contract'] = palm_length_metadata()
+    if args.input_profile in (PALM_LENGTH_PROFILE,UNIFIED_HAND_PROFILE):
+        metadata['input_contract'] = palm_length_metadata(args.input_profile)
     if args.backend == 'dex':
         from teleoperation.retargeting.hand.dex_native import VECTOR_PARAMETERS
         metadata['algorithm_parameters'] = {**VECTOR_PARAMETERS,'target_units':'m',
@@ -138,12 +77,17 @@ def _metadata(args, commands):
     return metadata
 
 
-def _process(window, specs, retargeter, commands, *, live=False):
+def _process(window, specs, retargeter, commands):
+    """单窗口处理：NN/dex 求解 → 命令策略；结果与实际执行命令分别返回。
+
+    retargeter 接收已归一化的三帧窗口；commands 保留跨帧滤波与限速状态。
+    targets 供显示/记录使用，不是实际执行的关节命令。
+    """
     solved = retargeter.retarget(window)
     results = {key:solved[key] for key in specs}
-    accepted = {key:commands.update(result,timestamp=None if live else window.timestamp) for key,result in results.items()}
+    accepted = {key:commands.update(result,timestamp=window.timestamp) for key,result in results.items()}
     targets = {}
-    if window.metadata.get('input_profile') == PALM_LENGTH_PROFILE:
+    if window.metadata.get('input_profile') in (PALM_LENGTH_PROFILE,UNIFIED_HAND_PROFILE):
         from teleoperation.retargeting.hand.hand_model import build_hand_targets
         targets = {key:build_hand_targets(window,spec) for key,spec in specs.items()}
     return results, accepted, targets
@@ -152,10 +96,10 @@ def _process(window, specs, retargeter, commands, *, live=False):
 def export(args):
     from teleoperation.learning.dataset import TwoHandH5Dataset
     specs, retargeter = _selection(args)
-    profile = PALM_LENGTH_PROFILE if args.input_profile == PALM_LENGTH_PROFILE else None
-    dataset = TwoHandH5Dataset(args.input,input_profile=profile)
-    expected = palm_length_metadata() if profile else palm_local_metadata('world' if args.input_profile == LEGACY_WORLD_PROFILE else 'normalized')
-    if dataset.coordinate_alignment != expected['coordinate_alignment']:
+    profile = args.input_profile
+    dataset = TwoHandH5Dataset(args.input,input_profile=PALM_LENGTH_PROFILE)
+    expected = palm_length_metadata(profile)
+    if dataset.coordinate_alignment != palm_length_metadata()['coordinate_alignment']:
         raise ValueError('Export data and checkpoint input profile differ; explicitly align the source H5')
     samples = {row['frame_index']:row for row in dataset.samples}
     with ExitStack() as stack:
@@ -171,7 +115,7 @@ def export(args):
         for index,(frame_id,timestamp) in enumerate(zip(dataset.frame_ids,dataset.timestamps)):
             sample = samples.get(index)
             hands = {side:None if sample is None or not sample[side+'_valid'] else sample[side+'_input'] for side in ('left','right')}
-            metadata = {**expected, **({} if sample is None else sample['window_metadata'])}
+            metadata = {**({} if sample is None else sample['window_metadata']), **expected}
             window = HandWindow(hands,float(timestamp),'h5',metadata)
             results, accepted, targets = _process(window,specs,retargeter,commands)
             writer.append(int(frame_id),window.timestamp,results,accepted,targets,metadata.get('palm_length_m'))
@@ -182,43 +126,120 @@ def export(args):
 def run(args):
     from teleoperation.applications.hand_realtime import MediaPipeCameraWorkflow
     from teleoperation.applications.realtime_hand_sim import resolve_model_asset
+    source_kind = getattr(args, 'source', 'camera')
+    if source_kind not in ('camera', 'visionpro'):
+        raise ValueError('Hand source must be camera or visionpro')
+    input_h5, ip = getattr(args, 'input_h5', None), getattr(args, 'ip', None)
+    if source_kind == 'visionpro' and (input_h5 is None) == (ip is None):
+        raise ValueError('Vision Pro requires exactly one of --input-h5 or --ip')
+    if source_kind == 'camera' and (input_h5 is not None or ip is not None):
+        raise ValueError('VR input options require --source visionpro')
+    if source_kind == 'visionpro' and args.input_profile != UNIFIED_HAND_PROFILE:
+        raise ValueError('Vision Pro control requires the unified hand input contract')
+    scene_choice = getattr(args, 'scene', 'auto')
+    if ((scene_choice == 'robots' and args.hand_model == 'l21') or
+            (scene_choice == 'hands' and args.hand_model != 'l21')):
+        raise ValueError('Scene must match the selected target: L21 hands or a native robot')
+    fps = getattr(args, 'fps', 0.)
+    if not np.isfinite(fps) or fps < 0:
+        raise ValueError('--fps must be finite and nonnegative')
     if args.frames < 0:
         raise ValueError('--frames must be nonnegative')
     specs, retargeter = _selection(args)
-    asset = resolve_model_asset(args.model_asset_path)
-    _camera_dependencies()
+    if input_h5 is not None and not input_h5.is_file():
+        raise FileNotFoundError(input_h5)
+    asset = None
+    if source_kind == 'camera':
+        asset = resolve_model_asset(args.model_asset_path)
+        _camera_dependencies()
     # Validate command options before allocating devices.
     _commands(args,specs)
     if args.record_results is not None and args.record_results.exists():
         raise FileExistsError(args.record_results)
-    profile = PALM_LENGTH_PROFILE if args.input_profile == PALM_LENGTH_PROFILE else None
-    space = 'normalized' if args.input_profile == LEGACY_NORMALIZED_PROFILE else 'world'
+    report_path = getattr(args, 'report', None)
+    destinations = [p.resolve() for p in (args.record_results, report_path) if p is not None]
+    protected = [p.resolve() for p in (input_h5, args.checkpoint) if p is not None]
+    if len(destinations) != len(set(destinations)) or set(destinations).intersection(protected):
+        raise ValueError('Hand outputs must differ from inputs and each other')
+    if report_path is not None and report_path.exists():
+        raise FileExistsError(report_path)
+    profile = args.input_profile
+    space = 'world'
     count = valid = 0
     with ExitStack() as stack:
         scene, executor = _scene(specs,args.headless)
+        # ExitStack 在正常结束或异常退出时按逆序清理已登记资源。
         stack.callback(scene.close)
         commands = _commands(args,specs,scene)
-        camera = stack.enter_context(MediaPipeCameraWorkflow(asset,args.camera_index,landmark_space=space,input_profile=profile))
+        # camera 与 commands 均在循环外创建：历史窗口和上次命令需要跨帧保留。
+        if source_kind == 'camera':
+            camera = stack.enter_context(MediaPipeCameraWorkflow(asset,args.camera_index,landmark_space=space,input_profile=profile))
+        else:
+            from teleoperation.applications.hand_input import VisionProHandWorkflow
+            camera = stack.enter_context(VisionProHandWorkflow(input_h5=input_h5, ip=ip, hand=args.hand))
+        wrist_control = None
+        if source_kind == 'visionpro':
+            from teleoperation.simulation.wrist_control import vr_arm_controller
+            wrist_control = vr_arm_controller(scene, {s:s for s in _sides(args.hand)})
+        robot_execution=None
+        if args.hand_model!='l21':
+            from .accepted_robot_output import AcceptedRobotOutput
+            robot_execution=AcceptedRobotOutput.native(scene,(args.hand_model,),args.hand,
+                                                       None if wrist_control is None else wrist_control.driver)
+            stack.callback(robot_execution.close)
         writer = None if args.record_results is None else stack.enter_context(HandJointResultWriter(args.record_results,specs,_metadata(args,commands)))
         try:
             while scene.alive() and (args.frames == 0 or count < args.frames):
-                window = camera.next_window()
-                timestamp = time.time()-camera._start_time if window is None else window.timestamp
+                tick = time.monotonic()
+                try:
+                    # 不只是采集：内部还会坐标转换、积累三帧并做掌长归一化。
+                    window = camera.next_window()
+                except StopIteration:
+                    break
+                timestamp = ((camera.timestamp if source_kind == 'visionpro' else time.time()-camera._start_time)
+                             if window is None else window.timestamp)
                 if window is None:
-                    metadata = palm_length_metadata() if profile else palm_local_metadata(space)
-                    window = HandWindow({'left':None,'right':None},timestamp,'mediapipe',metadata)
+                    # 预热/无有效窗口仍进入命令处理，以保持上一条已接受命令。
+                    metadata = palm_length_metadata(profile)
+                    window = HandWindow({'left':None,'right':None},timestamp,source_kind,metadata)
                 # The same acquisition time is stored on both result and command.
                 results, accepted, targets = _process(window,specs,retargeter,commands)
-                for command in accepted.values():
-                    executor.apply(command)
+                if robot_execution is None:
+                    for command in accepted.values():executor.apply(command)
                 if writer is not None:
                     writer.append(count,timestamp,results,accepted,targets,window.metadata.get('palm_length_m'))
                 valid += sum(row.valid for row in results.values())
                 count += 1
-                scene.step()
+                if wrist_control is not None:
+                    dt = 1/30 if count == 1 else timestamp - previous_timestamp
+                    arm_commands=wrist_control.solve_vr(camera.last_observation, dt)
+                else:arm_commands={}
+                if robot_execution is not None:
+                    if count==1:control_origin=timestamp
+                    observed={(args.hand_model,side+'_hand'):result.valid for (_,side),result in results.items()}
+                    if wrist_control is not None:
+                        for side in _sides(args.hand):
+                            wrist=camera.last_observation.wrists.get(side) if camera.last_observation else None
+                            observed[args.hand_model,side+'_arm']=wrist is not None and wrist.orientation_valid
+                    robot_execution.submit(count-1,timestamp-control_origin,hands=accepted,arms=arm_commands,
+                        source_timestamp=timestamp,source_timebase='source_seconds',observed=observed,
+                        steps=getattr(scene,'steps_per_frame',8))
+                else:scene.step()
+                if wrist_control is not None:
+                    wrist_control.record()
+                previous_timestamp = timestamp
+                if fps:
+                    time.sleep(max(0.,1/fps - (time.monotonic()-tick)))
         except KeyboardInterrupt:
             pass
-        print(json.dumps({'frames':count,'valid_solutions':valid,'commands':commands.summary()},ensure_ascii=False))
+        report = {'source':source_kind,'backend':args.backend,'input_profile':profile,
+                  'frames':count,'valid_solutions':valid,'commands':commands.summary(),
+                  'wrists': None if wrist_control is None else wrist_control.summary()}
+        print(json.dumps(report,ensure_ascii=False))
+        if report_path is not None:
+            report_path.parent.mkdir(parents=True,exist_ok=True)
+            with report_path.open('x',encoding='utf-8') as stream:
+                json.dump(report,stream,ensure_ascii=False,indent=2)
     return 0
 
 
@@ -232,7 +253,8 @@ def list_models(args):
     for name in HAND_MODELS:
         sides = {side:load_hand_spec(name,side) for side in ('left','right')}
         print(json.dumps({'hand_model':name,'sides':{side:{'independent_dof':spec.dof,'expanded_joints':len(spec.joint_names)} for side,spec in sides.items()},
-                          'backends':{'nn':True,'dex':True,'geometric':name=='l21'},
+                          'backends':{'nn':True,'dex':True,'geometric':False},
+                          'sources':['camera','visionpro'],
                           'nn_requires_target_weights':True,'performance_acceptance':'pending'},ensure_ascii=False))
     return 0
 

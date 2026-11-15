@@ -1,8 +1,8 @@
 """One camera capture shared by MediaPipe Hands and the SMPLer-X worker."""
 from __future__ import annotations
 
-import time
 from collections import Counter
+from dataclasses import replace
 
 import numpy as np
 
@@ -76,7 +76,16 @@ class CameraTeleopSource:
         tracked = self.tracker.update(result, now_s=frame.timestamp)
         self.last_tracked = tracked
         self.metrics.update(tracked.body, frame.timestamp)
-        return RawTeleopObservation(hands, tracked.body, tracked.wrists)
+        accepted = None
+        if result is not None and result.frame_id.capture_time_s <= frame.timestamp:
+            valid = {side: bool(result.valid.get(side, False) and tracked.fresh.get(side, False)
+                               and tracked.body.valid.get(side, False)
+                               and tracked.sample_id.get(side) == result.frame_id.sequence)
+                     for side in ('left', 'right')}
+            # A new rejected/lost sample revokes previous targets. None means
+            # no worker arrival, so it must not also represent explicit loss.
+            accepted = replace(result, valid=valid)
+        return RawTeleopObservation(hands, tracked.body, tracked.wrists, accepted)
 
     def worker_summary(self):
         """Retain original worker failures independently of tracker hold states."""

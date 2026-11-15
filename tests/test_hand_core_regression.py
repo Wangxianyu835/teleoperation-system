@@ -6,19 +6,11 @@ import h5py
 import numpy as np
 import torch
 
-from teleoperation.retargeting.hand.transformer import PoseTransformer
-from teleoperation.learning.dataset import TwoHandH5Dataset
-from teleoperation.applications.hand_processing import CanonicalHandPipeline
-from teleoperation.retargeting.hand.angles import angle18_to_dofs
-from teleoperation.applications.replay.canonical import iter_angle_h5
 from teleoperation.contracts.constants import HAND_KEYPOINTS
-from teleoperation.retargeting.hand.tracking import HandIdentityTracker
-from tests.support import CanonicalWindowFixture
 from teleoperation.retargeting.hand.topology import mediapipe21_to_hand25, wrist_relative
 from tests.fixtures.hands import (
     continuous_three_frames,
     fixed_mediapipe_hand,
-    identity_jump,
     left_hand,
     missing_left,
     missing_right,
@@ -67,150 +59,6 @@ class MediaPipeConversionRegressionTests(unittest.TestCase):
         np.testing.assert_allclose(relative, translated_relative, atol=1e-6)
 
 
-class HandWindowRegressionTests(unittest.TestCase):
-    def test_window_requires_three_frames_and_preserves_chronological_order(self):
-        buffer = CanonicalWindowFixture()
-        frames = continuous_three_frames()
-
-        self.assertIsNone(buffer.update(left_hand=frames[0], source="test"))
-        self.assertIsNone(buffer.update(left_hand=frames[1], source="test"))
-        payload = buffer.update(left_hand=frames[2], source="test")
-
-        self.assertIsNotNone(payload)
-        window = payload["hands"]["left"]
-        self.assertEqual(window.shape, (3, 25, 3))
-        expected = np.stack([mediapipe21_to_hand25(frame) for frame in frames])
-        np.testing.assert_allclose(window, expected)
-        self.assertIsNone(payload["hands"]["right"])
-
-    def test_h5_and_realtime_paths_produce_identical_canonical_windows(self):
-        frames = continuous_three_frames()
-        with tempfile.TemporaryDirectory() as temp_dir:
-            h5_path = Path(temp_dir) / "hands.h5"
-            with h5py.File(h5_path, "w") as h5_file:
-                h5_file.attrs["coordinate_frame"] = "l21"
-                h5_file.attrs["coordinate_alignment"] = "source_to_l21_xyz"
-                h5_file.create_dataset("frame_ids", data=np.arange(3))
-                h5_file.create_dataset("timestamps", data=np.arange(3) / 30.0)
-                h5_file.create_dataset("left_hand_keypoints", data=frames)
-                h5_file.create_dataset(
-                    "right_hand_keypoints",
-                    data=np.zeros_like(frames),
-                )
-            h5_window = TwoHandH5Dataset(h5_path).samples[0]["left_input"]
-
-        realtime_style = CanonicalHandPipeline()
-        realtime_payload = None
-
-        for index, frame in enumerate(frames):
-            realtime_payload = realtime_style.update_detections(
-                detections=[("left", frame)],
-                timestamp=index / 30.0,
-                source="mediapipe_approx",
-            )
-
-        self.assertIsNotNone(realtime_payload)
-        realtime_window = realtime_payload["hands"]["left"]
-        self.assertEqual(h5_window.shape, (3, 25, 3))
-        self.assertEqual(realtime_window.shape, (3, 25, 3))
-        np.testing.assert_array_equal(h5_window, realtime_window)
-
-    def test_missing_left_and_missing_right_stay_explicit(self):
-        right_only = CanonicalWindowFixture()
-        for _ in range(2):
-            self.assertIsNone(
-                right_only.update(
-                    left_hand=missing_left(),
-                    right_hand=right_hand(),
-                    source="test",
-                )
-            )
-        right_payload = right_only.update(
-            left_hand=missing_left(),
-            right_hand=right_hand(),
-            source="test",
-        )
-        self.assertIsNone(right_payload["hands"]["left"])
-        self.assertEqual(right_payload["hands"]["right"].shape, (3, 25, 3))
-
-        left_only = CanonicalWindowFixture()
-        for _ in range(2):
-            self.assertIsNone(
-                left_only.update(
-                    left_hand=left_hand(),
-                    right_hand=missing_right(),
-                    source="test",
-                )
-            )
-        left_payload = left_only.update(
-            left_hand=left_hand(),
-            right_hand=missing_right(),
-            source="test",
-        )
-        self.assertEqual(left_payload["hands"]["left"].shape, (3, 25, 3))
-        self.assertIsNone(left_payload["hands"]["right"])
-
-
-class IdentityResetRegressionTests(unittest.TestCase):
-    def test_jump_is_rejected_side_buffer_is_cleared_and_recovery_needs_three_frames(self):
-        tracker = HandIdentityTracker()
-        buffer = CanonicalWindowFixture()
-        normal = fixed_mediapipe_hand()
-
-        for frame in continuous_three_frames():
-            tracked = tracker.update_detections([("left", frame)])
-            buffer.update(left_hand=tracked["left"], source="test")
-        self.assertIsNotNone(buffer.buffer._window_or_none("left"))
-
-        rejected = tracker.update_detections([("left", identity_jump())])
-        self.assertIsNone(rejected["left"])
-        buffer.reset_side("left")
-        self.assertIsNone(buffer.buffer._window_or_none("left"))
-
-        for index in range(2):
-            tracked = tracker.update_detections([("left", normal)])
-            self.assertIsNone(
-                buffer.update(left_hand=tracked["left"], source="test")
-            )
-        tracked = tracker.update_detections([("left", normal)])
-        recovered = buffer.update(left_hand=tracked["left"], source="test")
-        self.assertIsNotNone(recovered)
-        self.assertEqual(recovered["hands"]["left"].shape, (3, 25, 3))
-
-    def test_nonfinite_and_zero_frames_are_not_trackable(self):
-        tracker = HandIdentityTracker()
-        tracker.update(left_hand=left_hand())
-        self.assertIsNone(tracker.update(left_hand=nan_frame())["left"])
-        self.assertIsNone(tracker.update(left_hand=zero_frame())["left"])
-
-
-class ModelAndAngleContractRegressionTests(unittest.TestCase):
-    def test_pose_transformer_contract_is_b3jcx_to_b18(self):
-        model = PoseTransformer(
-            num_frame=3,
-            in_num_joints=25,
-            in_chans=3,
-            out_num_joint=18,
-            out_chans=1,
-            embed_dim_ratio=8,
-            spatial_depth=1,
-            temporal_depth=1,
-            num_heads=1,
-            drop_path_rate=0.0,
-        ).eval()
-        input_window = torch.zeros((2, 3, 25, 3), dtype=torch.float32)
-
-        with torch.no_grad():
-            output = model(input_window)
-
-        self.assertEqual(tuple(output.shape), (2, 18))
-
-    def test_angle18_to_dofs_drops_only_fixed_dim_zero(self):
-        angle = np.arange(18, dtype=np.float32)
-        self.assertEqual(float(angle[0]), 0.0)
-        np.testing.assert_array_equal(angle18_to_dofs(angle), angle[1:])
-
-
 class InvalidOfflineRegressionTests(unittest.TestCase):
     def test_invalid_result_is_not_relabelled_as_valid_when_command_is_held(self):
         from teleoperation.contracts.hand_control import HandJointResult
@@ -228,34 +76,85 @@ class InvalidOfflineRegressionTests(unittest.TestCase):
         self.assertIsNone(invalid.positions)
         np.testing.assert_array_equal(second.positions,third.positions)
 
-    def test_angle_h5_iterator_preserves_invalid_bits_and_hold_policy(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "angles.h5"
-            values = np.stack(
-                [
-                    np.zeros(18, dtype=np.float32),
-                    np.ones(18, dtype=np.float32),
-                    np.full(18, 7.0, dtype=np.float32),
-                ]
-            )
-            with h5py.File(path, "w") as h5_file:
-                h5_file.create_dataset("frame_ids", data=np.arange(3))
-                h5_file.create_dataset("timestamps", data=np.arange(3) / 30.0)
-                for side in ("left", "right"):
-                    h5_file.create_dataset(f"{side}_angles", data=values)
-                    h5_file.create_dataset(
-                        f"{side}_valid", data=np.asarray([False, True, False])
-                    )
 
-            frames = list(iter_angle_h5(path))
-
-        self.assertFalse(frames[0].left_valid)
-        self.assertTrue(frames[1].left_valid)
-        self.assertFalse(frames[2].left_valid)
-        np.testing.assert_array_equal(frames[0].left, np.zeros(18, dtype=np.float32))
-        np.testing.assert_array_equal(frames[1].left, np.ones(18, dtype=np.float32))
-        np.testing.assert_array_equal(frames[2].left, np.ones(18, dtype=np.float32))
+def write_native_recording(path, valid=(False, True, False), hand_model='g1', side='right'):
+    """Small real recording fixture shared by inspection and replay regressions."""
+    from teleoperation.contracts.hand_control import HandJointResult
+    from teleoperation.data.hand_joint_recording import HandJointResultWriter
+    from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
+    from teleoperation.robots.hand_spec import load_hand_spec
+    spec = load_hand_spec(hand_model, side)
+    pipeline = JointCommandPipeline({spec.key: spec}, filter_mode='none')
+    with HandJointResultWriter(path, {spec.key: spec}, {}) as writer:
+        for index, is_valid in enumerate(valid):
+            timestamp = index / 30.
+            result = HandJointResult(*spec.key, spec.spec_hash, spec.independent_joint_names,
+                                     spec.bounds.mean(1) if is_valid else None,
+                                     timestamp, is_valid)
+            command = pipeline.update(result, timestamp=timestamp)
+            writer.append(index, timestamp, {spec.key: result}, {spec.key: command})
+    return spec
 
 
-if __name__ == "__main__":
+class NativeRecordingRegressionTests(unittest.TestCase):
+    def test_invalid_results_stay_invalid_while_command_holds(self):
+        from teleoperation.data.hand_joint_recording import iter_joint_commands
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'joints.h5'
+            spec = write_native_recording(path)
+            frames = list(iter_joint_commands(path, {spec.key: spec}))
+            self.assertEqual([timestamp for timestamp, _ in frames], [0., 1/30., 2/30.])
+            np.testing.assert_array_equal(frames[1][1][spec.key].positions, frames[2][1][spec.key].positions)
+            with h5py.File(path) as stream:
+                group = stream['g1/right']
+                np.testing.assert_array_equal(group['valid'][:], [False, True, False])
+                self.assertTrue(np.isnan(group['raw_positions'][0]).all())
+                self.assertTrue(np.isnan(group['raw_positions'][2]).all())
+                self.assertTrue(np.isfinite(group['command_positions'][:]).all())
+
+    def test_old_angle_file_is_rejected_by_native_replay(self):
+        from teleoperation.data.hand_joint_recording import iter_joint_commands
+        from teleoperation.robots.hand_spec import load_hand_spec
+        spec = load_hand_spec('l21', 'right')
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'old.h5'
+            with h5py.File(path, 'w') as stream:
+                stream['timestamps'] = [0.]
+                stream['right_angles'] = np.zeros((1,18))
+            with self.assertRaisesRegex(ValueError, 'hand joint command recording'):
+                list(iter_joint_commands(path, {spec.key: spec}))
+
+    def test_shared_model_batch_and_streaming_use_identical_native_signs(self):
+        from teleoperation.contracts.coordinates import PALM_LENGTH_PROFILE
+        from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
+        from teleoperation.retargeting.hand.interface import SharedJointNNRetargeter
+        from teleoperation.retargeting.hand.predictor import build_joint_model
+        from teleoperation.retargeting.hand.angles import canonical_to_native_target_angles
+        from teleoperation.robots.hand_spec import load_hand_spec
+        from tests.test_joint_checkpoints import SMALL
+        from tests.test_world_hand_pipeline import world_frame
+        torch.manual_seed(7)
+        specs = {('l21',side):load_hand_spec('l21',side) for side in ('left','right')}
+        canonical = specs[('l21','right')]
+        model = build_joint_model(canonical, SMALL).eval()
+        retargeter = SharedJointNNRetargeter(specs, model)
+        pipeline = MediaPipePalmLocalPipeline('world', input_profile=PALM_LENGTH_PROFILE)
+        windows = []
+        for index in range(7):
+            window = pipeline.process_window(world_frame(index))
+            if window is not None:
+                windows.append(window)
+        self.assertEqual(len(windows), 5)
+        for key,spec in specs.items():
+            batch = torch.as_tensor(np.stack([window.hands[spec.side] for window in windows]))
+            with torch.no_grad():
+                expected = canonical_to_native_target_angles(model(batch),canonical,spec).numpy()
+            for index, window in enumerate(windows):
+                result = retargeter.retarget(window)[key]
+                self.assertTrue(result.valid)
+                self.assertEqual(result.positions.shape,(17,))
+                np.testing.assert_allclose(result.positions,expected[index],atol=1e-6,rtol=1e-5)
+
+
+if __name__ == '__main__':
     unittest.main()

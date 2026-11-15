@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
+from .plotting import set_equal_axes
 from teleoperation.retargeting.hand.config import JOINT_EDGES, JOINT_NAMES
 TIP_NAMES = ("thumb_tip", "index_tip", "middle_tip", "ring_tip", "pinky_tip")
 SIDE_COLORS = {
@@ -13,7 +14,7 @@ def _plot_side(positions, side: str, pose: str, label_names: bool, output_path: 
     fig = plt.figure(figsize=(9, 8))
     ax = fig.add_subplot(111, projection="3d")
     _draw_hand(ax, positions, side=side, label_names=label_names)
-    _set_equal_axes(ax, positions)
+    set_equal_axes(ax, positions, padding=0.6, zero_radius=0.1)
     ax.set_title(f"L21 {side} FK - {pose} pose")
     _finish_axes(ax)
     fig.tight_layout()
@@ -27,7 +28,7 @@ def _plot_both(hands, pose: str, label_names: bool, output_path: Path) -> None:
     ax = fig.add_subplot(111, projection="3d")
     for side, positions in hands.items():
         _draw_hand(ax, positions, side=side, label_names=label_names)
-    _set_equal_axes(ax, all_points)
+    set_equal_axes(ax, all_points, padding=0.6, zero_radius=0.1)
     ax.set_title(f"L21 left/right FK - {pose} pose")
     _finish_axes(ax)
     fig.tight_layout()
@@ -79,16 +80,3 @@ def _finish_axes(ax) -> None:
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
     ax.legend(loc="upper right")
-
-
-def _set_equal_axes(ax, points: np.ndarray) -> None:
-    mins = points.min(axis=0)
-    maxs = points.max(axis=0)
-    center = (mins + maxs) * 0.5
-    radius = float(np.max(maxs - mins) * 0.6)
-    if radius <= 0:
-        radius = 0.1
-    ax.set_xlim(center[0] - radius, center[0] + radius)
-    ax.set_ylim(center[1] - radius, center[1] + radius)
-    ax.set_zlim(center[2] - radius, center[2] + radius)
-

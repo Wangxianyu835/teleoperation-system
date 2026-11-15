@@ -152,145 +152,91 @@ def recording_evaluation(path, common_with=None):
     report = {"file": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
               "metric_scope": "human target fitting in native palm frame, not hardware accuracy", "hands": {}}
     with h5py.File(path, "r") as stream:
-        excluded = np.asarray(stream["is_calibration"], dtype=bool)
+        if stream.attrs.get("schema") != "hand_joint_results_v1":
+            raise ValueError("Acceptance requires hand_joint_results_v1")
+        times = np.asarray(stream["timestamps"])
+        metadata = json.loads(stream.attrs["metadata_json"])
+        calibration = metadata.get("calibration")
+        excluded = np.zeros(len(times), dtype=bool)
+        if calibration and metadata.get("input_sha256") == calibration["source_sha256"]:
+            excluded = (times >= calibration["segment"][0]) & (times <= calibration["segment"][1])
         report["frames"] = len(excluded)
         report["calibration_frames_excluded"] = int(excluded.sum())
         report["evaluation_indices_sha256"] = hashlib.sha256(np.flatnonzero(~excluded).astype("<i8").tobytes()).hexdigest()
-        for r in ROBOT_SPECS:
-            for side in ("left", "right"):
-                model = NativeHandModel(r, side)
-                group = stream[f"{r}/{side}"]
-                assert group.attrs["config_hash"] == model.config_hash
-                names = json.loads(group.attrs["joint_names"])
-                targets = np.asarray(group["target_vectors"])
-                input_valid = np.isfinite(targets).all(axis=(1,2)) & ~excluded
-                valid = np.asarray(group["valid"], dtype=bool) & input_valid
-                row = {"input_valid": int(input_valid.sum()), "solved": int(valid.sum()),
-                       "valid_fraction": float(valid.sum()/input_valid.sum()) if input_valid.any() else None}
-                if common_with is not None:
-                    with h5py.File(common_with,"r") as common:
-                        if not np.array_equal(stream["timestamps"][:],common["timestamps"][:]):
-                            raise ValueError("Comparison recordings have different timebases")
-                        valid &= np.asarray(common[f"{r}/{side}/valid"],dtype=bool)
-                        valid &= ~np.asarray(common["is_calibration"],dtype=bool)
-                    row["comparison_common_frames"] = int(valid.sum())
-                robot = model.kinematics
-                order = [names.index(n) for n in robot.dof_joint_names]
-                link_ids = [robot.get_link_index(n) for n in model.tip_frames]
-                for field in ("raw_angles", "command_angles"):
-                    angles = np.asarray(group[field])
-                    means, distances, pinch = [], [], []
+        keys = [(r,side) for r in ROBOT_SPECS if r in stream
+                for side in ("left","right") if side in stream[r]]
+        if not keys:
+            raise ValueError("No supported native robot hands in recording")
+        report["hand_count"] = len(keys)
+        for r,side in keys:
+            model = NativeHandModel(r, side)
+            group = stream[f"{r}/{side}"]
+            from teleoperation.robots.hand_spec import load_hand_spec
+            spec = load_hand_spec(r, side)
+            if group.attrs["spec_hash"] != spec.spec_hash:
+                raise ValueError("Recorded target specification differs from current assets")
+            names = json.loads(group.attrs["command_joint_names"])
+            targets = np.asarray(group["target_positions_native_m"])
+            input_valid = np.isfinite(targets).all(axis=(1,2)) & ~excluded
+            valid = np.asarray(group["valid"], dtype=bool) & input_valid
+            row = {"input_valid": int(input_valid.sum()), "solved": int(valid.sum()),
+                   "valid_fraction": float(valid.sum()/input_valid.sum()) if input_valid.any() else None}
+            if common_with is not None:
+                with h5py.File(common_with,"r") as common:
+                    if not np.array_equal(stream["timestamps"][:],common["timestamps"][:]):
+                        raise ValueError("Comparison recordings have different timebases")
+                    valid &= np.asarray(common[f"{r}/{side}/valid"],dtype=bool)
+                    if common.attrs.get("schema") != "hand_joint_results_v1":
+                        raise ValueError("Comparison requires hand_joint_results_v1")
+                    common_metadata = json.loads(common.attrs["metadata_json"])
+                    common_calibration = common_metadata.get("calibration")
+                    if common_calibration and common_metadata.get("input_sha256") == common_calibration["source_sha256"]:
+                        common_times = np.asarray(common["timestamps"])
+                        valid &= ~((common_times >= common_calibration["segment"][0]) &
+                                   (common_times <= common_calibration["segment"][1]))
+                row["comparison_common_frames"] = int(valid.sum())
+            robot = model.kinematics
+            order = [names.index(n) for n in robot.dof_joint_names]
+            link_ids = [robot.get_link_index(n) for n in model.tip_frames]
+            for field in ("raw_positions", "command_positions"):
+                values = np.asarray(group[field])
+                if field == "raw_positions":
+                    angles = np.full((len(values),len(names)),np.nan)
                     for index in np.flatnonzero(valid):
-                        robot.compute_forward_kinematics(angles[index, order])
-                        positions = np.array([robot.get_link_pose(i)[:3,3] for i in link_ids])
-                        error = np.linalg.norm(positions-targets[index],axis=1)*1000
-                        means.append(error.mean()); distances.extend(error)
-                        pinch.append(np.abs(np.linalg.norm(positions[1:3]-positions[0],axis=1)-
-                            np.linalg.norm(targets[index,1:3]-targets[index,0],axis=1))*1000)
-                    delta = np.abs(np.diff(angles,axis=0))
-                    finite_delta=delta[np.isfinite(delta)]
-                    hits = sum(np.count_nonzero(np.isclose(angles[valid,i], model.limits[n][0],atol=1e-5) |
-                                                 np.isclose(angles[valid,i], model.limits[n][1],atol=1e-5)) for i,n in enumerate(names))
-                    row[field] = {"mean_tip_error_mm": float(np.mean(means)) if means else None,
-                        "p95_tip_error_mm": float(np.percentile(distances,95)) if distances else None,
-                        "thumb_index_middle_distance_error_mm": np.mean(pinch,axis=0).tolist() if pinch else None,
-                        "limit_joint_fraction": float(hits/(valid.sum()*len(names))) if valid.any() else None,
-                        "mean_joint_delta_rad": float(finite_delta.mean()) if len(finite_delta) else None,
-                        "max_joint_delta_rad": float(finite_delta.max()) if len(finite_delta) else None}
-                times=np.asarray(group["solve_ms"])[valid]
-                row["solve_mean_ms"] = float(times.mean()) if len(times) else None
-                row["solve_p95_ms"] = float(np.percentile(times,95)) if len(times) else None
-                report["hands"][f"{r}/{side}"] = row
-        frame_ms=sum(np.asarray(stream[f"{r}/{s}/solve_ms"]) for r in ROBOT_SPECS for s in ("left","right"))
+                        expanded = spec.expand(values[index])
+                        angles[index] = [expanded[n] for n in names]
+                else:
+                    angles = values
+                means, distances, pinch = [], [], []
+                for index in np.flatnonzero(valid):
+                    robot.compute_forward_kinematics(angles[index, order])
+                    positions = np.array([robot.get_link_pose(i)[:3,3] for i in link_ids])
+                    error = np.linalg.norm(positions-targets[index],axis=1)*1000
+                    means.append(error.mean()); distances.extend(error)
+                    pinch.append(np.abs(np.linalg.norm(positions[1:3]-positions[0],axis=1)-
+                        np.linalg.norm(targets[index,1:3]-targets[index,0],axis=1))*1000)
+                delta = np.abs(np.diff(angles,axis=0))
+                finite_delta=delta[np.isfinite(delta)]
+                hits = sum(np.count_nonzero(np.isclose(angles[valid,i], model.limits[n][0],atol=1e-5) |
+                                             np.isclose(angles[valid,i], model.limits[n][1],atol=1e-5)) for i,n in enumerate(names))
+                row[field] = {"mean_tip_error_mm": float(np.mean(means)) if means else None,
+                    "p95_tip_error_mm": float(np.percentile(distances,95)) if distances else None,
+                    "thumb_index_middle_distance_error_mm": np.mean(pinch,axis=0).tolist() if pinch else None,
+                    "limit_joint_fraction": float(hits/(valid.sum()*len(names))) if valid.any() else None,
+                    "mean_joint_delta_rad": float(finite_delta.mean()) if len(finite_delta) else None,
+                    "max_joint_delta_rad": float(finite_delta.max()) if len(finite_delta) else None}
+            times=np.asarray(group["solve_ms"])[valid]
+            row["solve_mean_ms"] = float(times.mean()) if len(times) else None
+            row["solve_p95_ms"] = float(np.percentile(times,95)) if len(times) else None
+            report["hands"][f"{r}/{side}"] = row
+        frame_ms=sum(np.asarray(stream[f"{r}/{s}/solve_ms"]) for r,s in keys)
         sample=frame_ms[100:]
         report["performance"]={"warmup_frames":100,"sample_frames":len(sample),
-            "six_hand_p95_ms":float(np.percentile(sample,95)) if len(sample) else None,
+            "all_hands_p95_ms":float(np.percentile(sample,95)) if len(sample) else None,
             "p95_le_33ms":bool(len(sample)>=1000 and np.percentile(sample,95)<=33)}
         report["validity_passed"]=all(v["valid_fraction"] is not None and v["valid_fraction"]>=.99 for v in report["hands"].values())
         report["passed"] = report["validity_passed"]
     return report
-
-
-def legacy_comparison(input_path, calibration_path, checkpoint, output, source="visionpro", method="checkpoint"):
-    """Run the existing upstream VR model and legacy L21 native mapping as-is."""
-    import numpy as np
-    import torch
-    import time
-    from teleoperation.applications.dex_native import file_hash
-    from teleoperation.applications.visionpro_processing import TransHandRVisionProPipeline
-    from teleoperation.contracts.hand_control import valid_joint_result
-    from teleoperation.retargeting.hand.angles import l21_legacy_values, legacy_l21_dofs
-    from teleoperation.data.hand_recording import iter_dex_observations, LegacyComparisonWriter
-    from teleoperation.data.urdf import parse_joint_limits
-    from teleoperation.paths import L21_ROOT
-    from teleoperation.robots.l21 import MAPPING_18
-    from teleoperation.robots.native_hand import NativeHandModel, build_mapping, map_dofs
-    from teleoperation.retargeting.hand.angles import canonical_to_native_angles
-    from teleoperation.retargeting.hand.coordinates import OPERATOR_TO_CANONICAL
-    from teleoperation.retargeting.hand.dex_native import DexInputAdapter, DexCalibration
-    from teleoperation.retargeting.hand.transhandr_vr import load_transhandr_vr_model, TransHandRVRRetargeter
-    from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
-    from teleoperation.robots.hand_spec import load_hand_spec
-    torch.set_num_threads(1)
-    calibration=DexCalibration.load(calibration_path)
-    adapter=DexInputAdapter(source)
-    if source == "visionpro":
-        pipeline=TransHandRVisionProPipeline()
-        model=load_transhandr_vr_model(checkpoint)
-        predictors={s:TransHandRVRRetargeter(model,source_side=s,target_side=s) for s in ("left","right")}
-    else:
-        from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
-        from teleoperation.applications.realtime_hand_sim import build_retargeter
-        pipeline=MediaPipePalmLocalPipeline("world")
-        camera_retargeter,_,_=build_retargeter(method,checkpoint or Path("unused"),"cpu",15,0.,"world")
-    models={(r,s):NativeHandModel(r,s) for r in ROBOT_SPECS for s in ("left","right")}
-    specs={('l21',side):load_hand_spec('l21',side) for side in ('left','right')}
-    commands=JointCommandPipeline(specs)
-    mappings={k:build_mapping(*k,m.limits) for k,m in models.items()}
-    transforms={k:OPERATOR_TO_CANONICAL[k[1]].T@m.palm_reference()[0].T for k,m in models.items()}
-    digest=file_hash(input_path)
-    metadata={"method":f"{source}_{method}_legacy_L21_mapping", "input_sha256":digest,
-              "checkpoint_sha256":file_hash(checkpoint) if checkpoint else None,"calibration":vars(calibration),
-              "coupling":"legacy independent mapped joints, not the dex mimic-constrained command path"}
-    output.parent.mkdir(parents=True,exist_ok=True)
-    with LegacyComparisonWriter(output,models,metadata) as writer:
-        for raw in iter_dex_observations(input_path,source):
-            frame=adapter.adapt(raw)
-            window=pipeline.process_window(raw)
-            angles,accepted,side_ms={},{},{}
-            if source == "camera":
-                start=time.perf_counter()
-                camera_output=None if window is None else camera_retargeter.retarget(window)
-                camera_ms=(time.perf_counter()-start)*1000
-            for side in ("left","right"):
-                start=time.perf_counter()
-                if source == "visionpro":
-                    result=None if window is None else valid_joint_result(predictors[side].retarget(window),"l21",side)
-                    side_ms[side]=(time.perf_counter()-start)*1000
-                else:
-                    result=valid_joint_result(camera_output,"l21",side)
-                    side_ms[side]=camera_ms/2
-                if result is None:
-                    angles[side]=None
-                    accepted[side]=np.r_[0.,commands.missing(('l21',side),timestamp=raw.timestamp).positions]
-                else:
-                    angles[side]=l21_legacy_values(result)
-                    accepted[side]=np.r_[0.,commands.update(result,timestamp=raw.timestamp).positions]
-            results,applied,targets={},{},{}
-            for key,m in models.items():
-                side=key[1]
-                values=None
-                if angles[side] is not None:
-                    named,_=map_dofs(legacy_l21_dofs(angles[side]),mappings[key])
-                    values=np.array([named[n] for n in m.joint_names])
-                results[key]={"raw_angles": np.full(len(m.joint_names),np.nan) if values is None else values,
-                    "valid": values is not None,"error":"missing/warmup" if values is None else "", "solve_ms":side_ms[side]/3}
-                applied[key]=map_dofs(legacy_l21_dofs(accepted[side]),mappings[key])[0]
-                targets[key]=(None if frame.hands[side] is None else
-                    frame.hands[side][m.human_tip_indices]@transforms[key]*calibration.scale_for(m))
-            writer.append(raw.timestamp,results,applied,targets,
-                digest==calibration.source_sha256 and calibration.segment[0]<=raw.timestamp<=calibration.segment[1])
-    return recording_evaluation(output)
 
 
 def snapshots(path, directory):
@@ -300,18 +246,32 @@ def snapshots(path, directory):
     from PIL import Image
     from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
     from teleoperation.robots.native_hand import link_extent
-    scene=ThreeRobotHandScene(gui=False)
+    from teleoperation.data.hand_joint_recording import iter_joint_commands
+    from teleoperation.robots.hand_spec import load_hand_spec
+    with h5py.File(path) as stream:
+        if stream.attrs.get("schema") != "hand_joint_results_v1":
+            raise ValueError("Snapshots require hand_joint_results_v1")
+        keys = [(r,side) for r in ROBOT_SPECS if r in stream
+                for side in ("left","right") if side in stream[r]]
+    specs = {key:load_hand_spec(*key) for key in keys}
+    frame_count = sum(1 for _ in iter_joint_commands(path,specs))
+    if not frame_count:
+        raise ValueError("Empty native command recording")
+    scene=ThreeRobotHandScene(gui=False, sides=tuple(dict.fromkeys(s for r,s in keys)),
+                              robot_types=tuple(dict.fromkeys(r for r,s in keys)))
     directory.mkdir(parents=True,exist_ok=True)
-    report={"source":str(path),"frame":100,"images":[],"mode":"accepted-command pose for visual review"}
+    report={"source":str(path),"frame":min(100,frame_count-1),"images":[],"mode":"accepted-command pose for visual review"}
     try:
         with h5py.File(path) as stream:
             for robot in scene.robots:
                 ids=[]
-                for side in ("left","right"):
+                for side in scene.sides:
+                    if (robot["type"],side) not in specs:
+                        continue
                     group=stream[f"{robot['type']}/{side}"]
-                    names=json.loads(group.attrs["joint_names"])
-                    index=min(100,len(group["command_angles"])-1)
-                    values=group["command_angles"][index]
+                    names=json.loads(group.attrs["command_joint_names"])
+                    index=min(100,len(group["command_positions"])-1)
+                    values=group["command_positions"][index]
                     lookup=robot["plans"][side][1]
                     for name,value in zip(names,values):
                         p.resetJointState(robot["body"],lookup[name],float(value),physicsClientId=scene.cid)
@@ -339,7 +299,10 @@ def performance(input_path, calibration_path):
     from teleoperation.retargeting.hand.dex_native import DexCalibration,DexNativeRetargeter
     torch.set_num_threads(1)
     calibration=DexCalibration.load(calibration_path)
-    source="visionpro" if "visionpro" in calibration.profile else "camera"
+    from teleoperation.retargeting.hand.dex_native import PROFILES
+    if calibration.profile != PROFILES["visionpro"]:
+        raise ValueError("Fixed-calibration performance requires the visionpro profile")
+    source="visionpro"
     frames=recording_frames(input_path,source)
     if len(frames)<1100:
         raise ValueError("Performance requires at least 1100 recorded frames")
@@ -360,12 +323,9 @@ def performance(input_path, calibration_path):
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--stage", choices=("inventory", "kinematics", "solvers", "recording", "vr-comparison", "camera-comparison", "snapshots", "performance"), default="inventory")
+    parser.add_argument("--stage", choices=("inventory", "kinematics", "solvers", "recording", "snapshots", "performance"), default="inventory")
     parser.add_argument("--input", type=Path)
     parser.add_argument("--calibration", type=Path)
-    parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--result-h5", type=Path)
-    parser.add_argument("--method", choices=("geometric", "checkpoint"), default="checkpoint")
     parser.add_argument("--common-with", type=Path, help="restrict metrics to paired valid evaluation frames")
     args = parser.parse_args()
     if args.stage == "performance":
@@ -376,13 +336,6 @@ def main():
         if args.input is None:
             parser.error("snapshots requires native result input")
         report=snapshots(args.input,args.output.parent/"snapshots")
-    elif args.stage in ("vr-comparison", "camera-comparison"):
-        if any(v is None for v in (args.input,args.calibration,args.result_h5)) or (args.method=="checkpoint" and args.checkpoint is None):
-            parser.error("comparison requires input, calibration, result-h5 and checkpoint for a checkpoint method")
-        source="visionpro" if args.stage=="vr-comparison" else "camera"
-        if source=="visionpro" and args.method!="checkpoint":
-            parser.error("Existing VR baseline only supports the explicit upstream checkpoint route")
-        report=legacy_comparison(args.input,args.calibration,args.checkpoint,args.result_h5,source,args.method)
     elif args.stage == "recording":
         if args.input is None:
             parser.error("recording stage requires --input native-results.h5")
