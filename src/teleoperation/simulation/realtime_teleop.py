@@ -96,6 +96,7 @@ X 前、Y 左、Z 上。默认映射见 ``arm_realtime.AxisMap``（``(Z, X, Y)/(
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -150,6 +151,194 @@ NOMINAL_FRAME_DT = 1.0 / 30.0
 DEFAULT_ARM_SLEW_MM_PER_S = 600.0
 #: HUD 里把来源缩成一个字母：P = pose 手臂（主），H = 手部兜底，- = 无数据（保持上一帧）。
 SOURCE_SHORT = {"pose": "P", "hand": "H", "none": "-"}
+
+
+#: ``--wrist-trace`` 的列。顺序就是 CSV 表头；改这一行等于换一份取证格式，
+#: 所以任何改动都要在 docs 里同步（约定 12）。
+WRIST_TRACE_COLUMNS = (
+    "frame", "t_s", "side", "robot", "status",
+    "target_x", "target_y", "target_z",
+    "actual_x", "actual_y", "actual_z",
+    "err_mm", "residual_mm",
+    "ori_sent", "ori_turn_deg", "ori_err_deg",
+    "palm_turn_deg", "palm_space",
+    "wrist_a", "wrist_b", "wrist_c", "wrist_names",
+)
+
+
+#: ``--wrist-trace`` 盯哪些关节（大小写不敏感的子串）。除了 ``wrist`` 还必须含
+#: ``elbow_roll``：h1_2 的 URDF 把旋前轴命名成 ``right_elbow_roll_joint``（它的腕只有
+#: pitch + yaw 两个关节），只筛 ``wrist`` 会**漏掉这台机器人唯一能旋前的关节** ——
+#: 那正是本缺陷要观察的那一维（2026-11-16）。
+WRIST_TRACE_JOINT_KEYS = ("wrist", "elbow_roll")
+
+
+def palm_normal(points):
+    """掌面单位法向：腕 0 / 食指 MCP 5 / 小指 MCP 17 三点叉乘。
+
+    这是**观测量**，不是控制量。MediaPipe 的 pose 只给肩/肘/腕三点，绕前臂轴的自转
+    （旋前-旋后）在那套几何里是自由度、量不到；掌面法向是唯一能看出来的分量
+    （2026-11-16 现场根因，见 docs/PROJECT_CONTEXT.md 22.1）。点不全或退化给 ``None``。
+    """
+    try:
+        wrist, index, pinky = (np.asarray(points[slot], dtype=np.float64)
+                               for slot in (0, 5, 17))
+    except (IndexError, TypeError, ValueError):
+        return None
+    normal = np.cross(index - wrist, pinky - wrist)
+    length = float(np.linalg.norm(normal))
+    if not np.isfinite(length) or length < 1e-9:
+        return None
+    return normal / length
+
+
+def angle_between_deg(left, right) -> float:
+    """两个单位向量的夹角（度）；任一为 ``None`` 给 ``nan``（CSV 里就是空着的证据）。"""
+    if left is None or right is None:
+        return float("nan")
+    cosine = float(np.dot(np.asarray(left, dtype=np.float64),
+                          np.asarray(right, dtype=np.float64)))
+    return float(np.degrees(np.arccos(max(-1.0, min(1.0, cosine)))))
+
+
+def palm_points(raw_frame, side):
+    """这一帧的 21 点手（米制 world 优先，退回归一化），附带口径名。"""
+    if not raw_frame:
+        return None, ""
+    for key, space in ((f"world_{side}", "world"), (side, "normalized")):
+        points = raw_frame.get(key)
+        if points is None:
+            continue
+        values = np.asarray(points, dtype=np.float64)
+        if values.shape == (21, 3) and np.isfinite(values).all():
+            return values, space
+    return None, ""
+
+
+class WristTrace:
+    """``--wrist-trace``：每帧一行，只写文件，**不参与任何控制量**。
+
+    一行 = 一个（帧, 侧, 机器人），回答现场四件事：
+
+    * 目标点 ``target_*``（基座系，米）：桥这一帧交给驱动器的腕目标；
+    * 末端实际点 ``actual_*``（基座系，米）：本帧步进之后 FK 读到的腕；
+    * ``err_mm`` = 上面两点的距离；``residual_mm`` = 驱动器自己量的「命令目标 -> 到哪了」
+      （斜坡/夹紧之后的那个目标，含肩锚点平移）；
+    * ``ori_sent`` = 这一帧到底有没有把**腕姿态**交给 IK（0 = 只喂位置）；
+      ``ori_turn_deg`` = 下发的相对旋转有多大；``ori_err_deg`` = 下发后实测差多少；
+    * ``palm_turn_deg`` = 操作者掌面法向相对本侧第一帧转过多少度（诊断标尺，
+      不作为输入）。
+    * ``wrist_a/b/c`` + ``wrist_names`` = 该侧前三个「腕链」关节值
+      （``WRIST_TRACE_JOINT_KEYS``：``wrist`` 与 ``elbow_roll``）。**h1_2 的旋前轴叫
+      ``right_elbow_roll_joint``，不叫 ``wrist``** —— 只看 ``wrist`` 会得出「腕关节
+      一动不动」的错结论。
+
+    ``status``：``ok`` / ``no_target``（这一侧有机器人没有目标，整侧跳过）/
+    ``error:<类型>``（IK 抛异常，该侧保持上一帧命令）。
+    不给 ``--wrist-trace`` 时本类根本不会被构造。
+    """
+
+    def __init__(self, path):
+        self.path = Path(path)
+        parent = self.path.parent
+        if parent and not parent.exists():
+            parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self.path.open("w", encoding="utf-8", newline="")
+        self._writer = csv.writer(self._handle)
+        self._writer.writerow(WRIST_TRACE_COLUMNS)
+        self._palm_reference = {}
+        self.rows = 0
+        self.frames = 0
+
+    def close(self) -> None:
+        """收尾不该改变退出码：关不掉就算了（报告已经写完）。"""
+        try:
+            self._handle.flush()
+            self._handle.close()
+        except Exception:                     # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _xyz(point):
+        if point is None:
+            return "", "", ""
+        return (f"{float(point[0]):.4f}", f"{float(point[1]):.4f}",
+                f"{float(point[2]):.4f}")
+
+    def _palm_turn(self, side, raw_frame):
+        points, space = palm_points(raw_frame, side)
+        normal = None if points is None else palm_normal(points)
+        if normal is None:
+            return float("nan"), ""
+        reference = self._palm_reference.get(side)
+        if reference is None:
+            self._palm_reference[side] = normal
+            return 0.0, space
+        return angle_between_deg(normal, reference), space
+
+
+    def frame(self, index, elapsed, pending, driver, orientation_by_side,
+              raw_frame) -> None:
+        """写这一帧的行；``pending`` 是循环里每侧的结果（见 ``run``）。"""
+        self.frames += 1
+        for side, entry in sorted(pending.items()):
+            orientation = (orientation_by_side or {}).get(side)
+            if orientation is None:
+                ori_sent, ori_turn = 0, float("nan")
+            else:
+                cosine = max(-1.0, min(1.0, abs(float(orientation[3]))))
+                ori_sent = 1
+                ori_turn = float(np.degrees(2.0 * np.arccos(cosine)))
+            palm_turn, palm_space = self._palm_turn(side, raw_frame)
+            status = str(entry.get("status", ""))
+            positions = entry.get("positions") or {}
+            reports = entry.get("reports") or {}
+            robots = sorted(reports) if reports else []
+            ori_cell = "" if not ori_sent else f"{ori_turn:.2f}"
+            palm_cell = "" if palm_turn != palm_turn else f"{palm_turn:.2f}"
+            if not robots:
+                self._writer.writerow([
+                    index, f"{elapsed:.3f}", side, "-", status,
+                    "", "", "", "", "", "", "", "",
+                    ori_sent, ori_cell, "",
+                    palm_cell, palm_space,
+                    "", "", "", "",
+                ])
+                self.rows += 1
+                continue
+            for robot in robots:
+                adapter = driver.ik[robot]
+                target = positions.get(robot)
+                actual = adapter.to_base(adapter.arm_points(side)["wrist"])
+                if target is None:
+                    err = float("nan")
+                else:
+                    err = 1000.0 * float(np.linalg.norm(
+                        np.asarray(actual, dtype=np.float64)
+                        - np.asarray(target, dtype=np.float64)))
+                try:
+                    residual = float(adapter.residual_mm(side))
+                except Exception:             # noqa: BLE001 - 还没解过就没有残差
+                    residual = float("nan")
+                try:
+                    ori_err = float(adapter.orientation_error_deg(side))
+                except Exception:             # noqa: BLE001
+                    ori_err = float("nan")
+                joints = adapter.joint_values(side)
+                names = sorted(name for name in joints
+                               if any(key in name.lower() for key in WRIST_TRACE_JOINT_KEYS))
+                values = [float(joints[name]) for name in names[:3]]
+                values += [float("nan")] * (3 - len(values))
+                self._writer.writerow([
+                    index, f"{elapsed:.3f}", side, robot, status,
+                    *self._xyz(target), *self._xyz(actual),
+                    f"{err:.2f}", f"{residual:.2f}",
+                    ori_sent, ori_cell,
+                    ("" if ori_err != ori_err else f"{ori_err:.2f}"),
+                    palm_cell, palm_space,
+                    *(f"{value:.4f}" for value in values), ";".join(names),
+                ])
+                self.rows += 1
 
 
 class CameraFrameSource:
@@ -593,6 +782,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="write this run's neutral pose so the next run can reuse it")
     parser.add_argument("--arm-trace", action="store_true",
                         help="print the operator-side delta per axis (use this to check the axes)")
+    parser.add_argument("--wrist-trace", type=Path, default=None,
+                        help="write a read-only CSV probe, one row per (frame, side, robot): the "
+                             "wrist target, the actual wrist after the step, the residual, whether "
+                             "a wrist pose was commanded at all, the wrist joint values and how far "
+                             "your palm turned since the first frame. Writes a file only: no control "
+                             "output changes (see WRIST_TRACE_COLUMNS)")
     parser.add_argument("--dump-npz", type=Path, default=None,
                         help="record the raw frames (hands + pose arms) for offline replay")
     parser.add_argument("--arm-frame-dump", type=Path, default=None,
@@ -811,6 +1006,7 @@ def run(args) -> int:
         args.backend, checkpoint, args.device, args.calibration_frames,
         args.smoothing, args.landmark_space)
     scene = camera = preview = driver = bridge = None
+    wrist_trace = None
     fixed_slew_m = None
     arm_failures = {}
     processed = 0
@@ -824,6 +1020,9 @@ def run(args) -> int:
               "arm": {side: [] for side in SIDES},
               "timestamps": []}
     targets = {}
+    if args.wrist_trace is not None:
+        # 只读探针：这里只建文件（表头），下面每帧一行；它写不进去也不改变控制与退出码。
+        wrist_trace = WristTrace(args.wrist_trace)
     try:
         args.scene = "robots"                      # 手臂只存在于机器人场景
         scene = build_scene(args, sides)
@@ -1041,11 +1240,14 @@ def run(args) -> int:
                 # （8-12 fps），固定 mm/帧 会把跟随速度绑在帧率上，摆动被整段削掉（§8.9）。
                 # 第一帧拿不到间隔，用名义 1/30 s（= 旧口径 20 mm/帧），不是"关掉斜坡"。
                 driver.update_slew(frame_dt)
+                # --wrist-trace 的每侧结果（不给探针时它只是个空字典，控制路径不看它）。
+                pending = {}
                 for side in sides:
                     per_side = {name: entry[side] for name, entry in targets.items()}
                     positions = {name: target.position for name, target in per_side.items()
                                  if target.position is not None}
                     if len(positions) != len(per_side):
+                        pending[side] = {"status": "no_target"}
                         continue        # 还有机器人没目标：这一侧整侧跳过（保持上一帧）
                     # 肘位置任务（--arm-elbow-task）：只给量到锚点的那几台，缺的退回只喂腕。
                     elbows = {name: target.elbow for name, target in per_side.items()
@@ -1056,18 +1258,26 @@ def run(args) -> int:
                         # 中性 EE 朝向 —— orientation_frame="neutral" 就是这件事）。
                         # 取自 bridge.orientation_target()：不能从某一台的 target 里挑，
                         # 那样会挑到 position-only 的那台（None，姿态被静默丢掉）。
-                        driver.apply_each(side, positions, source="base",
-                                          orientation=orientation,
-                                          orientation_frame="neutral",
-                                          elbows=elbows,
-                                          elbow_bend_deg=(None if bend_by_side is None
-                                                          else bend_by_side[side]))
+                        reports = driver.apply_each(side, positions, source="base",
+                                                    orientation=orientation,
+                                                    orientation_frame="neutral",
+                                                    elbows=elbows,
+                                                    elbow_bend_deg=(None if bend_by_side is None
+                                                                    else bend_by_side[side]))
+                        pending[side] = {"status": "ok", "positions": positions,
+                                         "reports": reports}
                     except Exception as error:  # noqa: BLE001 - 一台坏不该拖垮整场
+                        pending[side] = {"status": f"error:{type(error).__name__}"}
                         if side not in arm_failures:
                             arm_failures[side] = f"{type(error).__name__}: {error}"
                             print(f"[WARN] {side}: arm IK failed, the arms keep their last "
                                   f"command: {arm_failures[side]}", flush=True)
                 driver.step(1)
+                if wrist_trace is not None:
+                    # 步进之后再读 FK：actual_* 是这一帧真正稳定下来的位置，
+                    # 与同一帧的 target_*/residual_mm 可比。只写文件，不回灌控制量。
+                    wrist_trace.frame(processed, time.perf_counter() - started, pending,
+                                      driver, orientation_by_side, raw_frame)
             else:
                 scene.step()
             if args.dump_npz is not None:
@@ -1105,6 +1315,8 @@ def run(args) -> int:
         scene_summary = scene.summary() if hasattr(scene, "summary") else None
         elapsed = time.perf_counter() - started
     finally:
+        if wrist_trace is not None:
+            wrist_trace.close()          # 先把探针落盘，再断开场景（读它不需要 PyBullet）
         if preview is not None:
             _drain_in_background(preview.close, "camera preview close")
         if camera is not None:
@@ -1115,6 +1327,9 @@ def run(args) -> int:
     fps = _loop_fps(marks)
     print(f"\nprocessed={processed} frames in {elapsed:.2f} s  fps={fps:.1f}  "
           f"median frame interval {_median_interval(marks) * 1000:.1f} ms")
+    if wrist_trace is not None:
+        print(f"wrist trace: {wrist_trace.rows} rows over {wrist_trace.frames} frames -> "
+              f"{wrist_trace.path}", flush=True)
     if scene_summary is not None:
         print(f"scene={scene_summary['scene']} sim_frames={scene_summary['sim_frames']} "
               f"applied={scene_summary['applied_frames']} "
