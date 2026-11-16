@@ -1828,7 +1828,7 @@ python scripts/show_hands_all.py --render --view front --loop 0
 | 平台 | PyBullet + 三台机器人（h1_2 / gr1_t2 / g1）并排，手臂 7+7 可独立驱动 | `applications/three_robot_scene.py` + `simulation/arm_scene_driver.py` |
 | 手部 | 18 维 NN 重定向（共享权重 `3eb1dd8`）-> 原装手 12/11/7 DoF 映射，端到端验收通过 | `RETARGETING_PIPELINE.md` §4.6 / §4.7 |
 | 手臂（VR 线） | Vision Pro 三机器人同帧跑通；今天定位并修掉「腕限位噪声把整臂冻结」 | 分支 `fix/limit-clamp-and-guard-margin`，commit `d9fb470`（见 20.1.1）|
-| 手臂（视觉线） | MediaPipe pose -> 相对重定向 -> 每侧 7 DoF IK（腕 + 肘双位置任务） | `multi-robot-arm.md` §8.15-§8.17 |
+| 手臂（视觉线） | MediaPipe pose -> 相对重定向 -> 每侧 7 DoF IK（腕 + 肘双位置任务）；拧腕只动腕（§8.18），`--arm-ik-mode pose` 让三台一起转腕 + `wrist_usage` 判定「腕到限位」（§8.19） | `multi-robot-arm.md` §8.15-§8.19 |
 | 任务（批次 1） | 30 任务可评测性审计：**19/30 通过**；三台机器人 **0/57** 个可搬物体在手臂可达半径内 | `task-evaluation.md` §3 |
 | 任务（批次 2） | 场景层落地：**72/90 格可评测**（每台 24 OK / 3 CRITERIA_INVALID / 2 CRITERIA_ABSOLUTE / 1 SCENE_UNSUPPORTED） | `task-evaluation.md` §4.3；`devtools/task_eval.py --verify --robot all` |
 | 任务（批次 3） | `--policy camera` 现场档已接：链路通（238 帧 / `joint_travel_rad` 1.16），**任务未解**（pushcube 需要 92% 臂展） | `task-evaluation.md` §4.6 |

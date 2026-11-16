@@ -466,6 +466,17 @@ class ArmSceneDriver:
         return self._per_side(
             lambda adapter, side: round(adapter.orientation_error_deg(side), 2), sides)
 
+    def wrist_usage(self, sides=None) -> dict:
+        """``{robot: {side: {joint: {"usage", "at_limit"}}}}``: 腕关节还剩多少行程。
+
+        见 ``PyBulletArmIK.wrist_usage``：``orientation_scope="wrist"`` 之后姿态只由腕兑现，
+        于是「手转不到我的角度」只剩「腕顶到限位」和「标定/增益」两种解释 —— 这一列用来
+        在报告里分开它们（``orientation_error_deg`` 自己分不开）。
+        """
+        wanted = self.sides if sides is None else tuple(sides)
+        return {robot_type: {side: adapter.wrist_usage(side) for side in wanted}
+                for robot_type, adapter in self.ik.items()}
+
     def _per_side(self, measure, sides=None) -> dict:
         wanted = self.sides if sides is None else tuple(sides)
         out = {}
@@ -538,6 +549,8 @@ class ArmSceneDriver:
                                     for robot_type, entry in self.released.items()},
             "residual_mm": self.residuals_mm(),
             "orientation_error_deg": self.orientation_errors_deg(),
+            # 腕关节还剩多少行程（``at_limit`` = 这一维就是「转不过去」的物理上限）。
+            "wrist_usage": self.wrist_usage(),
             # 姿势：肩/肘/上臂到底有没有参与（论文说肘不用管，这里量它有没有动）；
             # 前臂间隙：左右两条前臂离多近（叠中线 / 交叉就是这个量掉下来）。
             "posture": self.posture_summary(),

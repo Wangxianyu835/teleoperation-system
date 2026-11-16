@@ -347,6 +347,8 @@ class ThreeRobotArmIkTests(unittest.TestCase):
                          {robot: 7 for robot in PAPER_ROBOTS})
         self.assertEqual(set(payload["residual_mm"]), set(PAPER_ROBOTS))
         self.assertIn("hands", payload)
+        # 腕关节行程（``at_limit`` = 「转不过去」的物理上限）：报告里必须有这一列。
+        self.assertEqual(set(payload["wrist_usage"]), set(PAPER_ROBOTS))
         for robot in PAPER_ROBOTS:
             entry = payload["robots"][robot]
             with self.subTest(robot=robot):
@@ -355,6 +357,12 @@ class ThreeRobotArmIkTests(unittest.TestCase):
                 self.assertEqual(entry["end_effector"]["right"]["link"],
                                  EE_LINKS[robot])
                 self.assertIn("right", entry["arm_joints"])
+                usage = payload["wrist_usage"][robot]["right"]
+                self.assertEqual(set(usage), set(entry["orientation_joints"]["right"]))
+                for joint, cell in usage.items():
+                    self.assertGreaterEqual(cell["usage"], 0.0, joint)
+                    self.assertLessEqual(cell["usage"], 1.0, joint)
+                    self.assertIsInstance(cell["at_limit"], bool, joint)
 
 
 class SegmentDistanceTests(unittest.TestCase):
@@ -640,6 +648,22 @@ class FieldArmDefaultsTests(unittest.TestCase):
         self.assertEqual(build_parser().parse_args([]).arm_elbow_follow, "off")
         self.assertEqual(build_parser().parse_args(
             ["--arm-elbow-follow", "operator"]).arm_elbow_follow, "operator")
+
+    def test_ik_mode_override_defaults_to_the_profile_table(self):
+        """``--arm-ik-mode``: 默认 ``profile``（逐字不变），``pose`` 才覆盖。
+
+        ``position`` 口径下姿态那一遍根本不跑，所以 g1 / gr1_t2 的腕从来不转（2026-11-16
+        实测：45 度拧腕时腕关节变化 0.05 度）。``--arm-ik-mode pose`` 是 A/B 用的旗子，
+        实测数字见 ``devtools/probe_wrist_twist.py --ik-mode pose`` 与 §8.19；
+        profile 表本身不动（``test_ik_mode_is_driven_by_the_robot_not_by_the_caller`` 仍成立）。
+        """
+        from teleoperation.simulation.realtime_teleop import build_parser
+
+        self.assertEqual(build_parser().parse_args([]).arm_ik_mode, "profile")
+        self.assertEqual(build_parser().parse_args(
+            ["--arm-ik-mode", "pose"]).arm_ik_mode, "pose")
+        self.assertEqual(build_parser().parse_args(
+            ["--arm-ik-mode", "position"]).arm_ik_mode, "position")
 
 
 @unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
@@ -1231,4 +1255,113 @@ class OrientationScopeTests(unittest.TestCase):
             self.assertEqual(positional.ik_mode, "position", robot)
             self.assertEqual(positional._hold("left", zeros, [1.0] * len(zeros),
                                              positional._wrist_ids("left")), zeros, robot)
+
+
+
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
+class PoseModeOnEveryRobotTests(unittest.TestCase):
+    """``ik_mode="pose"`` 覆盖：g1 / gr1_t2 的腕到底能不能转（2026-11-16 实测）。
+
+    profile 表里这两台是 ``position``，于是 ``solve`` 里姿态那一遍根本不跑 —— 现场拧手腕时
+    h1_2 的腕在转，另外两台的腕一动不动（实测 45 度拧腕，腕关节变化 0.05 度）。
+    ``orientation_scope="wrist"`` 修好之后「谁来兑现朝向」有了答案（只让腕动、肩/肘抄回
+    位置解），所以这两台也可以切进姿态口径。这里量的是**纯运动学**（只写关节、读 FK），
+    45 度绕 x 拧腕、三个轴取最大：「不该动」的肩/肘 = 0，腕确实转了，
+
+        机器人    肩/肘变化（度）   腕关节变化（度）   朝向残差（度）
+        gr1_t2    0.15 / 0.17       26.55-51.11       0.0-25.9
+        g1        0.02 / 0.02       26.00-64.60       0.2-0.9
+
+    含物理那一版见 ``devtools/probe_wrist_twist.py --ik-mode pose --scope wrist``
+    （12 次扭转合计，肩/肘最大 0.17 度）。
+    """
+
+    WRIST_MOVED_DEG = 5.0
+    TWIST_DEG = 45.0
+    AXIS = (1.0, 0.0, 0.0)
+    IDENTITY = (0.0, 0.0, 0.0, 1.0)
+
+    @classmethod
+    def setUpClass(cls):
+        from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+        from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+
+        cls.scene = ThreeRobotHandScene(sides=SIDES, gui=False)
+        cls.driver = ArmSceneDriver(cls.scene, sides=SIDES, ik_mode="pose")
+        cls.driver.step(5)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.driver = None
+        cls.scene.close()
+
+    def reset_to_load_pose(self, adapter, side):
+        for index, _name in adapter.arm[side]:
+            adapter.p.resetJointState(adapter.body, index, float(adapter.hold[index]),
+                                      physicsClientId=adapter.cid)
+
+    def solve_pose(self, adapter, side, orientation):
+        target = tuple(float(value)
+                       for value in profile_for(adapter.robot_type).realtime_neutral(side))
+        return adapter.solve(side, target, source="base", orientation=orientation,
+                             orientation_frame="neutral")
+
+    def test_the_override_turns_the_orientation_pass_on_every_robot(self):
+        for robot in PAPER_ROBOTS:
+            adapter = self.driver.ik[robot]
+            with self.subTest(robot=robot):
+                self.assertEqual(adapter.ik_mode, "pose")
+                # 腕关节名是量出来的，不是猜的：这三台都测得出至少一个。
+                self.assertTrue(adapter.orientation_joints("right"), robot)
+
+    def test_a_wrist_twist_turns_the_wrist_of_the_position_only_robots(self):
+        for robot in ("gr1_t2", "g1"):
+            adapter = self.driver.ik[robot]
+            twist = adapter.p.getQuaternionFromAxisAngle(self.AXIS,
+                                                         math.radians(self.TWIST_DEG))
+            for side in SIDES:
+                wrist = [name for _index, name in adapter.wrist[side]]
+                proximal = [name for _index, name in adapter.arm[side]
+                            if name not in wrist]
+                self.assertTrue(wrist and proximal, f"{robot}/{side}")
+                self.reset_to_load_pose(adapter, side)
+                rest = self.solve_pose(adapter, side, self.IDENTITY)
+                self.reset_to_load_pose(adapter, side)
+                held = self.solve_pose(adapter, side, twist)
+                with self.subTest(robot=robot, side=side):
+                    # 肩/肘一个都没动（``_hold`` 抄回位置解，实测 0.0000 度）。
+                    for name in proximal:
+                        self.assertAlmostEqual(held[name], rest[name], places=6,
+                                               msg=f"{robot}/{side}/{name} moved")
+                    # 腕确实转了（实测 26.00-64.60 度）。
+                    self.assertGreater(
+                        max(abs(held[name] - rest[name]) for name in wrist),
+                        math.radians(self.WRIST_MOVED_DEG), f"{robot}/{side}")
+                self.reset_to_load_pose(adapter, side)
+
+    def test_wrist_usage_flags_a_joint_pinned_at_its_limit(self):
+        """``wrist_usage``: 0..1 的行程占用率 + 「贴限位」标记（报告里用来分「物理上限」）。"""
+        adapter = self.driver.ik["h1_2"]
+        self.reset_to_load_pose(adapter, "left")
+        usage = adapter.wrist_usage("left")
+        self.assertEqual(set(usage), set(adapter.orientation_joints("left")))
+        for name, cell in usage.items():
+            self.assertGreaterEqual(cell["usage"], 0.0, name)
+            self.assertLessEqual(cell["usage"], 1.0, name)
+            self.assertFalse(cell["at_limit"], name)
+        index, name = adapter.wrist["left"][0]
+        position = adapter.position_of[index]
+        low = float(adapter.limits["lower"][position])
+        high = float(adapter.limits["upper"][position])
+        for angle, expected in ((high, 1.0), (low, 0.0)):
+            adapter.p.resetJointState(adapter.body, index, angle,
+                                      physicsClientId=adapter.cid)
+            cell = adapter.wrist_usage("left")[name]
+            with self.subTest(angle=angle):
+                self.assertTrue(cell["at_limit"])
+                self.assertAlmostEqual(cell["usage"], expected, places=6)
+        # 复位到加载角：后面的测试还要用这台机器人。
+        self.reset_to_load_pose(adapter, "left")
+        self.assertFalse(adapter.wrist_usage("left")[name]["at_limit"])
 

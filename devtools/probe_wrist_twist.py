@@ -60,6 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="orientation_scope to measure (repeatable; default: both)")
     parser.add_argument("--robot", action="append", default=None,
                         help="only these robots (repeatable; default: every loaded one)")
+    parser.add_argument("--ik-mode", choices=("pose", "position"), default=None,
+                        help="override the profile's ik_mode (A/B: g1 / gr1_t2 ship with "
+                             "'position', i.e. their wrist never rotates)")
     parser.add_argument("--side", choices=("left", "right", "both"), default="both")
     parser.add_argument("--twist", type=float, default=DEFAULT_TWIST_DEG,
                         help=f"twist angle in degrees (default {DEFAULT_TWIST_DEG:.0f})")
@@ -181,10 +184,18 @@ def measure_side(adapter, scene, side: str, profile, scope: str,
             entry.update(_delta(baseline, pose))
             variants.append(entry)
     _pose(adapter, side, resting)
+    limits = {}
+    for index, name in adapter.wrist[side]:
+        position = adapter.position_of[index]
+        limits[name] = {"lower": round(float(adapter.limits["lower"][position]), 4),
+                        "upper": round(float(adapter.limits["upper"][position]), 4),
+                        "load": round(float(adapter.hold[index]), 4)}
     return {"scope": scope, "wrist_joints": wrist_joints, "proximal_joints": proximal,
+            "wrist_limits": limits,
             "baseline": {"ori_err_deg": baseline["ori_err_deg"],
                          "residual_mm": baseline["residual_mm"]},
             "twists": variants}
+
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
@@ -203,7 +214,7 @@ def main(argv=None) -> int:
     try:
         driver = ArmSceneDriver(scene, sides=sides, robots=robots,
                                 ik_iterations=200, residual_threshold=1e-5,
-                                lock_others=True)
+                                lock_others=True, ik_mode=args.ik_mode)
         for name in robots:
             adapter = driver.ik[name]
             profile = profile_for(name)
@@ -225,6 +236,10 @@ def main(argv=None) -> int:
                           f"baseline ori err {data['baseline']['ori_err_deg']:.1f} deg, "
                           f"wrist residual {data['baseline']['residual_mm']:.1f} mm",
                           flush=True)
+                    print("    limits: " + ", ".join(
+                        f"{joint} [{entry_['lower']:.2f}, {entry_['upper']:.2f}] "
+                        f"load {entry_['load']:.2f}"
+                        for joint, entry_ in data["wrist_limits"].items()), flush=True)
                     for twist in data["twists"]:
                         print(f"    twist {twist['axis']}{twist['twist_deg']:+6.1f} deg -> "
                               f"shoulder {twist['shoulder_deg']:6.2f} / elbow "

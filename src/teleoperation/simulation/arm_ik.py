@@ -112,6 +112,15 @@ ORIENTATION_FRAMES = ("absolute", "neutral")
 #: 而真机转腕只用腕关节。把腕以前的关节钉住，朝向就只由 ``WRIST_KEYWORD`` 命中的那几个
 #: 关节吸收（h1_2 是 wrist_roll/pitch/yaw）。数字见 ``devtools/probe_wrist_twist.py``。
 ORIENTATION_SCOPES = ("wrist", "arm")
+#: 腕关节「贴到限位」的判据（**占本关节行程的比例**，0 = 下限，1 = 上限）：``wrist_usage``
+#: 用它标 ``at_limit``。区间取 ``[1 - WRIST_LIMIT_USAGE, WRIST_LIMIT_USAGE]`` 之外为贴限位。
+#:
+#: 为什么要这一列（2026-11-16，``orientation_scope="wrist"`` 之后）：朝向只由腕兑现，于是
+#: 「手转不到我的角度」在画面上只剩两种解释 —— 腕关节顶到了 URDF 限位（物理上限），或者
+#: 标定/增益/延迟（软件）。姿态残差 ``orientation_error_deg`` 本身分不开这两种，而这一列能：
+#: 命中 ``at_limit`` 的关节就是卡住的那一维，没命中就说明腕还有行程、问题在别处。
+#: 实测 h1_2 单次 45 度拧腕的取向残差可达 56.83 度（``devtools/probe_wrist_twist.py``）。
+WRIST_LIMIT_USAGE = 0.98
 #: 同时给了腕与肘两个位置目标时，肘任务放在第几遍：
 #:
 #: ``first``  第一遍就是 IK2（腕 + 肘），第二遍按 ``ik_mode`` 用腕的位姿收尾；
@@ -1528,6 +1537,37 @@ class PyBulletArmIK:
         return {name: float(self.p.getJointState(self.body, index,
                                                  physicsClientId=self.cid)[0])
                 for index, name in self.arm[side]}
+
+    def wrist_usage(self, side: str) -> dict:
+        """腕关节在本侧行程里的相对位置：``{joint: {"usage": 0..1, "at_limit": bool}}``。
+
+        1.0 = 顶在 URDF 上限，0.0 = 顶在下限，0.5 = 正中；区间两端的 ``1 - WRIST_LIMIT_USAGE``
+        以内算「贴限位」（见模块顶这个常量的现场原因）。
+
+        只有腕关节（``self.wrist``，即 ``orientation_scope="wrist"`` 放开的那些）：
+        ``orientation_scope="wrist"`` 之后朝向就只由它们兑现，所以「转不过去」的物理上限
+        只能出在这里。腕集合为空（这台机器人的臂结构测不出腕关节）时退回整条臂 —— 那种
+        情况下姿态误差是整条链在摊，卡住的可能是任何一个关节。
+
+        报告落点：``ArmSceneDriver.summary()["wrist_usage"]``。纯读，不动任何关节。
+        """
+        values = self.joint_values(side)
+        joints = self.wrist[side] or self.arm[side]
+        usage = {}
+        for index, name in joints:
+            position = self.position_of[index]
+            low = float(self.limits["lower"][position])
+            high = float(self.limits["upper"][position])
+            span = high - low
+            if span <= 1e-9:
+                # 连续关节被 ``_joint_limits`` 放宽成一整圈以外的怪限位：量不出比例，如实记 0.5。
+                usage[name] = {"usage": 0.5, "at_limit": False}
+                continue
+            fraction = (values[name] - low) / span
+            usage[name] = {"usage": round(min(1.0, max(0.0, fraction)), 3),
+                           "at_limit": bool(fraction >= WRIST_LIMIT_USAGE
+                                            or fraction <= 1.0 - WRIST_LIMIT_USAGE)}
+        return usage
 
     def orientation_joints(self, side: str) -> list:
         """``orientation_scope="wrist"`` 在这一侧会放开的关节名（空 = 没有腕关节名）。

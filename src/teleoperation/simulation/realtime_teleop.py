@@ -87,8 +87,10 @@ X 前、Y 左、Z 上。默认映射见 ``arm_realtime.AxisMap``（``(Z, X, Y)/(
 如实声明
 --------
 这里**没有**相机内参、没有手眼标定，也**不是**论文的 SMPLer-X + PINK 链路：位置来自
-相对重定向的调参，姿态约定只在 ``ik_mode="pose"`` 的机器人（h1_2）上使用，
-``gr1_t2`` / ``g1`` 只做位置 IK。每台机器人每侧的行程上限 ``profile.realtime_travel_m``
+相对重定向的调参，姿态约定按 profile 的 ``ik_mode`` 使用 —— 默认只有 h1_2 走姿态口径
+（``gr1_t2`` / ``g1`` 只做位置 IK，它们的腕因此从来不转）；``--arm-ik-mode pose`` 可以把
+三台都切进姿态口径（2026-11-16 实测：肩/肘移动 <= 0.17 度，见 docs/multi-robot-arm.md 8.19）。
+每台机器人每侧的行程上限 ``profile.realtime_travel_m``
 是实测出来的（``devtools\\verify_realtime_arm_bridge.py --probe-travel``），超出即被夹住。
 
 """
@@ -664,6 +666,22 @@ def build_parser() -> argparse.ArgumentParser:
                              "fraction 0.0 on all six sides); the solver has 7 variables instead "
                              "of ~55 so it is not slower, but no speedup is claimed -- fps over "
                              "these runs varied 2.5-12.7 with machine load under both scopes")
+    parser.add_argument("--arm-ik-mode", choices=("profile", "pose", "position"),
+                        default="profile",
+                        help="override the profile's ik_mode (default 'profile' = the "
+                             "per-robot table: h1_2 'pose', g1 / gr1_t2 'position'). "
+                             "'pose' sends the wrist orientation into the IK on *every* "
+                             "robot -- with 'position' that pass never runs, so g1 / "
+                             "gr1_t2 never rotate their wrist with yours at all. Measured "
+                             "2026-11-16 with 'devtools/probe_wrist_twist.py --ik-mode "
+                             "pose --scope wrist' (45 deg twists, both sides): shoulder + "
+                             "elbow move <= 0.17 deg (gr1_t2) and <= 0.04 deg (g1), "
+                             "orientation error 0.0-25.9 deg (gr1_t2) / 0.2-0.9 deg (g1), "
+                             "wrist position residual 2.1 -> 2.2 mm (gr1_t2) but 4.6 -> up "
+                             "to 49.8 mm (g1: the hand mount link sits off the wrist "
+                             "axis, so turning the wrist moves the mount point). Combine "
+                             "with --arm-orientation on to actually send the target; A/B "
+                             "it in the field before it becomes a profile default")
     parser.add_argument("--arm-orientation-scope", choices=ORIENTATION_SCOPES,
                         default="wrist",
                         help="which joints absorb the commanded wrist orientation "
@@ -1109,6 +1127,8 @@ def run(args) -> int:
                                     elbow_recovery_cooldown=args.arm_elbow_recovery_frames,
                                     shoulder_anchor_key=args.arm_anchor,
                                     lock_others=(args.arm_ik_scope == "arm"),
+                                    ik_mode=(None if args.arm_ik_mode == "profile"
+                                             else args.arm_ik_mode),
                                     orientation_scope=args.arm_orientation_scope)
             # segments 口径与肘任务要的「机器人自己的量」：实测连杆长 + 中性腕/肘点（基座系）。
             # 加载后量一次即可，之后每帧只是加减法（见 arm_realtime.MAP_MODES）。
@@ -1232,9 +1252,12 @@ def run(args) -> int:
                 posture_gain=args.arm_posture_gain,
                 max_direction_rate_deg_s=args.arm_direction_rate_deg_s,
                 anchors=robot_anchors)
+            # ik_mode 打**实际生效的**（``--arm-ik-mode`` 可以覆盖 profile 表）：现场看这一行
+            # 就知道 g1 / gr1_t2 这一场到底会不会转腕（pose = 会，position = 不会）。
             print(f"arms: {', '.join(robots)} | ik_mode "
-                  f"{({name: profiles[name].ik_mode for name in robots})} | "
-                  f"orientation {args.arm_orientation} | travel limit "
+                  f"{({name: driver.ik[name].ik_mode for name in robots})}"
+                  f"{'' if args.arm_ik_mode == 'profile' else ' (--arm-ik-mode override)'}"
+                  f" | orientation {args.arm_orientation} | travel limit "
                   f"{bridge.travel_limits()} m ({args.arm_travel_mode}) | "
                   f"lateral guard {args.arm_lateral_guard_mm} mm | "
                   f"neutral mode {args.arm_calibrate_mode} | "

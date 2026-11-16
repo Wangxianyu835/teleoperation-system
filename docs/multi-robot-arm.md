@@ -1,16 +1,17 @@
 # 多机器人手臂驱动：按 robot_type 选臂并驱动机器人关节
 
-最后更新：2026-11-16（§8.18 **「一拧手腕，整条手臂跟着抬、带着摆」**：pose 口径的朝向那一遍把误差摊到 7 个自由度上，腕装不满时肩/肘替它分担；新增 `--arm-orientation-scope`，默认 `wrist` = 肩/肘抄回位置解、朝向只由 `elbow_roll + wrist_pitch + wrist_yaw` 兑现 —— 实测肩+肘最大变化 129.22 -> 0.09 度、肘点位移 285.13 -> 0.38 mm，代价「腕 3 自由度装不下所有朝向」也一并记下）| 2026-11-09（§8.17.11 **GR1-T2 的肘被中性姿势弯到了反面**：`ARM_NEUTRAL` 按关节名给 +1.2 rad，而 gr1_t2 的肘关节正方向是伸直方向（斜率 -0.999），加载时前臂因此朝后（基座系 x=-0.79，另两台 +0.56）；`arm_ik._level_elbow_pose` 把这类关节对 0 取反 —— 同一个弯角、换到另一侧，启动行与报告 `elbow_pose_fix` 都能核对）| 2026-10-14 深夜（§8.16 **「肘/小臂不跟手」的机制是 PyBullet `restPoses` 把解往加载姿势拽**：探针 A/B 把「精确可达目标」的残差从 6.6-140.1 mm 打到 0.0 mm / 拽动 35.0 度打到 0.00 度，证明主因是零空间代价项而不是链路帧口径；但同一条现场录制上换 `--arm-rest-poses live` **不是一边倒的赢**（肘任务只 3/6 侧变好、腕精度中位 17.2 -> 40.5 mm 变差），所以 CLI 默认仍留在 `current`、`live` 只作实验档）| 前一轮 §8.15「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」的根因是那场跑在默认 `chain` 口径上（`--arm-map` 默认改 `posture`、`report_table.py` 加行程与夹断列）| 前一轮 §8.14 中性标定永远等不到数据（`--arm-calibrate-mode track`、`record_posture` 静默丢腕命令、`--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
+最后更新：2026-11-16（§8.19 **「另外两台的手根本不转」**：profile 表里 g1 / gr1_t2 是 `position` 口径，姿态那一遍根本不跑 —— 45 度拧腕实测腕关节变化 0.05 度；新增 `--arm-ik-mode`，`pose` 让三台一起转腕，实测肩+肘最大变化 0.17 度、取向残差 0.2-25.9 度；报告新增 `wrist_usage` 判定「拧不过去是不是腕顶到限位」，同一次回放里 gr1_t2 右腕 roll `usage 1.0 / at_limit` 正好对上它 58.53 度的残差）| 2026-11-16（§8.18 **「一拧手腕，整条手臂跟着抬、带着摆」**：pose 口径的朝向那一遍把误差摊到 7 个自由度上，腕装不满时肩/肘替它分担；新增 `--arm-orientation-scope`，默认 `wrist` = 肩/肘抄回位置解、朝向只由 `elbow_roll + wrist_pitch + wrist_yaw` 兑现 —— 实测肩+肘最大变化 129.22 -> 0.09 度、肘点位移 285.13 -> 0.38 mm，代价「腕 3 自由度装不下所有朝向」也一并记下）| 2026-11-09（§8.17.11 **GR1-T2 的肘被中性姿势弯到了反面**：`ARM_NEUTRAL` 按关节名给 +1.2 rad，而 gr1_t2 的肘关节正方向是伸直方向（斜率 -0.999），加载时前臂因此朝后（基座系 x=-0.79，另两台 +0.56）；`arm_ik._level_elbow_pose` 把这类关节对 0 取反 —— 同一个弯角、换到另一侧，启动行与报告 `elbow_pose_fix` 都能核对）| 2026-10-14 深夜（§8.16 **「肘/小臂不跟手」的机制是 PyBullet `restPoses` 把解往加载姿势拽**：探针 A/B 把「精确可达目标」的残差从 6.6-140.1 mm 打到 0.0 mm / 拽动 35.0 度打到 0.00 度，证明主因是零空间代价项而不是链路帧口径；但同一条现场录制上换 `--arm-rest-poses live` **不是一边倒的赢**（肘任务只 3/6 侧变好、腕精度中位 17.2 -> 40.5 mm 变差），所以 CLI 默认仍留在 `current`、`live` 只作实验档）| 前一轮 §8.15「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」的根因是那场跑在默认 `chain` 口径上（`--arm-map` 默认改 `posture`、`report_table.py` 加行程与夹断列）| 前一轮 §8.14 中性标定永远等不到数据（`--arm-calibrate-mode track`、`record_posture` 静默丢腕命令、`--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
 相关代码：`src/teleoperation/simulation/arm_ik.py`、`arm_profiles.py`、`arm_scene_driver.py`、
 `arm_realtime.py`、`realtime_teleop.py`、`arm_preview.py`
-相关测试：`tests/test_arm_ik_multi_robot.py`（44 个用例）、`tests/test_arm_realtime_bridge.py`（84 个用例）、
+相关测试：`tests/test_arm_ik_multi_robot.py`（48 个用例）、`tests/test_arm_realtime_bridge.py`（84 个用例）、
 `tests/test_arm_preview.py`（25 个用例）；
 离线验收 `devtools/verify_arm_multi_robot.py`、`devtools/verify_realtime_arm_bridge.py`、
 `devtools/verify_arm_wing.py`、`devtools/probe_elbow_task.py`、`devtools/probe_posture_task.py`、
 `devtools/probe_arm_segment_rigidity.py`（2026-10-14 新增：锚点刚性与求解器自检；
 同日给 `ik_frame_test` 加了 `restPoses` A/B = `identity_current_rest`，见 §8.16.2）、
 `devtools/probe_wrist_twist.py`（2026-11-16 新增：拧腕的 A/B —— 同一目标只切
-`orientation_scope`，报肩/肘关节角变化、肘点位移、大臂/前臂方向变化与朝向/位置残差，见 §8.18）
+`orientation_scope`，报肩/肘关节角变化、肘点位移、大臂/前臂方向变化与朝向/位置残差，见 §8.18；
+同日加 `--ik-mode` 覆盖：量 position 口径那两台切进姿态口径后会怎样，见 §8.19）
 
 ## 1. 为什么需要这一层
 
@@ -2119,9 +2120,118 @@ h1_2 与 gr1_t2 的肘关节名是同一个（`*_elbow_pitch_joint`）—— 但
 #### 8.18.6 没做的
 
 - **朝向限幅/可达性判定**：见 8.18.3 的代价。现在不可达的朝向就是解不出来，报在朝向残差里。
+  → **判定**已在 §8.19.3 落地（`wrist_usage` 报告：哪个腕关节顶到限位）；**限幅**没做，
+  理由见 §8.19.4。
 - **平滑**：这一维（掌面法向来的旋前）在 §8.17 里就记着「下一步是加平滑，不是关掉」，仍未做。
 - **`--arm-orientation off` 档没动**：那条路根本不进遍 2，本节对它零影响；正因为如此它仍然是
   「手臂形状最稳的那一档」，只是没有旋前。
+
+
+### 8.19 「另外两台的手根本不转」：姿态那一遍只有 h1_2 在跑（2026-11-16，§8.18 的下一步）
+
+§8.18 把「谁来兑现朝向」定下来了（只让腕动），但它只影响**真正跑姿态那一遍**的机器人：profile
+表里 `g1` / `gr1_t2` 是 `ik_mode="position"`（§8.2 定的口径，理由是「gr1_t2 没有腕 link、g1 的腕
+跟不上未标定的朝向约定」），`solve` 里那一段直接跳过。于是现场拧手腕时 h1_2 的手在转，另外两台的
+**手一动不动**。§8.18 之后这变成三台一起演示时唯一的短板。
+
+先量清「一动不动」到什么程度（`devtools/probe_wrist_twist.py --robot gr1_t2 --robot g1`，默认
+profile 口径，45 度拧腕，纯运动学）：腕关节最大变化 **0.05 度**、`achieved` 0.4-0.5 度 —— 噪声，
+不是转动。同一份目标在 `ik_mode="pose"` 下腕关节变化 26-65 度。
+
+#### 8.19.1 修法：`--arm-ik-mode`（默认 `profile`，profile 表一个字不改）
+
+沿用这个仓库的老约定（「默认逐字不变，换口径显式给旗子」，见 §8.13.4 / §8.16）：profile 表不动，
+现场入口加一条旗子。
+
+| 环节 | 做法 |
+|---|---|
+| 新旗子 | `realtime_teleop.py --arm-ik-mode {profile,pose,position}`，默认 `profile` = 现在的表；`pose` 把三台都切进姿态口径，`position` 把三台都关掉（A/B 用） |
+| 传参 | `ArmSceneDriver(..., ik_mode=...)` 已有这个形参（`None` = 跟 profile），只是以前没暴露到现场入口 |
+| 启动行 | `arms: ... | ik_mode {'h1_2': 'pose', 'gr1_t2': 'pose', 'g1': 'pose'} (--arm-ik-mode override)` —— 打**实际生效的**，不是 profile 表。`orientation on (scope wrist: ...)` 那一段会自动把三台都列出来（它按 `adapter.ik_mode` 过滤），不用另写 |
+| 姿态目标从哪来 | 不用改 bridge：`--arm-orientation on` 是「无条件下发」（`auto` 才按 profile 门控），`arm_ik.solve` 在 `ik_mode="pose"` 时才用它 —— 所以 `--arm-orientation on --arm-ik-mode pose` 就是完整组合 |
+
+#### 8.19.2 证据（`devtools/probe_wrist_twist.py --ik-mode pose --scope wrist`，2026-11-16）
+
+同一目标、45 度拧腕、双侧 6 个方向，含物理（`solve -> apply -> step` 30 帧站稳基准）：
+
+| 机器人 | 肩+肘最大变化 | 腕关节变化 | 朝向残差 | 腕位置残差 | 基准（同一次跑） |
+|---|---|---|---|---|---|
+| `gr1_t2` | **0.17 度** | 26.55-51.11 度 | 0.0-25.9 度 | 2.1 -> 2.2 mm | 基准残差 2.1 mm、朝向 8.8-11.5 度 |
+| `g1` | **0.04 度** | 26.00-64.60 度 | 0.2-0.9 度 | 4.6 -> 最大 49.8 mm | 基准残差 4.6 mm、朝向 17.5-19.5 度 |
+
+两点如实记下：
+
+1. `g1` 的腕位置残差会涨到 49.8 mm（`y +45` 那一列，前臂方向同时变 13.7 度）。原因是它的**手安装
+   连杆不在腕转轴上**，腕一转，安装点就跟着划弧 —— 这是几何，不是求解器。`gr1_t2` / `h1_2` 也有
+   这个耦合，只是短（h1_2 最大 10.8 mm）。要不要接受这个代价，现场看一眼就知道，所以默认没改。
+2. `g1` 的朝向反而最准（0.9 度以内），`gr1_t2` 最差 25.9 度：它的腕行程窄（`wrist_roll` 只有
+   ±0.61 rad = ±35 度，见下面 8.19.3 的表），装不下的那部分就只能残在那儿。
+
+#### 8.19.3 可达性判定：`wrist_usage`（报告里多一列）
+
+§8.18.3 留下的代价是「腕装不下的朝向就残着」。残差本身**分不开**两种原因：腕顶到 URDF 限位
+（物理上限），还是标定/增益/延迟（软件）。所以加一列，纯读、不动关节：
+
+- `PyBulletArmIK.wrist_usage(side)` → `{关节: {"usage": 0..1, "at_limit": bool}}`，
+  `usage` = 本关节在 URDF 行程里的相对位置（0 = 下限、1 = 上限），
+  `at_limit` = 落在两端 `1 - WRIST_LIMIT_USAGE`（2%）以内；
+- 落点：`ArmSceneDriver.summary()["wrist_usage"]`（报告里与 `orientation_error_deg` 并排）。
+
+为什么会用得上 —— 同一次 headless 回放（150 帧，`--arm-orientation on --arm-ik-mode pose`）里
+朝向残差是这样的：
+
+| 侧 | 朝向残差 | 腕关节行程占用（`usage`） |
+|---|---|---|
+| `h1_2` 左/右 | 16.84 / 17.52 度 | 0.29-0.77，无 `at_limit` |
+| `gr1_t2` 左 | 13.60 度 | 0.51-0.62，无 `at_limit` |
+| `gr1_t2` **右** | **58.53 度** | `right_wrist_roll_joint` **1.000，`at_limit: true`** |
+| `g1` 左/右 | 8.20 / 8.96 度 | 0.46-0.92，无 `at_limit` |
+
+那一行 58.53 度就是「拧不过去」的全部：`gr1_t2` 右腕的 roll 已经顶死在 +35 度上（行程比例 1.0）。
+没有这一列，只能看到「这台手跟不上」，然后去怀疑标定。
+
+#### 8.19.4 为什么没做「不可达就不下发」的限幅
+
+本来打算按可达范围把朝向目标**限幅**。做之前先把限幅的参考定下来，发现没有干净的参考：
+
+- 拿「位置那一遍解出来的腕朝向」当参考 —— 那是**冗余链随便挑的一个朝向**（这次回放里基准朝向
+  就偏离中性 8.8-19.5 度），限幅等于让手围着它转，小角度命令的保真度直接没了（现在是 0.06 度）；
+- 拿「上一帧实际朝向」当参考 —— 那是**速率限幅**（slew），治的是跳变，不是不可达；
+- 拿「腕自己的行程」当参考 —— 需要把 3 个关节的限位映射成朝向集，PyBullet 给不出这个映射。
+
+而 Bullet 的行为本来就是「到限位就停」，硬下发不可达目标不会让腕乱跑（§8.18.2 已经把肩/肘钉死），
+代价只是残差数字大。所以这次只做**判定**（8.19.3）：先把「不可达」这件事变得可读，再谈限幅。
+真要限幅，正确的参考是「腕关节限位映射出来的朝向集」，那是另一个量级的工作。
+
+#### 8.19.5 验收（本机实跑，2026-11-16）
+
+| 命令 | 退出码 | 关键不变量 |
+|---|---|---|
+| `E:\python3.11.7\python.exe devtools\probe_wrist_twist.py --robot gr1_t2 --robot g1 --ik-mode pose --scope wrist --json outputs\tmp_probe\pw_pose_others.json` | **0** | `scope=wrist worst shoulder/elbow motion 0.17 deg -> ok: the arm does not move`；`g1` 腕关节 26.00-64.60 度、朝向残差 0.2-0.9 度 |
+| `E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --input-npz outputs\tmp_probe\wrist_fixture.npz --headless --frames 150 --arm-map posture --arm-orientation on --arm-ik-mode pose --report outputs\tmp_probe\rt_pose.json` | **0** | 启动行 `ik_mode {'h1_2': 'pose', 'gr1_t2': 'pose', 'g1': 'pose'} (--arm-ik-mode override)`；`orientation on (scope wrist: g1:l ..., gr1_t2:l ..., h1_2:l ...)`（三台都列出来了）；报告含 `wrist_usage`，`gr1_t2` 右腕 roll `usage 1.0 / at_limit true` 与它 58.53 度的朝向残差对上 |
+| `E:\python3.11.7\python.exe -m pytest tests -q` | **0** | `406 passed, 3 skipped, 378 subtests passed`（改前 402 / 369）。新增：`--arm-ik-mode` 默认 `profile` 且可切到 `pose`/`position`；`ik_mode="pose"` 覆盖后 g1 / gr1_t2 拧腕**只动腕**（肩/肘 0.0000 度、腕 > 5 度，实测 26-65 度）；`wrist_usage` 键集 = 腕关节名、比例都在 0..1、顶到 URDF 上下限时 `at_limit` 亮起来；`summary()["wrist_usage"]` 三台都在且 JSON 化 |
+| `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | **0** | 未发现 GBK 无法编码的字符 |
+
+#### 8.19.6 没做的
+
+- **`pose` 不是 profile 默认**：`g1` 的手安装点不在腕轴上（腕一转，残差 4.6 -> 49.8 mm），
+  这台要不要常开只能现场看；`gr1_t2` 的腕行程窄（roll ±35 度），拧过头就顶限位。两条都是
+  「看一眼就知道」的事，所以先给旗子。
+- **旋前平滑**：掌面法向来的这一维仍有抖动（§8.17 记着「下一步是加平滑，不是关掉」），仍未做。
+- **朝向限幅**：理由见 §8.19.4，等「腕限位 → 朝向集」的映射。
+- **现场动态验收**：`forearm_dir_error_deg` / 拧腕跟随度这一轮没在相机前测（需要人在镜头前），
+  下面 8.19.7 是照抄给现场的清单。
+
+#### 8.19.7 现场清单（下一步，需要人在相机前）
+
+```
+E:\python3.11.7\python.exe devtools\run_realtime_arm_windows.py --arm-orientation on --arm-ik-mode pose --arm-trace
+```
+
+1. 只拧手腕（小臂不动）：三台的手都该转，肩/肘不该动（trace 里 `ori_err_deg` 与报告
+   `orientation_error_deg` / `wrist_usage` 一起看）；
+2. 拧到明显拧不动的位置：看报告里哪一维 `at_limit: true` —— 那就是物理上限，不是标定问题；
+3. 想回到历史口径：`--arm-ik-mode profile`（= 只有 h1_2 转腕）。
 
 
 
