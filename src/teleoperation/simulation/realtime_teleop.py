@@ -160,7 +160,7 @@ WRIST_TRACE_COLUMNS = (
     "target_x", "target_y", "target_z",
     "actual_x", "actual_y", "actual_z",
     "err_mm", "residual_mm",
-    "ori_sent", "ori_turn_deg", "ori_err_deg",
+    "ori_sent", "ori_turn_deg", "ori_err_deg", "ori_source",
     "palm_turn_deg", "palm_space",
     "wrist_a", "wrist_b", "wrist_c", "wrist_names",
 )
@@ -171,6 +171,33 @@ WRIST_TRACE_COLUMNS = (
 #: pitch + yaw 两个关节），只筛 ``wrist`` 会**漏掉这台机器人唯一能旋前的关节** ——
 #: 那正是本缺陷要观察的那一维（2026-11-16）。
 WRIST_TRACE_JOINT_KEYS = ("wrist", "elbow_roll")
+
+
+def _one_source_label(target) -> str:
+    """``ArmTarget.info["orientation_source"]`` 规范化成 CSV 里的短标签。"""
+    raw = getattr(target, "info", {}).get("orientation_source")
+    if not raw:
+        return "none"
+    text = str(raw)
+    if text.startswith("palm"):
+        return "palm_normal"
+    if text.startswith("three_point"):
+        return "three_point"
+    # 手部兜底（桥自己写的是 none (hand fallback has no elbow)）：没有肘就造不出基。
+    # 缩成一个不含逗号的短标签，和「姿态整体关着」的 none 区分开。
+    return "none_hand_fallback" if "no elbow" in text else text.replace(",", ";")
+
+
+def orientation_source_label(per_side) -> str:
+    """这一侧这一帧的腕姿态取自哪条基：``palm_normal`` / ``three_point`` / ``none``。
+
+    三台机器人共用同一个相对旋转，理论上取值一致；真出现不一致就把各自的名字连起来
+    （``mixed(a|b)``）—— 宁可难看，也不要静默挑一个。``none`` 有两种来源：姿态整体关着
+    （``--arm-orientation off``），或者这一帧还没标定完，靠 ``ori_sent`` 那一列 + 帧号区分；
+    手部兜底（没有肘）是 ``none_hand_fallback``。
+    """
+    labels = sorted({_one_source_label(target) for target in per_side.values()}) or ["none"]
+    return labels[0] if len(labels) == 1 else "mixed(" + "|".join(labels) + ")"
 
 
 def palm_normal(points):
@@ -226,6 +253,9 @@ class WristTrace:
       （斜坡/夹紧之后的那个目标，含肩锚点平移）；
     * ``ori_sent`` = 这一帧到底有没有把**腕姿态**交给 IK（0 = 只喂位置）；
       ``ori_turn_deg`` = 下发的相对旋转有多大；``ori_err_deg`` = 下发后实测差多少；
+      ``ori_source`` = 这个旋转取自哪条基（``palm_normal`` 掌面法向 / ``three_point``
+      三点基 / ``none`` 没下发）。**排查先看这一列**：整段都是 ``three_point`` 说明掌面基
+      一直退化，那时「手拧了腕不动」是退化导致的，不是桥没接上。
     * ``palm_turn_deg`` = 操作者掌面法向相对本侧第一帧转过多少度（诊断标尺，
       不作为输入）。
     * ``wrist_a/b/c`` + ``wrist_names`` = 该侧前三个「腕链」关节值
@@ -295,12 +325,13 @@ class WristTrace:
             reports = entry.get("reports") or {}
             robots = sorted(reports) if reports else []
             ori_cell = "" if not ori_sent else f"{ori_turn:.2f}"
+            source_cell = str(entry.get("ori_source", ""))
             palm_cell = "" if palm_turn != palm_turn else f"{palm_turn:.2f}"
             if not robots:
                 self._writer.writerow([
                     index, f"{elapsed:.3f}", side, "-", status,
                     "", "", "", "", "", "", "", "",
-                    ori_sent, ori_cell, "",
+                    ori_sent, ori_cell, "", source_cell,
                     palm_cell, palm_space,
                     "", "", "", "",
                 ])
@@ -335,6 +366,7 @@ class WristTrace:
                     f"{err:.2f}", f"{residual:.2f}",
                     ori_sent, ori_cell,
                     ("" if ori_err != ori_err else f"{ori_err:.2f}"),
+                    source_cell,
                     palm_cell, palm_space,
                     *(f"{value:.4f}" for value in values), ";".join(names),
                 ])
@@ -1253,7 +1285,8 @@ def run(args) -> int:
                     positions = {name: target.position for name, target in per_side.items()
                                  if target.position is not None}
                     if len(positions) != len(per_side):
-                        pending[side] = {"status": "no_target"}
+                        pending[side] = {"status": "no_target",
+                                         "ori_source": orientation_source_label(per_side)}
                         continue        # 还有机器人没目标：这一侧整侧跳过（保持上一帧）
                     # 肘位置任务（--arm-elbow-task）：只给量到锚点的那几台，缺的退回只喂腕。
                     elbows = {name: target.elbow for name, target in per_side.items()
@@ -1271,9 +1304,11 @@ def run(args) -> int:
                                                     elbow_bend_deg=(None if bend_by_side is None
                                                                     else bend_by_side[side]))
                         pending[side] = {"status": "ok", "positions": positions,
-                                         "reports": reports}
+                                         "reports": reports,
+                                         "ori_source": orientation_source_label(per_side)}
                     except Exception as error:  # noqa: BLE001 - 一台坏不该拖垮整场
-                        pending[side] = {"status": f"error:{type(error).__name__}"}
+                        pending[side] = {"status": f"error:{type(error).__name__}",
+                                         "ori_source": orientation_source_label(per_side)}
                         if side not in arm_failures:
                             arm_failures[side] = f"{type(error).__name__}: {error}"
                             print(f"[WARN] {side}: arm IK failed, the arms keep their last "

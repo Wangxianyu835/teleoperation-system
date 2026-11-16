@@ -1898,6 +1898,7 @@ E:\python3.11.7\python.exe devtools\report_table.py outputs\tmp_realtime\ab_ef_o
 | 指标（右手，旋前相位） | `off` | `on` + 三点基（改前） | `on` + 掌面基（改后） |
 |---|---|---|---|
 | `ori_sent` | 0/60 | 60/60 | 60/60 |
+| `ori_source` | `none` | `three_point` | **`palm_normal`** |
 | `ori_turn_deg` | n/a | **13.13**（冻结） | **12.67 -> 92.30** |
 | `palm_turn_deg`（操作者真值） | 12.28 -> 91.98 | 同上 | 同上 |
 | 腕残差 `residual_mm` | 12.96 -> 13.59 | 70.14 -> 70.29 | **14.80 -> 27.41** |
@@ -1914,6 +1915,23 @@ E:\python3.11.7\python.exe devtools\report_table.py outputs\tmp_realtime\ab_ef_o
 
 取证口径：`--wrist-trace` 的 `WRIST_TRACE_JOINT_KEYS = ("wrist", "elbow_roll")`。**h1_2 的旋前轴叫
 `right_elbow_roll_joint`**，只筛 `wrist` 会得出「腕关节一动不动」的错结论 —— 这个坑本轮踩过。
+
+`ori_source` 这一列（本轮新加，之前只有代码里的 `info["orientation_source"]`，CSV 里看不到，等于
+**文档让你查的东西落不了地**）：每帧写 `palm_normal` / `three_point` / `none` / `none_hand_fallback`
+（手部兜底，没有肘就造不出基）。本轮 fixture 上旋前相位 60 帧全是 `palm_normal`、`palm_space` 恒为
+`world`；标定那 30 帧是 `none`（姿态还没开始下发）。所以现场看到 `none` / `three_point` 要先分清四种
+情况：**没开** `--arm-orientation on`、**还没标定完**（前 `--arm-calibrate-frames` 帧）、**掌面基退化**
+（`three_point`）、**这一帧只有手没有手臂**（`none_hand_fallback`）—— 症状一样，性质完全不同。
+
+启用瞬间有个瞬态，如实记下来：标定结束那一帧（第 30 帧）腕残差冲到 **165 mm**（`off` 同帧只有
+35 mm），之后 70 帧内单调衰减到 20 mm 上下，不振荡。现场别在标定刚结束就满速拧手，给它一两秒。
+
+图上还看得见一件事：`off` 档的 `right_elbow_roll_joint` **也会动**（0 -> 0.45 rad），因为位置 IK 里
+它是个自由自由度，被零空间/初值顺手摆到哪算哪；但它**不跟**你拧手（旋前相位里 0.50 -> 0.45 缓降），
+`on` 档才是 0.19 -> 0.82 跟着走。判据不是「关节动没动」，是「跟不跟 `palm_turn_deg`」。
+
+复现图：`outputs\tmp_probe\plot_effect.py v_off.csv v_on.csv wrist_effect.png`（四联图：下发转角 vs
+掌面真值 / 旋前关节 / 腕残差 / IK 后姿态误差）。
 
 还没做的（如实说）：
 

@@ -12,11 +12,13 @@
 from __future__ import annotations
 
 import importlib.util
+import csv
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -37,7 +39,13 @@ from teleoperation.simulation.arm_realtime import (
     save_neutral,
     wrist_orientation_frame,
 )
-from teleoperation.simulation.realtime_teleop import ReplayFrameSource, build_parser
+from teleoperation.simulation.realtime_teleop import (
+    WRIST_TRACE_COLUMNS,
+    ReplayFrameSource,
+    WristTrace,
+    build_parser,
+    orientation_source_label,
+)
 
 SIDES = ("left", "right")
 PROFILES = [profile_for(name) for name in PAPER_ROBOTS]
@@ -1410,6 +1418,98 @@ class ElbowFollowPresetTests(unittest.TestCase):
     def test_the_pinned_choice_is_accepted_by_the_entry_parser(self):
         args = build_parser().parse_args(self.launcher.apply_elbow_preset([]))
         self.assertEqual(args.arm_elbow_follow, self.launcher.ELBOW_BUILD)
+
+
+class WristTraceColumnTests(unittest.TestCase):
+    """``--wrist-trace`` 是取证格式：表头与每一行的列数必须一致，``ori_source`` 要落地。
+
+    这类错不会抛异常 —— 少写一格只会让现场读出来的每个字段静默错位一格，所以用一条
+    「行宽 == 表头宽」的断言钉住它（2026-11-16 加 ``ori_source`` 时就是靠它兜的底）。
+    """
+
+    HEADER = WRIST_TRACE_COLUMNS
+
+    class _Adapter:
+        """只提供 ``WristTrace.frame`` 用到的五个方法。"""
+
+        def to_base(self, point):
+            return np.asarray(point, dtype=np.float64)
+
+        def arm_points(self, side):
+            return {"wrist": np.zeros(3)}
+
+        def residual_mm(self, side):
+            return 12.5
+
+        def orientation_error_deg(self, side):
+            return 1.5
+
+        def joint_values(self, side):
+            return {"right_elbow_roll_joint": 0.2, "right_wrist_pitch_joint": 0.1,
+                    "right_wrist_yaw_joint": -0.3}
+
+    class _Driver:
+        def __init__(self):
+            self.ik = {"h1_2": WristTraceColumnTests._Adapter()}
+
+    @staticmethod
+    def _rows(folder, pending, orientation=None, raw_frame=None):
+        trace = WristTrace(Path(folder) / "trace.csv")
+        trace.frame(7, 0.231, pending, WristTraceColumnTests._Driver(),
+                    orientation, raw_frame)
+        trace.close()
+        with (Path(folder) / "trace.csv").open("r", encoding="utf-8", newline="") as handle:
+            return list(csv.reader(handle))
+
+    def test_a_measured_frame_writes_one_cell_per_column(self):
+        pending = {"right": {"status": "ok",
+                             "positions": {"h1_2": np.array([0.24, -0.05, 0.19])},
+                             "reports": {"h1_2": object()},
+                             "ori_source": "palm_normal"}}
+        # 相对中性转了 90 度：四元数 (x, y, z, w)，WristTrace 取 [3] 当余弦。
+        half = np.radians(45.0)
+        orientation = {"right": np.array([0.0, 0.0, np.sin(half), np.cos(half)])}
+        with tempfile.TemporaryDirectory() as folder:
+            rows = self._rows(folder, pending, orientation,
+                              {"world_right": np.zeros((21, 3))})
+        header, row = rows[0], rows[1]
+        self.assertEqual(header, list(self.HEADER))
+        self.assertEqual(len(row), len(self.HEADER))
+        cells = dict(zip(header, row))
+        self.assertEqual(cells["ori_source"], "palm_normal")
+        self.assertEqual(cells["ori_sent"], "1")
+        self.assertAlmostEqual(float(cells["ori_turn_deg"]), 90.0, places=1)
+        self.assertEqual(cells["wrist_names"].split(";")[0], "right_elbow_roll_joint")
+
+    def test_a_frame_without_a_robot_stays_aligned(self):
+        pending = {"right": {"status": "no_target", "ori_source": "three_point"}}
+        with tempfile.TemporaryDirectory() as folder:
+            rows = self._rows(folder, pending)
+        header, row = rows[0], rows[1]
+        self.assertEqual(len(row), len(self.HEADER))
+        cells = dict(zip(header, row))
+        self.assertEqual((cells["robot"], cells["status"]), ("-", "no_target"))
+        self.assertEqual(cells["ori_source"], "three_point")
+        self.assertEqual(cells["ori_sent"], "0")
+
+    def test_the_label_normalises_what_the_bridge_writes(self):
+        def targets(*sources):
+            return {name: SimpleNamespace(info={"orientation_source": source})
+                    for name, source in zip(("h1_2", "g1", "gr1_t2"), sources)}
+
+        self.assertEqual(orientation_source_label(targets("palm_normal")), "palm_normal")
+        self.assertEqual(orientation_source_label(targets("three_point")), "three_point")
+        self.assertEqual(orientation_source_label(targets(None)), "none")
+        self.assertEqual(orientation_source_label(targets()),
+                         "none")
+        # 手部兜底：桥写的是整句话，CSV 里必须是短标签且不含逗号。
+        fallback = orientation_source_label(
+            targets("none (hand fallback has no elbow)"))
+        self.assertEqual(fallback, "none_hand_fallback")
+        self.assertNotIn(",", fallback)
+        # 真出现不一致就如实连起来，不静默挑一个。
+        self.assertEqual(orientation_source_label(targets("palm_normal", "three_point")),
+                         "mixed(palm_normal|three_point)")
 
 
 if __name__ == "__main__":
