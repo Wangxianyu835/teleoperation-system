@@ -33,25 +33,30 @@
 数据从哪来（同一帧，来自 ``inputs/mediapipe.py`` 的 ``next_teleop_observation``）
 -------------------------------------------------------------------------------
 ``upper_body.world_arms[side]`` = (肩, 肘, 腕) 3x3、米制、原点=髋中点 -> **位置**用它；
-``world_hands[side]`` / ``hands[side]`` = 手 21 点 -> **姿态**用它（掌面基只用方向，
-与平移原点无关：手部 world 的原点是「手的几何中心」，不能当位置用）。
+``world_hands[side]`` = 手 21 点（度量 world）-> **姿态的第三轴**用它（掌面法向，只取方向：
+手部 world 的原点是「手的几何中心」，不能当位置用）；``hands[side]`` 是图像归一化口径，
+形状不对或各向异性，这里**不用它**算姿态。
 
 退化输入（该侧没检到 / 非有限 / 掌面基不可张成）一律不猜：保持上一帧目标，并在
 ``ArmTarget.reason`` 里写明原因。
 
 姿态目标（论文的腕部完整位姿，去掉需要标定的那一半）
 --------------------------------------------------
-论文给 IK 的是「手腕 4x4 位姿」（SMPL-X 旋转链算出来），不是只给一个点；我们手上只有
-(肩, 肘, 腕) 三点，于是用**相对中性**的写法把它补上：
+论文给 IK 的是「手腕 4x4 位姿」（SMPL-X 旋转链算出来），不是只给一个点；我们用**相对
+中性**的写法把它补上：
 
-    R_now  = wrist_orientation_frame(肩, 肘, 腕)     # 前臂方向 + 手臂平面
-    R_rel  = R_neutral^T @ R_now                    # 相对你站好的那一帧
-    R_target(robot) = R_robot_neutral_ee @ R_rel     # 每台各自乘自己的（在 arm_ik 里做）
+    R_now  = palm_orientation_frame(手 21 点, 肩肘腕)  # 前臂方向 + **掌面法向**
+    R_rel  = R_neutral^T @ R_now                      # 相对你站好的那一帧
+    R_target(robot) = R_robot_neutral_ee @ R_rel      # 每台各自乘自己的（在 arm_ik 里做）
 
-这样做有两个好处：轴向约定在相减里自然约掉（不需要把相机外参标出来），而且同一份目标
-被三台机器人各自乘上自己的中性 EE 朝向，天生是「每台一套」。如实说缺什么：手的轴向
-扭转（要手 21 点）不算；三点近共线（直臂）时手臂平面不定，这一帧就给不出姿态，保持
-位置模式而不是猜一个。
+两个好处：轴向约定在相减里自然约掉（不需要把相机外参标出来），而且同一份目标被三台
+机器人各自乘上自己的中性 EE 朝向，天生是「每台一套」。
+
+第三轴取**掌面法向**而不是手臂平面法向（2026-11-16 现场根因）：三点几何里「绕前臂轴的
+自转」是自由度、量不到 —— 手怎么拧，机器人手腕一动不动。掌面法向量得到那一维。没有
+21 点手 / 掌面退化时退回旧的三点基（``wrist_orientation_frame``，行为与改动前逐字一致），
+并把用的是哪条基写进 ``info["orientation_source"]``。仍然缺的：三点近共线（直臂）时三点
+基给不出姿态，而掌面基不受这一点限制（它不需要手臂平面）。
 
 轴向约定（默认值，不是标定）
 --------------------------
@@ -93,6 +98,13 @@ DEFAULT_MAX_TRAVEL_M = 0.10
 FALLBACK_IMAGE_SCALE = 0.7
 #: 肘平面可信判据：|上臂 x 前臂|（= 上臂与前臂夹角的正弦）小于它时这一帧不给姿态。
 MIN_ELBOW_PLANE_SINE = 0.05
+#: 掌面法向取点：腕 0 / 食指 MCP 5 / 小指 MCP 17。与 ``--wrist-trace`` 的 ``palm_normal``
+#: 是**同一口径**（现场取证看到的那一列，就是这里喂给 IK 的那一维）。
+PALM_NORMAL_SLOTS = (0, 5, 17)
+#: 掌面法向投影到「前臂法平面」之后的长度下限（= sin(法向, 前臂)）。手掌自然朝前时它
+#: 接近 1；接近 0 说明掌面法向与前臂几乎平行（手腕折成 90 度、或 21 点乱跳），此时滚转
+#: 定不出来 —— 退回三点基，不猜。
+MIN_PALM_SINE = 0.05
 #: 目标超出行程上限后的做法：``clip`` = 逐轴剪断（**默认**）；``scale`` = 整条位移等比缩到上限。
 #: 2026-10-13 单轴隔离 + 正弦跟随实测（E:\cache\tmp\probe_axis_response.py / probe_sine.py，
 #: 数字写进 docs/multi-robot-arm.md §8.8）：一次真实现场复合位移 (-9.3, +6.4, +24.5) cm
@@ -299,12 +311,71 @@ def relative_wrist_rotation(arm_world, neutral_frame):
 
     论文那条「手腕完整位姿」约束的可用部分：轴向约定在相减里约掉，所以不需要相机外参。
     """
-    if neutral_frame is None:
+    return _relative_to_neutral(wrist_orientation_frame(arm_world), neutral_frame)
+
+
+def _relative_to_neutral(frame, neutral_frame):
+    """``R_neutral^T @ R_now``；任一帧给不出时 ``None``（两种基共用这一个减法）。
+
+    相对写法有两个好处：轴向约定在相减里自然约掉（不需要相机外参），而且同一份目标能被
+    三台机器人各自乘上自己的中性 EE 朝向。``frame`` 与 ``neutral`` 必须**同一套构造**
+    —— 混用三点基与掌面基得到的差不是姿态误差，是垃圾。
+    """
+    if frame is None or neutral_frame is None:
         return None
-    frame = wrist_orientation_frame(arm_world)
-    if frame is None:
+    return np.asarray(neutral_frame, dtype=np.float64).T @ np.asarray(frame, dtype=np.float64)
+
+
+def palm_orientation_frame(hand_world, arm_world):
+    """(手 21 点度量world, (肩, 肘, 腕)) -> 3x3 腕坐标系（列 = x/y/z 基）；给不出时 None。
+
+    与 ``wrist_orientation_frame`` 只差**第三轴是谁给的**：那一版的 z 取「上臂 x 前臂」
+    的手臂平面法向 —— 绕前臂轴的自转（旋前/旋后）在那套几何里是自由度、量不到，
+    于是 ``R_neutral^T @ R_now`` 对「手怎么拧」完全不敏感。掌面法向才量得到那一维，
+    这正是 2026-11-16 现场「手怎么拧，机器人手腕一动不动」缺的那一维。
+
+        x = 前臂方向 (腕 - 肘)        与 ``wrist_orientation_frame`` 逐字相同
+        z = 掌面法向                  腕 0 / 食指 MCP 5 / 小指 MCP 17 的叉乘，
+                                      投影到 x 的法平面再单位化
+        y = z x x                    补成右手系
+
+    x 故意仍取 **pose 的前臂方向**、不取掌面长轴（0 -> 9）：中性那一帧与这一帧的 x 定义
+    必须一致，否则相减得到的不是旋前角；手部关键点只负责补上 z。
+
+    ``arm_world`` 必须有：只靠手点也能凑出 x，但那与中性帧的口径不一致，宁可不给。
+    退化（没有 pose 手臂 / 手点不全 / 掌面近退化 / 法向几乎与前臂平行）一律 ``None``，
+    由调用方退回三点基或位置模式 —— 与 ``wrist_orientation_frame`` 一样不猜。
+    """
+    if not _is_points(arm_world, (3, 3)) or not _is_points(hand_world, (21, 3)):
         return None
-    return np.asarray(neutral_frame, dtype=np.float64).T @ frame
+    arm = np.asarray(arm_world, dtype=np.float64)
+    hand = np.asarray(hand_world, dtype=np.float64)
+    x_axis = _unit_direction(arm[2] - arm[1])
+    if x_axis is None:
+        return None
+    origin, index, pinky = (hand[slot] for slot in PALM_NORMAL_SLOTS)
+    normal = np.cross(index - origin, pinky - origin)
+    length = float(np.linalg.norm(normal))
+    if not np.isfinite(length) or length <= 0.0:
+        return None
+    # 先归一化再投影：门槛是**夹角的正弦**，不能拿未归一化的叉乘长度（量纲 m^2）去比。
+    normal = normal / length
+    normal = normal - float(np.dot(normal, x_axis)) * x_axis
+    sine = float(np.linalg.norm(normal))
+    if not np.isfinite(sine) or sine < MIN_PALM_SINE:
+        return None
+    z_axis = normal / sine
+    y_axis = np.cross(z_axis, x_axis)
+    return np.stack((x_axis, y_axis, z_axis), axis=1)
+
+
+def relative_palm_rotation(hand_world, arm_world, neutral_frame):
+    """这一帧的**掌面基**相对中性那一帧的旋转 ``R_neutral^T @ R_now``；给不出时 None。
+
+    与 ``relative_wrist_rotation`` 的差别只有基的构造（见 ``palm_orientation_frame``）：
+    它对绕前臂轴的自转敏感，于是「手旋前 90 度」真的会变成 90 度的姿态目标。
+    """
+    return _relative_to_neutral(palm_orientation_frame(hand_world, arm_world), neutral_frame)
 
 
 def _average_rotation(matrices):
@@ -424,6 +495,9 @@ class ArmTarget:
 
 def _neutral_default() -> dict:
     return {"offset": None, "reach": None, "orientation": None,
+            # 掌面基的中性腕坐标系（第三轴 = 掌面法向，见 ``palm_orientation_frame``）。
+            # 老记录 / 标定期间一直没手点时是 None -> 姿态退回三点基（历史行为）。
+            "orientation_palm": None,
             # 上臂段 (肘-肩) 与「前臂+手」段 (腕-肘) 的中性向量：两段式映射要用的基准。
             # 老记录里没有这两项 -> None，那一侧自动退回整段 gain（不会算错，只是不生效）。
             "upper": None, "fore": None,
@@ -457,6 +531,9 @@ def load_neutral(path) -> dict:
             # 中性那一帧的腕坐标系（相对姿态的基准）。老记录没有这一段 -> None，
             # 于是这一侧退化成位置模式，而不是把缺的姿态当成零。
             "orientation": _neutral_rotation(orientation),
+            # 同一帧的**掌面基**（第三轴 = 掌面法向）：只有它带旋前/旋后。老记录没有
+            # 这一段 -> None，姿态自动退回三点基，行为与改动前逐字一致。
+            "orientation_palm": _neutral_rotation(entry.get("orientation_palm")),
             # 两段式映射（--arm-map segments）的基准：上臂段 / 「前臂+手」段。
             "upper": _neutral_vector(entry.get("upper"), 3),
             "fore": _neutral_vector(entry.get("fore"), 3),
@@ -495,6 +572,11 @@ def save_neutral(path, sides: dict, extra: dict | None = None) -> Path:
             "orientation": (None if entry.get("orientation") is None else
                             [float(value) for value in
                              np.asarray(entry["orientation"], dtype=np.float64).reshape(9)]),
+            # 同一帧的掌面基（第三轴 = 掌面法向）。没有就是 null：读回来时姿态退回三点基。
+            "orientation_palm": (None if entry.get("orientation_palm") is None else
+                                 [float(value) for value in
+                                  np.asarray(entry["orientation_palm"],
+                                             dtype=np.float64).reshape(9)]),
             # 两段式映射的基准（上臂段 / 「前臂+手」段，米）。没采到就写 null。
             "upper": None if entry.get("upper") is None else
                      [float(v) for v in np.asarray(entry["upper"]).reshape(3)],
@@ -699,6 +781,8 @@ class RealtimeArmBridge:
                 "reach": None if entry.get("reach") is None else float(entry["reach"]),
                 # 姿态基准：老记录里没有 -> None（这一侧退化成位置模式）。
                 "orientation": _neutral_rotation(entry.get("orientation")),
+                # 掌面基的姿态基准：老记录里没有 -> None（姿态退回三点基，同改动前）。
+                "orientation_palm": _neutral_rotation(entry.get("orientation_palm")),
                 # 两段式映射的基准：老记录里没有 -> None（那一侧退回整段 gain）。
                 "upper": _neutral_vector(entry.get("upper"), 3),
                 "fore": _neutral_vector(entry.get("fore"), 3),
@@ -987,6 +1071,9 @@ class RealtimeArmBridge:
         标定完成后取均值（SVD 投影回真旋转）作为**姿态基准**。直臂帧是 ``None``，跳过。
         2026-10-13 起还记上臂段 (肘-肩) 与「前臂+手」段 (腕-肘) 的中性向量：两段式映射
         （``map_mode="segments"``）拿它们当基准 —— 同一份中性记录多吃四个数，不用多站一次。
+        2026-11-16 起再多记一帧**掌面基**（``palm_orientation_frame``，第三轴 = 掌面法向）：
+        三点基量不到旋前/旋后，掌面基量得到。两份基准都留，是因为它们**不能混用** ——
+        相减的两帧必须同一套构造（见 ``_relative_to_neutral``）。
 
         这一帧的中位数写进 ``neutral[side]`` 的动作在 ``_refresh_neutral``：``hold`` 模式下
         只有攒够帧那一次才写（历史行为），``track`` 模式下每来一帧都刷新（临时中性）。
@@ -997,7 +1084,10 @@ class RealtimeArmBridge:
         points = data["arm"]
         self._samples[side].append((points[2] - points[0], arm_reach(points),
                                     wrist_orientation_frame(points),
-                                    points[1] - points[0], points[2] - points[1]))
+                                    points[1] - points[0], points[2] - points[1],
+                                    # 掌面基：没手点 / 掌面退化时是 None，
+                                    # 均值那边照样能出（全是 None 就给 None）。
+                                    palm_orientation_frame(data.get("world_hand"), points)))
         self._refresh_neutral(side)
 
     def _refresh_neutral(self, side) -> None:
@@ -1022,6 +1112,9 @@ class RealtimeArmBridge:
         entry["offset"] = np.median(offsets, axis=0)
         entry["reach"] = float(np.median(reaches))
         entry["orientation"] = _average_rotation([sample[2] for sample in samples])
+        # 掌面基单独取均值：全是 None（这一侧一直没手点 / 老记录）就给 None，
+        # 姿态那边自动退回三点基 —— 绝不把「没有」当成单位阵。
+        entry["orientation_palm"] = _average_rotation([sample[5] for sample in samples])
         entry["upper"] = np.median(uppers, axis=0)
         entry["fore"] = np.median(fores, axis=0)
         entry["samples"] = int(len(samples))
@@ -1076,6 +1169,7 @@ class RealtimeArmBridge:
         if self._has_neutral(side) and data["arm"] is not None:
             points = data["arm"]
             offset = points[2] - points[0]
+            orientation, orientation_source = self._orientation_frame(data)
             state = {
                 "source": SOURCE_POSE,
                 "valid": True,
@@ -1089,7 +1183,8 @@ class RealtimeArmBridge:
                 "fore": points[2] - points[1],
                 "reach": arm_reach(points),
                 "elbow_bend_deg": elbow_bend_degrees(points[0], points[1], points[2]),
-                "orientation": self._orientation(data),
+                "orientation": orientation,
+                "orientation_source": orientation_source,
                 "hand": data["hand"],
                 "fallback_reason": data["reason"],
             }
@@ -1099,6 +1194,7 @@ class RealtimeArmBridge:
             self.counts["valid"][side] += 1
             return state
         if data["arm"] is None and self.fallback_hand and data["hand"] is not None:
+            orientation, orientation_source = self._orientation_frame(data)
             state = {
                 "source": SOURCE_HAND,
                 "valid": True,
@@ -1110,7 +1206,8 @@ class RealtimeArmBridge:
                 "fore": None,
                 "reach": float("nan"),
                 "elbow_bend_deg": float("nan"),
-                "orientation": self._orientation(data),
+                "orientation": orientation,
+                "orientation_source": orientation_source,
                 "hand": data["hand"],
                 "fallback_reason": data["reason"],
             }
@@ -1219,6 +1316,9 @@ class RealtimeArmBridge:
             "neutral_m": [round(float(value), 5) for value in neutral],
             "operator_reach_m": _round_or_none(state.get("reach"), 4),
             "elbow_bend_deg": _round_or_none(state.get("elbow_bend_deg"), 1),
+            # 这一帧的姿态用的是哪条基（palm_normal / three_point / None）。现场排查先看它：
+            # three_point 说明掌面基退化了 —— 那时腕对旋前不敏感是"正常"的。
+            "orientation_source": state.get("orientation_source"),
         }
         if state["source"] == SOURCE_HAND and state["hand"] is not None:
             return self._fallback_target(profile, side, state, info)
@@ -1390,30 +1490,51 @@ class RealtimeArmBridge:
     def _orientation(self, data) -> tuple | None:
         """相对中性姿势的腕部姿态四元数（机器人无关；IK 那边再乘本机的中性 EE 朝向）。
 
-        论文喂给 IK 的是「手腕 4x4 位姿」（SMPL-X 旋转链）；我们用手上的三点造一个腕
-        坐标系再减掉中性那一帧（模块 docstring 有公式）。三个前提缺一不可，缺任何一个
-        就返回 ``None`` —— 这一帧退回位置模式，不猜姿态：
+        论文喂给 IK 的是「手腕 4x4 位姿」（SMPL-X 旋转链）；我们用手上的点造一个腕
+        坐标系再减掉中性那一帧（模块 docstring 有公式）。顺序与日期：
 
-        - 这一帧有 pose 手臂（兜底的手 21 点路径没有肘，给不出手臂平面）；
-        - 中性记录里有姿态基准（``--neutral-json`` 是记了 ``orientation`` 的那一版）；
-        - 三点不近共线（见 ``wrist_orientation_frame``）。
+        1. **掌面基**（2026-11-16 起优先）：``palm_orientation_frame`` —— x = 前臂方向、
+           z = 掌面法向。只有这一条量得到绕前臂轴的自转（旋前/旋后）。前提是这一帧有
+           21 点**度量 world 手**、且中性记录里有 ``orientation_palm``。
+        2. **三点基**（历史路径）：``wrist_orientation_frame`` —— z 取手臂平面法向，
+           量不到旋前。掌面给不出时用它，行为与 2026-11-16 之前逐字一致。
+
+        两条都要求这一帧有 pose 手臂（兜底的手 21 点路径没有肘，给不出前臂方向），
+        中性记录里有对应基准。都给不出就返回 ``None`` —— 这一帧退回位置模式，不猜姿态。
 
         返回的是 ``R_neutral^T @ R_now``；乘本机的中性 EE 朝向由
         ``PyBulletArmIK.solve(orientation_frame="neutral")`` 做，所以这里不需要知道是
         哪台机器人 —— 同一份目标三台各自乘自己的。
         """
+        return self._orientation_frame(data)[0]
+
+    def _orientation_frame(self, data):
+        """``(四元数 or None, 用的是哪条基)``；基 ∈ ``{"palm_normal", "three_point", None}``。
+
+        返回值单独带一条「基」的名字，是因为现场排查必须先分清**两种失败**：
+        「掌面基退化、退回三点基」（``three_point`` 但 ``ori_turn`` 对旋前不敏感）与
+        「根本没算出来」（``None``，这一帧位置模式）。两者在报告里长得一样，性质不同。
+        """
         if self.orientation == "off":
-            return None
+            return None, None
         entry = self.neutral.get(data.get("side"))
-        if entry is None or entry.get("orientation") is None:
-            return None
-        relative = relative_wrist_rotation(data.get("arm"), entry["orientation"])
+        if entry is None:
+            return None, None
+        arm = data.get("arm")
+        # 掌面基优先：它比三点基多一维（旋前/旋后）。退化时如实退回三点基。
+        relative = relative_palm_rotation(data.get("world_hand"), arm,
+                                          entry.get("orientation_palm"))
+        source = "palm_normal"
         if relative is None:
-            return None
+            relative = relative_wrist_rotation(arm, entry.get("orientation"))
+            source = "three_point"
+        if relative is None:
+            return None, None
         from teleoperation.retargeting.arm.wrist_targets import (
             rotation_matrix_to_quaternion)
 
-        return tuple(float(value) for value in rotation_matrix_to_quaternion(relative))
+        return (tuple(float(value) for value in
+                      rotation_matrix_to_quaternion(relative)), source)
 
     def _orientation_wanted(self, profile) -> bool:
         """要不要带姿态约束：``auto`` = 只在 profile 声明 ``ik_mode="pose"`` 时带。"""

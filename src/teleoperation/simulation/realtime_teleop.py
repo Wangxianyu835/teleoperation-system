@@ -533,7 +533,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "46.0 / 46.4 deg -> 1.5 / 0.4 deg, shoulder yaw travel 322.4 / "
                              "235.5 deg -> 209.6 / 68.7 deg (the 3-point wrist frame flips its "
                              "elbow-plane normal: 4-7%% of frames command a >60 deg step, max "
-                             "~178 deg). g1 / gr1_t2 are position-only either way")
+                             "~178 deg). g1 / gr1_t2 are position-only either way. Since "
+                             "2026-11-16 the z axis comes from the palm normal (metric world "
+                             "hand 21) when it is available, so 'on' also carries forearm "
+                             "pronation: on the 150 frame wrist fixture the h1_2 wrist turn went "
+                             "13.13 -> 92.30 deg against 91.98 deg of operator palm twist, "
+                             "residual 70.1 -> 14.8 mm (docs/multi-robot-arm.md 8.17.10). Without "
+                             "a metric hand it falls back to the 3-point frame above")
     parser.add_argument("--arm-elbow-follow", choices=("off", "operator"), default="off",
                         help="null-space posture reference for the arm IK. 'off' (default) = the "
                              "historical behaviour: the build-time neutral, or --arm-rest-poses. "

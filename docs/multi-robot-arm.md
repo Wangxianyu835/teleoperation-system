@@ -1835,6 +1835,7 @@ E:\python3.11.7\python.exe devtools\report_table.py outputs\tmp_realtime\ab_ef_o
 - **幅度是加载姿势处的一阶近似**：h1_2 那段弦 0.711，实测「-20 度」会走出 -23.4 度（17% 过冲）。
   折叠方向不封顶；本轮没加增益，先拿干净数据 —— 若现场出现超调，再按 §8.17.6 的③加限幅。
 - **「手掌相对手臂的朝向」仍未交付**：§8.17.9 只说明 `--arm-orientation` 那条通道不是路。
+  2026-11-16 已离线交付（掌面法向当第三轴），见 §8.17.10。
 
 #### 8.17.9 顺带结清：`--arm-orientation` 不是「手掌相对手臂的朝向」那条路
 
@@ -1865,6 +1866,64 @@ E:\python3.11.7\python.exe devtools\report_table.py outputs\tmp_realtime\ab_ef_o
 
 结论：`--arm-orientation` 保持默认 `off`，姿态那一条继续按 §8.11.4 的「相对中性旋转」口径走，
 **不要靠它去修手掌朝向**。「肘跟手」这一步走零空间参考（本节 §8.17.5），两者不是同一条通道。
+
+#### 8.17.10 结清 §8.17.9 的另一半：掌面法向当第三轴（2026-11-16）
+
+§8.17.9 只说了「三点造的腕坐标系不是路」，没说该怎么走。这一条补上：**第三轴改取掌面法向**
+（人自己的手掌朝向）。现场那句「手怎么拧，机器人手腕一动不动」缺的就是这一维。
+
+根因有两条，缺一不可：
+
+1. `--arm-orientation` 默认 `off`，`_orientation()` 直接返回 `None`，腕只吃位置；
+2. 就算打开，`wrist_orientation_frame` 的 z 是「上臂 × 前臂」的手臂平面法向 —— 绕前臂轴的自转
+   在那套几何里是**自由度、量不到**，`R_neutral^T @ R_now` 对「手怎么拧」完全不敏感（现场
+   夹具实测：手掌拧 90 度，三点基给的转角 13.13 度一动不动）。
+
+改法（`arm_realtime.palm_orientation_frame`，一个入口；`--arm-orientation off` 时逐字不变）：
+
+    x = 前臂方向 (腕 - 肘)      # 与三点基逐字相同：中性帧与当前帧必须同一口径，否则相减没意义
+    z = 掌面法向                # 腕 0 / 食指 MCP 5 / 小指 MCP 17 叉乘，先归一化再投影到 x 的法平面
+    y = z x x                   # 补成右手系
+
+退化（没有 pose 手臂 / 手点不全 / 掌面法向几乎与前臂平行，`MIN_PALM_SINE = 0.05`）一律退回三点基，
+`ArmTarget.info["orientation_source"]` 写明这一帧用的是 `palm_normal` 还是 `three_point` —— 现场排查
+必须先分清「掌面基退化」与「根本没算出来」，两者在报告里长得像，性质不同。中性记录多存一份
+`orientation_palm`（9 个数，`--save-neutral` / `--neutral-json` 都能往返）；老记录没有这一项 ->
+`None` -> 自动退回三点基，与改动前逐字节一致。**只认度量 world 手**（`world_hands`）：图像归一化
+口径各向异性，拿它算叉乘会得到一个假的滚转。
+
+离线 A/B（`outputs/tmp_probe/wrist_fixture.npz`：右手第 91-150 帧掌面绕前臂轴转 90 度、手臂三点
+一点没变；h1_2；`--arm-calibrate-mode hold --arm-calibrate-frames 30`；150 帧）：
+
+| 指标（右手，旋前相位） | `off` | `on` + 三点基（改前） | `on` + 掌面基（改后） |
+|---|---|---|---|
+| `ori_sent` | 0/60 | 60/60 | 60/60 |
+| `ori_turn_deg` | n/a | **13.13**（冻结） | **12.67 -> 92.30** |
+| `palm_turn_deg`（操作者真值） | 12.28 -> 91.98 | 同上 | 同上 |
+| 腕残差 `residual_mm` | 12.96 -> 13.59 | 70.14 -> 70.29 | **14.80 -> 27.41** |
+| `right_elbow_roll_joint`（rad） | — | 0.07 -> 0.08（不动） | **0.19 -> 0.82** |
+
+读法：`ori_turn` 从「冻结在 13 度」变成「跟 `palm_turn` 一比一走」（92.30 vs 91.98）；h1_2 唯一能
+旋前的 `right_elbow_roll_joint` 真的动了；腕残差比旧 `on` 低 3-4 倍，只比 `off` 高 2-14 mm（那是
+「同时追姿态」应付的代价）。全程不动的左手侧仍是 60 mm 左右，与改前逐位相同。
+
+`off` 档不变是实测出来的，不是推断：把 `checkpoint-20261116-1642-pre-palm-orientation`（只有探针
+那一版）拉进 worktree，同一份 fixture、同一条命令各跑一遍，300 行里 `target_*` **0 行不同**、
+`ori_sent` / `ori_turn_deg` / `status` 全同；`actual_*` / `residual_mm` / `wrist_*` 有亚毫米级差异 ——
+那是斜坡按**实际帧时长**换算的结果（`frame_dt` 每次运行都不一样），与本次改动无关。
+
+取证口径：`--wrist-trace` 的 `WRIST_TRACE_JOINT_KEYS = ("wrist", "elbow_roll")`。**h1_2 的旋前轴叫
+`right_elbow_roll_joint`**，只筛 `wrist` 会得出「腕关节一动不动」的错结论 —— 这个坑本轮踩过。
+
+还没做的（如实说）：
+
+- **没有现场验证**：掌面法向在现场的噪声/丢帧率没测过（`_cs` 侧报 5-10 mm 抖动、50-75% 命中）。
+  现场第一步先看 `--wrist-trace` 的 `palm_space` 是否恒为 `world`、`palm_turn_deg` 抖多大；若抖到
+  不能用，下一步是给相对旋转加平滑，而不是把这一维关掉。
+- **`--arm-calibrate-mode track` 会把旋前平均掉**：它拿已有样本的中位数当临时中性，操作者在标定
+  期间拧手，中性就把这次拧记成「零」。**测旋转必须用 `hold`**。
+- **只对 h1_2 生效**：g1 / gr1_t2 的 profile 是 `ik_mode="position"`，这一维对它们仍是 position-only。
+  要不要给这两台开 pose IK 是另一个决定，得各自单独手测。
 
 
 
