@@ -15,6 +15,7 @@ The thresholds come from each profile, so a robot whose arm stops being tracked 
 this test instead of silently producing a frozen arm.
 """
 
+import math
 import unittest
 from pathlib import Path
 
@@ -1068,4 +1069,166 @@ class ElbowPoseSideTests(unittest.TestCase):
                 # 姿势一个 rad 都没动（``_measure_elbow_posture`` 的探针原样恢复）。
                 self.assertAlmostEqual(after, before, places=6)
                 self.assertGreater(self.forearm_in_base(again, "left")[0], 0.3)
+
+
+
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
+class OrientationScopeTests(unittest.TestCase):
+    """``orientation_scope``：转手腕只该转腕，不该抬手、不该摆肘（2026-11-16 现场）。
+
+    现场：掌面基修好之后 ``--arm-orientation on`` 第一次真的把腕的朝向送进 IK，一拧手腕，
+    机器人的**大臂和小臂跟着抬/摆**；而同一份代码 ``--arm-orientation off`` 时臂形是好的。
+    机制（docs/multi-robot-arm.md 8.18）：pose 口径的第二遍 ``calculateInverseKinematics``
+    会把朝向误差摊到 7 个自由度上，腕装不满时肩/肘替它分担。
+
+    这里量的是**纯运动学**（只写关节、读 FK，不走物理），所以数字只反映求解器：同一起点、
+    同一位置目标，只把朝向从「中性」换成绕 x 轴 45 度 ——
+
+        scope=wrist   肩/肘关节变化 0.0000 度（抄回位置解），腕关节 126.63 / 16.88 度
+        scope=arm     肩/肘关节变化 37.31 / 5.87 度（左/右，都是 ``elbow_pitch`` 最大）
+
+    也就是说现场那句话在数字上就是这个开关。端到端那一版（含物理）见
+    ``devtools/probe_wrist_twist.py``：肩+肘最大变化 129.22 -> 0.09 度。
+    """
+
+    #: 判据留足余量：腕只是「动了」，肩/肘只是「没动」。
+    WRIST_MOVED_DEG = 5.0
+    PROXIMAL_MOVED_DEG = 3.0
+    TWIST_DEG = 45.0
+    AXIS = (1.0, 0.0, 0.0)
+    IDENTITY = (0.0, 0.0, 0.0, 1.0)
+
+    @classmethod
+    def setUpClass(cls):
+        from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+        from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+
+        cls.scene = ThreeRobotHandScene(sides=SIDES, gui=False)
+        cls.driver = ArmSceneDriver(cls.scene, sides=SIDES)
+        cls.driver.step(5)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.driver = None
+        cls.scene.close()
+
+    def reset_to_load_pose(self, adapter, side):
+        """每次都从同一个起点解：两次求解之间只允许「目标朝向」不同。"""
+        for index, _name in adapter.arm[side]:
+            adapter.p.resetJointState(adapter.body, index, float(adapter.hold[index]),
+                                      physicsClientId=adapter.cid)
+
+    def solve_pose(self, adapter, side, orientation, scope):
+        adapter.orientation_scope = scope
+        target = tuple(float(value)
+                       for value in profile_for(adapter.robot_type).realtime_neutral(side))
+        return adapter.solve(side, target, source="base", orientation=orientation,
+                             orientation_frame="neutral")
+
+    def test_a_wrist_twist_moves_only_the_wrist_joints(self):
+        adapter = self.driver.ik["h1_2"]
+        twist = adapter.p.getQuaternionFromAxisAngle(self.AXIS,
+                                                     math.radians(self.TWIST_DEG))
+        for side in SIDES:
+            wrist = [name for _index, name in adapter.wrist[side]]
+            proximal = [name for _index, name in adapter.arm[side] if name not in wrist]
+            self.assertTrue(wrist and proximal, side)
+            self.reset_to_load_pose(adapter, side)
+            rest = self.solve_pose(adapter, side, self.IDENTITY, "wrist")
+            self.reset_to_load_pose(adapter, side)
+            held = self.solve_pose(adapter, side, twist, "wrist")
+            self.reset_to_load_pose(adapter, side)
+            historic = self.solve_pose(adapter, side, twist, "arm")
+            with self.subTest(side=side):
+                # 肩/肘一个都没动：抄回位置解，实测 0.0000 度。
+                for name in proximal:
+                    self.assertAlmostEqual(held[name], rest[name], places=6,
+                                           msg=f"{side}/{name} moved under scope=wrist")
+                # 腕确实转了（实测 126.63 / 16.88 度）。
+                self.assertGreater(
+                    max(abs(held[name] - rest[name]) for name in wrist),
+                    math.radians(self.WRIST_MOVED_DEG), side)
+                # 历史口径把同一个朝向摊给整条臂（实测 37.31 / 5.87 度）：现场看到的就是它。
+                self.assertGreater(
+                    max(abs(historic[name] - rest[name]) for name in proximal),
+                    math.radians(self.PROXIMAL_MOVED_DEG), side)
+
+    def test_the_wrist_set_is_measured_instead_of_name_matched(self):
+        adapter = self.driver.ik["h1_2"]
+        # h1_2 的旋前关节叫 ``elbow_roll``（名字里没有 wrist），必须靠 FK 实测收进来。
+        self.assertEqual(adapter.orientation_joints("left"),
+                         ["left_elbow_roll_joint", "left_wrist_pitch_joint",
+                          "left_wrist_yaw_joint"])
+        self.assertEqual(adapter.orientation_joints("right"),
+                         ["right_elbow_roll_joint", "right_wrist_pitch_joint",
+                          "right_wrist_yaw_joint"])
+        # 摆关节一个都不许进来。
+        for side in SIDES:
+            for name in adapter.orientation_joints(side):
+                self.assertNotIn("shoulder", name)
+                self.assertNotIn("elbow_pitch", name)
+        described = adapter.describe()
+        self.assertEqual(described["orientation_scope"], "wrist")
+        self.assertEqual(described["orientation_joints"]["left"],
+                         adapter.orientation_joints("left"))
+
+    def test_the_pins_cover_exactly_the_joints_that_must_not_move(self):
+        """``_orientation_arguments`` 钉肩/肘、``_elbow_arguments`` 钉腕（各留 1e-6 的缝）。"""
+        adapter = self.driver.ik["h1_2"]
+        adapter.orientation_scope = "wrist"
+        arguments = {"lowerLimits": list(adapter.limits["lower"]),
+                     "upperLimits": list(adapter.limits["upper"]),
+                     "jointRanges": list(adapter.limits["range"]),
+                     "restPoses": adapter._rest_poses(None)}
+        angles = [float(adapter.p.getJointState(adapter.body, index,
+                                                physicsClientId=adapter.cid)[0])
+                  for index in adapter.indices]
+        for side in SIDES:
+            wrist = {adapter.position_of[index] for index, _name in adapter.wrist[side]}
+            proximal = {adapter.position_of[index]
+                        for index, _name in adapter.arm[side]} - wrist
+            for label, narrowed, expected in (
+                    ("orientation", adapter._orientation_arguments(side, arguments, angles),
+                     proximal),
+                    ("elbow", adapter._elbow_arguments(side, arguments, angles), wrist)):
+                pinned = {position for position, (low, high)
+                          in enumerate(zip(narrowed["lowerLimits"],
+                                           narrowed["upperLimits"]))
+                          if abs((float(high) - float(low)) - 2e-6) < 1e-9}
+                with self.subTest(side=side, pass_=label):
+                    self.assertEqual(pinned, expected)
+                    for position in pinned:
+                        self.assertAlmostEqual(float(narrowed["lowerLimits"][position]),
+                                               angles[position] - 1e-6, places=9)
+                    # 没被钉的那些必须原样带走（否则等于偷偷改了别的关节的限位）。
+                    for position, (low, high) in enumerate(zip(arguments["lowerLimits"],
+                                                               arguments["upperLimits"])):
+                        if position in pinned:
+                            continue
+                        self.assertEqual(float(narrowed["lowerLimits"][position]), float(low))
+                        self.assertEqual(float(narrowed["upperLimits"][position]), float(high))
+
+    def test_the_scope_name_is_validated_and_lands_in_the_report(self):
+        from teleoperation.simulation.arm_ik import PyBulletArmIK
+        from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+
+        adapter = self.driver.ik["h1_2"]
+        self.assertEqual(adapter.describe()["orientation_scope"], "wrist")
+        with self.assertRaises(ValueError):
+            PyBulletArmIK(adapter.body, adapter.cid, "h1_2", sides=SIDES,
+                          orientation_scope="wristy")
+        # 驱动层在碰场景之前就校验（同一台 body 上再建一个驱动会撞 hold 记账，所以只测拒绝）。
+        with self.assertRaises(ValueError):
+            ArmSceneDriver(self.scene, sides=SIDES, orientation_scope="wristy")
+        historic = PyBulletArmIK(adapter.body, adapter.cid, "h1_2", sides=SIDES,
+                                orientation_scope="arm")
+        self.assertEqual(historic.describe()["orientation_scope"], "arm")
+        # 位置口径的机器人照样有腕关节名，但那一遍根本不解朝向 —— 抄回这一步对它们必须是空操作。
+        zeros = [0.0] * len(adapter.indices)
+        for robot in ("gr1_t2", "g1"):
+            positional = self.driver.ik[robot]
+            self.assertEqual(positional.ik_mode, "position", robot)
+            self.assertEqual(positional._hold("left", zeros, [1.0] * len(zeros),
+                                             positional._wrist_ids("left")), zeros, robot)
 

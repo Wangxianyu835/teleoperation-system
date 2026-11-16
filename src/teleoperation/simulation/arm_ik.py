@@ -62,6 +62,12 @@ IK_RESIDUAL_THRESHOLD = 1e-5
 #: 手臂链里的定位关键字：肩（上臂起点）与肘。三台的命名都含这两个词（实测 2026-10-12）。
 SHOULDER_KEYWORD = "shoulder"
 ELBOW_KEYWORD = "elbow"
+#: 「腕」关节（名字里含这个词的那些）：``orientation_scope="wrist"`` 里无条件放开它们。
+WRIST_KEYWORD = "wrist"
+#: ``_distal_joints`` 判「只滚不摆」时把单个关节拧开的角度（度），以及判据：
+#: 前臂方向变化 <= 这个角度、肘点位移 <= 1 mm，才算「转手不摆臂」。
+ROLL_PROBE_DEG = 30.0
+ROLL_PROBE_MAX_DEG = 2.0
 #: 「肘跟手」（``posture_from_bend``）在加载时量肘关节正方向用的探针角（度）：把该关节拧
 #: +PROBE 一次，看「肩-肘-腕夹角」变多少。三台的肘关节正方向约定不一样（h1_2 与 gr1_t2 相反），
 #: 所以符号只能量，不能写死 —— 写死就会在某一台上把「跟你一样弯」做成「反着弯」。
@@ -94,6 +100,18 @@ ELBOW_LEVEL_MAX_ERROR_DEG = 5.0
 POSTURE_MAX_FRAMES = 600
 #: ``solve(orientation_frame=...)`` 的两种口径。
 ORIENTATION_FRAMES = ("absolute", "neutral")
+#: 姿态收尾那一遍**谁去吸收朝向误差**（``PyBulletArmIK.orientation_scope``）：
+#:
+#: ``wrist`` 只让腕关节动，肩/肘钉在位置解上（默认，2026-11-16 现场修法）；
+#: ``arm``   整条 7 自由度链一起解 —— 历史行为，A/B 用。
+#:
+#: 为什么（2026-11-16 现场）：掌面基修好之后腕的朝向第一次真的进了 IK，操作者一转手腕，
+#: **大臂和小臂跟着抬/摆**，而同一份代码在 ``--arm-orientation off`` 下臂形很好。原因是
+#: PyBullet 的 ``calculateInverseKinematics`` 对朝向只有「限位 + restPoses」两样软约束，
+#: 7 个自由度一起分这个朝向误差，肩/肘分到的那部分在画面上就是「机械臂自己动了」——
+#: 而真机转腕只用腕关节。把腕以前的关节钉住，朝向就只由 ``WRIST_KEYWORD`` 命中的那几个
+#: 关节吸收（h1_2 是 wrist_roll/pitch/yaw）。数字见 ``devtools/probe_wrist_twist.py``。
+ORIENTATION_SCOPES = ("wrist", "arm")
 #: 同时给了腕与肘两个位置目标时，肘任务放在第几遍：
 #:
 #: ``first``  第一遍就是 IK2（腕 + 肘），第二遍按 ``ik_mode`` 用腕的位姿收尾；
@@ -252,7 +270,8 @@ class PyBulletArmIK:
                  elbow_recovery_deg: float = ELBOW_RECOVERY_DEG,
                  elbow_recovery_margin_deg: float = ELBOW_RECOVERY_MARGIN_DEG,
                  elbow_recovery_cooldown: int = ELBOW_RECOVERY_COOLDOWN_FRAMES,
-                 lock_others: bool = False):
+                 lock_others: bool = False,
+                 orientation_scope: str = "wrist"):
         import pybullet as p
 
         if profile is None:
@@ -281,6 +300,13 @@ class PyBulletArmIK:
         #: 求解时是否把「非本侧手臂」的关节全部锁在当前角度（见 ``_locked_arguments``）：
         #: False = 交给 PyBullet 对整机求解（历史行为）。
         self.ik_lock_others = bool(lock_others)
+        #: 姿态那一遍谁去吸收朝向误差：``"wrist"``（默认）或 ``"arm"``（历史行为）。
+        #: 见 ``ORIENTATION_SCOPES`` 与 ``_orientation_arguments``。
+        if orientation_scope not in ORIENTATION_SCOPES:
+            raise ValueError(
+                f"orientation_scope must be one of {ORIENTATION_SCOPES}, "
+                f"got {orientation_scope!r}")
+        self.orientation_scope = str(orientation_scope)
 
         # Every non-fixed joint in PyBullet order: the IK solution has one entry per
         # movable joint, so the mapping has to stay name-based (index 0 is a hip).
@@ -344,6 +370,11 @@ class PyBulletArmIK:
             if fix is not None and fix["applied"]:
                 # 摆正之后加载夹角变了零点几度：斜率与基准重新量一遍，别用旧读数。
                 self.elbow_posture[side] = self._measure_elbow_posture(side)
+
+        #: ``orientation_scope="wrist"`` 那一遍放开的关节：**只转手、不摆前臂/大臂**的那些
+        #: （由 FK 实测，见 ``_distal_joints``）。h1_2 = elbow_roll + wrist_pitch + wrist_yaw；
+        #: 空表 = 这台机器人的臂结构测不出来，那时 orientation_scope 退回历史行为。
+        self.wrist = {side: self._distal_joints(side) for side in self.sides}
 
         self.limits = self._joint_limits()
         #: Angle of every movable joint when this adapter was built (drift reference).
@@ -1041,6 +1072,134 @@ class PyBulletArmIK:
         return locked
 
 
+    def _roll_only(self, side: str, index: int) -> bool:
+        """单独拧开这个关节 ``ROLL_PROBE_DEG`` 度时，肘点与前臂方向都不动吗？
+
+        判法就是「滚转」的定义：绕前臂轴转，肘点（关节自身原点）不动、前臂指向不变。
+        ``resetJointState`` 绕过限位，量完立刻写回原角度（只在加载时调用）。
+        """
+        p, cid = self.p, self.cid
+        saved = float(p.getJointState(self.body, index, physicsClientId=cid)[0])
+        try:
+            before = self.arm_points(side)
+            p.resetJointState(self.body, index, saved + radians(ROLL_PROBE_DEG),
+                              physicsClientId=cid)
+            after = self.arm_points(side)
+        finally:
+            p.resetJointState(self.body, index, saved, physicsClientId=cid)
+        elbow_moved = 1000.0 * float(np.linalg.norm(
+            np.asarray(after["elbow"], dtype=np.float64)
+            - np.asarray(before["elbow"], dtype=np.float64)))
+        if elbow_moved > 1.0:
+            return False
+        start = _unit_difference(before["wrist"], before["elbow"])
+        stop = _unit_difference(after["wrist"], after["elbow"])
+        if start is None or stop is None:
+            return False
+        return _direction_angle_deg(start, stop) <= ROLL_PROBE_MAX_DEG
+
+    def _distal_joints(self, side: str) -> list:
+        """哪些臂关节「只转手、不摆前臂/大臂」——由 FK 实测（``_roll_only``），不猜名字。
+
+        为什么需要（2026-11-16 现场）：掌面基修好之后 ``--arm-orientation on`` 第一次真的把
+        腕的朝向送进 IK，操作者转手腕，机器人的**大臂和小臂跟着抬/摆**。原因是姿态那一遍
+        （``orientation_scope="arm"``）整条 7 自由度链一起摊这个误差。真机上「转手」只用
+        腕关节 + 前臂滚转，所以姿态那一遍只该放开这些关节。
+
+        判法（每侧只在加载时做一次）：从**第一个肘关节**开始往后逐个试 —— 名字里含
+        ``WRIST_KEYWORD`` 的无条件放进来；其余必须过 ``_roll_only``（绕前臂轴、不摆方向）。
+        实测 h1_2 = ``elbow_roll`` + ``wrist_pitch`` + ``wrist_yaw``：正是「旋前 + 腕屈/偏」，
+        肩与 ``elbow_pitch`` 一个都不在里面。名字里连肘都找不到时返回空表（= 历史行为）。
+        """
+        joints = list(self.arm[side])
+        names = [name for _index, name in joints]
+        start = next((position for position, name in enumerate(names)
+                      if ELBOW_KEYWORD in name.lower()), None)
+        if start is None:
+            return []
+        distal = []
+        for index, name in joints[start:]:
+            if WRIST_KEYWORD in name.lower() or self._roll_only(side, index):
+                distal.append((index, name))
+        return distal
+
+    def _hold(self, side: str, candidate, reference, free) -> list:
+        """``candidate`` 里把**不在** ``free`` 的本侧臂关节换成 ``reference`` 的值。
+
+        为什么要这一步（2026-11-16 实测，``devtools/probe_wrist_twist.py``）：PyBullet 的
+        ``lowerLimits`` / ``upperLimits`` 是**硬不起来的**约束 —— 把 7 个臂关节全钉在 1e-6 的
+        窗口里再解一个 45 度的朝向，返回的解仍然偏离钉住值 4.2-27.1 度（不可达的目标越大偏得
+        越多）。所以钉住只是让求解器**靠近**目标姿势，最后必须把不该动的关节抄回去。
+        """
+        if self.orientation_scope != "wrist" or not self.wrist[side]:
+            return candidate
+        if self.ik_mode != "pose":
+            return candidate
+        kept = list(candidate)
+        for index, _name in self.arm[side]:
+            if index in free:
+                continue
+            position = self.position_of[index]
+            kept[position] = float(reference[position])
+        return kept
+
+    def _pin_arguments(self, side: str, arguments, angles, free) -> dict:
+        """把本侧臂里**不在** ``free`` 的关节钉在 ``angles``（IK 解向量）上。
+
+        与 ``_locked_arguments`` 同一套手法（上下限各留 1e-6 的缝，PyBullet 当硬约束），
+        区别只在于锁的是「本侧手臂里不该动的那几个」而不是「别的关节」。``angles`` 是
+        PyBullet 返回的解向量（每个可动关节一项），所以按 ``self.position_of`` 取。
+        """
+        pinned = {index: float(angles[self.position_of[index]])
+                  for index, _name in self.arm[side] if index not in free}
+        if not pinned:
+            return arguments
+        lower = list(arguments["lowerLimits"])
+        upper = list(arguments["upperLimits"])
+        for index, angle in pinned.items():
+            position = self.position_of[index]
+            lower[position] = angle - 1e-6
+            upper[position] = angle + 1e-6
+        out = dict(arguments)
+        out["lowerLimits"], out["upperLimits"] = lower, upper
+        # jointRanges 只影响步长缩放，不参与「能不能到」，保持原样（同 ``_locked_arguments``）。
+        return out
+
+    def _wrist_ids(self, side: str) -> set:
+        """``orientation_scope="wrist"`` 放开的那些关节索引（``_distal_joints``）。"""
+        return {index for index, _name in self.wrist[side]}
+
+    def _proximal_ids(self, side: str) -> set:
+        """本侧臂里除了上面那些以外的关节（肩、肘的摆关节）。"""
+        return {index for index, _name in self.arm[side]} - self._wrist_ids(side)
+
+    def _orientation_arguments(self, side: str, arguments, solution) -> dict:
+        """姿态那一遍的边界：只放开**腕关节**（``orientation_scope="wrist"``）。
+
+        现场 2026-11-16（``--arm-orientation on`` 第一次真的把腕朝向送进 IK）：操作者转手腕，
+        大臂和小臂跟着抬/摆。PyBullet 的 ``calculateInverseKinematics`` 对朝向只有限位 +
+        ``restPoses`` 两样软约束，7 个自由度一起摊这个误差 —— 真机转腕只用腕关节，所以这里
+        把腕以前的关节（肩、肘）钉在第一遍位置解上，朝向只能由 ``self.wrist[side]`` 吸收。
+        腕关节一个都没识别到时返回原边界（= 历史行为，不做半套事）。
+        """
+        if self.orientation_scope != "wrist" or not self.wrist[side]:
+            return arguments
+        return self._pin_arguments(side, arguments, solution, self._wrist_ids(side))
+
+    def _elbow_arguments(self, side: str, arguments, solution) -> dict:
+        """肘任务放在最后一遍时**反过来**：腕钉住（保住刚解出来的朝向），肩肘去够位置。
+
+        ``elbow_pass="last"`` 的最后一次 ``calculateInverseKinematics2`` 完全不管朝向，
+        整条链会重新分一遍误差 —— 刚解出来的腕转角就被摊回肩/肘了（``orientation_scope``
+        修好的东西又白费）。把腕钉在姿态那一遍的解上，剩下 4 个自由度照样能兑现肘目标。
+        """
+        if self.orientation_scope != "wrist" or not self.wrist[side]:
+            return arguments
+        if self.ik_mode != "pose":
+            return arguments
+        return self._pin_arguments(side, arguments, solution, self._proximal_ids(side))
+
+
     def _ik_call(self, side: str, world, orientation, arguments) -> list:
         """One ``calculateInverseKinematics`` call: world target -> full solution."""
         p = self.p
@@ -1151,7 +1310,11 @@ class PyBulletArmIK:
                 target_orientation = (self.neutral_orientation[side]
                                       if orientation is None
                                       else tuple(float(v) for v in orientation))
-            solution = self._ik_call(side, world, target_orientation, arguments)
+            oriented = self._ik_call(
+                side, world, target_orientation,
+                self._orientation_arguments(side, arguments, solution))
+            # orientation_scope="wrist"：肩/肘抄回位置解，朝向只由腕（含前臂滚转）兑现。
+            solution = self._hold(side, oriented, solution, self._wrist_ids(side))
         elif warm_start:
             # Position-only profiles still benefit: the second pass starts on target.
             self._teleport(side, solution)
@@ -1161,7 +1324,10 @@ class PyBulletArmIK:
             # （实测 2026-10-13：肘误差 185-256 mm、腕残差 107 mm）。给了肘目标又要求最后一遍
             # 仍是腕的姿态时，就只能再交一次 IK2 把两个位置目标一起收住。
             self._teleport(side, solution)
-            solution = self._ik_call2(side, world, elbow_world, arguments)
+            finished = self._ik_call2(side, world, elbow_world,
+                                      self._elbow_arguments(side, arguments, solution))
+            # 这一遍完全不管朝向：腕抄回来，刚解出来的手姿态不会被肩/肘分走。
+            solution = self._hold(side, finished, solution, self._proximal_ids(side))
         return solution, target_orientation
 
     def _recover_elbow_branch(self, side, solution, world, elbow_world, orientation,
@@ -1363,11 +1529,24 @@ class PyBulletArmIK:
                                                  physicsClientId=self.cid)[0])
                 for index, name in self.arm[side]}
 
+    def orientation_joints(self, side: str) -> list:
+        """``orientation_scope="wrist"`` 在这一侧会放开的关节名（空 = 没有腕关节名）。
+
+        只做给报告 / 启动横幅用：``solve`` 内部直接用 ``self.wrist[side]`` 的索引。
+        """
+        return [name for _index, name in self.wrist[side]]
+
     def describe(self) -> dict:
         """JSON-able summary of what this adapter drives (for reports / --list)."""
         return {
             "robot": self.robot_type,
             "ik_mode": self.ik_mode,
+            #: 姿态那一遍谁去吸收朝向误差（``"wrist"`` = 只转腕，``"arm"`` = 历史行为）。
+            "orientation_scope": self.orientation_scope,
+            #: ``orientation_scope="wrist"`` 放开的那几个关节（空 = 该机型没有腕关节名，
+            #: 于是退回历史行为）。
+            "orientation_joints": {side: [name for _index, name in entries]
+                                   for side, entries in self.wrist.items()},
             "rest_poses": self.rest_poses,
             "arm_force": self.arm_force,
             "driven_joints": len(self.driven),

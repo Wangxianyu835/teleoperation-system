@@ -39,7 +39,12 @@ from pathlib import Path
 
 import numpy as np
 
-from teleoperation.simulation.arm_ik import ARM_FORCE, ELBOW_PASS_ORDERS, PyBulletArmIK
+from teleoperation.simulation.arm_ik import (
+    ARM_FORCE,
+    ELBOW_PASS_ORDERS,
+    ORIENTATION_SCOPES,
+    PyBulletArmIK,
+)
 from teleoperation.simulation.arm_profiles import (
     SIDES,
     describe,
@@ -86,7 +91,8 @@ class ArmSceneDriver:
                  slew_m_per_s: float = 0.0, elbow_pass: str = "first",
                  elbow_recovery_deg=None, elbow_recovery_margin_deg=None,
                  elbow_recovery_cooldown=None, shoulder_anchors=None,
-                 shoulder_anchor_key: str = "upper", lock_others: bool = False):
+                 shoulder_anchor_key: str = "upper", lock_others: bool = False,
+                 orientation_scope: str = "wrist"):
         self.scene = scene
         self.p = scene.p
         self.cid = scene.cid
@@ -137,6 +143,14 @@ class ArmSceneDriver:
         #: 求解时是否把非本侧手臂的关节锁在当前角度（``arm_ik._locked_arguments``）。
         lock_others = bool(lock_others)
         self.lock_others = lock_others
+        #: 姿态那一遍谁去吸收朝向误差（``arm_ik.ORIENTATION_SCOPES``）：
+        #: ``"wrist"`` = 只转腕关节（默认，2026-11-16 现场「转腕带动整条臂」的修法），
+        #: ``"arm"`` = 整条链一起解（历史行为，A/B 用）。
+        if orientation_scope not in ORIENTATION_SCOPES:
+            raise ValueError(
+                f"orientation_scope must be one of {ORIENTATION_SCOPES}, "
+                f"got {orientation_scope!r}")
+        self.orientation_scope = str(orientation_scope)
         #: 每台每侧最后一次的平移量（毫米，报告用）。
         self.shoulder_shift_mm = {}
         #: 被斜坡削掉一部分的帧数（报告用：说明这一场有多少帧没一步到位）。
@@ -160,6 +174,7 @@ class ArmSceneDriver:
             if self.elbow_recovery_cooldown is not None:
                 settings["elbow_recovery_cooldown"] = int(self.elbow_recovery_cooldown)
             settings["lock_others"] = self.lock_others
+            settings["orientation_scope"] = self.orientation_scope
             adapter = PyBulletArmIK(robot["body"], self.cid, robot_type,
                                     sides=self.sides, ik_mode=ik_mode,
                                     arm_force=arm_force, rest_poses=rest_poses,

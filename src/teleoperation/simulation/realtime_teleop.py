@@ -126,7 +126,8 @@ from teleoperation.simulation.arm_preview import (
 )
 from teleoperation.simulation.arm_profiles import loadable_robots, profile_for
 from teleoperation.simulation.arm_ik import (ELBOW_PASS_ORDERS, ELBOW_RECOVERY_COOLDOWN_FRAMES,
-                                             ELBOW_RECOVERY_DEG, ELBOW_RECOVERY_MARGIN_DEG)
+                                             ELBOW_RECOVERY_DEG, ELBOW_RECOVERY_MARGIN_DEG,
+                                             ORIENTATION_SCOPES)
 from teleoperation.simulation.arm_realtime import (
     CALIBRATE_MODES,
     DEFAULT_LATERAL_GUARD_M,
@@ -205,7 +206,7 @@ def palm_normal(points):
 
     这是**观测量**，不是控制量。MediaPipe 的 pose 只给肩/肘/腕三点，绕前臂轴的自转
     （旋前-旋后）在那套几何里是自由度、量不到；掌面法向是唯一能看出来的分量
-    （2026-11-16 现场根因，见 docs/PROJECT_CONTEXT.md 22.1）。点不全或退化给 ``None``。
+    （2026-11-16 现场根因，见 docs/PROJECT_CONTEXT.md §21.1）。点不全或退化给 ``None``。
     """
     try:
         wrist, index, pinky = (np.asarray(points[slot], dtype=np.float64)
@@ -429,7 +430,15 @@ class CameraFrameSource:
             },
         }
         if raw.world_hands is not None:
-            frame.update({"world_" + side: raw.world_hands[side] for side in SIDES})
+            world = {"world_" + side: raw.world_hands[side] for side in SIDES}
+            frame.update(world)
+            # ``last_raw_frame`` 也必须在合并 **之后** 才有 ``world_*``：相机链路里
+            # ``RealtimeArmBridge`` 读的就是 ``camera.last_raw_frame``（见 ``run``），
+            # 它靠这一份米制 21 点造掌面基。2026-11-16 现场实测：赋值写在合并之前 ->
+            # 985 帧里 ``palm_space`` 全是 ``normalized``、``ori_source`` 全是
+            # ``three_point``，掌面基一次都没启用（回放源是合并后才赋值的，所以
+            # fixture 一直测不出来）。这里就地把同一份键补进去，两个 dict 同口径。
+            raw_frame.update(world)
         return self.pipeline.process_window(frame)
 
     def arms(self):
@@ -655,6 +664,20 @@ def build_parser() -> argparse.ArgumentParser:
                              "fraction 0.0 on all six sides); the solver has 7 variables instead "
                              "of ~55 so it is not slower, but no speedup is claimed -- fps over "
                              "these runs varied 2.5-12.7 with machine load under both scopes")
+    parser.add_argument("--arm-orientation-scope", choices=ORIENTATION_SCOPES,
+                        default="wrist",
+                        help="which joints absorb the commanded wrist orientation "
+                             "(default 'wrist'): 'wrist' pins every joint proximal to the "
+                             "wrist (shoulder + elbow) at the position solution, so turning "
+                             "your hand only turns the robot's wrist joints -- the real arm "
+                             "works that way. 'arm' lets PyBullet spread the orientation "
+                             "error over the whole 7-DoF chain (the historical behaviour, "
+                             "kept for A/B): field report 2026-11-16 after the palm basis "
+                             "started working -- 'a twist of the wrist lifts and swings the "
+                             "whole arm'. Numbers: devtools/probe_wrist_twist.py and "
+                             "docs/multi-robot-arm.md 8.18. Only the pose-mode robots "
+                             "(h1_2) run that pass at all, so g1 / gr1_t2 behave the "
+                             "same either way")
     parser.add_argument("--arm-rest-poses", choices=("current", "zero", "live"),
                         default="current",
                         help="IK null-space reference (arm_ik._rest_poses; default 'current'): "
@@ -1085,7 +1108,8 @@ def run(args) -> int:
                                     elbow_recovery_margin_deg=args.arm_elbow_recovery_margin_deg,
                                     elbow_recovery_cooldown=args.arm_elbow_recovery_frames,
                                     shoulder_anchor_key=args.arm_anchor,
-                                    lock_others=(args.arm_ik_scope == "arm"))
+                                    lock_others=(args.arm_ik_scope == "arm"),
+                                    orientation_scope=args.arm_orientation_scope)
             # segments 口径与肘任务要的「机器人自己的量」：实测连杆长 + 中性腕/肘点（基座系）。
             # 加载后量一次即可，之后每帧只是加减法（见 arm_realtime.MAP_MODES）。
             robot_links, robot_anchors = {}, {}
@@ -1137,11 +1161,26 @@ def run(args) -> int:
                 elbow_pose_note = (" | elbow pose: " + ", ".join(leveled)
                                    if leveled else
                                    " | elbow pose: as loaded (no elbow was bent backwards)")
+                # 姿态那一遍谁去吸收朝向：只列**真正跑这一遍**的机器人 —— position 口径根本不进
+                # 这一遍（``solve`` 里那一支只在 ``ik_mode == "pose"`` 下执行），把 g1 / gr1_t2
+                # 也列出来会让人以为它们也被这个开关影响了。
+                if args.arm_orientation == "off":
+                    orientation_note = ""
+                else:
+                    posed = [f"{name}:{side[0]} "
+                             f"{'/'.join(adapter.orientation_joints(side)) or 'none'}"
+                             for name, adapter in sorted(driver.ik.items())
+                             if adapter.ik_mode == "pose" for side in sides]
+                    orientation_note = (": " + ", ".join(posed) if posed else
+                                        ": no pose-mode robot, the pass never runs")
 
                 print(f"arm map: {args.arm_map} | shoulder end = {args.arm_anchor} "
                       f"({'rigid: the elbow parent link' if args.arm_anchor == 'upper' else 'historical name-matched link'})"
                       f" | ik scope = {args.arm_ik_scope}"
                       f" | rest poses = {args.arm_rest_poses}"
+                      f" | orientation {args.arm_orientation}"
+                      f" (scope {args.arm_orientation_scope}"
+                      + orientation_note + ")"
                       f" | elbow follow = {args.arm_elbow_follow}"
                       f" | measured links (m) "
                       + " ".join(f"{name}:{side[0]}" +
@@ -1231,6 +1270,8 @@ def run(args) -> int:
                       f"chest) for about {args.arm_calibrate_frames} frames per side; until "
                       "then the arms hold their working point.", flush=True)
         started = time.perf_counter()
+        # 标定一完成就检查一次「掌面基到底采到没有」（只提示一次，见下面的 palm_warn）。
+        palm_warn = True
 
         while True:
             if args.frames and processed >= args.frames:
@@ -1268,6 +1309,24 @@ def run(args) -> int:
                 frame_dt = _median_interval(marks) or NOMINAL_FRAME_DT
                 targets = bridge.update(arms_world=camera.arms(), hands=raw_frame,
                                         frame_dt=frame_dt)
+                if palm_warn and not bridge.calibrating:
+                    # 只提示一次。``hold`` 模式下中性只在攒够帧那一次写，之后不再采 ——
+                    # 标定那 30 帧里手上没有米制点 / 掌面退化，``orientation_palm`` 就是
+                    # None，**整场**都会退回三点基（现场 CSV 里表现为整段
+                    # ``ori_source=three_point``）。2026-11-16 第一次现场跑就撞上了这一条：
+                    # 人还没进画面就把标定站完了，于是掌面基一次都没启用。
+                    palm_warn = False
+                    if args.arm_orientation != "off":
+                        bare = [side for side in sides
+                                if (bridge.neutral.get(side) or {}).get("orientation_palm") is None]
+                        if bare:
+                            print(f"[WARN] no palm basis for {', '.join(bare)}: the neutral was "
+                                  f"collected without metric hand points (or the palm was "
+                                  f"degenerate), so this whole run falls back to the "
+                                  f"three-point basis (ori_source=three_point, pronation is "
+                                  f"not tracked). Keep BOTH hands inside the camera window "
+                                  f"during the {args.arm_calibrate_frames} calibration frames "
+                                  f"and rerun.", flush=True)
                 orientation_by_side = bridge.orientation_target()
                 # 「肘跟手」（``--arm-elbow-follow operator``）：操作者这一帧的肘弯（绝对角）。
                 # 与姿态口径同一个理由单独取一份（这一项机器人无关），缺数据的那一侧是 None，

@@ -41,6 +41,7 @@ from teleoperation.simulation.arm_realtime import (
 )
 from teleoperation.simulation.realtime_teleop import (
     WRIST_TRACE_COLUMNS,
+    CameraFrameSource,
     ReplayFrameSource,
     WristTrace,
     build_parser,
@@ -740,6 +741,38 @@ class EntryAndReplayTests(unittest.TestCase):
         np.testing.assert_allclose(observation.world_arms["left"], arm("left"), atol=1e-6)
         self.assertIsNone(observation.world_arms["right"])
         self.assertIsNone(source.release())
+
+    def test_camera_source_keeps_the_world_hands_that_the_bridge_reads(self):
+        """回归用例（2026-11-16 现场）：``last_raw_frame`` 必须带 ``world_*``。
+
+        ``run()`` 把 ``camera.last_raw_frame`` 同时喂给 ``RealtimeArmBridge`` 和
+        ``--wrist-trace``；桥靠 `world_left/right` 造掌面基（``orientation_palm``），
+        trace 靠它写 ``palm_space=world``。曾经 ``self.last_raw_frame`` 在合并
+        ``world_*`` **之前**赋值，于是现场 985 帧里 ``palm_space`` 全是
+        ``normalized``、``ori_source`` 全是 ``three_point`` —— 掌面基一次都没启用。
+        回放源是合并后才赋值的，所以只有这条用例能拦住它。
+
+        不碰相机：只替换 ``_input`` / ``pipeline`` 两个协作者。
+        """
+        def observation():
+            hands = SimpleNamespace(
+                hands={"left": np.zeros((21, 3)), "right": None},
+                world_hands={"left": np.full((21, 3), 0.19), "right": None},
+                timestamp=1234, metadata={"source": "stub"})
+            return SimpleNamespace(hands=hands)
+
+        source = object.__new__(CameraFrameSource)
+        source.pose_enabled = True
+        source._start_time = 0.0
+        source.last_observation = None
+        source._input = SimpleNamespace(next_teleop_observation=observation)
+        source.pipeline = SimpleNamespace(process_window=lambda frame: frame)
+        source.next_frame()
+
+        self.assertIn("world_left", source.last_raw_frame)
+        np.testing.assert_allclose(source.last_raw_frame["world_left"], 0.19)
+        # 这一侧这一帧没检到，就必须是 None（不能伪造一个零阵）。
+        self.assertIsNone(source.last_raw_frame["world_right"])
 
     def test_world_replay_declares_the_metadata_the_pipeline_demands(self):
         """world 口径回放必须自带队友处理器要的三个声明（world 米制 + source_scale）。
