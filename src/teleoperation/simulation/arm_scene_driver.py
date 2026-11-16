@@ -92,7 +92,7 @@ class ArmSceneDriver:
                  elbow_recovery_deg=None, elbow_recovery_margin_deg=None,
                  elbow_recovery_cooldown=None, shoulder_anchors=None,
                  shoulder_anchor_key: str = "upper", lock_others: bool = False,
-                 orientation_scope: str = "wrist"):
+                 orientation_scope: str = "wrist", wrist_joint_step_deg=None):
         self.scene = scene
         self.p = scene.p
         self.cid = scene.cid
@@ -175,6 +175,10 @@ class ArmSceneDriver:
                 settings["elbow_recovery_cooldown"] = int(self.elbow_recovery_cooldown)
             settings["lock_others"] = self.lock_others
             settings["orientation_scope"] = self.orientation_scope
+            #: 腕链关节每帧的步长上限（度，``None`` = 各 adapter 自己的默认 = 关）。见
+            #: ``arm_ik.MAX_WRIST_JOINT_STEP_DEG``：朝向上限守住了但单个关节仍能跳 200 度。
+            if wrist_joint_step_deg is not None:
+                settings["max_wrist_joint_step_deg"] = max(0.0, float(wrist_joint_step_deg))
             adapter = PyBulletArmIK(robot["body"], self.cid, robot_type,
                                     sides=self.sides, ik_mode=ik_mode,
                                     arm_force=arm_force, rest_poses=rest_poses,
@@ -561,6 +565,13 @@ class ArmSceneDriver:
             "target_slew_mm_per_s": round(1000.0 * self.slew_m_per_s, 3),
             "target_slew_ceiling_mm": round(1000.0 * SLEW_MAX_STEP_M, 3),
             "target_slew_limited_frames": self.slew_limited,
+            # 腕链关节每帧步长上限（度）与这一场被削掉的关节次数（见
+            # ``arm_ik.MAX_WRIST_JOINT_STEP_DEG``）：现场验收就看这两个数 ——
+            # 0 = 关；被削 0 次 = 这条上限一次都没绑住（解本来就没跳）。
+            "wrist_joint_step_deg": {robot_type: adapter.max_wrist_joint_step_deg
+                                     for robot_type, adapter in self.ik.items()},
+            "wrist_step_clamped": {robot_type: adapter.wrist_step_clamped
+                                   for robot_type, adapter in self.ik.items()},
             "hands": self.scene.summary(),
             "robots": self.describe()["robots"],
         }

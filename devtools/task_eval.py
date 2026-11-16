@@ -264,7 +264,8 @@ class TaskScene:
                        "bench_top_m": None, "rest_on_table": {}, "ops": [],
                        "clamped": {}, "compressed": {}, "separated": [],
                        "settle": {}, "criteria_at_reset": None, "in_reach": {},
-                       "notes": []}
+                       "ik_reach": {}, "notes": []}
+
 
     # -- 查询 ---------------------------------------------------------------
     def _movable_keys(self) -> list:
@@ -615,10 +616,34 @@ class TaskScene:
                          "axis": "xy"[axis] + ("+" if sign > 0 else "-"),
                          "amount_m": round(amount, 4)})
 
-    def _settle(self, steps: int) -> None:
+    def _hold_motors(self, force: float = 200.0) -> None:
+        """把所有可动关节按**当前角**锁住（现场档 ``arm_scene_driver`` 的 hold motors 同做法）。
+
+        不锁的后果实测（``outputs/tmp_probe/track.txt``）：settle 的 600 步里手臂靠重力垂到
+        自己腿里、手与大腿互穿，之后 shoulder_pitch 指令 -1.03 rad 却在 +0.44 rad 卡住不动
+        （电机 200/500/1200 都一样；把重力关掉也一样）——不是电机不够力，是**自己卡自己**。
+        """
+        if self.robot_id is None:
+            return
+        for index in range(p.getNumJoints(self.robot_id, physicsClientId=self.client)):
+            info = p.getJointInfo(self.robot_id, index, physicsClientId=self.client)
+            if info[2] == p.JOINT_FIXED:
+                continue
+            angle = float(p.getJointState(self.robot_id, index,
+                                          physicsClientId=self.client)[0])
+            p.setJointMotorControl2(self.robot_id, index, p.POSITION_CONTROL,
+                                    targetPosition=angle, force=force,
+                                    physicsClientId=self.client)
+
+    def _settle(self, steps: int, hold: bool = False) -> None:
         start = audit.poses(self.client, self.task.objects)
+        if hold:
+            # 只有脚本档要 hold：它后面要靠电机把手臂走到航点，手臂先垂进腿里就会自己卡死
+            self._hold_motors()
         for _ in range(int(steps)):
             p.stepSimulation(physicsClientId=self.client)
+
+
         end = audit.poses(self.client, self.task.objects)
         drifts = {key: float(np.linalg.norm(end[key][0] - start[key][0])) for key in end}
         top = self._table_top()
@@ -648,9 +673,241 @@ class TaskScene:
             "reach_m": round(self.reach, 4),
         }
 
+    # -- 真 IK 可达性校正（批次 5）--------------------------------------------
+    def _ik_solver(self):
+        """position 口径的 IK（脚本档抓取不看腕朝向）：每个场景建一次。"""
+        from teleoperation.simulation.arm_ik import PyBulletArmIK
+
+        return PyBulletArmIK(self.robot_id, self.client, robot_type=self.robot,
+                             sides=("left", "right"), rest_poses="current",
+                             ik_mode="position", lock_others=True)
+
+    def _joint_state(self) -> dict:
+        """整机可动关节的当前角（``solve`` 会 teleport 手臂，量完必须还原）。"""
+        out = {}
+        for index in range(p.getNumJoints(self.robot_id, physicsClientId=self.client)):
+            info = p.getJointInfo(self.robot_id, index, physicsClientId=self.client)
+            if info[2] == p.JOINT_FIXED:
+                continue
+            out[index] = float(p.getJointState(self.robot_id, index,
+                                               physicsClientId=self.client)[0])
+        return out
+
+    def _ik_residual_mm(self, ik, point, side: str = None) -> tuple:
+        """这一点（世界系）用哪只手残差最小、残差多少。``side`` 指定时只量那只手。"""
+        best = (float("inf"), "")
+        for name in ik.arm:
+            if side and name != side:
+                continue
+            ik.solve(name, tuple(float(v) for v in point), source="world")
+            value = float(ik.residual_mm(name))
+            if value < best[0]:
+                best = (value, name)
+        return best
+
+
+    def _reach_keys(self) -> list:
+        """可达性校正要照顾的物体：除桌子外**全部**（含 mass=0 的目标标记）。
+
+        ``_movable_keys`` 只收 mass>0，那是给「抬到台面上 / 退让」用的；可达性不同 ——
+        ``pushcube`` 要把方块送到 ``target``，target 自己是 mass=0 的标记物，够不着就等于
+        这条任务永远做不完（实测 target 在 y=+0.30 处 IK 残差 642 mm）。
+        """
+        return [key for key in self.task.objects if key != TABLE_KEY]
+
+    def _layout_for_arm(self, forward: float = 0.26, drop: float = 0.22,
+                        lateral: float = 0.02, spread: float = 0.12,
+                        rebuild_bench: bool = True) -> None:
+        """按**这台臂的真实几何**重摆整幕（脚本档专用）。
+
+        为什么不再用 ``solve_shift`` 的球模型：那个模型把物体放在 0.9×reach 的球面上，
+        手臂伸直才勉强够到，压根没有「从上方接近」的余量；而且桌子会跟着漂到机器人身体里
+        （实测桌面近沿 x=0.083 m，机器人胸口就在桌子里，``home`` 航点差 0.123 m）。
+
+        这里只做三件事，全部按肩关节算：
+        1. 物体**整组**平移：质心放到「肩前 ``forward``、横向不超过 ``lateral``」；
+        2. 桌子跟着物体走，并把**桌面顶面**放到比肩低 ``drop``；近沿留在 x=0.24 m；
+        3. 物体随桌子一起升降，落到桌面上（不重建任何物体，相对布置不变）。
+        """
+        if self.shoulder is None or self.robot_id is None:
+            return
+        keys = [key for key in self.task.objects if key != TABLE_KEY]
+        if not keys:
+            return
+        shoulder = np.asarray(self.shoulder, dtype=float)
+        points = np.stack([body_pose(self.client, self.task.objects[key])[0]
+                           for key in keys])
+        centre = points.mean(axis=0)
+        # 先把「相对布置」等比压缩进 spread 半径：pushcube 的方块离目标 0.54 m，
+        # 一条 0.41 m 的手臂一次搬运根本走不完（实测 carry 差 0.079 m / lower 0.138 m）。
+        offsets = points[:, :2] - centre[:2]
+        reach_xy = float(np.linalg.norm(offsets, axis=1).max()) if len(points) > 1 else 0.0
+        scale = 1.0 if reach_xy <= spread or reach_xy <= 1e-9 else spread / reach_xy
+        for key, offset in zip(keys, offsets):
+            if scale >= 1.0:
+                break
+            target_xy = centre[:2] + offset * scale
+            current = body_pose(self.client, self.task.objects[key])[0]
+            move_body(self.client, self.task.objects[key],
+                      np.array([target_xy[0] - float(current[0]),
+                                target_xy[1] - float(current[1]), 0.0]))
+        if scale < 1.0:
+            points = np.stack([body_pose(self.client, self.task.objects[key])[0]
+                               for key in keys])
+            centre = points.mean(axis=0)
+            print("[scene] layout_for_arm: relative spread %.3f -> %.3f m (x%.2f)"
+                  % (reach_xy, reach_xy * scale, scale), flush=True)
+        want_x = float(shoulder[0] + forward)
+        # 横向按**整组中点**对齐肩（不是质心）：物体各自最多 ±spread，中点对齐后每个物体
+        # 离肩的横向就 ≤spread，左右两条臂都够得着（实测可达带在 y≈±0.10）。
+        y_mid = 0.5 * (float(points[:, 1].min()) + float(points[:, 1].max()))
+        want_y = float(shoulder[1] + max(-lateral, min(lateral, y_mid - shoulder[1])))
+        delta = np.array([want_x - centre[0], want_y - y_mid, 0.0])
+
+        for key in keys:
+            move_body(self.client, self.task.objects[key], delta)
+        table = self.task.objects.get(TABLE_KEY)
+        if table is not None:
+            # 桌子整体跟着物体平移；平移后若近沿还伸进机器人身前 0.24 m 以内，再单独往前推
+            move_body(self.client, table, np.array([delta[0], delta[1], 0.0]))
+            low, high = aabb(self.client, table)
+            if float(low[0]) < 0.24:
+                move_body(self.client, table, np.array([0.24 - float(low[0]), 0.0, 0.0]))
+                low, high = aabb(self.client, table)
+
+            want_top = float(shoulder[2] - drop)
+            shift_z = want_top - float(high[2])
+            move_body(self.client, table, np.array([0.0, 0.0, shift_z]))
+            for key in keys:
+                move_body(self.client, self.task.objects[key], np.array([0.0, 0.0, shift_z]))
+            self.report["notes"].append(
+                "layout_for_arm: objects moved by %s, table top -> %.3f m, near edge %.3f m"
+                % ([round(float(v), 3) for v in delta], want_top, float(low[0])))
+            print("[scene] layout_for_arm: table top=%.3f near_edge=%.3f objects_dxy=%s"
+                  % (want_top, float(low[0]), [round(float(v), 3) for v in delta[:2]]),
+                  flush=True)
+            # ★ 落地支撑必须按**新**桌面高度重建：旧支撑停在原桌面高度，等于在机器人胸口
+            #   立了一堵墙（实测每个航点都差 ~0.12 m，手臂顶在墙上）。
+            if rebuild_bench:
+                self.cleanup()
+                self._bench()
+
+
+    def _pull_into_ik_workspace(self, tolerance_mm: float = 15.0,
+                                max_shift_m: float = 0.30, rounds: int = 3,
+                                side: str = None) -> None:
+
+        """把够不着的物体组沿「在桌面上就近挪」的方向试，直到**真 IK** 残差合格。
+
+        为什么必须用 IK 而不是半径：``solve_shift`` 假设工作域是一个球，实测这台臂的
+        可达区是一条斜带（``outputs/tmp_probe/workspace2.txt``：y=+0.10 一带残差 3-14 mm，
+        y=-0.20 一带要到 x≈0.52 才 8 mm），球半径 0.55 m 上的点有一大半 IK 到不了
+        （pushcube 的方块在 0.51 m 处残差 58-81 mm）。批次 2 的 ``in_reach`` 因此是乐观的。
+        """
+        if self.robot_id is None or not self.robot:
+            return
+        keys = self._reach_keys()
+        if not keys:
+            return
+
+        ik = self._ik_solver()
+        state = self._joint_state()
+        try:
+            groups = self._touch_groups()
+            table = self.task.objects.get(TABLE_KEY)
+            if table is not None:
+                low, high = aabb(self.client, table)
+            else:
+                low, high = np.array([0.2, -0.8, 0.0]), np.array([1.2, 0.8, 1.0])
+            ring = (0.02, 0.04, 0.07, 0.10, 0.14, 0.19, 0.25)
+            angles = (0.0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.57, -1.57,
+                      2.09, -2.09, 2.62, -2.62, np.pi)
+            # 「够得着」还不够：贴着可达边界（≈0.9 reach）的点虽然残差合格，但手臂伸直后
+            # 没有余量从上方接近物体（实测 pushcube 的 hover 航点因此差 0.19 m）。
+            # 所以还要求离肩不超过 0.80 * reach —— 留出肘部弯曲的余量。
+            comfort = (0.80 * float(self.reach)) if self.reach else None
+
+            moved = {}
+            for group in groups:
+                group = [key for key in group if key in keys]
+                if not group:
+                    continue
+                for _round in range(int(rounds)):
+                    worst_key, worst_value = None, 0.0
+                    for key in group:
+                        point = body_pose(self.client, self.task.objects[key])[0]
+                        residual, _side = self._ik_residual_mm(ik, point, side=side)
+                        far = (comfort is not None and self.shoulder is not None
+                               and float(np.linalg.norm(np.asarray(point, dtype=float)
+                                                        - self.shoulder)) > comfort)
+                        if residual <= tolerance_mm and not far:
+                            continue
+                        score = residual if residual > tolerance_mm else tolerance_mm + 1.0
+                        if score > worst_value:
+                            worst_key, worst_value = key, score
+                    if worst_key is None:
+                        break
+
+                    point = body_pose(self.client, self.task.objects[worst_key])[0]
+                    chosen = None
+                    for radius in ring:
+                        if radius > max_shift_m:
+                            break
+                        for angle in angles:
+                            delta = np.array([radius * np.cos(angle),
+                                              radius * np.sin(angle), 0.0])
+                            probe = np.asarray(point, dtype=float) + delta
+                            if not (low[0] + 0.05 <= probe[0] <= high[0] - 0.05
+                                    and low[1] + 0.05 <= probe[1] <= high[1] - 0.05):
+                                continue
+                            residual, _side = self._ik_residual_mm(ik, probe, side=side)
+                            near = (comfort is None or self.shoulder is None
+                                    or float(np.linalg.norm(
+                                        np.asarray(probe, dtype=float) - self.shoulder))
+                                    <= comfort)
+                            if residual <= tolerance_mm and near:
+                                chosen = delta
+                                break
+                        if chosen is not None:
+                            break
+                    if chosen is None:
+                        message = ("ik workspace: %s 在 %.2f m 半径内找不到可达点（残差 %.0f mm）"
+                                   % (worst_key, max_shift_m, worst_value))
+                        self.report["notes"].append(message)
+                        print("[scene] " + message, flush=True)
+                        break
+                    for key in group:
+                        move_body(self.client, self.task.objects[key], chosen)
+                    moved[worst_key] = round(float(moved.get(worst_key, 0.0)
+                                                   + np.linalg.norm(chosen)), 4)
+                    print("[scene] ik workspace: moved %s by %.3f m (was %.0f off)"
+                          % (worst_key, float(np.linalg.norm(chosen)), worst_value),
+                          flush=True)
+
+            self._separate()
+            final = {}
+            for key in keys:
+                point = body_pose(self.client, self.task.objects[key])[0]
+                residual, side = self._ik_residual_mm(ik, point)
+                final[key] = {"residual_mm": round(residual, 1), "side": side}
+            self.report["ik_reach"] = {
+                "tolerance_mm": float(tolerance_mm),
+                "moved": moved,
+                "objects": final,
+                "ok": all(item["residual_mm"] <= tolerance_mm for item in final.values()),
+            }
+        finally:
+            for index, value in state.items():
+                p.resetJointState(self.robot_id, index, value,
+                                  physicsClientId=self.client)
+
+
     # -- 对外 ---------------------------------------------------------------
     def prepare(self, settle_steps: int = SETTLE_STEPS, shift: bool = True,
-                bench: bool = True) -> dict:
+                bench: bool = True, ik_workspace: bool = False,
+                side: str = None) -> dict:
+
+
         # SCENE_OPS 用的是**作者写的绝对坐标**（0.555 = 柜面 0.55 + 半厚 0.015），
         # 所以必须排在平移之前；平移一次动全部，相对关系不会被拆散。
         self._apply_ops()
@@ -664,7 +921,18 @@ class TaskScene:
         self._separate()
         self._clamp_to_reach()
         self._compress_to_reach()
-        self._settle(settle_steps)
+        if ik_workspace:
+            # 批次 5：球形模型把物体摆到了真 IK 够不到的地方 -> 先按真实臂几何重摆，
+            # 再用 IK 残差做最后校正（两步都写进 scene report）
+            self._layout_for_arm()
+            self._rest_on_table()
+            self._separate()
+            self._pull_into_ik_workspace(side=side)
+
+
+        self._settle(settle_steps, hold=ik_workspace)
+
+
         # 静置后物体可能被挤出去几厘米（锅被两个手柄推），最后再收一次；
         # 只动 x/y、不再跑物理，drift 记的是"收之前"的漂移，不掩饰。
         self._clamp_to_reach()
@@ -704,21 +972,74 @@ def shift_oracle(ops, dz: float) -> list:
     return out
 
 
+def sample_reach(client: int, body: int, robot: str, samples: int = 1200,
+                 seed: int = 0) -> dict:
+    """用 FK 采样量**真实**可达半径：``{side: 从肩关节到腕点的最大距离}``。
+
+    为什么不能用连杆和：``measure_arm`` 原来把「肩 link 原点到肘」+「肘到腕」当半径
+    （h1_2 = 0.5527 m），但那两段在静止位姿下并**不共线**，实测伸直也只有 0.4067 m
+    （``outputs/tmp_probe/limits.txt``）；按 0.55 m 摆出来的物体，IK 残差 58-81 mm，
+    手臂根本够不到（``outputs/tmp_probe/workspace2.txt``：y=-0.20 一带要 x≈0.52 才 8 mm）。
+    这里按 URDF 限位随机采样 7 个臂关节，直接量腕点离肩多远 —— 这才是 IK 能用的球。
+    """
+    from teleoperation.simulation.arm_ik import PyBulletArmIK
+
+    ik = PyBulletArmIK(body, client, robot_type=robot)
+    rng = np.random.RandomState(int(seed))
+    limits = {}
+    for side in ik.arm:
+        limits[side] = [(index, float(info[8]), float(info[9]))
+                        for index, info in zip(ik.indices, ik.infos)
+                        if index in {joint for joint, _name in ik.arm[side]}]
+    best = {side: 0.0 for side in ik.arm}
+    centre = {}
+    neutral = {}
+    for side in ik.arm:
+        for index, _low, _high in limits[side]:
+            neutral[index] = float(p.getJointState(body, index,
+                                                   physicsClientId=client)[0])
+        centre[side] = [round(float(v), 4) for v in ik.arm_points(side)["upper"]]
+    try:
+        for _ in range(int(samples)):
+            for side in ik.arm:
+                for index, low, high in limits[side]:
+                    if not (low == low and high == high) or high <= low:
+                        low, high = -3.14, 3.14
+                    p.resetJointState(body, index, float(rng.uniform(low, high)),
+                                      physicsClientId=client)
+                points = ik.arm_points(side)
+                radius = float(np.linalg.norm(np.asarray(points["wrist"])
+                                              - np.asarray(points["upper"])))
+                best[side] = max(best[side], radius)
+    finally:
+        for index, value in neutral.items():
+            p.resetJointState(body, index, value, physicsClientId=client)
+    return {"reach": {side: round(value, 4) for side, value in best.items()},
+            "centre": centre}
+
+
+
 def measure_arm(robot: str) -> dict:
-    """两肩中点 + 单臂臂长（上臂 + 前臂）。
+    """两肩中点 + 单臂臂长（上臂 + 前臂），**半径用 FK 采样量**（见 ``sample_reach``）。
 
     用**两肩中点**而不是某一侧：``pushcube`` 的方块在 y=-0.2，离左肩 0.4 m、离右肩 0.0 m，
     只取"第一个 shoulder_pitch"会把可达判成不可达（实测 dz 被逼到 +1.00 m，台面抬到肩高）。
     """
+    cached = _ARM_CACHE.get(str(robot))
+    if cached is not None:
+        return dict(cached)
     from teleoperation.simulation import RobotLoader
+
 
     client = p.connect(p.DIRECT)
     try:
         audit.fresh(client, ground=False)
         body = RobotLoader(client).load_robot(robot)["robot"]
         points = audit.link_points(client, body)
+        sampled = sample_reach(client, body, robot)
     finally:
         p.disconnect(client)
+
     low = {name.lower(): point for name, point in points.items()}
     shoulders = {name: point for name, point in low.items()
                  if "shoulder" in name and "pitch" in name}
@@ -746,13 +1067,30 @@ def measure_arm(robot: str) -> dict:
         upper = float(np.linalg.norm(first_elbow - first_shoulder))
         fore = float(np.linalg.norm(first_wrist - first_elbow))
     centre = np.mean(np.stack(list(shoulders.values())), axis=0)
-    return {"robot": robot,
-            "reach_m": round(upper + fore, 4),
-            "upper_m": round(upper, 4),
-            "fore_m": round(fore, 4),
-            "shoulder_m": [round(float(v), 4) for v in centre],
-            "shoulders": {name: [round(float(v), 4) for v in point]
-                          for name, point in shoulders.items()}}
+    reach_sampled = max(sampled["reach"].values()) if sampled["reach"] else 0.0
+    centres = [np.asarray(point, dtype=float) for point in sampled["centre"].values()]
+    if centres:
+        # 采样半径是**从肩关节轴**量出来的，中心必须用同一个点（不是名字匹配到的肩 link）
+        centre = np.mean(np.stack(centres), axis=0)
+    result = {"robot": robot,
+              "reach_m": round(reach_sampled, 4) if reach_sampled > 0.0
+              else round(upper + fore, 4),
+              "reach_sampled_m": sampled["reach"],
+              "reach_link_sum_m": round(upper + fore, 4),
+              "upper_m": round(upper, 4),
+              "fore_m": round(fore, 4),
+              "shoulder_m": [round(float(v), 4) for v in centre],
+              "shoulders": {name: [round(float(v), 4) for v in point]
+                            for name, point in shoulders.items()}}
+    _ARM_CACHE[str(robot)] = dict(result)
+    return result
+
+
+
+#: ``measure_arm`` 每次要跑一遍 FK 采样（~2 s），同一个进程里同一台机器人只量一次
+_ARM_CACHE: dict = {}
+
+
 
 #: 摄像头帧率的名义值（`frame_dt` 拿不到真实间隔时才用）：媒体管道实测 19-21 fps
 CAMERA_NOMINAL_FPS = 20.0
@@ -984,6 +1322,11 @@ def build_actions(policy: str, env, path: str = None, steps: int = None,
     if policy == "camera":
         live = CameraPolicy(env, **options)
         return live, dict({"policy": "camera", "source": "mediapipe_pose"}, **live.meta())
+    if policy == "scripted":
+        from task_scripted import ScriptedPolicy
+        live = ScriptedPolicy(env, task_name=env.task_name, **options)
+        return live, dict({"policy": "scripted", "source": "waypoint+ik"}, **live.meta())
+
     from teleoperation.applications.replay.replay_actions import (
         make_dummy_actions, validate_dim)
     if policy == "dummy":
@@ -1122,15 +1465,28 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                          shoulder=arm.get("shoulder_m"),
                                          reach=arm.get("reach_m"),
                                          name=task_name,
-                                         robot_id=env.robot_id).prepare(settle_steps)
+                                         robot_id=env.robot_id).prepare(
+                                             settle_steps,
+                                             ik_workspace=(policy == "scripted"),
+                                             side=options.get("side"))
+
+
             actions, policy_meta = build_actions(policy, env, actions_path, max_steps,
                                                  **options)
             live = actions if callable(actions) else None
             result = run_trial(env, actions, max_steps, max_wall_s=max_wall_s)
             trial = dict(result, trial=index, **policy_meta,
                          scene=scene_report, final_objects=object_positions(env))
+            if scene_report is not None and scene_report.get("criteria_at_reset"):
+                # 场景摆完判据就已经成立 -> 这条 trial 的成功是假的（布局把物体摆得太近），
+                # 如实记成失败并写明原因，绝不让它进成功率。
+                trial.update({"success": False, "completion_time_s": None,
+                              "criteria_at_reset": True,
+                              "note": "场景摆完后判据即为真（layout 把物体拉得太近）-> 不计成功"})
+
             if live is not None:
-                trial["camera"] = live.report()
+                trial["camera" if policy == "camera" else policy + "_report"] = live.report()
+
             if snapshot_dir:
                 shot = Path(snapshot_dir) / ("%s_%s_t%d.png" % (task_name, robot, index))
                 if snapshot(env, shot):
@@ -1280,9 +1636,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="机器人（--verify 时 all = 三台全跑）")
     parser.add_argument("--trials", type=int, default=1, help="每个任务跑几个 trial")
     parser.add_argument("--policy", default="idle",
-                        choices=["idle", "dummy", "replay", "camera"],
+                        choices=["idle", "dummy", "replay", "camera", "scripted"],
                         help="idle=不下发动作（查假成功）；dummy=正弦假动作；"
-                             "replay=契约H 动作文件；camera=摄像头实时驱动（现场用）")
+                             "replay=契约H 动作文件；camera=摄像头实时驱动（现场用）；"
+                             "scripted=脚本化操作（无人：IK 到位 + 抓取约束，见 task_scripted.py）")
+
     parser.add_argument("--actions", default=None, help="--policy replay 的动作文件")
     parser.add_argument("--camera-index", type=int, default=0, help="--policy camera 的相机编号")
     parser.add_argument("--side", default="right", choices=["left", "right"],
@@ -1309,7 +1667,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", default=None, help="报告落盘路径")
     parser.add_argument("--snapshot-dir", default=None,
                         help="每个 trial 结束时离屏渲染一张 PNG 到这个目录（现场取证用）")
+    parser.add_argument("--no-grasp-assist", action="store_true",
+                        help="--policy scripted 关掉抓取约束（对照：纯接触抓不住）")
+    parser.add_argument("--scripted-speed", type=float, default=None,
+                        help="--policy scripted 末端速度 m/s（默认 0.35）")
+    parser.add_argument("--scripted-ik-every", type=int, default=None,
+                        help="--policy scripted 每几个物理步解一次 IK（默认 8）")
+    parser.add_argument("--scripted-trace", action="store_true",
+                        help="--policy scripted 打印每段到位情况（排障用）")
     return parser
+
 
 
 def main(argv=None) -> int:
@@ -1361,9 +1728,21 @@ def main(argv=None) -> int:
         print("[FAIL] unknown task(s): %s" % unknown)
         return 2
     max_steps = max(1, int(round(args.max_sim_s / DT)))
-    options = {"side": args.side, "camera_index": args.camera_index,
-               "substeps": args.substeps, "calibrate_frames": args.calibrate_frames,
-               "arm_map": args.arm_map, "preview": args.preview}
+    if args.policy == "scripted":
+        from task_scripted import IK_EVERY_STEPS, SPEED_M_S
+        options = {"side": args.side,
+                   "grasp_assist": not args.no_grasp_assist,
+                   "speed_m_s": (SPEED_M_S if args.scripted_speed is None
+                                 else args.scripted_speed),
+                   "ik_every": (IK_EVERY_STEPS if args.scripted_ik_every is None
+                                else args.scripted_ik_every),
+                   "trace": args.scripted_trace}
+
+    else:
+        options = {"side": args.side, "camera_index": args.camera_index,
+                   "substeps": args.substeps, "calibrate_frames": args.calibrate_frames,
+                   "arm_map": args.arm_map, "preview": args.preview}
+
     reports = []
     for name in tasks:
         report = evaluate_task(args.robot, name, args.trials, args.policy,

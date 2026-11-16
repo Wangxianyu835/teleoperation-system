@@ -101,10 +101,76 @@ MIN_ELBOW_PLANE_SINE = 0.05
 #: 掌面法向取点：腕 0 / 食指 MCP 5 / 小指 MCP 17。与 ``--wrist-trace`` 的 ``palm_normal``
 #: 是**同一口径**（现场取证看到的那一列，就是这里喂给 IK 的那一维）。
 PALM_NORMAL_SLOTS = (0, 5, 17)
+
+#: 左侧的掌面法向要**取反**：MediaPipe 21 点里食指 MCP 在拇指侧、小指 MCP 在另一侧，
+#: 左右手的关键点绕序是**镜像**的，于是同一个 ``cross(index - wrist, pinky - wrist)`` 在右手
+#: 给出「掌心朝外」、在左手给出「掌心朝内」。``y = z x x`` 是推算出来的，所以那一帧形式上
+#: 仍是正交旋转（det = +1），差别藏在「z 指反」里 —— 等价于**整帧绕前臂轴多转 180 度**。
+#:
+#: 后果（2026-11-16 深夜现场 + 离线取证 ``outputs/tmp_probe/left_right_palm_sign.py``）：
+#: 绕前臂的自转在 ``R_neutral^T @ R_now`` 里**不受影响**（同一个叉乘在两侧都被用，共轭约掉，
+#: 实测两侧给的都是 +40.0 度），但腕的 pitch/yaw 两个方向在左侧整体反号 —— 于是左手的目标
+#: 姿态系统性偏了 180 度：关节被一路推到行程两端（同一跑报告 ``arm.wrist_usage``：h1_2 左
+#: ``wrist_pitch`` usage 1.000 顶满、``wrist_yaw`` 0.000 顶死另一端，右 0.283/0.248 全在中段；
+#: g1 左 ``wrist_roll`` 1.000 顶满、右 0.184），现场看到的就是「右手跟得上、左手反着拧，而且
+#: 左边特别抖」（``bridge.counts.direction_glitch`` 左 77 / 右 39）。
+#:
+#: 取反之后左侧掌面基与右侧同手性，同一个世界旋转在两侧语义一致。**不改**旋前那一维的含义
+#: （它本来就对），改的是 pitch/yaw 那两维。
+MIRRORED_PALM_SIDES = ("left",)
+
+
 #: 掌面法向投影到「前臂法平面」之后的长度下限（= sin(法向, 前臂)）。手掌自然朝前时它
 #: 接近 1；接近 0 说明掌面法向与前臂几乎平行（手腕折成 90 度、或 21 点乱跳），此时滚转
 #: 定不出来 —— 退回三点基，不猜。
 MIN_PALM_SINE = 0.05
+#: 掌面基这一帧给不出时，还能沿用**上一次**掌面旋转多久（秒；``0`` = 关，A/B 用）。
+#:
+#: 为什么要保持（2026-11-16 第一次带 ``--wrist-trace`` 的现场，CSV 见
+#: ``outputs/tmp_probe/wrist_live_hold.csv``）：掌面基依赖**米制 21 点手**，而手部模型在
+#: 那场里只有约 20% 的帧给出完整手点，``ori_source`` 于是逐帧在 ``palm_normal`` /
+#: ``three_point`` 之间来回切。两套基量的不是同一件事：``three_point`` 对旋前完全不敏感，
+#: 所以「丢掉一帧掌面基」等于把腕目标从「拧了 90 度」瞬间改成「没拧」—— 机器人照着做就是
+#: 猛甩一下；掌面基回来之后，同一份姿态在腕链上的两个对称解又落在另一支上（实测 g1 左腕
+#: ``left_wrist_pitch_joint`` 在 -1.512 / +1.619 rad 两颗限位之间跳，而限位正是
+#: ±1.614429558 rad），现场看到的就是「抽搐」。丢一两帧时沿用上一帧的掌面旋转，比换一套
+#: 量不到旋前的基更接近事实：腕的目标本来是连续的。超过窗口才如实退回 ``three_point``
+#: （无限保持会让腕锁在旧姿态上不跟手）。
+PALM_HOLD_S = 0.5
+#: 腕姿态目标（下发给 IK 的那一份相对旋转）的最大角速度（度/秒）：``0`` = 关（A/B 基线）。
+#:
+#: 为什么 ``PALM_HOLD_S`` 之后还需要这一层（2026-11-16 第二次现场，CSV 见
+#: ``outputs/tmp_probe/wrist_live_hold2.csv``，分析脚本 ``outputs/tmp_probe/analyze_hold2*.py``）：
+#: 加了保持窗口后「换基那一下」确实不跳了（进 ``palm_hold`` 的帧 |d腕| 只有 0.000-0.010 rad），
+#: 但同一场里仍有 **1-2% 的掌面帧本身是坏的**：``palm_turn`` 的逐帧角速度 p50 13-50 度/秒、
+#: p90 114-210、p99 740-833、最大 1252（人手腕极限约 500-700），也就是偶发一帧就要求转
+#: 100-180 度。这些帧直接把腕目标拨过去，实测 g1 左腕 4 秒内 0.75 -> 3.14 -> -0.49 rad
+#: （3.14 = 腕行程尽头），现场看到的就是「抽搐」。另一种同源跳变是**换基**：掌面基丢超过
+#: ``PALM_HOLD_S`` 后如实退回 ``three_point``，两套基的目标差 2.6-3.0 rad，那一下也是瞬时的。
+#:
+#: 这里是**限速**而不是「保持」或低通：按这一帧的真实时长放行 ``rate * dt`` 那么多度，
+#: 轴不变。真手速之内照跟（p50 只有 13-50 度/秒，限速根本不介入），超了就把尖峰削成一段
+#: 连续运动；与 ``_guard_direction`` 的「保持」不同，它**不会卡住**持续的快动作，也不会在
+#: 尖峰过去之后来回振（削掉的角度不累积成追赶）。与 ``--arm-slew-mm`` 是同一哲学，只是
+#: 作用在旋转上。数字依据：人前臂旋前/旋后的峰值约 500-700 度/秒，取 540 落在里面。
+MAX_ORIENTATION_RATE_DEG_S = 540.0
+#: 腕姿态目标**每帧**最多走多少度（与帧长无关）；``0`` = 只按速率（旧行为）。
+#:
+#: 为什么在速率上限之外还要这一条（2026-11-16 晚，现场 16 分钟实跑
+#: ``outputs/tmp_realtime/arm_run_20261116_213650.json``：5940 帧 / 967.7 秒 =
+#: **5.92 fps**，``median_frame_interval_ms`` 155.4）：``rate * dt`` 在 155 ms 一帧时
+#: 等于 **84 度/帧**，于是一帧 150 度的坏掌面帧仍被放行 84 度 —— 速率上限在这个帧率下
+#: 等于没拦，现场看到的还是「抽一下」（同一份报告里 ``arm.residual_mm`` 49-329 mm、
+#: 左臂 2251/5940 = 38% 的帧没有手点，也都是同一个低帧率现场的产物）。
+#:
+#: 分工：速率管「这个速度人体可能吗」，这一条管「这一帧别走太远」，与帧率脱钩 ——
+#: 6 fps 与 30 fps 都最多 30 度/帧。两条同时生效时取较小的那个。
+#:
+#: 代价如实说：帧长超过 ``30/540 = 55.6 ms``（低于 18 fps）时这一条比速率更紧，会削掉
+#: **真实**的快速转腕（0.5 秒一帧里人真能转 150 度）。18 fps 以上一个数都不改（30 fps
+#: 下速率只放 18 度/帧）。要在低帧率下把「真快」与「坏帧」分开，只能等「缓一帧回看」
+#: （给每帧加一帧延迟），本轮没做。
+MAX_ORIENTATION_STEP_DEG = 30.0
 #: 目标超出行程上限后的做法：``clip`` = 逐轴剪断（**默认**）；``scale`` = 整条位移等比缩到上限。
 #: 2026-10-13 单轴隔离 + 正弦跟随实测（E:\cache\tmp\probe_axis_response.py / probe_sine.py，
 #: 数字写进 docs/multi-robot-arm.md §8.8）：一次真实现场复合位移 (-9.3, +6.4, +24.5) cm
@@ -247,6 +313,59 @@ def _angle_between_deg(left, right) -> float:
     return float(degrees(acos(cosine)))
 
 
+def quaternion_angle_deg(left, right) -> float:
+    """两个单位四元数（``[x, y, z, w]``，PyBullet 序）之间的转角（度，0-180）；坏输入给 NaN。
+
+    口径与 ``--wrist-trace`` 的 ``ori_turn_deg`` 逐字相同（``2*acos(|w|)``，``q`` 与 ``-q``
+    是同一个姿态，所以取绝对值），这样现场看到的那个数和限速用的那个数是同一个数。
+    """
+    left = np.asarray(left, dtype=np.float64).reshape(-1)
+    right = np.asarray(right, dtype=np.float64).reshape(-1)
+    if left.size != 4 or right.size != 4:
+        return float("nan")
+    left_norm = float(np.linalg.norm(left))
+    right_norm = float(np.linalg.norm(right))
+    if not np.isfinite(left_norm) or not np.isfinite(right_norm) \
+            or left_norm <= 0.0 or right_norm <= 0.0:
+        return float("nan")
+    cosine = abs(float(np.dot(left, right)) / (left_norm * right_norm))
+    return float(degrees(2.0 * acos(min(1.0, max(-1.0, cosine)))))
+
+
+def _quaternion_multiply(left, right):
+    """``left * right``（Hamilton 积，``[x, y, z, w]`` 序）：先把 ``right`` 转再转 ``left``。"""
+    x1, y1, z1, w1 = (float(value) for value in np.asarray(left, dtype=np.float64).reshape(4))
+    x2, y2, z2, w2 = (float(value) for value in np.asarray(right, dtype=np.float64).reshape(4))
+    return np.array([w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                     w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                     w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+                     w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2], dtype=np.float64)
+
+
+def _quaternion_scaled(quaternion, fraction: float):
+    """把 ``quaternion`` 的转角按 ``fraction``（0..1）缩，**轴不变**；= 与单位四元数做 slerp。
+
+    用途只有一处：限速时「只走 limit 那么多度」（见 ``MAX_ORIENTATION_RATE_DEG_S``）。
+    转轴保持不变是必须的 —— 换轴等于换姿态方向，削尖峰会变成另一条曲线。
+    """
+    values = np.asarray(quaternion, dtype=np.float64).reshape(4)
+    norm = float(np.linalg.norm(values))
+    if not np.isfinite(norm) or norm <= 0.0:
+        return np.array([0.0, 0.0, 0.0, 1.0])
+    values = values / norm
+    if float(values[3]) < 0.0:
+        values = -values
+    half = float(acos(min(1.0, max(-1.0, float(values[3])))))
+    sine = float(np.sin(half))
+    if not np.isfinite(sine) or sine <= 1e-9:
+        # 转角 0：怎么缩都还是它自己。
+        return np.array([0.0, 0.0, 0.0, 1.0])
+    axis = values[:3] / sine
+    scaled_half = half * float(min(max(fraction, 0.0), 1.0))
+    return np.array([axis[0] * np.sin(scaled_half), axis[1] * np.sin(scaled_half),
+                     axis[2] * np.sin(scaled_half), np.cos(scaled_half)], dtype=np.float64)
+
+
 def elbow_bend_degrees(shoulder, elbow, wrist) -> float:
     """肘关节弯曲角（度）：0 = 完全伸直，180 = 完全折起。
 
@@ -326,8 +445,12 @@ def _relative_to_neutral(frame, neutral_frame):
     return np.asarray(neutral_frame, dtype=np.float64).T @ np.asarray(frame, dtype=np.float64)
 
 
-def palm_orientation_frame(hand_world, arm_world):
-    """(手 21 点度量world, (肩, 肘, 腕)) -> 3x3 腕坐标系（列 = x/y/z 基）；给不出时 None。
+def palm_orientation_frame(hand_world, arm_world, side):
+    """(手 21 点度量world, (肩, 肘, 腕), 侧) -> 3x3 腕坐标系（列 = x/y/z 基）；给不出时 None。
+
+    ``side`` 是**必须**给的（``"left"`` / ``"right"``）：关键点绕序左右镜像，掌面法向要按侧
+    取反才能让两侧同手性，否则左手那一帧等于绕前臂多转 180 度（见 ``MIRRORED_PALM_SIDES``）。
+    不给侧就等于把 2026-11-16 深夜那个「左手反着拧」的 bug 又装回去，所以这里不给默认值。
 
     与 ``wrist_orientation_frame`` 只差**第三轴是谁给的**：那一版的 z 取「上臂 x 前臂」
     的手臂平面法向 —— 绕前臂轴的自转（旋前/旋后）在那套几何里是自由度、量不到，
@@ -355,6 +478,9 @@ def palm_orientation_frame(hand_world, arm_world):
         return None
     origin, index, pinky = (hand[slot] for slot in PALM_NORMAL_SLOTS)
     normal = np.cross(index - origin, pinky - origin)
+    if side in MIRRORED_PALM_SIDES:
+        # 见 MIRRORED_PALM_SIDES：左手的关键点绕序与右手镜像，不取反就是「掌心朝内」。
+        normal = -normal
     length = float(np.linalg.norm(normal))
     if not np.isfinite(length) or length <= 0.0:
         return None
@@ -369,13 +495,15 @@ def palm_orientation_frame(hand_world, arm_world):
     return np.stack((x_axis, y_axis, z_axis), axis=1)
 
 
-def relative_palm_rotation(hand_world, arm_world, neutral_frame):
+def relative_palm_rotation(hand_world, arm_world, neutral_frame, side):
     """这一帧的**掌面基**相对中性那一帧的旋转 ``R_neutral^T @ R_now``；给不出时 None。
 
     与 ``relative_wrist_rotation`` 的差别只有基的构造（见 ``palm_orientation_frame``）：
-    它对绕前臂轴的自转敏感，于是「手旋前 90 度」真的会变成 90 度的姿态目标。
+    它对绕前臂轴的自转敏感，于是「手旋前 90 度」真的会变成 90 度的姿态目标。``side`` 必须
+    带下去 —— 掌面法向要按侧取反，否则左手那一帧等于绕前臂多转 180 度。
     """
-    return _relative_to_neutral(palm_orientation_frame(hand_world, arm_world), neutral_frame)
+    return _relative_to_neutral(palm_orientation_frame(hand_world, arm_world, side),
+                                neutral_frame)
 
 
 def _average_rotation(matrices):
@@ -640,6 +768,9 @@ class RealtimeArmBridge:
                  normalise_arm_length: bool = True,
                  arm_length_band=ARM_LENGTH_BAND,
                  orientation: str = "auto",
+                 palm_hold_s: float = PALM_HOLD_S,
+                 max_orientation_rate_deg_s: float = MAX_ORIENTATION_RATE_DEG_S,
+                 max_orientation_step_deg: float = MAX_ORIENTATION_STEP_DEG,
                  gains=None, max_travel_m=None, neutral=None,
                  travel_mode: str = "clip",
                  lateral_guard_m: float = DEFAULT_LATERAL_GUARD_M,
@@ -716,6 +847,10 @@ class RealtimeArmBridge:
         self.normalise_arm_length = bool(normalise_arm_length)
         self.arm_length_band = (float(arm_length_band[0]), float(arm_length_band[1]))
         self.orientation = orientation
+        #: 掌面基丢帧时沿用上一次掌面旋转的窗口（秒，见 ``PALM_HOLD_S``）。0 = 立即退回三点基。
+        if float(palm_hold_s) < 0.0:
+            raise ValueError("palm_hold_s must be >= 0 (0 turns the hold off)")
+        self.palm_hold_s = float(palm_hold_s)
         self.gains = {str(name): float(value) for name, value in (gains or {}).items()}
         self.max_travel_m = (None if max_travel_m is None else float(max_travel_m))
         if travel_mode not in TRAVEL_MODES:
@@ -734,6 +869,10 @@ class RealtimeArmBridge:
         self.frames = 0
         self._samples = {side: [] for side in self.sides}
         self.neutral = {side: _neutral_default() for side in self.sides}
+        #: 标定期间**真的拿到过**掌面基的帧数。0 = 这一整场量不到旋前/旋后（见
+        #: ``_raw_orientation``：掌面基要跟中性里的 ``orientation_palm`` 相减，它是 None 就
+        #: 只能退回三点基）。2026-11-16 晚那场就是标定那 30 帧手不在画面里，整场丢旋前跟踪。
+        self._palm_samples = {side: 0 for side in self.sides}
         self._last_state = {side: None for side in self.sides}
         #: 关键点跳变护栏的角速度上限（度/秒）：0 = 关（A/B 用）。见 ``_guard_direction``。
         self.max_direction_rate_deg_s = max(0.0, float(max_direction_rate_deg_s))
@@ -741,6 +880,16 @@ class RealtimeArmBridge:
         self._last_direction = {}
         #: 每侧连续被拦的帧数（见 ``GLITCH_HOLD_FRAMES``）。
         self._glitch_streak = {}
+        #: 每侧最近一次可用的掌面旋转 ``(四元数, 距今秒数)``；丢帧时按 ``PALM_HOLD_S``
+        #: 沿用它（见 ``_orientation_frame``）。
+        self._palm_hold = {side: None for side in self.sides}
+        #: 腕姿态目标的角速度上限（度/秒）：0 = 关（A/B 用）。见 ``_clamp_orientation``。
+        self.max_orientation_rate_deg_s = max(0.0, float(max_orientation_rate_deg_s))
+        #: 腕姿态目标**每帧**最多走多少度（与帧长无关）：0 = 只按速率，见
+        #: ``MAX_ORIENTATION_STEP_DEG``。
+        self.max_orientation_step_deg = max(0.0, float(max_orientation_step_deg))
+        #: 每侧上一帧**放行**的姿态目标（限速的链式基准，见 ``_clamp_orientation``）。
+        self._last_orientation = {}
         #: 这一帧的时长（秒）：护栏的角速度上限按它换算。见 _guard_direction。
         #: 构造时给一个值 = 这个调用方按固定帧率跑（``update(frame_dt=...)`` 仍可逐帧覆盖）。
         self.frame_dt = NOMINAL_FRAME_DT_S
@@ -753,6 +902,10 @@ class RealtimeArmBridge:
                        "held": {side: 0 for side in self.sides},
                        "fallback": {side: 0 for side in self.sides},
                        "oriented": {side: 0 for side in self.sides},
+                       #: 掌面基这一帧丢了、沿用上一帧掌面旋转的帧数（见 ``PALM_HOLD_S``）。
+                       "palm_held": {side: 0 for side in self.sides},
+                       #: 姿态目标被限速削过的帧数（见 ``MAX_ORIENTATION_RATE_DEG_S``）。
+                       "orientation_clamped": {side: 0 for side in self.sides},
                        "clamped": {side: 0 for side in self.sides},
                        "guarded": {side: 0 for side in self.sides},
                        "segments": {side: 0 for side in self.sides},
@@ -787,6 +940,8 @@ class RealtimeArmBridge:
                 "upper": _neutral_vector(entry.get("upper"), 3),
                 "fore": _neutral_vector(entry.get("fore"), 3),
                 "samples": int(entry.get("samples", 0)),
+                # 标定期间拿到掌面基的帧数（0/缺 = 这一整场量不到旋前，见 _palm_samples）。
+                "palm_samples": int(entry.get("palm_samples", 0)),
                 "complete": bool(entry.get("complete", False)) and offset is not None,
             }
 
@@ -1023,6 +1178,11 @@ class RealtimeArmBridge:
                 value = 0.0
             if value > 0.0:
                 self.frame_dt = value
+        # 掌面基的保持窗口按这一帧的真实时长走（见 ``PALM_HOLD_S``）：现场 8-12 fps，
+        # 写死「几帧」会把窗口绑在帧率上。
+        for side, held in self._palm_hold.items():
+            if held is not None:
+                self._palm_hold[side] = (held[0], held[1] + self.frame_dt)
         normalized, world = _hand_frames(hands)
         arms = _side_map(arms_world)
         inputs = {}
@@ -1082,12 +1242,15 @@ class RealtimeArmBridge:
         if entry["complete"] or data["arm"] is None:
             return
         points = data["arm"]
+        palm_frame = palm_orientation_frame(data.get("world_hand"), points, side)
+        if palm_frame is not None:
+            self._palm_samples[side] += 1
         self._samples[side].append((points[2] - points[0], arm_reach(points),
                                     wrist_orientation_frame(points),
                                     points[1] - points[0], points[2] - points[1],
                                     # 掌面基：没手点 / 掌面退化时是 None，
                                     # 均值那边照样能出（全是 None 就给 None）。
-                                    palm_orientation_frame(data.get("world_hand"), points)))
+                                    palm_frame))
         self._refresh_neutral(side)
 
     def _refresh_neutral(self, side) -> None:
@@ -1118,6 +1281,9 @@ class RealtimeArmBridge:
         entry["upper"] = np.median(uppers, axis=0)
         entry["fore"] = np.median(fores, axis=0)
         entry["samples"] = int(len(samples))
+        #: 这批样本里有几帧真的带掌面基：0 就说明这一整场量不到旋前（现场只看 ``ori_source``
+        #: 全是 ``three_point`` 是看不出来的，要这一列才知道「标定时机不对」）。
+        entry["palm_samples"] = int(self._palm_samples[side])
         entry["complete"] = bool(enough)
 
     def _guard_direction(self, side, upper, fore):
@@ -1509,32 +1675,114 @@ class RealtimeArmBridge:
         return self._orientation_frame(data)[0]
 
     def _orientation_frame(self, data):
-        """``(四元数 or None, 用的是哪条基)``；基 ∈ ``{"palm_normal", "three_point", None}``。
+        """``(四元数 or None, 用的是哪条基)``；基 ∈ ``{"palm_normal", "palm_hold", "three_point", None}``。
 
         返回值单独带一条「基」的名字，是因为现场排查必须先分清**两种失败**：
         「掌面基退化、退回三点基」（``three_point`` 但 ``ori_turn`` 对旋前不敏感）与
         「根本没算出来」（``None``，这一帧位置模式）。两者在报告里长得一样，性质不同。
+
+        ``palm_hold`` = 这一帧的掌面基给不出（手点丢了 / 掌面退化），但上一次给出它不超过
+        ``PALM_HOLD_S``，于是沿用那一次的相对旋转。理由见 ``PALM_HOLD_S``：两套基量的不是
+        同一件事，逐帧来回切就是把腕目标在「拧了 90 度」和「没拧」之间来回拨。窗口过了才
+        如实退回 ``three_point``。
+
+        算出来的旋转还要过一遍 ``_clamp_orientation``（角速度上限），但**保持窗口里存的是
+        原始测量值**：限速削过的那一份只给 IK，不能反过来污染下一次的「上一帧掌面旋转」。
         """
+        rotation, source = self._raw_orientation(data)
+        if rotation is None:
+            return None, None
+        clamped, _ = self._clamp_orientation(data.get("side"), rotation)
+        return clamped, source
+
+    def _raw_orientation(self, data):
+        """``_orientation_frame`` 的测量部分（不含限速）：``(四元数 or None, 基名 or None)``。"""
         if self.orientation == "off":
             return None, None
-        entry = self.neutral.get(data.get("side"))
+        side = data.get("side")
+        entry = self.neutral.get(side)
         if entry is None:
             return None, None
         arm = data.get("arm")
-        # 掌面基优先：它比三点基多一维（旋前/旋后）。退化时如实退回三点基。
+        # 掌面基优先：它比三点基多一维（旋前/旋后）。
         relative = relative_palm_rotation(data.get("world_hand"), arm,
-                                          entry.get("orientation_palm"))
-        source = "palm_normal"
-        if relative is None:
-            relative = relative_wrist_rotation(arm, entry.get("orientation"))
-            source = "three_point"
+                                          entry.get("orientation_palm"), side)
+        if relative is not None:
+            from teleoperation.retargeting.arm.wrist_targets import (
+                rotation_matrix_to_quaternion)
+
+            held = tuple(float(value) for value in
+                         rotation_matrix_to_quaternion(relative))
+            # 这一帧重新拿到掌面基：窗口重新计时。
+            self._palm_hold[side] = (held, 0.0)
+            return held, "palm_normal"
+        held = self._palm_hold.get(side)
+        if held is not None and held[1] <= self.palm_hold_s:
+            self.counts["palm_held"][side] += 1
+            return held[0], "palm_hold"
+        # 掌面基超出窗口（或从来没有）：如实退回三点基 —— 它量不到旋前，不假装量到。
+        relative = relative_wrist_rotation(arm, entry.get("orientation"))
         if relative is None:
             return None, None
         from teleoperation.retargeting.arm.wrist_targets import (
             rotation_matrix_to_quaternion)
 
         return (tuple(float(value) for value in
-                      rotation_matrix_to_quaternion(relative)), source)
+                      rotation_matrix_to_quaternion(relative)), "three_point")
+
+    def _orientation_limit_deg(self) -> float:
+        """这一帧最多放行多少度：``min(rate * dt, step)``；``rate <= 0`` = 整个机制关掉（0）。
+
+        两条上限分工见 ``MAX_ORIENTATION_RATE_DEG_S`` / ``MAX_ORIENTATION_STEP_DEG``：
+        速率那条按**这一帧的真实时长**换算（6 fps 下 540 度/秒 = 84 度/帧，几乎不拦），
+        步长那条与帧长无关（任何帧率都最多 ``MAX_ORIENTATION_STEP_DEG`` 度）。
+
+        ``step <= 0`` = 只按速率（历史行为）；``rate <= 0`` 时一律 0 —— A/B 基线要求
+        「关掉就是逐位透传」，不能被步长那条单独接管。
+        """
+        if self.max_orientation_rate_deg_s <= 0.0:
+            return 0.0
+        limit = self.max_orientation_rate_deg_s * self.frame_dt
+        if self.max_orientation_step_deg > 0.0:
+            limit = min(limit, self.max_orientation_step_deg)
+        return limit
+
+    def _clamp_orientation(self, side, quaternion):
+        """单帧姿态变化超过上限 -> 只放行 ``limit`` 那么多度（见 ``_orientation_limit_deg``）。
+
+        返回 ``(放行后的四元数, 被削掉的角度)``。基准是**上一帧放行后的值**，所以削掉的角
+        不会累积成「追赶」（下一帧从削过的位置继续算）；这也正是它和低通的区别：低通在尖峰
+        之后要来回振几下才收敛，限速只是把一跳变成一段连续运动，不会过冲。
+
+        为什么对 ``three_point`` 也生效：换基（掌面基丢超过 ``PALM_HOLD_S``）那一下两套基的
+        目标差 2.6-3.0 rad（实测 ``outputs/tmp_probe/wrist_live_hold2.csv`` f=246/439/550），
+        那是**真实的口径切换**而不是噪声，但同样不该在一帧里完成。
+
+        与 ``_guard_direction`` 的一处不同：``data["arm"]`` 断流时**不清**这里的基准。跳变
+        护栏判的是「这是不是手在动」，断流后必须重新起算；限速管的是「命令连不连续」，断流
+        之后的大幅转向同样该是一段连续运动，清掉基准反而会把那一跳放过去。要清用 ``reset()``。
+        """
+        if quaternion is None:
+            return None, 0.0
+        quaternion = tuple(float(value) for value in
+                           np.asarray(quaternion, dtype=np.float64).reshape(4))
+        previous = self._last_orientation.get(side)
+        limit = self._orientation_limit_deg()
+        if previous is None or limit <= 0.0:
+            self._last_orientation[side] = quaternion
+            return quaternion, 0.0
+        step = quaternion_angle_deg(previous, quaternion)
+        if not np.isfinite(step) or step <= limit:
+            self._last_orientation[side] = quaternion
+            return quaternion, 0.0
+        relative = _quaternion_multiply(tuple(float(-value) for value in previous[:3])
+                                        + (float(previous[3]),), quaternion)
+        clamped = tuple(float(value) for value in
+                        _quaternion_multiply(previous,
+                                             _quaternion_scaled(relative, limit / step)))
+        self._last_orientation[side] = clamped
+        self.counts["orientation_clamped"][side] += 1
+        return clamped, float(step - limit)
 
     def _orientation_wanted(self, profile) -> bool:
         """要不要带姿态约束：``auto`` = 只在 profile 声明 ``ik_mode="pose"`` 时带。"""
@@ -1826,6 +2074,11 @@ class RealtimeArmBridge:
                                                      np.asarray(self.neutral[side]["orientation"],
                                                                 dtype=np.float64)]),
                                "samples": self.neutral[side]["samples"],
+                               # 标定期间拿到掌面基的帧数 + 结论：0/False = 这一整场只有三点基，
+                               # 量不到旋前/旋后（现场「手腕不跟」就是这个，见 _palm_samples）。
+                               "palm_samples": self.neutral[side].get("palm_samples", 0),
+                               "orientation_palm_recorded":
+                                   self.neutral[side].get("orientation_palm") is not None,
                                "complete": self.neutral[side]["complete"]}
                         for side in self.sides},
             # 「肘跟手」（``--arm-elbow-follow operator``）用的两个操作者量：中性那一帧的
@@ -1842,6 +2095,11 @@ class RealtimeArmBridge:
                        "held": dict(self.counts["held"]),
                        "fallback": dict(self.counts["fallback"]),
                        "oriented": dict(self.counts["oriented"]),
+                       # 掌面基丢帧、沿用上一帧掌面旋转的帧数（见 ``PALM_HOLD_S``）：
+                       # 它占 ``frames`` 的比例就是现场的手点丢帧率。
+                       "palm_held": dict(self.counts["palm_held"]),
+                       # 姿态目标被限速削过的帧数（见 ``MAX_ORIENTATION_RATE_DEG_S``）。
+                       "orientation_clamped": dict(self.counts["orientation_clamped"]),
                        "clamped": dict(self.counts["clamped"]),
                        "guarded": dict(self.counts["guarded"]),
                        "segments": dict(self.counts["segments"]),
@@ -1861,11 +2119,15 @@ class RealtimeArmBridge:
         self.frames = 0
         self._last_state = {side: None for side in self.sides}
         self._last_direction = {}
+        self._palm_hold = {side: None for side in self.sides}
+        self._last_orientation = {}
         self.counts = {"frames": 0,
                        "valid": {side: 0 for side in self.sides},
                        "held": {side: 0 for side in self.sides},
                        "fallback": {side: 0 for side in self.sides},
                        "oriented": {side: 0 for side in self.sides},
+                       "palm_held": {side: 0 for side in self.sides},
+                       "orientation_clamped": {side: 0 for side in self.sides},
                        "clamped": {side: 0 for side in self.sides},
                        "guarded": {side: 0 for side in self.sides},
                        "segments": {side: 0 for side in self.sides},
@@ -1879,6 +2141,7 @@ class RealtimeArmBridge:
         if recalibrate:
             self._samples = {side: [] for side in self.sides}
             self.neutral = {side: _neutral_default() for side in self.sides}
+            self._palm_samples = {side: 0 for side in self.sides}
 
 
 def _round_or_none(value, digits: int):

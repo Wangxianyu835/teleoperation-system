@@ -2235,3 +2235,593 @@ E:\python3.11.7\python.exe devtools\run_realtime_arm_windows.py --arm-orientatio
 
 
 
+### 8.20 「翻转手腕机器人不转、还抽搐」：掌面基逐帧换基 + 单帧坏帧的角速度限速（2026-11-16 第二次现场，`--arm-palm-hold-ms` / `--arm-orientation-rate-deg-s`）
+
+这一场查出来**两个机制叠在一起**，两轮各治一个：换基跳变 -> §8.20.3（`PALM_HOLD_S`）；
+**掌面基自身 1-2% 的坏帧**与「退回三点基」那一下 -> §8.20.7（`MAX_ORIENTATION_RATE_DEG_S`）。
+
+#### 8.20.1 现场说法与第一次实测
+
+用户现场（三台一起看，`--arm-orientation on --arm-ik-mode pose`）：
+
+1. **「我翻转手腕的时候，机器人的手腕并不会翻转」**；
+2. **「它们的手腕会有点抽搐的感觉」**。
+
+先把「是不是改坏了」排掉：`--arm-ik-mode pose` 只是**多加**一遍姿态求解，`position` 那一遍逐字没动；
+位置目标与腕关节值在两次现场里都在正常跟随（下面第 3 条），所以不是「手臂被锁住」。
+
+两次现场都带 `--wrist-trace` 取证（CSV 留在 `outputs/tmp_probe/`）：
+
+| 场次 | 命令要点 | 行数 / 其中 `palm_normal` | `three_point` | `none` | `none_hand_fallback` |
+|---|---|---|---|---|---|
+| A | 默认 `--arm-calibrate-mode track` | 3090 / **486** | 2124 | 96 | 432 |
+| B | `--arm-calibrate-mode hold` | 885 / **129** | 441 | 132 | 183 |
+
+两场是同一个结论：**只有 15-25% 的帧真的拿到了掌面基**。其余帧里手部模型没给出完整的 21 点手
+（`palm_space` 空 = `world_*` 与归一化都没有），于是每一帧都在 `palm_normal` → `three_point` 之间掉。
+
+#### 8.20.2 两个症状是同一个机制
+
+`three_point` 基对**旋前/旋后完全不敏感**（它的 z 是「上臂 × 前臂」，绕前臂轴的自转在那套几何里是
+自由度）。所以：
+
+- **「手腕不转」**：那 75-85% 的帧下发的是「没拧」，腕自然不动；只有偶尔的掌面帧才拧一下。
+- **「抽搐」**：掌面帧与三点帧**交替**下发两个**不同口径**的目标，等于把腕目标在「拧了 90 度」和
+  「没拧」之间来回拨。3 个腕关节吸收不了这个来回，就在**对称解**之间跳。实测（B 场，g1 左）：
+  `left_wrist_pitch_joint` 停在 **-1.512 / +1.619 rad** 两颗限位上反复换边，而 URDF 限位是
+  **±1.614429558 rad**（`assets/robots/g1/g1_29dof_with_hand_lock_waist.urdf`）—— 一帧内翻 180 度，
+  肉眼看就是抽一下。B 场第 237 帧正好是一场 `palm_normal` 中间夹了一帧 `three_point`，
+  腕从 -1.512 跳到限位 -1.700，下一帧回到掌面基就落到另一支 +1.619：**换基就是翻转的触发点**。
+- 顺带记一条**不是**本缺陷的：`ori_turn` 到了 113-140 度、腕顶在限位上，`ori_err` 却只有 4-9 度 ——
+  那是「人的腕行程比机器人宽」（§8.19.3 的 `wrist_usage` 就是量这个的），IK 没算错。
+
+#### 8.20.3 改动：掌面基短暂保持（`PALM_HOLD_S` / `--arm-palm-hold-ms`）
+
+掌面基这一帧给不出、但上一次给出它不超过 `arm_realtime.PALM_HOLD_S`（默认 **0.5 s**）时，
+**沿用那一次的相对旋转**，`ori_source` 写 `palm_hold`（与真的拿到掌面基 `palm_normal` 分开计数，
+`counts["palm_held"]`）。窗口过了才如实退回 `three_point` —— 不能无限保持，否则腕会锁在旧姿态上
+不跟手。窗口按这一帧的**真实时长**累加（现场 8-12 fps，写死「几帧」会把窗口绑在帧率上）。
+
+为什么这是「更接近事实」而不是作弊：丢手的这 0.1-0.2 s 里你的手**没有在拧**，上一帧的旋前角就是
+最好的估计；而三点基给的是「0 度旋前」，那是**已知错误**的信息。窗口只覆盖短缺口，超过就退回并
+如实标注。
+
+落点（约定 14，全部在既有文件里）：
+
+- `arm_realtime.py`：常量 `PALM_HOLD_S`、构造参数 `palm_hold_s`（`0` = 关，A/B 基线）、
+  `self._palm_hold`（每侧 `(四元数, 距今秒数)`）、`update()` 里按 `frame_dt` 累加年龄、
+  `_orientation_frame()` 的三分支（`palm_normal` / `palm_hold` / `three_point`）、
+  `counts["palm_held"]`、`reset()` 一并清掉；
+- `realtime_teleop.py`：旗子 `--arm-palm-hold-ms`（默认 500）、桥构造处换算成秒、
+  `_one_source_label()` 把 `palm_hold` 排在 `palm` 之前（否则会被吞成 `palm_normal`，
+  「手点丢了多少帧」这个现场数字就看不见了）。
+
+#### 8.20.4 另记：带姿态时不要用 `--arm-calibrate-mode track`
+
+`track` 的行为是「每帧把**已有全部样本**重新取中位数/均值当中性」（`_refresh_neutral`），
+`orientation_palm` 是这些样本的旋转均值 —— 于是**中性自己会在你拧手腕的过程中跟着漂**，
+`R_neutral^T @ R_now` 变成相对一个移动目标量出来的角。A 场（`track`）里 `ori_turn` 冲到 178.8 度、
+`ori_err` 116-150 度，B 场（`hold`）同一套代码是 113-140 / 4-9 度，差别就在这里。
+位置那一遍用 `track` 没问题（「看见一次就开始跟」是它存在的理由，§8.14），**姿态现场验收请用 `hold`**。
+
+#### 8.20.5 验收
+
+| 命令 | 退出码 | 关键不变量 |
+|---|---|---|
+| `E:\python3.11.7\python.exe -m pytest tests -q` | 0 | 新增 6 条：丢一帧掌面基 → `palm_hold` 且四元数逐位等于上一帧、`counts["palm_held"]=1`；0.5 s 内一直保持、0.6 s 退回 `three_point`（且此时手臂未动 → 单位阵）；`palm_hold_s=0` 立刻退回；无掌面基的场次不许凭空造；`reset()` 清空；`--arm-palm-hold-ms` 默认 500 / 可设 0；`palm_hold` 不被 `startswith("palm")` 吞掉 |
+| `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | 0 | 约定 4 |
+| 现场（相机前）`devtools\run_realtime_arm_windows.py --arm-orientation on --arm-ik-mode pose --arm-calibrate-mode hold --wrist-trace outputs\tmp_probe\wrist_live_hold2.csv` | — | `ori_source` 里 `palm_hold` 出现但**不再与 `three_point` 交替**；`ori_turn` 连续、不再逐帧 0↔90 度跳；g1 左腕 pitch 不再在 ±1.61 两颗限位间翻 |
+
+#### 8.20.6 没做的
+
+- **提高手点检测率**：本缺陷的二分之一（75-85% 的帧没有手点）根子在摄像头/距离/光照，代码侧只能
+  如实统计（`palm_hold` vs `palm_normal` 的比值）。现场可以先**走近一点、把两只手放进画面中央**试。
+- **朝向限幅**：§8.19.4 的结论不变（没有干净的参考）。本轮只解决「换基跳变」与下面的「单帧坏帧」，
+  没有、也不该凭空把腕目标夹到某个角度上。
+- **旋前平滑**：仍没做。§8.20.7 的角速度限速**不是**平滑——它只在超过 `MAX_ORIENTATION_RATE_DEG_S`
+  时把这一帧的步长截短，真手速之内一个数都不改（见那里的验收）。
+
+#### 8.20.7 同一场的第二个机制：单帧坏掌面帧也要一帧落到腕上（2026-11-16，`--arm-orientation-rate-deg-s`）
+
+`palm_hold` 落地后重放 `wrist_live_hold2.csv`（`--arm-calibrate-mode hold --arm-palm-hold-ms 500`，
+885 帧级）：**进 `palm_hold` 的那些帧本身是干净的**（相邻帧 `|d腕|` 只有 0.000-0.010 rad），说明
+「换基那一下」确实被治住了；但把 `palm_turn_deg` / `ori_turn_deg` 这两列**按行间差分再除以 `t_s` 的行间
+差分**（两列本身都是**绝对值**：相对本侧第一帧 / 相对中性，不是逐帧步长），掌面基的逐帧角速度是：
+
+| 量（hold2 会话，g1 左腕） | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| 掌面基逐帧角速度（度/秒）= `Δpalm_turn / Δt` | 13-50 | 114-210 | 740-833 | **1252** |
+| 同一段里腕目标 `wrist_a`（rad） | — | — | — | 4 s 内 0.75 → **3.14** → −0.49 |
+
+3.14 rad 是 g1 左腕 pitch 的行程尽头：**1-2% 的掌面帧自己就是坏的**（关键点跳了一格），一帧之内
+把腕目标推到限位，下一帧又被拉回来 —— 现场看到的「抽搐」就是这两三帧。人前臂旋前/旋后的峰值约
+500-700 度/秒，1252 度/秒的「手速」不存在。
+
+同一个源还有第二种跳：掌面基丢的时间超过 `PALM_HOLD_S` 后如实退回 `three_point`，两套基给出的目标
+差 **2.6-3.0 rad**（hold2 里 f=246 / 439 / 550），也是一帧完成。
+
+**修法：给腕姿态目标加角速度上限**（`arm_realtime.MAX_ORIENTATION_RATE_DEG_S`，默认 **540 度/秒**，
+`--arm-orientation-rate-deg-s 0` = 关）。每帧按**这一帧的真实时长**放行 `rate * dt` 度：
+
+- 轴不变（球面插值缩放，不是 lerp）：`q_target = slerp(q_prev, q_raw, rate*dt / angle)`；
+- 链式基准 = **上一帧放行出去的那个值**，不是上一帧的原始测量值 —— 削掉的角度不累积成「追赶」，
+  所以尖峰过后手一松，目标一帧就回到 0，不会过冲、不会来回振；
+- 真手速之内（300 度/秒 = 30 度/帧）**逐位透传**，一个数都不改：这不是低通，没有相位滞后；
+- 对 `three_point` 同样生效（换基那 2.6-3.0 rad 也摊成连续运动）；
+- `counts["orientation_clamped"]` 计数，`reset()` 清基准；
+- `_palm_hold` 里存的仍是**原始测量值**：限速结果只喂给 IK，不写回「上一帧掌面旋转」，否则一次被削的
+  坏帧会污染下一次保持；
+- 与 `_guard_direction`（§8.6.1 的跳变护栏）的一处**刻意不同**：`arm` 数据断流时不清这里的基准。
+  跳变护栏判的是「这是不是手在动」，断流后必须重新起算；限速管的是「命令连不连续」，断流之后的
+  大幅转向同样该是一段连续运动。
+
+为什么选限速而不是保持/低通：保持会把**真的**在拧腕的动作也冻住（现场第一需求就是「翻转手腕机器人要
+跟着转」），低通会在每一次快转上给出固定的滞后与过冲；限速只在超出人体能力的帧上动手，代价是那 1-2%
+的帧晚到 1-3 帧（540 度/秒 下 150 度的跳变需要 0.28 s 走完，而它本来就该被走完）。
+
+落点（约定 14，全部在既有文件里）：`arm_realtime.py` 的常量 `MAX_ORIENTATION_RATE_DEG_S`、
+`quaternion_angle_deg()` / `_quaternion_multiply()` / `_quaternion_scaled()` 三个纯函数、
+构造参数 `max_orientation_rate_deg_s`、`self._last_orientation`，`_orientation_frame()` 拆成
+`_raw_orientation()`（测量）+ `_clamp_orientation()`（限速）；`realtime_teleop.py` 的旗子
+`--arm-orientation-rate-deg-s`（默认 540）与桥构造处传参。
+
+离线 A/B（**不需要相机、可复现**）：拿 150 帧 dump（`outputs/tmp_probe/wrist_fixture.npz`）改出一份
+「第 90 帧左手拧 150 度、手臂不动」的 fixture（`make_spike_fixture.npz`，探针不入库），再用**真入口**
+headless 放两遍，只差限速旗子：
+
+```powershell
+$env:PYTHONPATH = "$pwd\src"
+foreach ($rate in 540, 0) {
+  E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headless `
+    --input-npz outputs\tmp_probe\wrist_fixture_spike.npz --arm-orientation on `
+    --arm-ik-mode pose --arm-calibrate-mode hold --arm-palm-hold-ms 500 `
+    --arm-orientation-rate-deg-s $rate --wrist-trace outputs\tmp_probe\ab_spike_rate$rate.csv
+}
+```
+
+| 帧（左 / g1） | `--arm-orientation-rate-deg-s 0`（基线） | `540`（新默认） |
+|---|---|---|
+| 90（正常） | `ori_turn` 0.00 度，`wrist_b` −0.0559 | 同左 |
+| 91（坏帧） | `ori_turn` **150.00** 度，`wrist_b` **+2.0364**（一帧 Δ **2.09 rad**），`ori_err` 8.20 -> **36.31** 度 | `ori_turn` **52.09** 度，`wrist_b` +0.8667（一帧 Δ **0.92 rad**），`ori_err` 8.12 度 |
+| 92（恢复） | `wrist_b` 回到 −0.0559（一帧又 Δ 2.09 rad，来回抽两下） | 回到 −0.0549 |
+
+两次 `--headless` 都是退出码 0。**如实说**：限速**不是**单帧野值驱逐器 —— 一帧就回来的坏帧，它只能把跳幅
+压到 `rate * dt`（fixture 12 fps -> 45 度/帧；实测放行 52.09 度，差在桥用的是调用方的 `frame_dt`、CSV 的
+`t_s` 是另一个采样点），剩下的 0.92 rad 仍会抽一下，只是已经离 g1 那两颗 ±1.61 rad 的限位很远。要彻底
+清掉单帧野值必须「缓一帧再回看」，那会给**每一帧**加一帧延迟（8-12 fps 下 83-125 ms），本轮没做。
+持续 >=2 帧的（换基那一下、连续误检）则会被摊成一段连续运动，不会一帧跳到限位。
+
+同一条**未注入尖峰**的 fixture 上 A/B：`ori_turn_deg` / `ori_source` / `target_*` / `palm_turn_deg` 四组列
+两份 CSV **逐行相同**（在动的右臂上 `ori_turn` 的帧间速率 p50 4.3、max 17.4 度/秒，远低于 540），限速对
+真手速零影响 —— 这是「不是低通」的直接证据。关节列 `wrist_a/b/c` 在第 4 位小数上有差（PyBullet IK 的
+warm start 不是逐位确定，且 `frame_dt` 取真实墙钟时间），两份本来就不是逐字节可比，看 `ori_*` 那几列。
+
+**现场帧率会把这个上限吃掉一部分（2026-11-16 实测）**：现场入口那次 16 分钟实跑
+（`outputs/tmp_realtime/arm_run_20261116_213650.json`，5940 帧 / 967.7 s）只有 **5.92 fps**
+（`median_frame_interval_ms` **155.4**），于是 `rate * dt = 540 x 0.155 = 84 度/帧` —— 一帧 150 度的
+坏帧仍被放行 84 度，肉眼还是一抽。8-12 fps 时是 45-68 度/帧，只有 30 fps 才是设计值 18 度/帧。
+**这条上限只在 >=20 fps 时才等于「人体速度」，低于 10 fps 它退化成「别一帧走完 180 度」。**
+要在低帧率下也按住那一抽，得再叠一条**与 dt 无关的每帧步长上限** —— 已在 §8.20.9 落地。
+
+
+```powershell
+$env:PYTHONPATH = "$pwd\src"
+# A：限速开（默认，540）
+E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --arm-orientation on --arm-ik-mode pose --arm-calibrate-mode hold --arm-palm-hold-ms 500 --wrist-trace outputs\tmp_probe\wrist_live_hold4_rate540.csv
+# B：限速关（基线）
+E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --arm-orientation on --arm-ik-mode pose --arm-calibrate-mode hold --arm-palm-hold-ms 500 --arm-orientation-rate-deg-s 0 --wrist-trace outputs\tmp_probe\wrist_live_hold4_rate0.csv
+```
+
+看两列就够：`ori_turn_deg` 与 `palm_turn_deg` 都是**绝对值**（相对中性的转角 / 相对本侧第一帧的掌面转角），
+所以判据是**同一（侧, 机器人）相邻两行的 `Δori_turn / Δt`**：A 场不该再有超过 540 度/秒 的帧，
+B 场会有（那就是原来的抽搐帧）。`wrist_a/b/c` 也应当从「一帧跳 1.8 rad」变成连续几帧走完。
+想直接数「削了多少帧」不看 CSV，就看报告 JSON 里的 `bridge.counts.orientation_clamped`。
+
+#### 8.20.8 验收（本机实跑，2026-11-16）
+
+| 命令 | 退出码 | 关键不变量 |
+|---|---|---|
+| `E:\python3.11.7\python.exe -m pytest tests -q` | 0 | 420 passed / 3 skipped；`OrientationSlewTests` 新增 8 条：一帧 150 度的跳变只放行 `rate*dt`=54 度且 `counts["orientation_clamped"]=1`；30 度/帧的真实转腕**逐位**透传、计数不动；`frame_dt` 换成 0.5 s 时 150 度原样过去、1/30 s 时只剩 18 度；尖峰回到中性后目标一步到 0 且不反弹；**丢手点后的 `palm_hold` 用的是原始 150 度而不是削过的 54 度**（否则一次坏帧会把随后的保持一起压低）；`max_orientation_rate_deg_s=0` 关闭；`reset()` 清基准；`--arm-orientation-rate-deg-s` 默认 540 / 可设 0 |
+| `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | 0 | 约定 4 |
+| 离线 A/B：`realtime_teleop --headless --input-npz outputs\tmp_probe\wrist_fixture_spike.npz ... --arm-orientation-rate-deg-s {540,0}`（fixture = 150 帧 dump 的第 90 帧左手拧 150 度） | 0 / 0 | 基线一帧 `wrist_b` −0.0559 -> **+2.0364**、`ori_err` 36.31 度；限速后同一帧 `wrist_b` -> **+0.8667**、`ori_turn` 150.00 -> **52.09** 度、`ori_err` 8.12 度；未注入尖峰的 fixture 上 `ori_turn` / `ori_source` / `target_*` 两份逐行相同 |
+| 现场（相机前）§8.20.7 的 A/B 两条命令 | — | A 场 g1 左 `wrist_a` 不再出现 0.75 → 3.14 → −0.49 的三段跳；`ori_turn` 的逐帧步长 ≤ 540 度/秒 × 帧长；B 场复现原始抽搐（证明变量就是这个旗子） |
+
+
+### 8.20.9 低帧率下的一抽：每帧步长上限（2026-11-16 晚，§8.20.7 的下一步）
+
+§8.20.7 落地后现场仍说「还是不行」。先把「不行」拆成两件事，再动手：
+
+1. **那场实跑根本没带这两个修**。`outputs/tmp_realtime/arm_run_20261116_213650.json`
+   （16 分钟 / 5940 帧，21:36:50 启动）的 `bridge.counts` 里**没有** `palm_held` /
+   `orientation_clamped` 两个键，而当前代码 `summary()` 是导出的；`arm_realtime.py` 的
+   mtime 是 21:40:52，晚于启动时间，HEAD 里也还没有 `PALM_HOLD_S`。三个证据指向同一件事：
+   那两轮改动**一次都没在窗口里生效**（未提交）。复测必须用带 `--wrist-trace` 的新命令，
+   并确认报告里有这两个键。
+2. **即使带上，速率上限在那个帧率下形同虚设**：5.92 fps = 155.4 ms/帧，
+   `540 x 0.155 = 84 度/帧`。一帧 150 度的坏掌面帧仍会被放行 84 度 —— 肉眼当然还是一抽。
+
+#### 8.20.9.1 修法：`MAX_ORIENTATION_STEP_DEG = 30.0`（与帧长无关）
+
+| 环节 | 做法 |
+|---|---|
+| 新常量 | `arm_realtime.MAX_ORIENTATION_STEP_DEG = 30.0`；`0` = 只按速率（旧行为） |
+| 新旗子 | `realtime_teleop --arm-orientation-step-deg DEG`，默认 30，`0` 关 |
+| 新形参 | `RealtimeArmBridge(max_orientation_step_deg=...)`，负数按 0 处理 |
+| 合并点 | `_orientation_limit_deg()`：`rate<=0` -> 0（整套关）；否则 `min(rate*frame_dt, step)` |
+| 语义边界 | `rate<=0` 时**步长那条也不能单独接管**（A/B 基线要「关掉就是逐位透传」） |
+| 分工 | 速率管「这个速度人体可能吗」；步长管「这一帧别走太远」。6 fps 与 30 fps 都 <= 30 度/帧 |
+
+为什么要两条而不是把速率调小：速率那条必须按真实帧长换算（§8.20.7 里 0.5 s 一帧能合理走 270 度），
+把它压小就等于「不管帧多长都不许多走」，正确行为会被一并砍掉；步长那条只加一个上界，18 fps 以上
+从不介入（30 fps 下速率只放 18 度/帧）。
+
+#### 8.20.9.2 离线 A/B（真入口，同一份注入尖峰的 fixture，三档）
+
+命令同 §8.20.7，只多一个旗子；fixture = 150 帧 dump 的第 90 帧左手拧 150 度：
+
+| 设置 | f91 `ori_turn` | f91 g1 左 `wrist_b` | 一帧 Δ | `ori_err` |
+|---|---|---|---|---|
+| `rate 0`（全关，基线） | **150.00** | +2.0364 | **2.09 rad** | 36.31 度 |
+| `rate 540 / step 0`（只速率） | **38.35**（dt≈71 ms） | +0.6242 | 0.68 rad | 7.86 度 |
+| `rate 540 / step 30`（**新默认**） | **30.00** | +0.4763 | **0.53 rad** | 7.80 度 |
+
+三档退出码都是 0。`step 30` 与 `rate 540/step 0` 两份 CSV 的 900 行里，`ori_source` **全部相同**、
+`ori_turn` **只有第 91 帧不同**（38.35 -> 30.00）—— 新上限只动那一帧。按现场 155 ms 帧长推算
+同一条坏帧是 `84 -> 30 度`（`OrientationStepCapTests` 用 0.155 s 直接钉住）。
+
+#### 8.20.9.3 三台机器人自己能不能流畅翻转（URDF 实测，回答现场那个问题）
+
+| 机器人 | 沿前臂轴的翻转关节 | 行程 | 判决 |
+|---|---|---|---|
+| `g1` | `left/right_wrist_roll_joint`，轴 `(1,0,0)` | ±1.97 rad = **±113 度（跨度 226）** | 能翻，有专用电机；但手的安装点不在转轴上，45 度拧腕时腕位置残差最大 49.8 mm（§8.19.2，几何不是求解器） |
+| `h1_2` | `left/right_elbow_roll_joint`，轴 `(1,0,0)` | −3.01..+2.75 rad = **−172..+158 度（跨度 330）** | 最适合翻转；旋前轴在**肘**上，腕只剩 pitch ±27 / yaw ±73 度 |
+| `gr1_t2` | `left/right_wrist_roll_joint` | ±0.61 rad = **±35 度（跨度 70）** | **机械上翻不了**；实测右腕 `usage 1.000 at_limit`、朝向残差 58.53 度，左腕 roll/pitch 两个 `usage 0.0 at_limit`（现场那场），软件无解 |
+
+三台 **全是 `type="revolute"`**，没有一个连续关节：谁都做不到 360 度连续旋转，所谓「翻转」只能
+在上述行程内来回。`gr1_t2` 的 ±35 度是硬件，三台一起演示时只能当「小幅校正」，不能承诺
+「三台都跟着翻」。
+
+#### 8.20.9.4 如实说
+
+- **它不是野值驱逐器**：一帧就回来的坏帧仍会被走 30 度（现场 155 ms 下一次约 30 度 = 一抽的
+  1/3 幅度），彻底清掉要「缓一帧回看」，代价是每帧多一帧延迟（5.92 fps 下 169 ms），没做。
+- **<18 fps 时会削真实快转**：0.5 s 一帧里人真能转 150 度，这里只放 30 度。帧长超过
+  `30/540 = 55.6 ms`（<18 fps）时这条就是瓶颈。收益是任何帧率下都不再一帧甩到底。
+- **`gr1_t2` 的问题它治不了**：±35 度的 roll 是 URDF 限位，顶死时朝向残差 25.96 / 58.53 度照旧。
+- **现场仍然待跑**：上面全是离线 fixture，三档退出码 0 只证明代码路径；相机前的 A/B 未做。
+
+#### 8.20.9.5 验收（本机实跑，2026-11-16 晚）
+
+| 命令 | 退出码 | 关键不变量 |
+|---|---|---|
+| `E:\python3.11.7\python.exe -m pytest tests -q` | **0** | **433 passed / 3 skipped**（原 420）；`OrientationStepCapTests` 7 条：0.155 s 帧长下 150 度只走 30 度且 `orientation_clamped=1`（同链路 `step 0` 回到 83.7 度）/ 30 fps 下这条从不介入（18 度来自速率，15 度真手速逐位透传） / 连续 3 帧尖峰摊成 30-60-90 度 / `step 0` 只留速率 / `rate 0` 时步长那条也关 / parser 默认 30 与自定义 12.5 / 负数按 0 |
+| `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | 0 | 约定 4 |
+| 离线三档 A/B（上表 8.20.9.2） | 0 / 0 / 0 | 2.09 -> 0.68 -> 0.53 rad；除第 91 帧外两份 CSV 的 `ori_source`/`ori_turn` 逐行相同 |
+| 现场（相机前）`--arm-orientation-step-deg {30,0}` | — | 30 档：同一（侧, 机器人）相邻行 `Δori_turn <= 30 度`；0 档：复现原来的一帧大跳 |
+
+
+### 8.20.10 帧率预算：155 ms 到底花在哪（`--frame-budget-json`）
+
+§8.20.9 之后还剩一个问题：「流畅」的硬上限是帧率。现场 5.92 fps 的报告里只有一个
+`median_frame_interval_ms`，分不出是摄像头/姿态模型、IK、物理步进还是窗口渲染。
+
+#### 8.20.10.1 探针
+
+`realtime_teleop --frame-budget-json PATH`（`FrameBudget`，与 `--wrist-trace` 同一套「只读探针」
+约定：只写文件 + 打一张表，**不参与任何控制量**，写不进去也不改退出码）。每帧记
+`capture / retarget / bridge / ik / step / trace / preview / rest` 八段，出
+`mean / p50 / p90 / p99 / max` + `share_percent`，并同时写进报告 JSON 的 `frame_budget` 字段。
+
+```powershell
+$env:PYTHONPATH = "$pwd\src"
+E:\python3.11.7\python.exe -m teleoperation.simulation.realtime_teleop --headless `
+  --input-npz outputs\tmp_probe\wrist_fixture.npz --frames 60 --arm-orientation on `
+  --arm-ik-mode pose --arm-calibrate-mode hold --arm-palm-hold-ms 500 `
+  --frame-budget-json outputs\tmp_probe\frame_budget_replay.json
+```
+
+#### 8.20.10.2 实测（60 帧回放，本机，headless）
+
+```
+frame budget: 60 frames, mean frame 65.1 ms (p50 68.9, p90 71.4) = 15.36 fps
+  stage       mean_ms   p50_ms   p90_ms   p99_ms    max_ms    share
+  capture       0.63     0.62     0.68     0.78     0.81     1.0%
+  retarget      3.67     3.00     3.16     3.65    50.02     5.6%
+  bridge        0.57     0.69     0.74     0.77     3.57     0.9%
+  ik           46.77    51.49    53.36   104.22   107.50    71.8%
+  step         13.46    13.53    14.17    14.53    14.62    20.7%
+```
+
+**`ik` 吃掉 71.8%**（三台 x 两侧 x 两遍热启动 x 60 次迭代），`stepSimulation` 20.7%，
+取帧/重定向/桥加起来 < 8%。于是把迭代次数当旋钮扫一遍（同一份 fixture，60 帧）：
+
+| `--arm-ik-iterations` | fps | `ik` mean_ms | 腕位置残差 g1 / gr1_t2 / h1_2 | 朝向残差 g1 / gr1_t2 / h1_2 |
+|---|---|---|---|---|
+| **60（默认）** | 15.29 | 46.86 | 316.7 / 321.2 / 401.7 | 8.12 / 13.48 / 9.13 |
+| 30 | **22.85** | 25.19 | 315.0 / 321.5 / 369.3 | 7.76 / 13.79 / 7.42 |
+| 20 | **27.56** | 17.92 | 312.8 / 319.7 / 356.0 | 7.27 / 14.69 / 8.65 |
+
+结论：**帧率是这条链上唯一真正的「流畅」上限**，而它主要由 IK 迭代次数决定。60 -> 30 迭代
+把回放帧率从 15.3 提到 22.9（+50%）；22.9 fps 时速率上限只放 23.6 度/帧，`step 30` 基本不介入，
+即回到「真手速逐位透传」的设计点。
+
+补一段**真摄像头**（同一台机器，`--headless --frames 25`，画面里没有人，只为量回放测不到的 `capture`）：
+
+| 段 | mean_ms | p50 | p99 | max | 占比 |
+|---|---|---|---|---|---|
+| `capture`（取帧 + 姿态推理） | **33.94** | 19.26 | **361.27** | 361.27 | **40.4%** |
+| `ik` | 36.00 | 35.88 | 38.45 | 38.45 | 42.9% |
+| `step` | 13.78 | 13.73 | 14.80 | 14.80 | 16.4% |
+| `bridge` | 0.25 | 0.27 | 0.29 | 0.29 | 0.3% |
+| 整帧 | 84.0 | 69.9（p90 76.5） | — | — | 11.91 fps |
+
+读法：`capture` 与 `ik` **各占四成**（p50 里 capture 只有 19 ms，均值被第一帧 361 ms 的模型加载拉高 ——
+看 p50 才准）。所以现场 5.92 fps 的 169 ms 里，能靠软件拿回来的两条就是「降 IK 迭代」与
+「姿态模型件/输入分辨率」，`step` 那 14 ms 是物理与渲染，改不动多少。
+`retarget` 在这一跑里是 0，因为画面里没有手（`raw=1/25`，标定没完成，退出码 1 ——
+**不带新旗子跑同一条件是同样的退出码 1**，不是本轮引入的）。
+
+#### 8.20.10.3 如实说
+
+- 上表残差在这份 fixture 上都是 **312-402 mm**（目标本身不可达，和现场 128-329 mm 同一类问题），
+  几毫米的差别是噪声，**不构成「30 次迭代一样准」的证明**；旧结论（§8.1）是 60/1e-4 优于
+  200/1e-5。现场换 30 之前请同时看 `arm.residual_mm` 与画面。
+- 回放里 `capture` 只有 0.63 ms 是因为**没有真摄像头**；上面那段真摄像头的一跑又只有 25 帧、
+  画面里没有人，只能当量级参考。定论要现场跑一次（`capture` 里含姿态推理），再跑一次加
+  `--arm-ik-iterations 30` 的对照，两次的 `fps` 与 `ik` 一起看。
+- `step` 的 13.5 ms 里 GUI 渲染与 `--sim-steps` 都算在内，没拆开；要拆得再给 `driver.step` 加计时。
+- 现场那场报告里左臂 **2251/5940 = 38%** 的帧 `held_reason=no_pose_landmarks`（右臂 27%）——
+  帧率之外还有这一层，属于摄像头/姿态模型侧，本轮没动。
+
+#### 8.20.10.4 验收（本机实跑，2026-11-16 晚）
+
+| 命令 | 退出码 | 关键不变量 |
+|---|---|---|
+| `E:\python3.11.7\python.exe -m pytest tests -q` | **0** | 同上 433 passed；`FrameBudgetTests` 6 条：各段均值/占比是这个算术（ik 15 ms / 整帧 50 ms -> 30%）/ 空预算 `fps=None` 不除零 / `lap` 返回新起点且只记当前段 / 表每段一行含 `fps` / `save()` 写出的就是 `summary()` / `--frame-budget-json` 默认 None |
+| 上面那条回放命令 | **0** | 表里 `ik` 71.8% 与 JSON 一致；报告多出 `frame_budget` 字段 |
+| `--headless --frames 25`（真摄像头，没人站镜头前） | 1（**预期**） | `capture`/`ik`/`step` 三段有真实毫秒（上表）；退出码 1 来自「标定没攒够 30 帧 + `raw=1/25` 没手点」，**不带本轮任何旗子跑同一条件也是 1**（`outputs/tmp_probe/camera_noflag.log`），不是本轮引入的 |
+| `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | 0 | 约定 4 |
+
+
+
+### 8.20.11 「朝向上限守住了，关节却还在跳」：腕链关节每帧步长（2026-11-16 晚第三次现场，`--arm-wrist-joint-step-deg`）
+
+现场反馈三句（同一跑、同一套手势）：**H1-2 抽得最凶、转腕最不准；GR1-T2 转的方向和我相反；G1 是三台里最好的，但也会抽**。
+三句话在同一份 `--wrist-trace` 里各有一行数字，而且**都不是** §8.20.9 那条朝向上限管得到的：
+
+| 机器人 | 腕链关节（URDF 限位） | 角度 p50 | 每帧 \|Δ\| p50 / p90 / **max** | 钉在限位上的帧 |
+|---|---|---|---|---|
+| gr1_t2 左 | `wrist_roll` ±35° | **-34.8°** | 0.39 / 10.3 / **52.5°** | **64.0%** |
+| gr1_t2 左 | `wrist_pitch` -55..50° | -46.2° | 1.27 / 10.5 / 50.6° | **42.4%** |
+| gr1_t2 左 | `wrist_yaw` ±170° | -24.6° | 3.39 / 21.0 / **213.2°** | 11.5% |
+| gr1_t2 右 | `wrist_pitch` | **-54.5°** | 0.38 / 6.7 / 111.5° | **55.4%** |
+| h1_2 左 | `elbow_roll` -172..158° | -46.9° | 3.54 / 24.8 / **202.3°** | 0% |
+| h1_2 右 | `elbow_roll` | -2.4° | 5.92 / 27.2 / **193.1°** | 0% |
+| g1 左 | `wrist_roll` ±113° | -34.9° | 2.61 / 19.1 / **237.8°** | 21.9% |
+| g1 右 | `wrist_roll` | -1.7° | 5.63 / 26.8 / **215.4°** | 8.2% |
+
+（`outputs/tmp_realtime/live2.csv` 共 9264 行，`outputs/tmp_probe/analyze_joints.py` 生成。）
+
+三件事因此可以说清楚：
+
+- **朝向上限确实生效了**：同一份数据里 `\|Δori\|` 最大 **29.98°**，一帧都没超过 30。
+- **但渲染出来的是「解」，不是「朝向」**：`PyBulletArmIK._ik_sequence` 在几遍之间用 `_teleport`
+  （`resetJointState`）把关节直接写到解上，于是**单个关节一帧跳 193-238°**，电机限幅追不回来 ——
+  现场看到的「抽」是关节在跳。
+- **GR1-T2 那句「转反了」不是符号错**：它的 `wrist_roll`（唯一能拧的轴）有 64.0% 的帧钉在 -35° 上，
+  剩下的朝向只能交给 `wrist_yaw`（±170°，方向不对的那个轴）去追，单帧最大 213° —— 看着就是往回拧。
+  **H1-2 抽得最凶**是因为它的腕链第一个关节是 `elbow_roll`（整个小臂 + 手一起转，力臂最大）；
+  **G1 最好**是因为行程最大（`wrist_roll` ±113°）。
+
+
+#### 8.20.11.1 修法：腕链关节每帧最多 20°（解与关节状态一起限）
+
+`arm_ik.MAX_WRIST_JOINT_STEP_DEG = 20.0` + `PyBulletArmIK._limit_wrist_step`，口径与 §8.20.9 的朝向上限
+**同一套** —— 每帧多少度，与帧率无关；只限腕链（`self.wrist[side]`，与 `orientation_scope="wrist"`
+放开的同一组），肩/肘仍由位置任务管。要点两条：
+
+1. **解和关节状态一起限**：只限 `apply` 的电机目标等于没限 —— `_ik_sequence` 里的 `_teleport` 已经把关节
+   写到没限幅的解上了（渲染出来的就是那个姿态）。
+2. **基准取上一帧「放行」的角度**，不是实测角，误差不累积（与 `arm_realtime._clamp_orientation` 同构）。
+
+- 命令行：`--arm-wrist-joint-step-deg 20`（默认 20，0 = 关）；adapter/库默认 **0**，免得演示扫掠
+  一次走 200 mm 被这里拖住。
+- 报告：`arm.ik[*].max_wrist_joint_step_deg` / `wrist_step_clamped`（本场被削的关节次数）；
+  启动横幅多一段 `wrist joint step = N deg/frame`。
+
+#### 8.20.11.2 离线 A/B（同一份 `wrist_fixture_spike.npz`，只差这一个旗子）
+
+| 量 | 关（`ab_step30.csv`） | 开 20°（`ab_joint20.csv`） |
+|---|---|---|
+| 最坏单关节 \|Δ\|（全 18 个腕链关节） | **44.79°** | **20.05°** |
+| `\|Δori\|` 最大 | 30.00° | 30.00°（朝向上限不受影响） |
+| h1_2 左 残差中位 | 433.9 mm | 487.1 mm |
+| h1_2 右 残差中位 | 445.1 mm | 501.0 mm |
+| g1 / gr1_t2 残差中位 | 317-345 mm | 317-345 mm（不变） |
+
+**如实说**：h1_2 的残差多了约 50 mm（这份 fixture 的目标本身不可达，残差本来就在 300-500 mm 的噪声区，
+`\|Δori\|` 中位只从 15.44 变 16.84°），换来的是「不再一帧跳 200°」。20.05° 比 20 多 0.05° 是写回状态之后
+那一帧物理步进的结果，不是上限没守住。
+
+#### 8.20.11.3 验收（本机实跑，2026-11-16 晚）
+
+| 命令 | 退出码 | 关键不变量 |
+|---|---|---|
+| `E:\python3.11.7\python.exe -m pytest tests -q` | **0** | **442 passed / 3 skipped**（原 433 + `WristJointStepTests` 6 条 / 58 个子断言 + `PalmBasisVisibilityTests` 3 条）：90° 拧腕在 20° 上限下 ≤ 20° 且 `wrist_step_clamped > 0` / 关掉时同一拧腕 > 20° 且计数为 0 / **关节状态**也被限（`joint_values` 与放行值逐个相等）/ 肩肘一个数字都不许改 / 库默认 0、负值按 0、`describe()` 落两个字段 |
+| 上面那条回放命令（加 `--arm-wrist-joint-step-deg 20`） | **0** | 横幅 `wrist joint step = 20 deg/frame`；900 行两两对齐；数字见 §8.20.11.2 |
+| `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | 0 | 约定 4 |
+
+顺带修掉一个同源的现场缺陷：**点掉 PyBullet 窗口会把整场报告吃掉**（`Not connected to physics server`
+抛在 `finally` 之前，而 `arm_run_*.json` 只在正常路径里生成 —— 22:18 那场就是这样：`budget_live2.json`
+与 `live2.csv` 都在，93 KB 的报告没了）。现在 `finally` 里补一份最小报告（`aborted: true` + 错误 +
+帧数 + `bridge_counts` + `frame_budget`，见 `realtime_teleop._write_abort_report`），正常路径写的完整
+报告仍是唯一权威。
+
+
+#### 8.20.11.4 现场（live3，2026-11-16 晚，1227 帧 / 8.11 fps）
+
+同一套旗子 + `--arm-ik-mode pose`（与 live2 一致，只多这一条腕关节上限）：
+
+| 关节 | live2 单帧 \|Δ\| max | live3 单帧 \|Δ\| max |
+|---|---|---|
+| g1 左 `wrist_roll` | 237.81° | **20.18°** |
+| g1 左 `wrist_pitch` | 130.51° | **20.34°** |
+| g1 右 `wrist_roll` | 215.39° | **20.53°** |
+| gr1_t2 左 `wrist_yaw` | 213.20° | **21.21°** |
+| gr1_t2 左 `wrist_roll` | 52.51° | **21.03°** |
+| h1_2 左 `elbow_roll` | 202.32° | **20.31°** |
+| h1_2 右 `elbow_roll` | 193.07° | **20.34°** |
+| **全部 18 个腕链关节的最坏值** | **237.81°** | **21.21°** |
+
+`orientation_clamped` 左 115 / 右 149 次（朝向上限照旧在削），`fps` 8.11（上一跑 7.5），
+整帧 138.3 ms：`ik` 67.97 ms = 49.5%、`capture` 38.13 = 27.8%、`step` 16.74 = 12.2%、
+`preview` 10.64 = 7.7%、其余 < 2%（`outputs/tmp_realtime/budget_live3.json`）。
+残留：`h1_2` 76.1 / 51.9 mm、`gr1_t2` 224.1 / 158.0 mm、`g1` 215.2 / 119.7 mm（左/右）。
+
+**但这一跑没验证「跟不跟手」**：`ori_source` 全程 `three_point`（1197/1227）、`palm_held` 0/0 ——
+整场没有掌面基，原因见下面的 §8.20.12。所以本节只能宣布「关节不再一帧跳 200°」，
+「手腕跟着拧」要等下一跑（标定那 30 帧站好）。
+
+#### 8.20.12 整场丢旋前：掌面基是在「标定那几十帧」里一次性决定的（2026-11-16 晚）
+
+现场现象：live3 拧腕**完全**不跟（`ori_source` 全程 `three_point`），而 22:16 那跑同样代码、
+同一套手势有 69% 的帧是 `palm_normal`。原因在 `arm_realtime._raw_orientation`：掌面基要跟
+**中性里的 `orientation_palm`** 相减，而中性是标定那 `--arm-calibrate-frames` 帧的均值 ——
+标定期间一帧掌面基都没拿到（手没进画面 / 掌面不可见 / 手点不全），`orientation_palm` 就是
+`None`，之后**再怎么把手伸进来也补不回来**，整场只能退回 `three_point`（对旋前不敏感 = 拧腕不跟）。
+
+这条以前是**静默**的：报告里只看得到 `frames` / `samples` / `complete`，`orientation_palm`
+根本没序列化；现场唯一的线索是 `--wrist-trace` 的 `ori_source` 全是 `three_point`。
+
+修法（只加可见性，不改控制行为）：
+
+- `_palm_samples[side]`：标定期间**真的拿到**掌面基的帧数 -> `neutral[side].palm_samples`；
+- 报告 `bridge.neutral[*].palm_samples`（int）+ `orientation_palm_recorded`（bool）；
+- `realtime_teleop._warn_missing_palm_basis`：标定一完成、某一侧没有掌面基，就在 HUD 旁喊一次
+  `[WARN] left: the neutral has no palm basis (orientation_palm is None, palm_samples=0) ->
+  pronation/supination is NOT tracked this run ... Restart and keep both palms facing the camera
+  for the first 30 frames.`
+
+现场用法：看到这条 WARN 就重开一跑，别等拧完才发现整场没旋前（live3 就是这么白跑的一轮）。
+
+#### 8.20.13 左手反着拧：掌面法向在左手上是指向掌心**内侧**的（2026-11-16 深夜，live4）
+
+现场第四轮反馈（`outputs/tmp_realtime/live4.csv` + `arm_run_live4.json`，2836 帧 / 7.14 fps，
+`cal=ok L=P R=P`、`ori_source` 100% `palm_normal`）：
+
+- **GR1-T2 / H1-2 都是「右手跟着拧、左手反着拧」**，而且左边仍在抖（H1-2 左手「有时候对、
+  有时候反」）；
+- GR1-T2 转手腕时**小臂跟着转**，问「能不能只转手腕」。
+
+这一轮旋前是**真的在跟**（`palm_turn` 左 131.5° / 右 12.1°），所以「左边反」不再是退化或饱和
+能解释的，它就是**符号问题**。
+
+##### 8.20.13.1 根因：`cross(index, pinky)` 在左手上给出「掌心朝内」
+
+`palm_orientation_frame` 的第三轴取
+`normal = cross(hand[5] - hand[0], hand[17] - hand[0])`（腕 / 食指 MCP / 小指 MCP）。MediaPipe
+的 21 点里食指 MCP 在拇指侧、小指 MCP 在另一侧，**左右手的关键点绕序是镜像的**，于是同一个
+叉乘：
+
+| 手 | 掌面法向 z 分量（掌心朝相机时） | 含义 |
+| --- | --- | --- |
+| 右手 | **-1** | 指向掌心外侧 ✔ |
+| 左手 | **+1** | 指向掌心**内侧** ✘ |
+
+而 `y_axis = cross(z, x)` 是**推算**出来的，所以那个基形式上仍是正交旋转（det 恒为 +1），
+差别只藏在「z 指反」里 —— 等价于**整帧绕前臂轴多转了 180 度**（`F_left = F_right @ R_x(180)`）。
+离线取证：`outputs/tmp_probe/left_right_palm_sign.py`（合成两双镜像的手，同一个世界旋转）。
+
+##### 8.20.13.2 后果分两种维：拧对、另外两维翻
+
+`R_rel = R_neutral^T @ R_now` 里那个 180 度是**共轭**关系（`D R D`，`D = R_x(180)`）：
+
+- **绕前臂轴（旋前/旋后）分量不变**（共轭不改变轴上的分量；实测两侧都给 **+40.0°**）——
+  所以「拧」这一维本来就对，我最初按「旋前翻号」去猜是**错的**，探针当场否掉了；
+- **另外两个分量整体反号**（`D R_y(φ) D = R_y(-φ)`）—— 于是**左手的目标姿态整体偏了 180 度**。
+
+现场口径的后果（同一跑报告 `arm.wrist_usage`，usage = 关节在行程里的归一化位置）：
+
+| 机器人 | 关节 | 左 | 右 |
+| --- | --- | --- | --- |
+| h1_2 | `wrist_pitch` | **1.000（顶满）** | 0.283 |
+| h1_2 | `wrist_yaw` | **0.000（顶死另一端）** | 0.248 |
+| h1_2 | `elbow_roll` | 0.896 | 0.265 |
+| g1 | `wrist_roll` | **1.000（顶满）** | 0.184 |
+| gr1_t2 | `wrist_pitch` | **1.000（顶满）** | 0.000 |
+
+**左边一路顶着行程、右边全在中段**；`bridge.counts.direction_glitch` 左 77 / 右 39；
+`arm.posture[*].command_jerk_deg` 的 p50 左 6.0-6.2° / 右 4.4-4.6°、p90 左 27-31° / 右 18-21°；
+`forearm_opposite_fraction` 左 0.058-0.078 / 右 **0.000**（右臂一帧都没有「前臂指反」）。
+这就是现场看到的「左边反着拧、而且更抖」，而右手因为目标一直在行程中间所以跟得顺。
+
+##### 8.20.13.3 修法：法向按侧取反
+
+`MIRRORED_PALM_SIDES = ("left",)` + `palm_orientation_frame(hand_world, arm_world, side)`
+里 `if side in MIRRORED_PALM_SIDES: normal = -normal`。取反之后左侧掌面基与右侧**同手性**，
+同一个世界旋转在两侧语义一致。
+
+`side` 是**必填参数、没有默认值**：漏传就等于把这个 bug 装回去，宁可让调用点立刻报错。
+两处调用点都带上了（标定的 `_record_neutral`、每帧的 `_raw_orientation`）。
+
+##### 8.20.13.4 验收
+
+`PalmBasisChiralityTests`（`tests/test_arm_realtime_bridge.py`，5 条，判据都是可算的数）：
+
+1. 掌面朝相机时，两侧基的 z 轴 z 分量都必须是 **-1**（左不取反时是 +1）；
+2. 镜像姿势下两侧的基**逐位相同**；
+3. 双手朝同一方向拧（同一个世界旋转）-> 两侧旋前角**同号同大小**（这一条修复前后都过，
+   它如实记录了「拧这一维本来就对」）；
+4. 整条手臂一起摆 -> 两侧的相对旋转**逐位相同**（修复前左侧被 180 度共轭，这条红）；
+5. **接线**：走整条桥（标定 -> 一帧「摆 12 度 + 拧 8 度」的手），桥吐的四元数必须等于
+   带 `side` 直接算的那一份，且必须**明显不等于**不带 `side` 的那一份 —— 漏传 `side` 时这条红
+   （实测：把 `relative_palm_rotation` 换成丢 side 的假实现，它立刻失败）。
+
+把 `MIRRORED_PALM_SIDES` 临时改回 `()` 重跑：第 1/2/4 条红、第 3 条仍绿 —— 与上面的分析一致。
+全量 `pytest tests -q` -> **447 passed / 3 skipped**（原 442 + 5）。
+
+**如实说：离线回放 A/B 测不出这条修复**（试过，`outputs/tmp_probe/compare_left_fix.py`）：
+
+- 拿 `wrist_fixture_spike.npz`（纯左手旋前 150°）放两遍 —— 两侧**逐行完全相同**。这不是巧合，
+  正是 §8.20.13.2 那条「纯旋前在两种构造下给同一个旋转」的现场复现；
+- 换成真的会动手臂的 `wrist_fixture.npz` 放两遍：左 `|Δwrist|` ≤ 0.0253 rad、右 ≤ 0.0232 rad，
+  但**同一份代码连放两遍**自己就差 **0.0274 / 0.0250 rad**（425/450 行都不同）—— 逐跑噪声比要测的
+  效应还大。噪声来源是这个回放的 `frame_dt` 取**实测墙钟**，`_orientation_limit_deg` 按它换算，
+  于是每跑都略有不同。
+
+所以这条修复的验收**必须靠现场**（左右手各拧一次看方向），离线只能验机制（上面 5 条）。
+要能离线 A/B，得先让回放的 `frame_dt` 固定（记一笔，没做）。
+
+##### 8.20.13.5 这一节顺带回答「为什么改手腕这么复杂」
+
+因为整条链路里**没有任何一处量到「带符号的拧」**：`palm_turn_deg` / `ori_turn_deg` 都是
+`angle_between_deg`（**取绝对值**），报告和 trace 里只有「拧了多少度」，没有「往哪边拧」。
+于是任何左右/符号错误在现场都表现为「效果不对」，而对不上任何一个数 —— 这次的 180 度共轭
+就是靠**关节行程占比**（`wrist_usage`）和**离线合成手**才定位到的。
+三台的旋前机构还各不相同：g1 `wrist_roll` ±113°、h1_2 是 `elbow_roll`（整条前臂，长力臂）、
+gr1_t2 `wrist_roll` 只有 ±35°，同一个符号错误在每台上的表现也不一样。
+
+#### 8.20.14 「能不能只转手腕、不转小臂」：GR1-T2 能，动的是**肩**（2026-11-16 深夜）
+
+现场问：GR1-T2 拧手腕时小臂跟着转，「他没有办法只转手腕吗」。
+
+**机构上可以**：`left_wrist_roll_joint` 的 parent 是 `left_hand_yaw_link`、child 是
+`left_hand_roll_link`，即它在**前臂远端之外**；`elbow_pitch` 是 pitch 轴，中间没有任何滚转
+关节。所以「小臂被转」不可能是腕链干的。
+
+动的是上游：同一跑 `arm.posture.gr1_t2.left.shoulder_range_deg` = `shoulder_pitch` **82.9°** /
+`shoulder_yaw` **56.0°** / `shoulder_roll` 13.6°（右：116.0 / 59.4 / 19.6）。也就是说位置任务
+（腕点）+ 七自由度余度让**肩**在重新摆姿势，肉眼看到的是「小臂+手整体在转」。
+
+两条可选做法（都不改默认行为）：
+
+1. `orientation_scope="wrist"` 已经把**姿态误差**限制在腕链（`self.wrist[side]`，由几何测出来
+   的「只转手」那几个关节），所以拧这一维本身不会摊到肩 —— 摊过去的是**位置**那一半；
+2. 要连位置那一半也不许上游动，只能把同侧上游关节钉住（`_locked_arguments` 的同类手法，
+   代价是腕一饱和就彻底转不动、而且腕点会跟不上手）。
+
+如实说：这次**没有**做 2 —— 它会把「跟手」换成「不动」，和 #42/#43 那两轮的方向相反；
+先把 8.20.13 的符号修完、现场确认右手那套手感也出现在左手上，再决定要不要加这条开关。
+
+
+

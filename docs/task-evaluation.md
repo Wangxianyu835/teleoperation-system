@@ -286,3 +286,88 @@ E:\python3.11.7\python.exe devtools\task_eval.py --task pushcube --policy camera
 - 手臂链路与实测数字：[`multi-robot-arm.md`](multi-robot-arm.md)、[`RETARGETING_PIPELINE.md`](RETARGETING_PIPELINE.md)
 - 任务代码（只读，队友维护）：`src/teleoperation/simulation/tasks/`、`environment.py`、`evaluation/metrics.py`
 
+## 7. 批次 5：无人脚本档（`--policy scripted`，2026-11-16）
+
+> 批次 3 / 4 都标着「需要人在摄像头前」。本轮**没有人**、也不能等人 —— 所以把「人的动作」换成
+> 一串确定性航点，走**同一条 IK + 同一条动作下发**，任务判据仍然由任务自己说。
+> 工具：`devtools/task_scripted.py`（策略 + 任务脚本）。`--policy idle` 的旧行为一个字节没变。
+
+### 7.1 先把四个「让够得着不成立」的根因修掉
+
+| # | 现象（实测） | 根因 | 修法 |
+|---|---|---|---|
+| 1 | `in_reach` 说物体在圈内，IK 残差 **58-81 mm** | `measure_arm` 把「肩 link 原点→肘」+「肘→腕」当半径（h1_2 **0.5527 m**），可那两段在静止位姿并不共线：实测伸直只有 **0.4067 m** | `task_eval.sample_reach()`：按 URDF 限位随机采样 7 个臂关节、用 FK 直接量「腕离肩多远」，h1_2 = **0.4084 m**；中心也改成**肩关节轴**（不再是名字匹配到的肩 link） |
+| 2 | 每条航点都差 ~0.12 m，手臂「顶住」不动 | `TaskScene._settle` 空转 600 步**没给电机**：手臂靠重力垂到腿里，手与大腿互穿后**自己卡自己**（`shoulder_pitch` 指令 −1.03 rad，实测停在 **+0.44 rad**；力 200/500/1200 一样，关掉重力也一样） | `_hold_motors()`：settle 前把全身可动关节按当前角锁住（与现场 `arm_scene_driver` 的 hold motors 同做法） |
+| 3 | 第一次试跑就把方块**扫飞 0.5 m** | `PyBulletArmIK.solve()` 为跑第二遍会 `resetJointState`（机械臂**瞬移穿过**桌面上的物体） | 策略里每次求解前后**存/还原整机角度**，只把解写进动作向量，交给位置电机平滑走过去 |
+| 4 | `lift`/`over` 都能到，`down` 永远差 0.09-0.19 m | 桌面顶面比肩关节**还高 5 cm**，桌子 + 落地支撑在 x≥0.18 是一堵墙 —— 垂着的手往前摆，在 z≈0.9 就怼上墙 | 航点固定四段：**收肘到胸前（x<0.18）→ 抬到桌面上方 → 平移到物体正上方 → 下探**；航点还夹进「肩关节 0.36 m」球内 |
+
+另有一条纯口径问题：单侧 `ik_mode="pose"` 对同一目标残差 **80.8 mm**，`"position"` 只有 **1.1 mm**
+（`outputs/tmp_probe/ik_variants.txt`）。脚本档不需要腕朝向（抓取靠约束），所以用 `position` + `lock_others`。
+
+### 7.2 场景层新增两步（只在 `--policy scripted` 下生效）
+
+1. **`_layout_for_arm()`**：按这台臂的真实几何重摆整幕 —— 物体质心放到「肩前 0.26 m、横向 ≤0.12 m」；
+   相对布置**等比压缩**进 0.12 m（pushcube 的方块离目标 0.54 m，0.41 m 的手臂一次搬运走不完）；
+   桌面顶面放到**比肩低 0.22 m**；桌子近沿留在 x≥0.24 m；落地支撑按新桌面高度**重建**（旧支撑会变成胸口的墙）。
+2. **`_pull_into_ik_workspace()`**：用**真 IK 残差**（≤15 mm）复核每个物体，并把物体局部（≤0.30 m）
+   挪到「残差合格且离肩 ≤0.80×reach」的最近点。半径模型只能保证「勉强够到」，从上方接近需要余量。
+
+### 7.3 抓取与搬运（诚实声明）
+
+* **抓取用约束辅助**：手（掌 + 五指任一 link）进到物体 **10 cm** 以内时，用
+  `p.createConstraint(JOINT_FIXED)` 把物体刚性挂在手部 base link 上，松手时删掉。够不着就**不挂**，
+  并记 `grasp MISSED (hand gap=…)` —— 隔空抓物会让成功率变成假的，所以留这道闸。
+  纯接触抓 3-6 cm 的代理方块在 PyBullet 里成功率极低；本仓库没有触觉 / 摩擦标定。
+* **搬运对物体闭环**：物体与手是刚性约束，腕一转「物体−腕点」的世界系偏移就变，所以每段都用
+  **物体实测位置**修腕点目标（静态偏移补偿实测差 **12 cm**）。
+* **判据在 reset 即为真 -> 不计成功**：场景摆完后 `task.check_success()` 若已经为真，这条 trial 记成
+  失败并注明 `criteria_at_reset`（`balltrashcan` / `ballbimanual` 就栽在这里，如实报）。
+
+### 7.4 怎么跑
+
+```powershell
+cd F:\simulation_platform
+$env:PYTHONPATH = "$pwd\src"; $env:PYTHONUTF8 = "1"
+
+# 单个任务（带每段到位日志）
+E:\python3.11.7\python.exe devtools\task_eval.py --task pushcube --policy scripted --scripted-trace
+
+# 对照：关掉抓取约束（纯接触）—— 证明成功不是「隔空抓」来的
+E:\python3.11.7\python.exe devtools\task_eval.py --task pushcube --policy scripted --no-grasp-assist
+
+# 30 个任务全跑（无人，DIRECT，不开窗口）
+E:\python3.11.7\python.exe devtools\task_eval.py --policy scripted --max-sim-s 30 --task <30 个名字> ^
+    --json outputs\task_eval\scripted_all_h1_2.json
+```
+
+### 7.5 结果（2026-11-16 实测，h1_2，每任务 1 trial）
+
+报告：`outputs/task_eval/scripted_all_h1_2.json`（每次 trial 的 `scripted_report.log` 里逐段写着
+`wrist_err` 与 `grasp` 的实测间隙）。
+
+| 任务 | 结果 | 完成时间 | 备注 |
+|---|---|--:|---|
+| pushcube | ✅ | 4.71 s | 抓→搬到 target 上方→松手，判据在搬运途中成立 |
+| pickcube | ✅ | 2.78 s | 举高 0.30 m（判据是绝对 z） |
+| pickplacecube | ✅ | 2.89 s | 放到盘子上方 |
+| ballmug | ✅ | 3.07 s | 球放进杯子 |
+| pourwater | ✅ | 3.96 s | 提起 + 前臂滚 80°（判据 roll > 60° 且 z > 0.5） |
+| potbimanual | ✅ | 3.77 s | 举起锅 0.30 m |
+| pottomato | ✅ | 2.87 s | 番茄放进锅 |
+| panhearth | ✅ | 4.18 s | 锅放到灶上 |
+| twistbottlecaps | ✅ | 3.55 s | 瓶盖放到瓶口 |
+| uprearcup | ❌ | — | 抓到了、也举起了，但「拧正」那一步用的是 `elbow_roll`，杯子没转正 |
+| balltrashcan | ❌ | — | 抓放路径撞到垃圾桶本体（2 cm 球滚走 2.3 m） |
+| rotatefaucet | ❌ | — | 手柄抓到了，`elbow_roll` 转 100° 后手柄朝向判据未达成 |
+| rotatehearth / breadtoaster | ❌ | — | 判据含**绝对 z**（`knob z < 0.43` / `button z < 0.47`），摆法一改就永远不成立（批次 1 已列 `CRITERIA_ABSOLUTE_Z`） |
+| openmicrowave / opendrawer / liftmug | ❌ | — | reset 时判据即为真（批次 1 的 `CRITERIA_INVALID`）；本轮**如实记成失败**（`criteria_at_reset`），不刷成功率 |
+| ballbimanual / pottomatoout / plateoven | ❌ | — | 场景摆完判据即为真（`z > 0.6` / 番茄已在锅外 / `door_closed` 本来就满足）-> 同样不计成功 |
+| closemicrowave / closedrawer / openlaptop / drawerbook | ❌ | — | 需要「推/拉门、拉抽屉、翻屏幕」这类**保持接触的持续推压**，脚本档只有「抓起来搬」，没有推压控制 |
+| pottray / stackboxes / tidyuptable / pottomatoplate / penbrushpot / stacktoyblocks | ❌ | — | 抓取/搬运途中撞到旁边的物体（这些任务的目标物彼此贴着），或落点差几厘米没进 `_is_above` 阈值 |
+
+**结论口径（不许含糊）**：批次 5 做到的是「**在无人条件下，9/30 的任务能被脚本真正做完**，并且
+失败原因逐条可查」。剩下的 21 条不是链路问题，分三类：①判据本身失效（7 条，批次 1 已标）；
+②需要接触式推压（4 条）；③抓取路径碰撞/落点精度（10 条）。这三类分别对应下一批的三件事：
+改判据为「相对初始位姿」、加「推压原语」、给抓取加局部避障与落点二次校正。
+
+

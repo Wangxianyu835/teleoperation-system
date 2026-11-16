@@ -129,12 +129,16 @@ from teleoperation.simulation.arm_preview import (
 from teleoperation.simulation.arm_profiles import loadable_robots, profile_for
 from teleoperation.simulation.arm_ik import (ELBOW_PASS_ORDERS, ELBOW_RECOVERY_COOLDOWN_FRAMES,
                                              ELBOW_RECOVERY_DEG, ELBOW_RECOVERY_MARGIN_DEG,
+                                             MAX_WRIST_JOINT_STEP_DEG,
                                              ORIENTATION_SCOPES)
 from teleoperation.simulation.arm_realtime import (
     CALIBRATE_MODES,
     DEFAULT_LATERAL_GUARD_M,
     MAP_MODES,
     MAX_DIRECTION_RATE_DEG_S,
+    MAX_ORIENTATION_RATE_DEG_S,
+    MAX_ORIENTATION_STEP_DEG,
+    PALM_HOLD_S,
     TRAVEL_MODES,
     AxisMap,
     RealtimeArmBridge,
@@ -182,6 +186,10 @@ def _one_source_label(target) -> str:
     if not raw:
         return "none"
     text = str(raw)
+    # ``palm_hold`` 必须排在 ``palm`` 前面：它是「这一帧掌面基丢了、沿用上一帧的掌面
+    # 旋转」（见 arm_realtime.PALM_HOLD_S），和真的拿到掌面基不是一回事，CSV 要分得开。
+    if text.startswith("palm_hold"):
+        return "palm_hold"
     if text.startswith("palm"):
         return "palm_normal"
     if text.startswith("three_point"):
@@ -192,12 +200,14 @@ def _one_source_label(target) -> str:
 
 
 def orientation_source_label(per_side) -> str:
-    """这一侧这一帧的腕姿态取自哪条基：``palm_normal`` / ``three_point`` / ``none``。
+    """这一侧这一帧的腕姿态取自哪条基：``palm_normal`` / ``palm_hold`` / ``three_point`` / ``none``。
 
     三台机器人共用同一个相对旋转，理论上取值一致；真出现不一致就把各自的名字连起来
     （``mixed(a|b)``）—— 宁可难看，也不要静默挑一个。``none`` 有两种来源：姿态整体关着
     （``--arm-orientation off``），或者这一帧还没标定完，靠 ``ori_sent`` 那一列 + 帧号区分；
-    手部兜底（没有肘）是 ``none_hand_fallback``。
+    手部兜底（没有肘）是 ``none_hand_fallback``。``palm_hold`` = 这一帧没有掌面基，沿用了
+    上一次的掌面旋转（窗口 ``arm_realtime.PALM_HOLD_S``）—— 与真的拿到掌面基（``palm_normal``）
+    分开数，否则「手点丢了多少帧」这个现场数字就看不见了。
     """
     labels = sorted({_one_source_label(target) for target in per_side.values()}) or ["none"]
     return labels[0] if len(labels) == 1 else "mixed(" + "|".join(labels) + ")"
@@ -256,9 +266,11 @@ class WristTrace:
       （斜坡/夹紧之后的那个目标，含肩锚点平移）；
     * ``ori_sent`` = 这一帧到底有没有把**腕姿态**交给 IK（0 = 只喂位置）；
       ``ori_turn_deg`` = 下发的相对旋转有多大；``ori_err_deg`` = 下发后实测差多少；
-      ``ori_source`` = 这个旋转取自哪条基（``palm_normal`` 掌面法向 / ``three_point``
-      三点基 / ``none`` 没下发）。**排查先看这一列**：整段都是 ``three_point`` 说明掌面基
-      一直退化，那时「手拧了腕不动」是退化导致的，不是桥没接上。
+      ``ori_source`` = 这个旋转取自哪条基（``palm_normal`` 掌面法向 / ``palm_hold``
+      这一帧丢了掌面基、沿用上一次的 / ``three_point`` 三点基 / ``none`` 没下发）。
+      **排查先看这一列**：整段都是 ``three_point`` 说明掌面基一直退化，那时「手拧了腕不动」
+      是退化导致的，不是桥没接上；``palm_hold`` 与 ``palm_normal`` 的比值就是「手点丢了
+      多少帧」（窗口见 ``arm_realtime.PALM_HOLD_S``）。
     * ``palm_turn_deg`` = 操作者掌面法向相对本侧第一帧转过多少度（诊断标尺，
       不作为输入）。
     * ``wrist_a/b/c`` + ``wrist_names`` = 该侧前三个「腕链」关节值
@@ -374,6 +386,115 @@ class WristTrace:
                     *(f"{value:.4f}" for value in values), ";".join(names),
                 ])
                 self.rows += 1
+
+
+class FrameBudget:
+    """``--frame-budget-json``：这一场每帧的时间花在哪。只读，**不改变任何控制量**。
+
+    为什么要它：2026-11-16 晚那场 16 分钟实跑（``outputs/tmp_realtime/arm_run_20261116_213650.json``）
+    只有 **5.92 fps**（``median_frame_interval_ms`` 155.4），而当时看到的「腕不流畅」里，
+    有多少是手腕数学的问题、多少是这一帧压根没算完，从报告里看不出来。这个探针把每个
+    循环拆成下面几段，每段记 ``perf_counter`` 差值（秒），跑完写 JSON + 在终端打一张表：
+
+    * ``capture``  = ``camera.next_frame()``：取帧 + 姿态推理（回放模式 = 读 npz，几乎为 0）；
+    * ``retarget`` = ``retargeter.retarget(window)`` + 每侧 ``scene.apply``（手部 18 维）；
+    * ``bridge``   = ``bridge.update``（标定 / 斜坡 / 护栏 / 掌面保持 / 姿态限幅都在这里）；
+    * ``ik``       = ``driver.apply_each`` 两侧（三台 x 两遍热启动 x ``--arm-ik-iterations``）；
+    * ``step``     = ``driver.step(1)`` / ``scene.step()``（``stepSimulation``，GUI 渲染也算这）；
+    * ``trace``    = ``--wrist-trace`` 那一行（不给探针时约为 0）；
+    * ``preview``  = 摄像头预览窗口的 ``preview.update``（画骨架 + HUD）；
+    * ``rest``     = 整帧墙钟间隔减去上面各段（剩下的零碎）。
+
+    判读：``capture`` 最大 -> 瓶颈在摄像头/姿态模型；``ik`` 最大 -> 先降
+    ``--arm-ik-iterations``；``step`` 最大 -> 物理步进或 GUI 渲染；``rest`` 很大 -> 有
+    未计入的等待（窗口/IO）。``frame`` 就是 ``fps`` 的倒数。
+    不给 ``--frame-budget-json`` 时本类根本不会被构造。
+    """
+
+    #: 计时段的固定顺序（报告与终端表都按它排，读的人不用再认顺序）。
+    STAGES = ("capture", "retarget", "bridge", "ik", "step", "trace", "preview", "rest")
+
+    def __init__(self, path):
+        self.path = Path(path)
+        parent = self.path.parent
+        if parent and not parent.exists():
+            parent.mkdir(parents=True, exist_ok=True)
+        self.samples = {stage: [] for stage in self.STAGES}
+        #: 相邻两帧循环开始之间的墙钟间隔（= fps 的倒数）。
+        self.intervals = []
+        self._started = None
+
+    def begin_frame(self, now: float) -> None:
+        """记下这一帧的起点；上一帧的起点到这里就是「整帧间隔」。"""
+        if self._started is not None:
+            self.intervals.append(float(now) - self._started)
+        self._started = float(now)
+
+    def lap(self, stage: str, since: float) -> float:
+        """把 ``since`` 到现在的这一段记到 ``stage`` 上，返回新的起点。"""
+        now = time.perf_counter()
+        if stage in self.samples:
+            self.samples[stage].append(now - float(since))
+        return now
+
+    @staticmethod
+    def _stats(values) -> dict:
+        """``count / total_ms / mean_ms / p50 / p90 / p99 / max_ms``；空列表全是 0。"""
+        if not values:
+            return {"count": 0, "total_ms": 0.0, "mean_ms": 0.0,
+                    "p50_ms": 0.0, "p90_ms": 0.0, "p99_ms": 0.0, "max_ms": 0.0}
+        ordered = sorted(float(value) * 1000.0 for value in values)
+
+        def pick(fraction: float) -> float:
+            index = min(len(ordered) - 1, max(0, int(round(fraction * (len(ordered) - 1)))))
+            return ordered[index]
+
+        return {"count": len(ordered),
+                "total_ms": round(sum(ordered), 3),
+                "mean_ms": round(sum(ordered) / len(ordered), 3),
+                "p50_ms": round(pick(0.50), 3),
+                "p90_ms": round(pick(0.90), 3),
+                "p99_ms": round(pick(0.99), 3),
+                "max_ms": round(ordered[-1], 3)}
+
+    def summary(self) -> dict:
+        stages = {stage: self._stats(self.samples[stage]) for stage in self.STAGES}
+        frame = self._stats(self.intervals)
+        mean_frame = frame["mean_ms"] or 0.0
+        # 「这一段占整帧多少」：用均值占比，p99 与 max 在同一份报告里，判读时一起看。
+        share = {stage: (0.0 if not mean_frame
+                         else round(100.0 * stages[stage]["mean_ms"] / mean_frame, 1))
+                 for stage in self.STAGES}
+        return {"frames": len(self.intervals),
+                "fps": None if not mean_frame else round(1000.0 / mean_frame, 2),
+                "frame": frame,
+                "stages": stages,
+                "share_percent": share}
+
+    def save(self) -> dict:
+        """写 JSON（写不进去也不改变退出码：这一份只是诊断）。"""
+        data = self.summary()
+        try:
+            self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False),
+                                 encoding="utf-8")
+        except Exception:                     # noqa: BLE001
+            pass
+        return data
+
+    @staticmethod
+    def table(data: dict) -> str:
+        """终端那张表（一行一段），``fps`` 与均值整帧一起给出。"""
+        frame = data.get("frame") or {}
+        lines = [f"frame budget: {data.get('frames', 0)} frames, mean frame "
+                 f"{frame.get('mean_ms', 0.0):.1f} ms (p50 {frame.get('p50_ms', 0.0):.1f}, "
+                 f"p90 {frame.get('p90_ms', 0.0):.1f}) = {data.get('fps') or 0.0:.2f} fps",
+                 "  stage       mean_ms   p50_ms   p90_ms   p99_ms    max_ms    share"]
+        for stage, stats in (data.get("stages") or {}).items():
+            share = (data.get("share_percent") or {}).get(stage, 0.0)
+            lines.append(f"  {stage:<9}{stats['mean_ms']:9.2f}{stats['p50_ms']:9.2f}"
+                         f"{stats['p90_ms']:9.2f}{stats['p99_ms']:9.2f}{stats['max_ms']:9.2f}"
+                         f"{share:8.1f}%")
+        return "\n".join(lines)
 
 
 class CameraFrameSource:
@@ -855,6 +976,53 @@ def build_parser() -> argparse.ArgumentParser:
                              "frames (historical); track = start following from the first frame "
                              "that sees your arm and let the neutral converge (default). See "
                              "CALIBRATE_MODES in arm_realtime.py for the 2026-10-14 field evidence")
+    parser.add_argument("--arm-palm-hold-ms", type=float,
+                        default=PALM_HOLD_S * 1000.0, metavar="MS",
+                        help="how long the last palm-normal wrist rotation may be reused after "
+                             "a frame loses the hand points (default %(default).0f ms). Without "
+                             "it every dropped hand frame swaps to the three-point basis, which "
+                             "cannot see pronation at all: the wrist target jumps between 'twisted "
+                             "90 deg' and 'not twisted', and the hand flips between the two "
+                             "symmetric wrist solutions (measured 2026-11-16: g1 left wrist pitch "
+                             "at -1.512 / +1.619 rad, limits are +-1.6144). 0 = off (A/B baseline)")
+    parser.add_argument("--arm-orientation-rate-deg-s", type=float,
+                        default=MAX_ORIENTATION_RATE_DEG_S, metavar="DEG/S",
+                        help="wrist orientation slew limit (default %(default).0f deg/s, 0 = off). "
+                             "Not a low-pass: over the limit only 'rate * frame dt' degrees are "
+                             "released along the same axis, so a spike becomes a short continuous "
+                             "move instead of a one-frame jump and never overshoots afterwards. "
+                             "Why it is needed on top of --arm-palm-hold-ms: measured 2026-11-16 "
+                             "on a live run, 1-2 percent of the palm frames are bad on their own "
+                             "(per-frame palm turn rate p50 13-50, p99 740-833, max 1252 deg/s, "
+                             "a human wrist tops out around 500-700), and a basis switch after "
+                             "the hold window is a real 2.6-3.0 rad step; both used to land on "
+                             "the wrist in a single frame (g1 left 0.75 -> 3.14 -> -0.49 rad in "
+                             "4 s). Clamped frames are counted in counts.orientation_clamped")
+    parser.add_argument("--arm-orientation-step-deg", type=float,
+                        default=MAX_ORIENTATION_STEP_DEG, metavar="DEG",
+                        help="per-frame cap on the wrist orientation step, independent of the "
+                             "frame interval (default %(default).0f deg, 0 = rate limit only). "
+                             "The rate limit is frame-rate blind: on the 2026-11-16 live run "
+                             "(5.92 fps, median frame 155 ms) 540 deg/s allowed 540 x 0.155 = "
+                             "84 deg in one frame, so a single bad palm frame still jerked the "
+                             "wrist. With this cap no single frame moves more than 30 deg at any "
+                             "frame rate; above 18 fps it never binds (30 fps: the rate limit "
+                             "already allows only 18 deg)")
+    parser.add_argument("--arm-wrist-joint-step-deg", type=float,
+                        default=MAX_WRIST_JOINT_STEP_DEG, metavar="DEG",
+                        help="per-frame cap on each *wrist-chain joint* (default %(default).0f "
+                             "deg, 0 = off), applied to the IK solution and to the joint state "
+                             "the solver teleports to. The orientation cap above only limits "
+                             "the commanded rotation: measured on the 2026-11-16 live run "
+                             "(9264 trace rows) the orientation stayed within 29.98 deg per "
+                             "frame while a single joint jumped 193-238 deg in one frame, "
+                             "because the wrist saturates and the solver switches branch or "
+                             "hands the leftover error to another axis (gr1_t2 left wrist_roll "
+                             "pinned at its -35 deg stop in 64.0 percent of frames, then wrist "
+                             "yaw moved up to 213 deg per frame - that is the on-site 'it turns "
+                             "the wrong way'; h1_2 elbow_roll 202 deg, g1 wrist_roll 238 deg). "
+                             "Only the wrist chain is limited, so the elbow/upper arm still "
+                             "follow the position task")
     parser.add_argument("--neutral-json", type=Path, default=None,
                         help="reuse a neutral pose saved by --save-neutral")
     parser.add_argument("--save-neutral", type=Path, default=None,
@@ -867,6 +1035,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "a wrist pose was commanded at all, the wrist joint values and how far "
                              "your palm turned since the first frame. Writes a file only: no control "
                              "output changes (see WRIST_TRACE_COLUMNS)")
+    parser.add_argument("--frame-budget-json", type=Path, default=None,
+                        help="write a read-only JSON probe with where each frame's time goes "
+                             "(capture / retarget / bridge / ik / step / trace / preview / rest, "
+                             "mean + p50 + p90 + p99 + max, plus the mean frame interval and fps). "
+                             "Measured 2026-11-16 on the field entry: 5.92 fps, 155 ms per frame. "
+                             "Writes a file and prints a table: no control output changes")
     parser.add_argument("--dump-npz", type=Path, default=None,
                         help="record the raw frames (hands + pose arms) for offline replay")
     parser.add_argument("--arm-frame-dump", type=Path, default=None,
@@ -1065,6 +1239,56 @@ def _save_arm_frames(path, arrays) -> Path:
     return target
 
 
+def _write_abort_report(path, error, processed, bridge, budget_data) -> None:
+    """``finally`` 里补一份最小报告：点掉 PyBullet 窗口不该把这一场的数据一起吃掉。
+
+    2026-11-16 22:18 那场就是关掉窗口（``Not connected to physics server``）之后，
+    ``budget_live2.json`` 与 ``live2.csv`` 都写出来了，唯独 93 KB 的 ``arm_run_*.json`` 没有 ——
+    因为它是 ``finally`` **之后**的正常路径里生成的，异常一路抛出去就再没走到。这里只写不依赖
+    PyBullet 的那几样（帧数、桥接计数、帧预算、错误），正常路径写的完整报告仍是唯一权威。
+    """
+    if path is None or error is None:
+        return
+    path = Path(path)
+    if path.exists():
+        return
+    data = {"entry": ARM_ENTRY, "aborted": True,
+            "error": f"{type(error).__name__}: {error}",
+            "frames": int(processed or 0),
+            "bridge_counts": (None if bridge is None else bridge.counts),
+            "frame_budget": budget_data}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str),
+                    encoding="utf-8")
+    print(f"[WARN] report (aborted run) written: {path}", flush=True)
+
+
+def _warn_missing_palm_basis(bridge, sides, warned) -> None:
+    """中性里没有掌面基就当场喊一声：这一整场都量不到旋前/旋后。
+
+    机制（``arm_realtime._raw_orientation``）：掌面基要跟「中性那一刻的掌面基」相减，而中性是
+    标定那 ``--arm-calibrate-frames`` 帧的均值。标定时手不在画面里 / 掌面不可见 ->
+    ``orientation_palm`` 是 None -> 整场只能退回 ``three_point``（对旋前完全不敏感，拧腕不跟）。
+    2026-11-16 晚那场就是这样静悄悄丢掉整场旋前跟踪，现场只看到「手腕不跟手」，
+    唯一线索是 ``--wrist-trace`` 的 ``ori_source`` 全是 ``three_point``。
+    """
+    if bridge is None or bridge.calibrating:
+        return
+    frames = getattr(bridge, "calibration_frames", 30)
+    for side in sides:
+        if side in warned:
+            continue
+        entry = bridge.neutral_record().get(side) or {}
+        if entry.get("orientation_palm") is not None:
+            continue
+        warned.add(side)
+        print(f"[WARN] {side}: the neutral has no palm basis (orientation_palm is None, "
+              f"palm_samples={entry.get('palm_samples', 0)}) -> pronation/supination is NOT "
+              f"tracked this run (ori_source stays three_point, the wrist will not follow a "
+              f"twist). Restart and keep both palms facing the camera for the first "
+              f"{frames} frames.", flush=True)
+
+
 def run(args) -> int:
     """采集 -> 手 + 臂 -> 仿真；0 = 至少一侧给出过输出，1 = 全程没有手也没有臂。"""
     sides = tuple(SIDES if args.side == "both" else (args.side,))
@@ -1091,6 +1315,8 @@ def run(args) -> int:
     processed = 0
     started = None
     marks = []
+    #: 「中性里没有掌面基」的那一侧只喊一次（见 ``_warn_missing_palm_basis``）。
+    palm_basis_warned = set()
     samples = {side: [] for side in sides}
     invalid = {side: 0 for side in sides}
     raw_seen = {side: 0 for side in sides}
@@ -1099,6 +1325,11 @@ def run(args) -> int:
               "arm": {side: [] for side in SIDES},
               "timestamps": []}
     targets = {}
+    budget = None
+    budget_data = None
+    if args.frame_budget_json is not None:
+        # 只读探针：把每帧拆成几段记耗时（见 FrameBudget）。只写文件 + 打表，不改控制。
+        budget = FrameBudget(args.frame_budget_json)
     if args.wrist_trace is not None:
         # 只读探针：这里只建文件（表头），下面每帧一行；它写不进去也不改变控制与退出码。
         wrist_trace = WristTrace(args.wrist_trace)
@@ -1129,7 +1360,9 @@ def run(args) -> int:
                                     lock_others=(args.arm_ik_scope == "arm"),
                                     ik_mode=(None if args.arm_ik_mode == "profile"
                                              else args.arm_ik_mode),
-                                    orientation_scope=args.arm_orientation_scope)
+                                    orientation_scope=args.arm_orientation_scope,
+                                    wrist_joint_step_deg=max(
+                                        0.0, float(args.arm_wrist_joint_step_deg)))
             # segments 口径与肘任务要的「机器人自己的量」：实测连杆长 + 中性腕/肘点（基座系）。
             # 加载后量一次即可，之后每帧只是加减法（见 arm_realtime.MAP_MODES）。
             robot_links, robot_anchors = {}, {}
@@ -1201,6 +1434,9 @@ def run(args) -> int:
                       f" | orientation {args.arm_orientation}"
                       f" (scope {args.arm_orientation_scope}"
                       + orientation_note + ")"
+                      f" | wrist joint step = "
+                      f"{args.arm_wrist_joint_step_deg:.0f} deg/frame"
+                      f"{' (off)' if args.arm_wrist_joint_step_deg <= 0 else ''}"
                       f" | elbow follow = {args.arm_elbow_follow}"
                       f" | measured links (m) "
                       + " ".join(f"{name}:{side[0]}" +
@@ -1251,6 +1487,9 @@ def run(args) -> int:
                 elbow_task=args.arm_elbow_task, elbow_gain=args.arm_elbow_gain,
                 posture_gain=args.arm_posture_gain,
                 max_direction_rate_deg_s=args.arm_direction_rate_deg_s,
+                palm_hold_s=max(0.0, float(args.arm_palm_hold_ms) / 1000.0),
+                max_orientation_rate_deg_s=max(0.0, float(args.arm_orientation_rate_deg_s)),
+                max_orientation_step_deg=max(0.0, float(args.arm_orientation_step_deg)),
                 anchors=robot_anchors)
             # ik_mode 打**实际生效的**（``--arm-ik-mode`` 可以覆盖 profile 表）：现场看这一行
             # 就知道 g1 / gr1_t2 这一场到底会不会转腕（pose = 会，position = 不会）。
@@ -1297,6 +1536,9 @@ def run(args) -> int:
         palm_warn = True
 
         while True:
+            since = time.perf_counter()
+            if budget is not None:
+                budget.begin_frame(since)
             if args.frames and processed >= args.frames:
                 break
             if not scene.alive():
@@ -1306,6 +1548,8 @@ def run(args) -> int:
             if getattr(camera, "exhausted", False):
                 print("replay finished (all recorded frames were replayed).", flush=True)
                 break
+            if budget is not None:
+                since = budget.lap("capture", since)
             processed += 1
             raw_frame = camera.last_raw_frame
             for side in sides:
@@ -1325,6 +1569,8 @@ def run(args) -> int:
                     scene.apply(side, values)
                     samples[side].append(values)
                     latest[side] = values
+            if budget is not None:
+                since = budget.lap("retarget", since)
             targets = {}
             if bridge is not None:
                 # 这一帧的真实时长先算出来：斜坡的速率口径与关键点跳变护栏都要用它
@@ -1356,6 +1602,8 @@ def run(args) -> int:
                 # 于是那一侧如实退回历史行为（不猜、不保持一个假姿势）。
                 bend_by_side = (bridge.elbow_bend_target()
                                 if args.arm_elbow_follow == "operator" else None)
+                if budget is not None:
+                    since = budget.lap("bridge", since)
                 # 斜坡：速率（mm/s）-> 这一帧最多走多少米。现场摄像头循环帧率不固定
                 # （8-12 fps），固定 mm/帧 会把跟随速度绑在帧率上，摆动被整段削掉（§8.9）。
                 # 第一帧拿不到间隔，用名义 1/30 s（= 旧口径 20 mm/帧），不是"关掉斜坡"。
@@ -1395,14 +1643,22 @@ def run(args) -> int:
                             arm_failures[side] = f"{type(error).__name__}: {error}"
                             print(f"[WARN] {side}: arm IK failed, the arms keep their last "
                                   f"command: {arm_failures[side]}", flush=True)
+                if budget is not None:
+                    since = budget.lap("ik", since)
                 driver.step(1)
+                if budget is not None:
+                    since = budget.lap("step", since)
                 if wrist_trace is not None:
                     # 步进之后再读 FK：actual_* 是这一帧真正稳定下来的位置，
                     # 与同一帧的 target_*/residual_mm 可比。只写文件，不回灌控制量。
                     wrist_trace.frame(processed, time.perf_counter() - started, pending,
                                       driver, orientation_by_side, raw_frame)
+                if budget is not None:
+                    since = budget.lap("trace", since)
             else:
                 scene.step()
+                if budget is not None:
+                    since = budget.lap("step", since)
             if args.dump_npz is not None:
                 _record_frame(dumped, raw_frame, camera.arms())
             if preview is not None:
@@ -1415,12 +1671,17 @@ def run(args) -> int:
                 if preview.quit_requested:
                     print("camera window closed; stopping.", flush=True)
                     break
+            if budget is not None:
+                since = budget.lap("preview", since)
             marks.append(time.perf_counter())
+            if budget is not None:
+                since = budget.lap("rest", since)
             if args.print_every and processed % args.print_every == 0:
                 counts = " ".join(f"{side}={len(samples[side])}" for side in sides)
                 print(f"frame={processed} fps={_loop_fps(marks):.1f} hand valid={counts} "
                       f"invalid={sum(invalid.values())} | {arm_hud(bridge, driver, targets)}",
                       flush=True)
+                _warn_missing_palm_basis(bridge, sides, palm_basis_warned)
                 if args.arm_trace and bridge is not None:
                     print_arm_state(processed, bridge, driver, targets, profiles)
         final = {side: scene.joint_values(side) for side in sides}
@@ -1438,6 +1699,8 @@ def run(args) -> int:
         scene_summary = scene.summary() if hasattr(scene, "summary") else None
         elapsed = time.perf_counter() - started
     finally:
+        if budget is not None:
+            budget_data = budget.save()   # 先落盘：它只读探针，不依赖 PyBullet
         if wrist_trace is not None:
             wrist_trace.close()          # 先把探针落盘，再断开场景（读它不需要 PyBullet）
         if preview is not None:
@@ -1446,6 +1709,8 @@ def run(args) -> int:
             _drain_in_background(camera.release, "camera release")
         if scene is not None:
             _drain_in_background(scene.close, "PyBullet disconnect")
+        # 关窗口 / 断连不该把这一场的数据一起吃掉（见 _write_abort_report）。
+        _write_abort_report(args.report, sys.exc_info()[1], processed, bridge, budget_data)
 
     fps = _loop_fps(marks)
     print(f"\nprocessed={processed} frames in {elapsed:.2f} s  fps={fps:.1f}  "
@@ -1453,6 +1718,10 @@ def run(args) -> int:
     if wrist_trace is not None:
         print(f"wrist trace: {wrist_trace.rows} rows over {wrist_trace.frames} frames -> "
               f"{wrist_trace.path}", flush=True)
+    if budget is not None and budget_data is not None:
+        # 只读探针：哪一段吃掉了整帧（判读见 FrameBudget）。
+        print("\n" + FrameBudget.table(budget_data), flush=True)
+        print(f"frame budget -> {budget.path}", flush=True)
     if scene_summary is not None:
         print(f"scene={scene_summary['scene']} sim_frames={scene_summary['sim_frames']} "
               f"applied={scene_summary['applied_frames']} "
@@ -1551,6 +1820,8 @@ def run(args) -> int:
         "elapsed_seconds": round(float(elapsed), 3),
         "fps": round(float(fps), 2),
         "median_frame_interval_ms": round(float(_median_interval(marks) * 1000), 2),
+        # 每帧各段耗时（--frame-budget-json 才非空）：回答「5.92 fps 花在哪」。
+        "frame_budget": budget_data,
         "sides": {
             side: {
                 "raw_detected_frames": raw_seen[side],

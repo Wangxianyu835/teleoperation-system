@@ -121,6 +121,23 @@ ORIENTATION_SCOPES = ("wrist", "arm")
 #: 命中 ``at_limit`` 的关节就是卡住的那一维，没命中就说明腕还有行程、问题在别处。
 #: 实测 h1_2 单次 45 度拧腕的取向残差可达 56.83 度（``devtools/probe_wrist_twist.py``）。
 WRIST_LIMIT_USAGE = 0.98
+#: 腕链关节每帧最多走多少度（0 = 关）：``PyBulletArmIK.max_wrist_joint_step_deg``。
+#:
+#: 为什么要它（2026-11-16 现场，三台一起量 ``--wrist-trace`` 的 9264 行）：朝向上限
+#: ``arm_realtime.MAX_ORIENTATION_STEP_DEG`` 确实守住了 —— ``|Δori|`` 最大 29.98 度，一帧没超，
+#: 但**单个关节**在同一帧能跳 193-238 度，因为腕顶到限位之后求解器换支路、或把残余朝向
+#: 交给另一个轴。现场看到的「一直抽」是关节在跳，不是朝向在跳：
+#:
+#:     gr1_t2 左 ``wrist_roll`` 钉在 -35 度限位上的帧 64.0%、``pitch`` 42.4%，剩下的朝向由
+#:             ``yaw``（±170 度，方向不对的那个轴）接走，单帧 ``|Δ|`` 最大 213 度 ——
+#:             现场那句「它转的方向和我相反」就是这一行；
+#:     h1_2   腕链第一个关节是 ``elbow_roll``（整个小臂 + 手一起转，力臂最大），单帧最大 202 度；
+#:     g1     行程最大（``wrist_roll`` ±113 度），单帧最大 238 度。
+#:
+#: 限的是**腕链**（``self.wrist[side]``，与 ``orientation_scope="wrist"`` 放开的同一组）：肩/肘由
+#: 位置任务自己管，这里不碰。口径与朝向上限一致 —— 每帧多少度，与帧率无关（2026-11-16 现场
+#: 7.5 fps，20 度/帧 = 150 度/秒，比操作者拧腕快，但跳不动 200 度）。
+MAX_WRIST_JOINT_STEP_DEG = 20.0
 #: 同时给了腕与肘两个位置目标时，肘任务放在第几遍：
 #:
 #: ``first``  第一遍就是 IK2（腕 + 肘），第二遍按 ``ik_mode`` 用腕的位姿收尾；
@@ -280,7 +297,8 @@ class PyBulletArmIK:
                  elbow_recovery_margin_deg: float = ELBOW_RECOVERY_MARGIN_DEG,
                  elbow_recovery_cooldown: int = ELBOW_RECOVERY_COOLDOWN_FRAMES,
                  lock_others: bool = False,
-                 orientation_scope: str = "wrist"):
+                 orientation_scope: str = "wrist",
+                 max_wrist_joint_step_deg: float = 0.0):
         import pybullet as p
 
         if profile is None:
@@ -316,6 +334,14 @@ class PyBulletArmIK:
                 f"orientation_scope must be one of {ORIENTATION_SCOPES}, "
                 f"got {orientation_scope!r}")
         self.orientation_scope = str(orientation_scope)
+        #: 腕链关节每帧的步长上限（**度**，0 = 关）。见 ``MAX_WRIST_JOINT_STEP_DEG`` 与
+        #: ``_limit_wrist_step``：限的是「解」和「写回去的关节状态」两处，只动腕链。
+        self.max_wrist_joint_step_deg = max(0.0, float(max_wrist_joint_step_deg))
+        #: 每侧最后一次**放行**的腕链角度（链式基准，与 ``arm_realtime._last_orientation``
+        #: 同一套写法：拿上一帧放行值当起点，误差不累积）。
+        self.last_commanded = {}
+        #: 被步长上限削过的关节次数（报告用：这一场有多少帧没一步到位）。
+        self.wrist_step_clamped = 0
 
         # Every non-fixed joint in PyBullet order: the IK solution has one entry per
         # movable joint, so the mapping has to stay name-based (index 0 is a hip).
@@ -1482,7 +1508,44 @@ class PyBulletArmIK:
                                    for name, value in dict(posture or {}).items()}
         #: The elbow position task this frame (``None`` = only the wrist was tasked).
         self.last_elbow_world[side] = elbow_world
+        # 腕链步长上限（``MAX_WRIST_JOINT_STEP_DEG``）：解与关节状态一起限，默认 0 = 关。
+        solution = self._limit_wrist_step(side, solution)
         return self._arm_values(side, solution)
+
+    def _limit_wrist_step(self, side: str, solution) -> list:
+        """腕链关节单帧最多走 ``max_wrist_joint_step_deg`` 度（0 = 关，原样返回）。
+
+        两处一起限，否则等于没限：**解**（``apply`` 的电机目标）和**状态**（``_ik_sequence``
+        里那几遍 ``_teleport`` 已经把关节直接写到了没限幅的解上 —— 现场 7.5 fps 下渲染出来的
+        就是那一帧的解，电机再怎么限也追不回来）。基准取上一帧**放行**的角度，不是实测角，
+        这样误差不累积（与 ``arm_realtime._clamp_orientation`` 同构）。
+        """
+        limit = self.max_wrist_joint_step_deg
+        joints = self.wrist[side]
+        if limit <= 0.0 or not joints:
+            return solution
+        step = radians(limit)
+        previous = self.last_commanded.get(side)
+        if previous is None:
+            # 第一次：以当前实测角为起点，免得第一帧就把解整个削一遍。
+            previous = self.joint_values(side)
+        limited = list(solution)
+        changed = []
+        for index, name in joints:
+            position = self.position_of[index]
+            before = float(previous.get(name, limited[position]))
+            wanted = float(limited[position])
+            after = min(before + step, max(before - step, wanted))
+            if abs(after - wanted) > 1e-12:
+                changed.append((index, after))
+            limited[position] = after
+        if changed:
+            self.wrist_step_clamped += len(changed)
+            for index, angle in changed:
+                self.p.resetJointState(self.body, index, angle,
+                                       physicsClientId=self.cid)
+        self.last_commanded[side] = self._arm_values(side, limited)
+        return limited
 
     def apply(self, side: str, values) -> None:
         """Write one side's arm angles: ``{joint name: angle}`` or a URDF-order sequence."""
@@ -1583,6 +1646,10 @@ class PyBulletArmIK:
             "ik_mode": self.ik_mode,
             #: 姿态那一遍谁去吸收朝向误差（``"wrist"`` = 只转腕，``"arm"`` = 历史行为）。
             "orientation_scope": self.orientation_scope,
+            #: 腕链关节每帧的步长上限（度，0 = 关）与本场被削掉的关节次数，见
+            #: ``MAX_WRIST_JOINT_STEP_DEG`` / ``_limit_wrist_step``。
+            "max_wrist_joint_step_deg": round(self.max_wrist_joint_step_deg, 3),
+            "wrist_step_clamped": self.wrist_step_clamped,
             #: ``orientation_scope="wrist"`` 放开的那几个关节（空 = 该机型没有腕关节名，
             #: 于是退回历史行为）。
             "orientation_joints": {side: [name for _index, name in entries]

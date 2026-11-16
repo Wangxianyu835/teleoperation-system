@@ -29,12 +29,17 @@ from teleoperation.simulation.arm_realtime import (
     GLITCH_HOLD_FRAMES,
     HOLD_REASONS,
     MAX_DIRECTION_RATE_DEG_S,
+    MAX_ORIENTATION_RATE_DEG_S,
+    MAX_ORIENTATION_STEP_DEG,
     MIN_ELBOW_PLANE_SINE,
+    PALM_HOLD_S,
     AxisMap,
     RealtimeArmBridge,
     arm_reach,
     elbow_bend_degrees,
     load_neutral,
+    palm_orientation_frame,
+    relative_palm_rotation,
     relative_wrist_rotation,
     save_neutral,
     wrist_orientation_frame,
@@ -42,6 +47,7 @@ from teleoperation.simulation.arm_realtime import (
 from teleoperation.simulation.realtime_teleop import (
     WRIST_TRACE_COLUMNS,
     CameraFrameSource,
+    FrameBudget,
     ReplayFrameSource,
     WristTrace,
     build_parser,
@@ -109,6 +115,25 @@ def rotate_arm(points, rotation, origin) -> np.ndarray:
     """把整条手臂绕 ``origin`` 转 ``rotation``（用来造「你转了一下前臂」的帧）。"""
     array = np.asarray(points, dtype=np.float64)
     return (rotation @ (array - np.asarray(origin, dtype=np.float64)).T).T + np.asarray(origin)
+
+
+def _quaternion_angle_deg(quaternion) -> float:
+    """四元数 ``(x, y, z, w)`` 的旋转角（度）：取最短那一侧（``q`` 与 ``-q`` 是同一个姿态）。"""
+    values = np.asarray(quaternion, dtype=np.float64)
+    w = min(1.0, abs(float(values[3])))
+    return float(np.degrees(2.0 * np.arccos(w)))
+
+
+def twisted_hand(side: str = "right", angle_deg: float = 40.0) -> np.ndarray:
+    """掌面绕**前臂轴**转过 ``angle_deg`` 度的手（旋前/旋后）；腕仍落在 ``bent_arm`` 的腕上。
+
+    掌面基的 x 取自 pose 的前臂方向、z 取自掌面法向，所以只转手掌 = 只改 z，
+    相对旋转正好是绕前臂轴的 ``angle_deg`` 度 —— 这一维三点基完全量不到（见 PALM_HOLD_S）。
+    """
+    arm_points = bent_arm(side)
+    hand = open_hand()
+    axis = arm_points[2] - arm_points[1]
+    return rotate_arm(hand, axis_angle(axis, np.radians(angle_deg)), hand[0])
 
 
 def calibrated(sides=SIDES, frames: int = 4, **kwargs) -> RealtimeArmBridge:
@@ -409,6 +434,14 @@ class TravelModeAndGuardTests(unittest.TestCase):
         self.assertEqual(legacy.arm_travel_mode, "scale")
         self.assertEqual(legacy.arm_lateral_guard_mm, 20.0)     # 恢复旧护栏
         self.assertTrue(legacy.no_arm_gain_quality_guard)
+
+    def test_the_entry_parser_exposes_the_palm_hold_window(self):
+        """``--arm-palm-hold-ms``：默认 500 ms，``0`` 关掉（A/B 基线）。"""
+        args = build_parser().parse_args([])
+        self.assertAlmostEqual(args.arm_palm_hold_ms, 1000.0 * PALM_HOLD_S, places=9)
+        self.assertEqual(args.arm_palm_hold_ms, 500.0)
+        off = build_parser().parse_args(["--arm-palm-hold-ms", "0"])
+        self.assertEqual(off.arm_palm_hold_ms, 0.0)
 
     def test_the_entry_parser_defaults_the_slew_to_a_speed(self):
         """斜坡默认是速率（mm/s），固定 mm/帧 只作为复现旧数字的 override。"""
@@ -857,8 +890,9 @@ class WristOrientationFrameTests(unittest.TestCase):
 class NeutralOrientationTests(unittest.TestCase):
     """中性记录里多存一份「腕坐标系」，姿态目标就成了**相对中性**的四元数。"""
 
-    def _calibrated_on_a_bent_arm(self, frames: int = 4) -> RealtimeArmBridge:
-        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=frames)
+    def _calibrated_on_a_bent_arm(self, frames: int = 4, **kwargs) -> RealtimeArmBridge:
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=frames,
+                                   **kwargs)
         for _ in range(frames):
             bridge.update(arms_world={"right": bent_arm("right")})
         return bridge
@@ -875,7 +909,10 @@ class NeutralOrientationTests(unittest.TestCase):
         from teleoperation.retargeting.arm.wrist_targets import (
             rotation_matrix_to_quaternion)
 
-        bridge = self._calibrated_on_a_bent_arm()
+        # 这条钉的是**基的数学**（三点基下 35 度就该是 35 度），所以把角速度限速关掉：
+        # 默认 frame_dt=1/30 s、540 度/秒 = 18 度/帧，一帧转 35 度会被削（见
+        # test_a_wrist_that_jumps_is_rate_limited 那条）。限速本身另有四条用例。
+        bridge = self._calibrated_on_a_bent_arm(max_orientation_rate_deg_s=0.0)
         neutral = bent_arm("right")
         reference = wrist_orientation_frame(neutral)
         # 绕中性帧的 z 轴（= 肘的拐向）转 -35 度；相对旋转在中性帧基里就是绕 z 转 -35 度。
@@ -926,6 +963,90 @@ class NeutralOrientationTests(unittest.TestCase):
         bridge_off.update(arms_world={"right": neutral})
         self.assertIsNone(bridge_off.orientation_target()["right"])
 
+    def test_a_dropped_hand_frame_reuses_the_last_palm_rotation(self):
+        """掌面基丢一帧不要换基：换基等于把腕目标在「拧了 40 度」和「没拧」之间来回拨。
+
+        现场取证见 ``arm_realtime.PALM_HOLD_S``（2026-11-16：``ori_source`` 逐帧在
+        ``palm_normal`` / ``three_point`` 之间切，g1 左腕 pitch 在 -1.512 / +1.619 rad
+        两颗限位间跳 = 抽搐）。
+        """
+        bridge = self._calibrated_with_a_palm_basis()
+        twisted = self._palm_frame(bridge, {"world_right": twisted_hand()})
+        self.assertEqual(twisted.info["orientation_source"], "palm_normal")
+        # 掌面基量得到旋前：这一帧相对中性是绕前臂轴 40 度左右的旋转
+        angle = _quaternion_angle_deg(twisted.orientation)
+        self.assertGreater(angle, 30.0)
+        self.assertLess(angle, 50.0)
+        held = self._palm_frame(bridge, None)
+        self.assertEqual(held.info["orientation_source"], "palm_hold")
+        np.testing.assert_allclose(np.asarray(held.orientation),
+                                   np.asarray(twisted.orientation), atol=1e-12)
+        self.assertEqual(bridge.counts["palm_held"]["right"], 1)
+
+    def test_the_palm_rotation_is_dropped_back_to_three_point_after_the_window(self):
+        """窗口过了才如实退回三点基：不能无限保持，否则腕会锁在旧姿态上不跟手。"""
+        bridge = self._calibrated_with_a_palm_basis()          # 每帧 0.1 s，窗口 0.5 s
+        self._palm_frame(bridge, {"world_right": twisted_hand()})
+        sources = [self._palm_frame(bridge, None).info["orientation_source"]
+                   for _ in range(6)]                          # 年龄 0.1 .. 0.6 s
+        self.assertEqual(sources[0], "palm_hold")              # 0.1 s
+        self.assertEqual(sources[4], "palm_hold")              # 0.5 s（含边界）
+        self.assertEqual(sources[5], "three_point")            # 0.6 s
+        entry = self._palm_frame(bridge, None)
+        self.assertEqual(entry.info["orientation_source"], "three_point")
+        # 手臂一直没动，三点基看到的相对旋转就是单位阵（旋前它量不到）
+        np.testing.assert_allclose(np.asarray(entry.orientation),
+                                   (0.0, 0.0, 0.0, 1.0), atol=1e-9)
+
+    def test_a_zero_window_goes_straight_back_to_three_point(self):
+        """``palm_hold_s=0`` = 关（A/B 基线，与 2026-11-16 之前逐字一致）。"""
+        bridge = self._calibrated_with_a_palm_basis(palm_hold_s=0.0)
+        self._palm_frame(bridge, {"world_right": twisted_hand()})
+        dropped = self._palm_frame(bridge, None)
+        self.assertEqual(dropped.info["orientation_source"], "three_point")
+        np.testing.assert_allclose(np.asarray(dropped.orientation),
+                                   (0.0, 0.0, 0.0, 1.0), atol=1e-9)
+        self.assertEqual(bridge.counts["palm_held"]["right"], 0)
+
+    def test_a_run_without_a_palm_basis_never_fabricates_one(self):
+        """标定时没有手点 -> 中性里没有掌面基；之后丢帧也不许编一个出来。"""
+        bridge = self._calibrated_on_a_bent_arm()
+        entry = bridge.update(arms_world={"right": bent_arm("right")},
+                              hands=None)["h1_2"]["right"]
+        self.assertEqual(entry.info["orientation_source"], "three_point")
+        self.assertEqual(bridge.counts["palm_held"]["right"], 0)
+
+    def test_reset_forgets_the_held_palm_rotation(self):
+        bridge = self._calibrated_with_a_palm_basis()
+        self._palm_frame(bridge, {"world_right": twisted_hand()})
+        bridge.reset()
+        entry = self._palm_frame(bridge, None)
+        self.assertEqual(entry.info["orientation_source"], "three_point")
+        self.assertEqual(bridge.counts["palm_held"]["right"], 0)
+
+    def _calibrated_with_a_palm_basis(self, palm_hold_s: float = PALM_HOLD_S,
+                                      frame_dt: float = 0.1) -> RealtimeArmBridge:
+        """标定时手也在画面里（未拧的掌面）-> 中性记录带上掌面基（``orientation_palm``）。
+
+        这一步只钉**基**（掌面法向 / 保持窗口），所以把两条姿态上限都留在关的状态：
+        40 度拧腕在 0.1 s 一帧下会被速率那条削成 54 度、被每帧步长那条削成 30 度，
+        混进来就分不清「基算得对不对」和「限幅削了多少」（限幅自己见
+        ``OrientationSlewTests`` / ``OrientationStepCapTests``）。
+        """
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=4,
+                                   palm_hold_s=palm_hold_s, frame_dt=frame_dt,
+                                   max_orientation_rate_deg_s=0.0,
+                                   max_orientation_step_deg=0.0)
+        for _ in range(4):
+            bridge.update(arms_world={"right": bent_arm("right")},
+                          hands={"world_right": open_hand()}, frame_dt=frame_dt)
+        return bridge
+
+    def _palm_frame(self, bridge, hands):
+        """手臂不动、只手部数据变的一帧（``hands=None`` = 这一帧没手点）。"""
+        return bridge.update(arms_world={"right": bent_arm("right")},
+                             hands=hands, frame_dt=0.1)["h1_2"]["right"]
+
     def test_the_hand_fallback_carries_no_relative_orientation(self):
         bridge = self._calibrated_on_a_bent_arm()
         entry = bridge.update(arms_world={"right": None},
@@ -933,6 +1054,283 @@ class NeutralOrientationTests(unittest.TestCase):
         self.assertEqual(entry.source, "hand")
         self.assertIsNone(entry.orientation)
         self.assertIn("no elbow", entry.info["orientation_source"])
+
+
+class OrientationSlewTests(unittest.TestCase):
+    """腕姿态目标的角速度上限（``MAX_ORIENTATION_RATE_DEG_S`` / ``--arm-orientation-rate-deg-s``）。
+
+    现场取证见那个常量：``PALM_HOLD_S`` 把「换基」那一下治住之后，同一场里仍有 1-2% 的掌面
+    帧自己就是坏的（实测逐帧角速度 p99 740-833 度/秒、最大 1252，而人手腕约 500-700），
+    外加「掌面基丢超窗口后退回三点基」那 2.6-3.0 rad 的真空跳。两者都不该在一帧里落到腕上。
+    """
+
+    def _bridge(self, **kwargs) -> RealtimeArmBridge:
+        """带掌面基的桥，每帧 0.1 s（于是默认 540 度/秒 = 54 度/帧）。"""
+        kwargs.setdefault("frame_dt", 0.1)
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=4, **kwargs)
+        for _ in range(4):
+            bridge.update(arms_world={"right": bent_arm("right")},
+                          hands={"world_right": open_hand()}, frame_dt=kwargs["frame_dt"])
+        return bridge
+
+    def _frame(self, bridge, hands, frame_dt: float = 0.1):
+        return bridge.update(arms_world={"right": bent_arm("right")},
+                             hands=hands, frame_dt=frame_dt)["h1_2"]["right"]
+
+    def test_a_wrist_that_jumps_is_rate_limited(self):
+        """一帧里手「拧了 150 度」（关键点跳变）-> 只放行 54 度，不是 150 度。"""
+        # 这一步只钉**速率**那条：帧长 0.1 s -> 540 度/秒 = 54 度/帧，正好在每帧步长上限
+        # （默认 30 度）之上，所以显式关掉步长那条，免得两条上限混在一起看不出是哪条削的。
+        bridge = self._bridge(max_orientation_step_deg=0.0)
+        self._frame(bridge, {"world_right": open_hand()})          # 中性：0 度
+        jumped = self._frame(bridge, {"world_right": twisted_hand(angle_deg=150.0)})
+        angle = _quaternion_angle_deg(jumped.orientation)
+        self.assertAlmostEqual(angle, 54.0, delta=1.0)
+        self.assertEqual(bridge.counts["orientation_clamped"]["right"], 1)
+        # 同一条链路关掉限速时这一帧就是 150 度 —— 差别全在限速上，不是基算错了。
+        raw_bridge = self._bridge(max_orientation_rate_deg_s=0.0)
+        self._frame(raw_bridge, {"world_right": open_hand()})
+        raw = self._frame(raw_bridge, {"world_right": twisted_hand(angle_deg=150.0)})
+        self.assertAlmostEqual(_quaternion_angle_deg(raw.orientation), 150.0, delta=1.0)
+        self.assertEqual(raw_bridge.counts["orientation_clamped"]["right"], 0)
+
+    def test_the_slew_lets_a_real_twist_through_untouched(self):
+        """真手速之内（30 度/帧 = 300 度/秒）一个数都不许改：限速不是平滑。"""
+        # 关掉每帧步长上限：这一步要证明的是「速率那条不介入」，30 度正好撞在步长上限上。
+        bridge = self._bridge(max_orientation_step_deg=0.0)
+        self._frame(bridge, {"world_right": open_hand()})
+        for expected in (30.0, 60.0, 90.0):
+            entry = self._frame(bridge, {"world_right": twisted_hand(angle_deg=expected)})
+            self.assertAlmostEqual(_quaternion_angle_deg(entry.orientation), expected,
+                                   delta=1e-6)
+        self.assertEqual(bridge.counts["orientation_clamped"]["right"], 0)
+
+    def test_the_limit_is_scaled_by_the_real_frame_dt(self):
+        """半秒一帧时 540 度/秒 = 270 度/帧，150 度就该原样过去；33 ms 一帧则只有 18 度。"""
+        # 只钉速率那条：每帧步长上限（默认 30 度）与「按 dt 换算」是两件事，这里把它关掉，
+        # 否则半秒一帧会被步长削成 30 度（那正是新加那条的行为，见 OrientationStepCapTests）。
+        slow = self._bridge(max_orientation_step_deg=0.0)
+        self._frame(slow, {"world_right": open_hand()}, frame_dt=0.5)
+        passed = self._frame(slow, {"world_right": twisted_hand(angle_deg=150.0)}, frame_dt=0.5)
+        self.assertAlmostEqual(_quaternion_angle_deg(passed.orientation), 150.0, delta=1.0)
+        self.assertEqual(slow.counts["orientation_clamped"]["right"], 0)
+        fast = self._bridge(max_orientation_step_deg=0.0)
+        self._frame(fast, {"world_right": open_hand()}, frame_dt=1.0 / 30.0)
+        cut = self._frame(fast, {"world_right": twisted_hand(angle_deg=150.0)},
+                          frame_dt=1.0 / 30.0)
+        self.assertAlmostEqual(_quaternion_angle_deg(cut.orientation), 18.0, delta=0.5)
+        self.assertEqual(fast.counts["orientation_clamped"]["right"], 1)
+
+    def test_a_clamped_spike_does_not_bounce_back(self):
+        """尖峰后被削掉的角度**不累积**：手回到中性，目标一步回到 0，不会过冲到来回振。"""
+        bridge = self._bridge()
+        self._frame(bridge, {"world_right": open_hand()})
+        self._frame(bridge, {"world_right": twisted_hand(angle_deg=150.0)})
+        back = self._frame(bridge, {"world_right": open_hand()})
+        self.assertLessEqual(_quaternion_angle_deg(back.orientation), 1.0)
+        settled = self._frame(bridge, {"world_right": open_hand()})
+        self.assertLessEqual(_quaternion_angle_deg(settled.orientation), 1e-6)
+
+    def test_the_hold_window_keeps_the_raw_measurement_not_the_clamped_one(self):
+        """`_palm_hold` 必须存**原始测量**：存削过的值 = 一次坏帧把随后的保持一起压低。"""
+        # 只钉速率那条（0.1 s -> 54 度），步长那条关掉，否则两次都被削成 30 度看不出区别。
+        bridge = self._bridge(max_orientation_step_deg=0.0)
+        self._frame(bridge, {"world_right": open_hand()})
+        cut = self._frame(bridge, {"world_right": twisted_hand(angle_deg=150.0)})
+        self.assertAlmostEqual(_quaternion_angle_deg(cut.orientation), 54.0, delta=1.0)
+        # 下一帧丢手点 -> 沿用「上一次掌面旋转」= 原始的 150 度，再被限速削一次
+        held = self._frame(bridge, None)
+        self.assertEqual(held.info["orientation_source"], "palm_hold")
+        self.assertEqual(bridge.counts["palm_held"]["right"], 1)
+        self.assertGreater(_quaternion_angle_deg(held.orientation), 100.0)
+        self.assertEqual(bridge.counts["orientation_clamped"]["right"], 2)
+
+    def test_a_zero_rate_turns_the_slew_off(self):
+        """``max_orientation_rate_deg_s=0`` = 关（A/B 基线，与 2026-11-16 之前逐字一致）。"""
+        bridge = self._bridge(max_orientation_rate_deg_s=0.0)
+        self._frame(bridge, {"world_right": open_hand()})
+        entry = self._frame(bridge, {"world_right": twisted_hand(angle_deg=150.0)})
+        self.assertAlmostEqual(_quaternion_angle_deg(entry.orientation), 150.0, delta=1.0)
+        self.assertEqual(bridge.counts["orientation_clamped"]["right"], 0)
+
+    def test_reset_forgets_the_slew_baseline(self):
+        """``reset()`` 之后第一帧不跟上一场比（换人 / 重标定后大幅转向是正常的）。"""
+        bridge = self._bridge()
+        self._frame(bridge, {"world_right": open_hand()})
+        self._frame(bridge, {"world_right": twisted_hand(angle_deg=150.0)})
+        bridge.reset()
+        entry = self._frame(bridge, {"world_right": twisted_hand(angle_deg=150.0)})
+        self.assertEqual(bridge.counts["orientation_clamped"]["right"], 0)
+        self.assertIsNotNone(entry.orientation)
+
+    def test_the_entry_parser_exposes_the_slew_flag(self):
+        args = build_parser().parse_args([])
+        self.assertEqual(args.arm_orientation_rate_deg_s, MAX_ORIENTATION_RATE_DEG_S)
+        args = build_parser().parse_args(["--arm-orientation-rate-deg-s", "0"])
+        self.assertEqual(args.arm_orientation_rate_deg_s, 0.0)
+
+
+class OrientationStepCapTests(unittest.TestCase):
+    """每帧步长上限（``MAX_ORIENTATION_STEP_DEG`` / ``--arm-orientation-step-deg``）。
+
+    现场取证见那个常量：速率上限是**帧率盲**的 —— 2026-11-16 晚那场实跑只有 5.92 fps
+    （``median_frame_interval_ms`` 155.4，``outputs/tmp_realtime/arm_run_20261116_213650.json``），
+    540 度/秒 x 0.155 s = **84 度/帧**，于是一帧 150 度的坏掌面帧仍被放行 84 度。这一条与
+    帧长无关：任何帧率下一帧都不超过 30 度。下面用真实的 155 ms 帧长钉住这两件事。
+    """
+
+    #: 现场实测的帧长（5.92 fps）。用它而不是 0.1 s，是因为这条上限存在的理由就是低帧率。
+    FIELD_DT = 0.155
+
+    def _bridge(self, **kwargs) -> RealtimeArmBridge:
+        kwargs.setdefault("frame_dt", self.FIELD_DT)
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=4, **kwargs)
+        for _ in range(4):
+            bridge.update(arms_world={"right": bent_arm("right")},
+                          hands={"world_right": open_hand()}, frame_dt=kwargs["frame_dt"])
+        return bridge
+
+    def _frame(self, bridge, hands, frame_dt: float = None):
+        return bridge.update(arms_world={"right": bent_arm("right")},
+                             hands=hands,
+                             frame_dt=self.FIELD_DT if frame_dt is None
+                             else frame_dt)["h1_2"]["right"]
+
+    def test_at_6_fps_a_150_deg_jump_moves_30_deg_not_84(self):
+        """5.92 fps 下速率那条会放行 84 度，步长那条把它压到 30 度。"""
+        bridge = self._bridge()
+        self._frame(bridge, {"world_right": open_hand()})
+        jumped = self._frame(bridge, {"world_right": twisted_hand(angle_deg=150.0)})
+        self.assertAlmostEqual(_quaternion_angle_deg(jumped.orientation),
+                               MAX_ORIENTATION_STEP_DEG, delta=1.0)
+        self.assertEqual(bridge.counts["orientation_clamped"]["right"], 1)
+        # 同一条链路关掉步长那条 -> 回到 540 x 0.155 = 83.7 度：差别全在步长上限上。
+        rate_only = self._bridge(max_orientation_step_deg=0.0)
+        self._frame(rate_only, {"world_right": open_hand()})
+        bigger = self._frame(rate_only, {"world_right": twisted_hand(angle_deg=150.0)})
+        self.assertAlmostEqual(_quaternion_angle_deg(bigger.orientation), 83.7, delta=1.5)
+
+    def test_above_18_fps_the_step_cap_never_binds(self):
+        """30 fps 下速率只放 18 度/帧，30 度的步长上限一次都不该介入。"""
+        bridge = self._bridge(frame_dt=1.0 / 30.0)
+        self._frame(bridge, {"world_right": open_hand()}, frame_dt=1.0 / 30.0)
+        cut = self._frame(bridge, {"world_right": twisted_hand(angle_deg=150.0)},
+                          frame_dt=1.0 / 30.0)
+        self.assertAlmostEqual(_quaternion_angle_deg(cut.orientation), 18.0, delta=0.5)
+        # 真手速（15 度/帧 = 450 度/秒）一个数都不改，两条上限都不介入。
+        slow = self._bridge(frame_dt=1.0 / 30.0)
+        self._frame(slow, {"world_right": open_hand()}, frame_dt=1.0 / 30.0)
+        real = self._frame(slow, {"world_right": twisted_hand(angle_deg=15.0)},
+                           frame_dt=1.0 / 30.0)
+        self.assertAlmostEqual(_quaternion_angle_deg(real.orientation), 15.0, delta=1e-6)
+        self.assertEqual(slow.counts["orientation_clamped"]["right"], 0)
+
+    def test_a_sustained_spike_is_walked_out_at_the_cap_per_frame(self):
+        """连续 3 帧都要求 150 度 -> 90 度（每帧 30），而不是一帧 84 度再被拉回。"""
+        bridge = self._bridge()
+        self._frame(bridge, {"world_right": open_hand()})
+        angles = [_quaternion_angle_deg(self._frame(
+            bridge, {"world_right": twisted_hand(angle_deg=150.0)}).orientation)
+            for _ in range(3)]
+        for index, angle in enumerate(angles, start=1):
+            self.assertAlmostEqual(angle, MAX_ORIENTATION_STEP_DEG * index, delta=1.0)
+        self.assertEqual(bridge.counts["orientation_clamped"]["right"], 3)
+
+    def test_a_zero_step_keeps_the_rate_limit_only(self):
+        """``max_orientation_step_deg=0`` = 只按速率（这条新上限的关法）。"""
+        bridge = self._bridge(max_orientation_step_deg=0.0)
+        self._frame(bridge, {"world_right": open_hand()})
+        entry = self._frame(bridge, {"world_right": twisted_hand(angle_deg=150.0)})
+        self.assertAlmostEqual(_quaternion_angle_deg(entry.orientation), 83.7, delta=1.5)
+
+    def test_a_zero_rate_switches_the_whole_mechanism_off(self):
+        """``max_orientation_rate_deg_s=0`` 时步长上限**也不能**单独接管（A/B 基线逐位透传）。"""
+        bridge = self._bridge(max_orientation_rate_deg_s=0.0)
+        self._frame(bridge, {"world_right": open_hand()})
+        entry = self._frame(bridge, {"world_right": twisted_hand(angle_deg=150.0)})
+        self.assertAlmostEqual(_quaternion_angle_deg(entry.orientation), 150.0, delta=1.0)
+        self.assertEqual(bridge.counts["orientation_clamped"]["right"], 0)
+
+    def test_the_entry_parser_exposes_the_step_cap(self):
+        args = build_parser().parse_args([])
+        self.assertEqual(args.arm_orientation_step_deg, MAX_ORIENTATION_STEP_DEG)
+        off = build_parser().parse_args(["--arm-orientation-step-deg", "0"])
+        self.assertEqual(off.arm_orientation_step_deg, 0.0)
+        custom = build_parser().parse_args(["--arm-orientation-step-deg", "12.5"])
+        self.assertEqual(custom.arm_orientation_step_deg, 12.5)
+
+    def test_the_constructor_clamps_a_negative_step_to_off(self):
+        """负数是「关」，不是反向限幅。"""
+        bridge = self._bridge(max_orientation_step_deg=-5.0)
+        self.assertEqual(bridge.max_orientation_step_deg, 0.0)
+
+
+class FrameBudgetTests(unittest.TestCase):
+    """``--frame-budget-json``（``FrameBudget``）：回答「5.92 fps 花在哪」。
+
+    2026-11-16 晚那场实跑只有 5.92 fps，而报告里只有整帧的 ``median_frame_interval_ms``，
+    分不出是取帧/姿态模型、IK、物理步进还是渲染。这一类只钉「算得对、写得进、不给旗子
+    就不构造」，判读交给现场那一张表。
+    """
+
+    def test_stats_and_share_are_the_plain_arithmetic(self):
+        budget = FrameBudget(Path(tempfile.gettempdir()) / "frame_budget_probe.json")
+        budget.samples["ik"] = [0.010, 0.020]          # 10 ms / 20 ms -> 均值 15
+        budget.samples["capture"] = [0.005, 0.005]      # 均值 5
+        budget.intervals = [0.050, 0.050]               # 整帧均值 50 ms -> 20 fps
+        data = budget.summary()
+        self.assertEqual(data["frames"], 2)
+        self.assertAlmostEqual(data["fps"], 20.0, places=6)
+        self.assertAlmostEqual(data["frame"]["mean_ms"], 50.0, places=6)
+        self.assertAlmostEqual(data["stages"]["ik"]["mean_ms"], 15.0, places=6)
+        self.assertAlmostEqual(data["stages"]["ik"]["p50_ms"], 10.0, places=6)
+        self.assertAlmostEqual(data["stages"]["ik"]["max_ms"], 20.0, places=6)
+        self.assertAlmostEqual(data["share_percent"]["ik"], 30.0, places=6)
+        self.assertAlmostEqual(data["share_percent"]["capture"], 10.0, places=6)
+        # 没记过的段必须是 0，不是缺键：报告里要能一眼看出「这段没跑」。
+        self.assertEqual(data["stages"]["preview"]["count"], 0)
+        self.assertEqual(data["stages"]["preview"]["mean_ms"], 0.0)
+
+    def test_an_empty_budget_does_not_divide_by_zero(self):
+        """一帧都没跑完（比如刚启动就关窗）：fps 是 None，不是 ZeroDivisionError。"""
+        data = FrameBudget(Path(tempfile.gettempdir()) / "frame_budget_empty.json").summary()
+        self.assertEqual(data["frames"], 0)
+        self.assertIsNone(data["fps"])
+        self.assertEqual(data["stages"]["ik"]["mean_ms"], 0.0)
+
+    def test_lap_returns_the_next_starting_point(self):
+        budget = FrameBudget(Path(tempfile.gettempdir()) / "frame_budget_lap.json")
+        start = budget.lap("capture", 0.0)
+        self.assertGreater(start, 0.0)
+        self.assertEqual(len(budget.samples["capture"]), 1)
+        self.assertEqual(len(budget.samples["ik"]), 0)
+
+    def test_table_prints_one_line_per_stage(self):
+        budget = FrameBudget(Path(tempfile.gettempdir()) / "frame_budget_table.json")
+        budget.samples["ik"] = [0.020]
+        budget.intervals = [0.100]
+        text = FrameBudget.table(budget.summary())
+        lines = text.splitlines()
+        self.assertIn("frame budget: 1 frames", lines[0])
+        self.assertIn("10.00 fps", lines[0])
+        for stage in FrameBudget.STAGES:
+            self.assertTrue(any(line.strip().startswith(stage) for line in lines[1:]),
+                            f"missing stage row: {stage}")
+
+    def test_save_writes_the_same_summary(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "budget.json"
+            budget = FrameBudget(path)
+            budget.samples["ik"] = [0.020]
+            budget.intervals = [0.100]
+            data = budget.save()
+            self.assertTrue(path.is_file())
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["fps"], data["fps"])
+
+    def test_the_entry_parser_exposes_the_budget_flag(self):
+        self.assertIsNone(build_parser().parse_args([]).frame_budget_json)
+        args = build_parser().parse_args(["--frame-budget-json", "budget.json"])
+        self.assertEqual(str(args.frame_budget_json), "budget.json")
 
 
 class NeutralOrientationRecordTests(unittest.TestCase):
@@ -1531,6 +1929,8 @@ class WristTraceColumnTests(unittest.TestCase):
                     for name, source in zip(("h1_2", "g1", "gr1_t2"), sources)}
 
         self.assertEqual(orientation_source_label(targets("palm_normal")), "palm_normal")
+        # palm_hold 不能被 startswith("palm") 吞成 palm_normal：它意味着这一帧手点丢了。
+        self.assertEqual(orientation_source_label(targets("palm_hold")), "palm_hold")
         self.assertEqual(orientation_source_label(targets("three_point")), "three_point")
         self.assertEqual(orientation_source_label(targets(None)), "none")
         self.assertEqual(orientation_source_label(targets()),
@@ -1548,6 +1948,233 @@ class WristTraceColumnTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+
+
+
+class PalmBasisVisibilityTests(unittest.TestCase):
+    """「中性里有没有掌面基」必须可见（2026-11-16 晚那场整场丢旋前的教训）。
+
+    机制：掌面基要跟中性里的 ``orientation_palm`` 相减，而中性是标定那几十帧的均值；标定时手
+    不在画面里 -> ``orientation_palm`` 是 None -> 之后再怎么把手伸进画面，也只能一路退回
+    ``three_point``（对旋前不敏感 = 拧腕不跟）。当时唯一的线索是 ``--wrist-trace`` 的
+    ``ori_source`` 全是 ``three_point``，现场只看到「手腕不跟」，看不出是标定时机的问题。
+    所以：标定期间拿到掌面基的帧数进报告（``palm_samples`` / ``orientation_palm_recorded``），
+    并且在 HUD 旁边一次性喊出来（``realtime_teleop._warn_missing_palm_basis``）。
+    """
+
+    FRAMES = 4
+
+    def _bridge(self, with_hands: bool) -> RealtimeArmBridge:
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",),
+                                   calibration_frames=self.FRAMES, frame_dt=0.1)
+        for _ in range(self.FRAMES):
+            bridge.update(arms_world={"right": bent_arm("right")},
+                          hands={"world_right": open_hand()} if with_hands else None,
+                          frame_dt=0.1)
+        return bridge
+
+    def test_the_palm_frame_count_matches_the_basis_that_was_recorded(self):
+        with_palm = self._bridge(True)
+        entry = with_palm.summary()["neutral"]["right"]
+        self.assertEqual(entry["palm_samples"], self.FRAMES)
+        self.assertTrue(entry["orientation_palm_recorded"])
+        # 同一次标定里三点基也照样记（两条基不能混用，两份都要在）。
+        self.assertTrue(entry["orientation_recorded"])
+
+    def test_a_calibration_without_hands_reports_zero_and_stays_three_point(self):
+        blind = self._bridge(False)
+        entry = blind.summary()["neutral"]["right"]
+        self.assertEqual(entry["palm_samples"], 0)
+        self.assertFalse(entry["orientation_palm_recorded"])
+        self.assertTrue(entry["orientation_recorded"])
+        # 后面把手伸进来也补不回来：中性里没有掌面基，整场只能三点基。
+        update = blind.update(arms_world={"right": bent_arm("right")},
+                              hands={"world_right": open_hand()}, frame_dt=0.1)
+        self.assertEqual(update["h1_2"]["right"].info["orientation_source"], "three_point")
+
+    def test_the_warning_fires_once_per_side_and_only_when_the_basis_is_missing(self):
+        import io
+        from contextlib import redirect_stdout
+
+        from teleoperation.simulation.realtime_teleop import _warn_missing_palm_basis
+
+        blind = self._bridge(False)
+        warned = set()
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            _warn_missing_palm_basis(blind, ("right",), warned)
+            _warn_missing_palm_basis(blind, ("right",), warned)
+        text = buffer.getvalue()
+        self.assertEqual(text.count("[WARN]"), 1, text)
+        self.assertIn("right", text)
+        self.assertIn("palm_samples=0", text)
+        self.assertEqual(warned, {"right"})
+
+        with_palm = self._bridge(True)
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            _warn_missing_palm_basis(with_palm, ("right",), set())
+        self.assertEqual(buffer.getvalue(), "")
+
+
+class PalmBasisChiralityTests(unittest.TestCase):
+    """左右手的掌面基必须**同手性** —— 2026-11-16 深夜：「右手跟得上、左手反着拧，三台一起」。
+
+    机制（离线取证 ``outputs/tmp_probe/left_right_palm_sign.py``）：掌面法向用
+    ``cross(index - wrist, pinky - wrist)`` 算，而关键点的绕序左右**镜像** —— 同一个叉乘在右手
+    给出「掌心朝外」、在左手给出「掌心朝内」。又因为 ``y = z x x`` 是推算出来的，那个基形式上
+    仍是正交旋转（det 恒为 +1），差别只藏在「z 指反」里，等价于**整帧绕前臂轴多转 180 度**。
+
+    后果分两种维：绕前臂的自转在 ``R_neutral^T @ R_now`` 里被共轭约掉（两侧都给 +40 度，
+    所以「拧」这一维本来就对），而 **pitch/yaw 两维在左侧整体反号**。现场的表现就是左手目标
+    系统性偏 180 度、关节一路被推进行程两端：同一跑报告 ``arm.wrist_usage`` 里 h1_2 左
+    ``wrist_pitch`` usage 1.000（顶满）/ ``wrist_yaw`` 0.000（顶死另一端），右 0.283/0.248 全在
+    中段；g1 左 ``wrist_roll`` 1.000（顶满）、右 0.184；``direction_glitch`` 左 77 / 右 39。
+
+    这里的判据是三个数：掌面法向指回掌心外侧、镜像姿势下两侧的基逐位相同、同一份世界旋转在
+    两侧给出**同号**的转角。
+    """
+
+    WRIST = np.array((0.20, 0.30, 0.0))
+    ELBOW = WRIST - np.array((0.0, 0.25, 0.0))
+
+    def _arm(self):
+        """(肩, 肘, 腕)：前臂沿 world +y（MediaPipe 口径 y 向下，即小臂朝下）。"""
+        return np.stack((self.ELBOW - np.array((0.0, 0.22, 0.0)), self.ELBOW, self.WRIST))
+
+    def _hand(self, side, rotation=None):
+        """21 点手：掌面朝相机（-z）、手指朝上（-y）、食指 MCP 在拇指侧；左右手在 x 上镜像。"""
+        across = 0.025 if side == "right" else -0.025
+        points = np.zeros((21, 3))
+        points[5] = (across, -0.09, 0.0)      # 食指 MCP
+        points[17] = (-across, -0.09, 0.0)    # 小指 MCP
+        for slot in range(1, 21):
+            if slot not in (5, 17):
+                points[slot] = (0.0, -0.02 - 0.005 * (slot % 5), 0.0)
+        if rotation is not None:
+            points = (rotation @ points.T).T
+        return points + self.WRIST
+
+    @staticmethod
+    def _about(axis, angle_deg):
+        """绕给定世界轴的旋转（罗德里格斯，只用来造测试数据）。"""
+        axis = np.asarray(axis, dtype=np.float64)
+        axis = axis / np.linalg.norm(axis)
+        angle = np.radians(angle_deg)
+        skew = np.array(((0.0, -axis[2], axis[1]),
+                        (axis[2], 0.0, -axis[0]),
+                        (-axis[1], axis[0], 0.0)))
+        return np.eye(3) + np.sin(angle) * skew + (1.0 - np.cos(angle)) * (skew @ skew)
+
+    def _frame(self, side, rotation=None):
+        return palm_orientation_frame(self._hand(side, rotation), self._arm(), side)
+
+    def _relative(self, side, rotation):
+        return self._frame(side).T @ self._frame(side, rotation)
+
+    def _twist_deg(self, side, rotation):
+        """绕前臂轴（基的 x）那个带符号角：``R_rel @ y`` 落在 (y, z) 平面上。"""
+        column = self._relative(side, rotation) @ np.array((0.0, 1.0, 0.0))
+        return float(np.degrees(np.arctan2(column[2], column[1])))
+
+    def _swing_relative(self, side, rotation):
+        """整条手臂（肩肘腕 + 21 点手）一起摆：绕着腕点转，返回相对中性的旋转。
+
+        为什么要让手臂一起动：掌面基的两个轴里 x 是**前臂方向**、z 是**掌面法向**，所以腕
+        「在自己平面里折/偏」对这套基是不可见的（只有旋前那一维看得见）。而现场那个「左手
+        反了」是全姿态的偏差，只有手臂真的动起来、前臂方向变了，相对旋转里才出现绕另外
+        两个轴的分量 —— 那两维正是被 180 度共轭翻掉的。
+        """
+        shift = self.WRIST
+        arm = (rotation @ (self._arm() - shift).T).T + shift
+        hand = (rotation @ (self._hand(side) - shift).T).T + shift
+        return (palm_orientation_frame(self._hand(side), self._arm(), side).T
+                @ palm_orientation_frame(hand, arm, side))
+
+    def test_the_palm_normal_points_out_of_the_palm_on_both_sides(self):
+        """掌面都朝相机（-z）=> 基的 z 轴 z 分量必须是 -1；左手不取反时这里是 +1。"""
+        for side in ("right", "left"):
+            self.assertAlmostEqual(float(self._frame(side)[2, 2]), -1.0, places=6, msg=side)
+
+    def test_a_mirrored_pose_builds_the_same_basis_on_both_sides(self):
+        self.assertTrue(np.allclose(self._frame("left"), self._frame("right"), atol=1e-9))
+
+    def test_both_sides_report_the_same_twist(self):
+        """双手朝同一方向拧（同一个世界旋转）：两侧的旋前角必须同号同大小。"""
+        rotation = self._about((0.0, 1.0, 0.0), 40.0)
+        right, left = (self._twist_deg(side, rotation) for side in ("right", "left"))
+        self.assertAlmostEqual(abs(right), 40.0, places=6)
+        self.assertAlmostEqual(left, right, places=6)
+
+    def test_both_sides_report_the_same_swing(self):
+        """手臂一起摆：两侧的相对旋转必须逐位相同（左侧不再被 180 度共轭翻掉）。"""
+        rotation = self._about((1.0, 0.0, 0.0), 30.0)
+        right = self._swing_relative("right", rotation)
+        left = self._swing_relative("left", rotation)
+        self.assertGreater(np.degrees(np.arccos(np.clip((np.trace(right) - 1) / 2, -1, 1))),
+                           10.0, "测试姿势离中性太近，量不出偏差")
+        self.assertTrue(np.allclose(left, right, atol=1e-9), f"\n{left}\n{right}")
+
+    def test_the_bridge_feeds_the_side_into_the_basis(self):
+        """**接线**测试：`_raw_orientation` 必须把 side 传进基的构造（漏传 = 把 bug 装回去）。
+
+        上面几条都直接调 ``palm_orientation_frame``，抓不到「某个调用点忘了传 side」；这里走
+        整条桥（标定 -> 一帧动过的手），把桥吐出来的四元数跟**带 side 直接算**的结果比。
+
+        姿势必须**同时有摆动和拧**：纯旋前在「翻/不翻」两种构造下给出**同一个**旋转（共轭约掉，
+        见 ``test_both_sides_report_the_same_twist``），只用拧是验不出接线漏没漏的。所以这里拿
+        ``side="right"``（= 不取反的那一套）再算一遍当反例，确认这条测试真的能分辨。
+        """
+        from teleoperation.retargeting.arm.wrist_targets import rotation_matrix_to_quaternion
+
+        frames = 4
+        bridge = RealtimeArmBridge(PROFILES, sides=("left",),
+                                   calibration_frames=frames, frame_dt=0.1)
+        arm = bent_arm("left")
+        still = self._normalized_left_hand()
+        for _ in range(frames):
+            bridge.update(arms_world={"left": arm},
+                          hands={"world_left": still}, frame_dt=0.1)
+        neutral_palm = bridge.neutral["left"]["orientation_palm"]
+        self.assertIsNotNone(neutral_palm, "标定没有拿到掌面基，这条测试就没验到东西")
+
+        # 摆 12 度 + 拧 8 度：合起来在步长上限之内（不带限速），且一定含非前臂轴分量。
+        swing = self._about((1.0, 0.0, 0.0), 12.0)
+        arm_moved = (swing @ (arm - arm[2]).T).T + arm[2]
+        hand_moved = self._twist_about_forearm(
+            (swing @ (still - still[0]).T).T + still[0], arm_moved, 8.0)
+        bridge.update(arms_world={"left": arm_moved},
+                      hands={"world_left": hand_moved}, frame_dt=0.1)
+
+        emitted = np.asarray(bridge.orientation_target()["left"], dtype=np.float64)
+        expected = np.asarray(rotation_matrix_to_quaternion(
+            relative_palm_rotation(hand_moved, arm_moved, neutral_palm, "left")))
+        # 反例 = 不取反的那套（同一个左手、同一个姿势）。
+        unflipped = np.asarray(rotation_matrix_to_quaternion(
+            relative_palm_rotation(hand_moved, arm_moved, neutral_palm, "right")))
+        self.assertLess(abs(float(np.dot(expected, unflipped))), 0.5,
+                        "反例与期望几乎重合，这条测试分辨不出接线")
+        self.assertAlmostEqual(abs(float(np.dot(emitted, expected))), 1.0, places=6)
+        self.assertGreater(abs(float(np.dot(emitted, expected))),
+                           abs(float(np.dot(emitted, unflipped))) + 1e-3)
+
+    @staticmethod
+    def _normalized_left_hand():
+        """一只**左手**的 21 点（``open_hand`` 是右手口径，按 x 镜像就是左手）。"""
+        hand = open_hand()
+        hand[:, 0] = 1.0 - hand[:, 0]
+        return hand
+
+    @classmethod
+    def _twist_about_forearm(cls, hand, arm, angle_deg):
+        """把手的 21 点绕**前臂轴**（腕 - 肘）拧 ``angle_deg``，腕点不动。"""
+        axis = arm[2] - arm[1]
+        axis = axis / np.linalg.norm(axis)
+        rotation = cls._about(axis, angle_deg)
+        wrist = hand[0]
+        return (rotation @ (hand - wrist).T).T + wrist
 
 
 

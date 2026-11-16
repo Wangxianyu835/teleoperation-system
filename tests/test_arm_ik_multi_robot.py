@@ -1365,3 +1365,153 @@ class PoseModeOnEveryRobotTests(unittest.TestCase):
         self.reset_to_load_pose(adapter, "left")
         self.assertFalse(adapter.wrist_usage("left")[name]["at_limit"])
 
+
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
+class WristJointStepTests(unittest.TestCase):
+    """``max_wrist_joint_step_deg``: the orientation cap held, a single joint still jumped 200 deg.
+
+    2026-11-16 live run, 9264 ``--wrist-trace`` rows across all three robots: ``|dori|`` max 29.98
+    deg (the orientation cap did hold, not one frame over), yet a single wrist-chain joint jumped
+    193-238 deg in one frame -- the wrist saturates, then the solver switches branch or hands the
+    leftover error to another axis (gr1_t2 left ``wrist_roll`` pinned at its -35 deg stop in 64.0%
+    of frames, the rest taken by ``wrist_yaw`` at up to 213 deg per frame; that is the on-site
+    "it turns the wrong way").
+
+    Pure kinematics here: a 90 deg twist solves to ~126 deg on one wrist joint, which must come
+    out <= 20 deg with the cap.  The joint *state* is capped too (``_teleport`` writes it), because
+    limiting the motor target alone leaves the rendered pose on the uncapped solution.
+    """
+
+    STEP_DEG = 20.0
+    TWIST_DEG = 90.0
+    AXIS = (1.0, 0.0, 0.0)
+
+    @classmethod
+    def setUpClass(cls):
+        from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+        from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+
+        cls.scene = ThreeRobotHandScene(sides=SIDES, gui=False)
+        cls.driver = ArmSceneDriver(cls.scene, sides=SIDES)
+        cls.driver.step(5)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.driver = None
+        cls.scene.close()
+
+    def adapter(self, robot="h1_2", step=STEP_DEG):
+        adapter = self.driver.ik[robot]
+        adapter.max_wrist_joint_step_deg = 0.0 if step is None else float(step)
+        adapter.last_commanded.clear()
+        adapter.wrist_step_clamped = 0
+        return adapter
+
+    def reset_to_load_pose(self, adapter, side):
+        for index, _name in adapter.arm[side]:
+            adapter.p.resetJointState(adapter.body, index, float(adapter.hold[index]),
+                                      physicsClientId=adapter.cid)
+
+    def solve_twist(self, adapter, side, twist_deg):
+        target = tuple(float(value)
+                       for value in profile_for(adapter.robot_type).realtime_neutral(side))
+        twist = adapter.p.getQuaternionFromAxisAngle(self.AXIS, math.radians(twist_deg))
+        return adapter.solve(side, target, source="base", orientation=twist,
+                             orientation_frame="neutral")
+
+    def wrist_jumps(self, adapter, side, before, after):
+        return {name: abs(float(after[name]) - float(before[name]))
+                for _index, name in adapter.wrist[side]}
+
+
+    def test_the_cap_cuts_a_90_degree_twist_to_one_step(self):
+        adapter = self.adapter("h1_2", self.STEP_DEG)
+        for side in SIDES:
+            self.reset_to_load_pose(adapter, side)
+            adapter.last_commanded.pop(side, None)
+            adapter.wrist_step_clamped = 0
+            rest = self.solve_twist(adapter, side, 0.0)
+            jumped = self.solve_twist(adapter, side, self.TWIST_DEG)
+            jumps = self.wrist_jumps(adapter, side, rest, jumped)
+            with self.subTest(side=side):
+                self.assertTrue(jumps, side)
+                self.assertLessEqual(max(jumps.values()),
+                                     math.radians(self.STEP_DEG) + 1e-9, jumps)
+                # Off the cap the same twist goes far past one step, so this proves it binds.
+                self.assertGreater(adapter.wrist_step_clamped, 0, side)
+
+    def test_without_the_cap_the_same_twist_goes_all_the_way(self):
+        adapter = self.adapter("h1_2", None)
+        for side in SIDES:
+            self.reset_to_load_pose(adapter, side)
+            rest = self.solve_twist(adapter, side, 0.0)
+            self.reset_to_load_pose(adapter, side)
+            jumped = self.solve_twist(adapter, side, self.TWIST_DEG)
+            jumps = self.wrist_jumps(adapter, side, rest, jumped)
+            with self.subTest(side=side):
+                self.assertGreater(max(jumps.values()), math.radians(self.STEP_DEG), jumps)
+                self.assertEqual(adapter.wrist_step_clamped, 0, side)
+
+    def test_the_joint_state_is_limited_too_not_just_the_motor_target(self):
+        adapter = self.adapter("h1_2", self.STEP_DEG)
+        side = "right"
+        self.reset_to_load_pose(adapter, side)
+        rest = self.solve_twist(adapter, side, 0.0)
+        jumped = self.solve_twist(adapter, side, self.TWIST_DEG)
+        actual = adapter.joint_values(side)
+        for name, jump in self.wrist_jumps(adapter, side, rest, jumped).items():
+            with self.subTest(joint=name):
+                self.assertLessEqual(jump, math.radians(self.STEP_DEG) + 1e-9)
+                self.assertAlmostEqual(float(actual[name]), float(jumped[name]), places=9)
+
+    def test_only_the_wrist_chain_is_limited(self):
+        adapter = self.adapter("h1_2", self.STEP_DEG)
+        side = "left"
+        self.reset_to_load_pose(adapter, side)
+        adapter.last_commanded.pop(side, None)
+        wanted = [math.radians(90.0)] * len(adapter.indices)
+        limited = adapter._limit_wrist_step(side, wanted)
+        wrist = {adapter.position_of[index] for index, _name in adapter.wrist[side]}
+        self.assertTrue(wrist, side)
+        self.assertEqual(len(limited), len(wanted))
+        for position, value in enumerate(limited):
+            with self.subTest(position=position):
+                if position in wrist:
+                    self.assertLessEqual(abs(value), math.radians(self.STEP_DEG) + 1e-9)
+                else:
+                    # Shoulder/elbow belong to the position task: not one digit may change.
+                    self.assertEqual(value, wanted[position])
+
+    def test_the_cap_is_off_by_default_and_lands_in_the_report(self):
+        from teleoperation.simulation.arm_ik import (MAX_WRIST_JOINT_STEP_DEG,
+                                                     PyBulletArmIK)
+
+        self.assertEqual(MAX_WRIST_JOINT_STEP_DEG, 20.0)
+        adapter = self.driver.ik["g1"]
+        # Off in the library (a demo sweep moves 200 mm per frame); the CLI default is on.
+        self.assertEqual(adapter.max_wrist_joint_step_deg, 0.0)
+        self.assertEqual(adapter.describe()["wrist_step_clamped"], 0)
+        built = PyBulletArmIK(adapter.body, adapter.cid, "h1_2", sides=SIDES,
+                              max_wrist_joint_step_deg=MAX_WRIST_JOINT_STEP_DEG)
+        described = built.describe()
+        self.assertEqual(described["max_wrist_joint_step_deg"], MAX_WRIST_JOINT_STEP_DEG)
+        self.assertEqual(described["wrist_step_clamped"], 0)
+        # A negative value means off, never a reversed cap.
+        self.assertEqual(PyBulletArmIK(adapter.body, adapter.cid, "h1_2", sides=SIDES,
+                                       max_wrist_joint_step_deg=-5.0
+                                       ).max_wrist_joint_step_deg, 0.0)
+
+
+    def test_the_driver_summary_carries_the_counter_the_report_shows(self):
+        # 现场验收只有这个数：报告里 arm.wrist_step_clamped（0 = 一次都没绑住）。
+        adapter = self.adapter("h1_2", self.STEP_DEG)
+        self.reset_to_load_pose(adapter, "right")
+        self.solve_twist(adapter, "right", 0.0)
+        self.solve_twist(adapter, "right", self.TWIST_DEG)
+        summary = self.driver.summary()
+        self.assertEqual(summary["wrist_joint_step_deg"]["h1_2"], self.STEP_DEG)
+        self.assertEqual(summary["wrist_step_clamped"]["h1_2"],
+                         adapter.wrist_step_clamped)
+        self.assertGreater(summary["wrist_step_clamped"]["h1_2"], 0)
+
