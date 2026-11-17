@@ -1099,7 +1099,7 @@ CAMERA_SUBSTEPS = 12
 
 
 class CameraPolicy:
-    """摄像头 -> pose 手臂 -> 相对重定向 -> PyBulletArmIK -> 原生动作向量。
+    """摄像头 -> 手 18D + pose 手臂 -> 原装手关节 + PyBulletArmIK -> 原生动作向量。
 
     一条正在用的链路一行都不重写，只把它们接在 ``SimulationEnv`` 上::
 
@@ -1112,24 +1112,35 @@ class CameraPolicy:
     物理步是 0.1 ms 级；每步读一次摄像头会把"你手的 1 秒"变成机器人的 0.02 秒。12 步 =
     0.05 s 仿真/帧，正好与 20 fps 的相机同节奏（实测 19.2 fps）。
 
-    手部关节保持 reset 时的角度：pushcube 只需要手臂推；18 维手角度是另一条链路
-    （``realtime_hand_sim``），混进来只会让失败原因难分辨。
+    手部默认接到原生手：``MediaPipePalmLocalPipeline`` 的三帧窗口 -> L21 18D ->
+    ``NativeHandAdapter`` -> H1-2 / GR1-T2 / G1 原装手。``hand_enabled=False`` 保留
+    历史上“只驱动手臂、手指保持 reset 角度”的 A/B 行为。
     """
 
     def __init__(self, env, side: str = "right", camera_index: int = 0,
                  substeps: int = CAMERA_SUBSTEPS, calibrate_frames: int = 30,
                  arm_map: str = "posture", hand_model=None, pose_model=None,
-                 preview: bool = False):
+                 preview: bool = False, hand_enabled: bool = True,
+                 hand_backend: str = "auto", hand_checkpoint=None,
+                 hand_smoothing: float = 0.0, hand_limit_mode: str = "clamp",
+                 hand_device: str = "cpu"):
         from teleoperation.simulation.arm_ik import PyBulletArmIK
         from teleoperation.simulation.arm_profiles import profile_for
         from teleoperation.simulation.arm_realtime import RealtimeArmBridge
         from teleoperation.simulation.realtime_teleop import CameraFrameSource
+        from teleoperation.applications.realtime_hand_sim import build_retargeter
+        from teleoperation.paths import realtime_checkpoint
+        from teleoperation.robots.native_hand import NativeHandAdapter
+        from teleoperation.simulation.robot_loader import read_joint_ranges
 
         self.env = env
         self.side = str(side)
         self.substeps = max(1, int(substeps))
         self.arm_map = str(arm_map)
         self.preview = bool(preview)
+        self.hand_enabled = bool(hand_enabled)
+        self.hand_backend = str(hand_backend)
+        self.hand_limit_mode = str(hand_limit_mode)
         self._window = "task_eval camera (q/Esc quits)"
         missing_names = []
         hand_model = Path(hand_model or (ROOT / "datasets" / "hand_landmarker.task"))
@@ -1163,12 +1174,30 @@ class CameraPolicy:
             if name not in self.names:
                 missing_names.append(name)
         self.action = joint_positions(env)
+        self.hand_names = list(env.robot_loader.hand_joints.get(self.side, []))
+        self.hand_adapter = None
+        self.hand_retargeter = None
+        self.hand_backend_name = "off"
+        self.hand_backend_note = "hand mapping disabled"
+        self.hand_valid_frames = 0
+        self.hand_invalid_frames = 0
+        self.hand_clipped = 0
+        self.hand_calibration_status = {}
+        if self.hand_enabled:
+            checkpoint = Path(hand_checkpoint) if hand_checkpoint else realtime_checkpoint("world")
+            self.hand_retargeter, self.hand_backend_name, self.hand_backend_note = \
+                build_retargeter(self.hand_backend, checkpoint, str(hand_device),
+                                 int(calibrate_frames), float(hand_smoothing), "world")
+            ranges, _names = read_joint_ranges(env.robot_id, env.client)
+            self.hand_adapter = NativeHandAdapter(
+                env.robot_type, self.side, ranges, limit_mode=self.hand_limit_mode)
         self.steps = 0
         self.frames = 0
         self.hand_frames = {"left": 0, "right": 0}
         self.bad_sides = 0
         self.last_target = None
         self.last_info = {}
+        self.last_hand = {}
         self.last_frame_at = None
         self.unmapped = missing_names
         self.stopped = False
@@ -1176,6 +1205,18 @@ class CameraPolicy:
         print("[camera] 机器人这一侧臂由你的右手驱动（--side 可换）："
               "手往画面右侧移 = 机器人往它自己左边移（方块在它左边，y 从 -0.20 到 +0.30）；"
               "手往镜头方向收 = 机器人往前伸。看 PyBullet 窗口跟，别盯着字", flush=True)
+        if self.hand_enabled:
+            backend = (self.hand_backend_name
+                       if self.hand_adapter is not None else "unavailable")
+            print("[camera] hand -> native joints: %s (%s), %d mapped joints, limits=%s"
+                  % (backend, self.hand_backend_note, len(self.hand_names),
+                     self.hand_limit_mode), flush=True)
+            print("[camera] hold this side's hand OPEN and fully visible during the first "
+                  "%d frames: that is the hand-retargeter zero pose" % calibrate_frames,
+                  flush=True)
+        else:
+            print("[camera] native hand mapping OFF: hand joints keep their reset angles",
+                  flush=True)
 
     # ------------------------------------------------------------------ #
     def _draw_preview(self, raw, upper, target) -> bool:
@@ -1205,8 +1246,9 @@ class CameraPolicy:
                          (int(xy[index + 1, 0] * width), int(xy[index + 1, 1] * height)),
                          (0, 255, 255), 2)
         hits = {side: int((raw or {}).get(side) is not None) for side in ("left", "right")}
-        text = "L=%d R=%d target=%s" % (
+        text = "L=%d R=%d hand=%s target=%s" % (
             hits["left"], hits["right"],
+            "ok" if self.last_hand.get("valid") else self.last_hand.get("reason", "-"),
             "ok" if (target is not None and target.position is not None)
             else (target.reason if target is not None else "none"))
         cv2.rectangle(image, (0, 0), (width, 26), (0, 0, 0), -1)
@@ -1217,12 +1259,62 @@ class CameraPolicy:
         cv2.imshow(self._window, image)
         return (cv2.waitKey(1) & 0xFF) not in (ord("q"), 27)
 
+    def _update_hand(self, window) -> None:
+        """Retarget this side's hand and write native joint targets into ``action``."""
+        if not self.hand_enabled or self.hand_adapter is None:
+            return
+        if window is None:
+            self.hand_invalid_frames += 1
+            self.last_hand = {"valid": False, "reason": "hand window is not ready"}
+            return
+        result = self.hand_retargeter.retarget(window)
+        angles = getattr(result, self.side + "_angles")
+        valid = bool(getattr(result, self.side + "_valid"))
+        status = getattr(self.hand_retargeter, "calibration_status", None)
+        if isinstance(status, dict):
+            self.hand_calibration_status = {
+                str(key): bool(value) for key, value in status.items()}
+        if not valid or angles is None:
+            self.hand_invalid_frames += 1
+            self.last_hand = {"valid": False, "reason": "hand landmarks unusable"}
+            return
+        targets, clipped = self.hand_adapter.map(angles.native_mapping_dofs())
+        action = np.array(self.action, dtype=np.float64, copy=True)
+        written = {}
+        for name, value in targets.items():
+            slot = self.names.get(name)
+            if slot is None:
+                continue
+            action[slot] = float(value)
+            written[name] = float(value)
+        if not written:
+            self.hand_invalid_frames += 1
+            self.last_hand = {
+                "valid": False,
+                "reason": "native hand mapping produced no joints in this action vector"}
+            return
+        self.action = action
+        self.hand_valid_frames += 1
+        self.hand_clipped += int(clipped)
+        self.last_hand = {
+            "valid": True,
+            "backend": self.hand_backend_name,
+            "limit_mode": self.hand_limit_mode,
+            "mapped_joints": sorted(written),
+            "clipped": int(clipped),
+            "calibrated": bool(getattr(
+                self, "hand_calibration_status", {}).get(self.side, True)),
+            "l21_angles": [round(float(value), 5)
+                           for value in np.asarray(angles.values, dtype=np.float64)],
+        }
+
     def _read_frame(self) -> None:
         """读一帧摄像头 -> 重定向 -> IK -> 写进 ``self.action``。"""
-        self.source.next_frame()
+        window = self.source.next_frame()
         self.frames += 1
         upper = self.source.arms()
         raw = self.source.last_raw_frame or {}
+        self._update_hand(window)
         for side in ("left", "right"):
             self.hand_frames[side] += int(raw.get(side) is not None)
         now = time.time()
@@ -1250,6 +1342,7 @@ class CameraPolicy:
             "reason": target.reason, "source": target.source,
             "left_ratio": round(self.hand_frames["left"] / max(self.frames, 1), 3),
             "right_ratio": round(self.hand_frames["right"] / max(self.frames, 1), 3),
+            "hand_valid": bool(self.last_hand.get("valid")),
             "unmapped_joints": list(self.unmapped),
         }
 
@@ -1285,12 +1378,22 @@ class CameraPolicy:
         return {"camera": {"side": self.side, "substeps": self.substeps,
                            "arm_map": self.arm_map,
                            "calibration_frames": self.bridge.calibration_frames,
+                           "hand_enabled": self.hand_enabled,
+                           "hand_backend": self.hand_backend_name,
+                           "hand_backend_note": self.hand_backend_note,
+                           "hand_limit_mode": self.hand_limit_mode,
+                           "hand_joints": self.hand_names,
                            "unmapped_joints": list(self.unmapped)}}
 
     def report(self) -> dict:
         """trial 结束时落盘的摄像头侧证据（判据之外，用来解释失败）。"""
         return {"frames": self.frames, "steps": self.steps,
                 "hand_frames": dict(self.hand_frames),
+                "hand_valid_frames": self.hand_valid_frames,
+                "hand_invalid_frames": self.hand_invalid_frames,
+                "hand_clipped_joints": self.hand_clipped,
+                "hand_calibration_status": dict(self.hand_calibration_status),
+                "last_hand": self.last_hand,
                 "held_frames": self.bad_sides,
                 "left_ratio": round(self.hand_frames["left"] / max(self.frames, 1), 3),
                 "right_ratio": round(self.hand_frames["right"] / max(self.frames, 1), 3),
@@ -1656,6 +1759,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="一个 trial 最多多少**墙钟**秒（--policy camera 建议 30-60）")
     parser.add_argument("--preview", action="store_true",
                         help="--policy camera 时弹摄像头预览窗（看手点/骨架/目标状态；q 退出）")
+    parser.add_argument("--camera-hand", choices=("on", "off"), default="on",
+                        help="--policy camera 同时驱动原装手（default on）；off 保留只驱动"
+                             "手臂的旧 A/B 行为")
+    parser.add_argument("--hand-backend", choices=("auto", "geometric", "checkpoint"),
+                        default="auto", help="手部重定向后端（default auto）")
+    parser.add_argument("--hand-checkpoint", default=None,
+                        help="训练好的手部 palm-local checkpoint（auto 缺失时回退 geometric）")
+    parser.add_argument("--hand-smoothing", type=float, default=0.0,
+                        help="手部 18D 输出平滑系数 0..<1（default 0）")
+    parser.add_argument("--hand-limit-mode", choices=("clamp", "rescale"),
+                        default="clamp",
+                        help="L21 -> 原装手限位处理：clamp 忠实截断（default），"
+                             "rescale 按 L21 比例压到原生行程（视觉辅助，需在报告中声明）")
     parser.add_argument("--max-sim-s", type=float, default=DEFAULT_MAX_SIM_S,
                         help="一个 trial 最多多少**仿真**秒（默认 60）")
     parser.add_argument("--settle-steps", type=int, default=SETTLE_STEPS,
@@ -1741,7 +1857,12 @@ def main(argv=None) -> int:
     else:
         options = {"side": args.side, "camera_index": args.camera_index,
                    "substeps": args.substeps, "calibrate_frames": args.calibrate_frames,
-                   "arm_map": args.arm_map, "preview": args.preview}
+                   "arm_map": args.arm_map, "preview": args.preview,
+                   "hand_enabled": args.camera_hand == "on",
+                   "hand_backend": args.hand_backend,
+                   "hand_checkpoint": args.hand_checkpoint,
+                   "hand_smoothing": args.hand_smoothing,
+                   "hand_limit_mode": args.hand_limit_mode}
 
     reports = []
     for name in tasks:

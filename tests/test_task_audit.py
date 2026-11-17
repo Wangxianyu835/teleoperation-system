@@ -22,6 +22,7 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -51,6 +52,54 @@ def load_eval():
 
 AUDIT = load_audit()
 EVAL = load_eval()
+
+
+class CameraHandPolicyTests(unittest.TestCase):
+    """摄像头任务策略必须把 18D 手角度落到原生手 joint，而不是只驱动手臂。"""
+
+    def test_native_hand_targets_are_written_by_joint_name(self):
+        class _Angles:
+            values = np.zeros(18, dtype=np.float64)
+
+            def native_mapping_dofs(self):
+                return self.values[1:]
+
+        class _Retargeter:
+            def retarget(self, _window):
+                return SimpleNamespace(right_angles=_Angles(), right_valid=True)
+
+        class _Adapter:
+            def map(self, _dofs):
+                return {"R_index_proximal_joint": 0.7,
+                        "R_middle_proximal_joint": -0.4}, 2
+
+        policy = object.__new__(EVAL.CameraPolicy)
+        policy.side = "right"
+        policy.hand_enabled = True
+        policy.hand_retargeter = _Retargeter()
+        policy.hand_adapter = _Adapter()
+        policy.hand_backend_name = "geometric"
+        policy.hand_limit_mode = "clamp"
+        policy.action = np.zeros(4, dtype=np.float64)
+        policy.names = {"R_index_proximal_joint": 1,
+                        "R_middle_proximal_joint": 3}
+        policy.hand_valid_frames = 0
+        policy.hand_invalid_frames = 0
+        policy.hand_clipped = 0
+        policy.last_hand = {}
+
+        policy._update_hand(object())
+        self.assertAlmostEqual(policy.action[1], 0.7)
+        self.assertAlmostEqual(policy.action[3], -0.4)
+        self.assertEqual(policy.hand_valid_frames, 1)
+        self.assertEqual(policy.hand_clipped, 2)
+        self.assertTrue(policy.last_hand["valid"])
+
+    def test_cli_defaults_enable_camera_hands_with_faithful_limits(self):
+        args = EVAL.build_parser().parse_args([])
+        self.assertEqual(args.camera_hand, "on")
+        self.assertEqual(args.hand_backend, "auto")
+        self.assertEqual(args.hand_limit_mode, "clamp")
 
 
 def registered_tasks():

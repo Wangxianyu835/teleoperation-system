@@ -370,4 +370,69 @@ E:\python3.11.7\python.exe devtools\task_eval.py --policy scripted --max-sim-s 3
 ②需要接触式推压（4 条）；③抓取路径碰撞/落点精度（10 条）。这三类分别对应下一批的三件事：
 改判据为「相对初始位姿」、加「推压原语」、给抓取加局部避障与落点二次校正。
 
+---
+
+## 8. 摄像头任务档接上真实原装手（2026-11-18）
+
+原来的 `--policy camera` 只驱动手臂，手部关节保持 reset 值；调用 `pickcube` 等抓取任务时，
+摄像头手部链路根本没有进入 `env.action_joint_indices`。现在 `CameraPolicy` 在同一帧里做：
+
+    MediaPipe 三帧手部窗口
+      -> Geometric / checkpoint 手部重定向（18D L21）
+      -> NativeHandAdapter（17D 语义自由度 -> 该机器人原装手）
+      -> action[hand_joint_name]（按关节名，不按位置猜）
+
+同时保留原来的 pose 手臂 -> RealtimeArmBridge -> PyBulletArmIK。手和臂分别写同一份完整动作向量，
+然后 `TaskScene` / `Environment` 用任务自己的成功判据检查。
+
+### 8.1 命令
+
+```powershell
+cd F:\simulation_platform
+$env:PYTHONPATH = "$pwd\src"; $env:PYTHONUTF8 = "1"
+
+# 先做捏取验收：右手拿起 6 cm 方块
+E:\python3.11.7\python.exe devtools\task_eval.py `
+    --task pickcube --robot h1_2 --policy camera --side right `
+    --preview --render --max-wall-s 60 `
+    --json D:\teleop_reports\pickcube_camera_h1.json
+
+# A/B：完全恢复“只驱动手臂”的旧行为
+E:\python3.11.7\python.exe devtools\task_eval.py `
+    --task pickcube --robot h1_2 --policy camera --side right `
+    --camera-hand off --preview --render --max-wall-s 60
+```
+
+默认参数：
+
+- `--camera-hand on`
+- `--hand-backend auto`（有 checkpoint 用 checkpoint，没有回退 geometric）
+- `--hand-limit-mode clamp`（忠实语义；`rescale` 只作视觉辅助）
+- 手部和手臂共用前 30 帧站立标定；手臂要求中性姿势，手部要求**该侧手掌张开**
+
+手部报告新增：
+
+- `camera.hand_valid_frames` / `hand_invalid_frames`
+- `camera.last_hand.mapped_joints`（这帧实际写进原生手的关节）
+- `camera.hand_clipped_joints`（原生行程截断次数）
+- `camera.hand_calibration_status`
+
+### 8.2 验收顺序
+
+相机任务档**不使用** `task_scripted.py` 的 `grasp_assist`；物体只能靠真实接触抬起。因此先做：
+
+1. `pickcube`：确认拇指 + 食指/中指捏取能抬起 6 cm 方块；
+2. `balltrashcan`：确认 3 cm 球形物体的稳定性；
+3. `uprearcup`：确认侧放杯子的包络抓取与转正；
+4. `pourwater`：确认水壶 + 腕部滚转；
+5. `potbimanual`：最后验证双手大物体。
+
+如果第 1、2 项成功而第 3 项失败，问题优先归到包络抓取而不是基础手部映射；如果第 1 项就失败，
+先看 `unmapped_joints`、`hand_clipped_joints` 和该机器人原生手映射，而不是先改 30 个任务。
+
+验收（2026-11-18）：`pytest tests -q` -> **516 passed, 3 skipped, 464 subtests passed**；
+摄像头短冒烟报告 `camera_hand_smoke.json` 退出码 0，H1-2 的 12 个原生手关节、geometric
+后端与任务动作向量均已加载。短冒烟时画面无人，所以 `hand_valid_frames=0` 是输入侧事实，
+不是接线失败。
+
 
