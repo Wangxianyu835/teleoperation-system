@@ -3364,3 +3364,66 @@ CLI 在报告里打一行（与 `wrist` / 手臂那些行挨着）：
 
 ---
 
+### 8.25 手腕映射：从「整只手相对中性」改成「手相对前臂」（2026-11-17）
+
+#### 8.25.1 根因不是掌面基，而是姿态目标的坐标系
+
+§8.23 修完后，单独拧手腕的离线回放已经能跟到约 90°；现场仍是「手臂准、手腕几乎没作用」。
+差别在于真实操作时**前臂方向也在变**。旧口径把
+
+    R_old = R_hand_neutral^T R_hand_now
+
+整份交给腕姿态任务。这个旋转里既有真正的腕部旋前/屈伸，也有肩肘移动造成的前臂方向变化；
+只转腕时，腕关节便先替前臂补偿，行程被位置误差和限位吃掉。
+
+#### 8.25.2 新口径：手相对前臂的局部旋转
+
+前臂坐标系 `F` 由已有的三点基构造，掌面坐标系 `H` 由 wrist/index-MCP/pinky-MCP 构造：
+
+    W_neutral  = F_neutral^T H_neutral
+    W_now      = F_now^T H_now
+    W_relative = W_neutral^T W_now
+
+`W_relative` 对整条手臂的刚体转动严格不变；抬臂、摆肘时它保持单位阵，只有手掌相对前臂
+旋前/旋后、腕屈/腕偏时才变化。机器人手臂已经由位置映射摆好前臂方向，腕关节只兑现这份
+局部姿态，不再重复补偿整条前臂。
+
+落点：
+
+- `arm_realtime.py` 新增 `ORIENTATION_MODES = ("wrist", "hand")` 和
+  `relative_palm_wrist_rotation()`；
+- CLI 新增 `--arm-orientation-mode`，默认 `wrist`；库默认仍是 `hand`，旧探针/离线 A/B
+  不静默换口径；
+- `--arm-orientation-scope wrist` 与 mode `wrist` 联合使用：肩/肘只执行位置解，腕链执行
+  局部姿态；
+- 每帧 `info.orientation_mode` 与报告 `bridge.orientation_mode` 都能核对；
+- `devtools/run_arm_quickcheck.py` 的 `FIELD_FLAGS` 改为 `scope=wrist` +
+  `mode=wrist`，摘要多打一行 `wrist mode`，不是这套口径会显式报警。
+
+#### 8.25.3 迟到掌面基也必须取局部零点
+
+§8.23 的 late palm reference 在手臂已经移动后才采到时，如果只保存绝对掌面基 `H_now`，
+再与标定时的 `F_neutral` 相减，会把前臂移动的 80–90° 重新塞给腕。现在 neutral 记录同时保存
+
+    orientation_palm_local = F_at_reference^T H_at_reference
+
+标定时逐帧算 `F_i^T H_i` 再平均；late reference 就在补采那一帧取局部零点。`save_neutral` /
+`load_neutral` 都保存这个字段；老 JSON 没有该字段时，用已有的 `F^T H` 兼容补齐。
+
+#### 8.25.4 验收
+
+| 用例 | 结果 |
+| --- | --- |
+| 整条手臂与手掌一起作刚体转动 | `orientation_mode=wrist` 的目标角 `< 1e-6°`；历史 `hand` 口径同一输入 `> 30°` |
+| 只绕前臂轴拧手 40° | 局部目标仍为 `40±1°` |
+| 手臂移动后 late reference | 补采当帧局部腕角 `< 1e-6°`；随后拧手仍跟 `40±1°` |
+| `pytest tests/test_arm_realtime_bridge.py -q` | **185 passed**，16 subtests |
+| `run_arm_quickcheck.py --check` | 退出码 0；camera 未接时仅 WARN，不影响入口导入与 pose 模型检查 |
+| `pytest tests -q` | **505 passed, 3 skipped, 444 subtests passed** |
+
+`outputs/tmp_probe/wrist_fixture.npz` 的旧数字不能直接当本次 A/B：它的“手腕前移”段通过改变
+`腕-肘`方向实现，按真实解剖语义这本身就含腕屈，而新口径会如实把它与纯旋前分开。纯旋前
+40°、刚体抬臂、late reference 三条判据已由单元测试直接钉住。下一步需要一次现场实拍确认：
+报告应为 `orientation_mode=wrist`、`orientation_scope=wrist`，摆臂时 h1_2 的
+`elbow_roll` 不再被前臂运动顶满，专门旋前时腕链的行程和 `orientation_error_deg` 同时变化。
+

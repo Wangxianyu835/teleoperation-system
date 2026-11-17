@@ -139,6 +139,7 @@ from teleoperation.simulation.arm_realtime import (
     MAX_DIRECTION_RATE_DEG_S,
     MAX_ORIENTATION_RATE_DEG_S,
     MAX_ORIENTATION_STEP_DEG,
+    ORIENTATION_MODES,
     PALM_HOLD_S,
     PALM_WAIT_FRAMES,
     TRAVEL_MODES,
@@ -706,6 +707,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "13.13 -> 92.30 deg against 91.98 deg of operator palm twist, "
                              "residual 70.1 -> 14.8 mm (docs/multi-robot-arm.md 8.17.10). Without "
                              "a metric hand it falls back to the 3-point frame above")
+    parser.add_argument("--arm-orientation-mode", choices=ORIENTATION_MODES,
+                        default="wrist",
+                        help="wrist (default) sends only the hand's rotation relative to "
+                             "the forearm; forearm direction is already handled by the arm "
+                             "position task. hand keeps the historical full hand-frame "
+                             "rotation relative to neutral, which can make the wrist absorb "
+                             "shoulder/elbow motion and hit its limits")
     parser.add_argument("--arm-elbow-follow", choices=("off", "operator"), default="off",
                         help="null-space posture reference for the arm IK. 'off' (default) = the "
                              "historical behaviour: the build-time neutral, or --arm-rest-poses. "
@@ -1631,6 +1639,7 @@ def run(args) -> int:
                 calibrate_mode=args.arm_calibrate_mode,
                 palm_wait_frames=args.arm_palm_wait_frames,
                 orientation=args.arm_orientation, gains=gains,
+                orientation_mode=args.arm_orientation_mode,
                 max_travel_m=(None if args.arm_travel_mm is None
                               else float(args.arm_travel_mm) / 1000.0),
                 travel_mode=args.arm_travel_mode,
@@ -1650,8 +1659,9 @@ def run(args) -> int:
             print(f"arms: {', '.join(robots)} | ik_mode "
                   f"{({name: driver.ik[name].ik_mode for name in robots})}"
                   f"{'' if args.arm_ik_mode == 'profile' else ' (--arm-ik-mode override)'}"
-                  f" | orientation {args.arm_orientation} | travel limit "
-                  f"{bridge.travel_limits()} m ({args.arm_travel_mode}) | "
+                  f" | orientation {args.arm_orientation}"
+                  f" (mode {args.arm_orientation_mode})"
+                  f" | travel limit {bridge.travel_limits()} m ({args.arm_travel_mode}) | "
                   f"lateral guard {args.arm_lateral_guard_mm} mm | "
                   f"neutral mode {args.arm_calibrate_mode} | "
                   f"neutral {'reused from ' + str(args.neutral_json) if neutral else str(args.arm_calibrate_frames) + ' frames'} | "

@@ -11,7 +11,7 @@
 
 * 同样的两个窗口（摄像头 + PyBullet 三台）同一步序：环境准备、体检、窗口摆放都复用它里面的
   公开函数（只 import，不写）；
-* 现场档那 4 个参数在这里**显式钉死**（``FIELD_FLAGS``）；你自己在命令行写的同名 ``--arm-*``
+* 现场档参数在这里**显式钉死**（``FIELD_FLAGS``）；你自己在命令行写的同名 ``--arm-*``
   优先，只补你没写的那几项；
 * 跑完读 ``--report`` 那份 JSON，把最近几节一直在追的读数打成一屏：**`operator_symmetry`**
   （左右到底是不是镜像）、**掌面基**（是不是迟到、偏多少）、**标定**（段长 / 可信度）、
@@ -60,7 +60,8 @@ DEFAULT_FRAMES = 900
 #: 现场档：**显式**钉在这里，不依赖任何启动器预设（见模块说明）。
 FIELD_FLAGS = (("--arm-elbow-follow", "operator"),
                ("--arm-orientation", "on"),
-               ("--arm-orientation-scope", "arm"),
+               ("--arm-orientation-scope", "wrist"),
+               ("--arm-orientation-mode", "wrist"),
                ("--arm-ik-mode", "pose"))
 
 
@@ -153,6 +154,13 @@ def digest(report: "Path | None") -> None:
     print(line)
     print(f"  frames        : {data.get('processed_frames')} at {_num(data.get('fps'))} fps "
           f"({_num(data.get('elapsed_seconds'))} s)")
+    mode = bridge.get("orientation_mode", "?")
+    scopes = sorted({str(robot.get("orientation_scope", "?"))
+                     for robot in (arm_block.get("robots") or {}).values()
+                     if isinstance(robot, dict)})
+    print(f"  wrist mode    : orientation={mode}, scope={'/'.join(scopes) or '?'}"
+          + ("" if mode == "wrist" and scopes == ["wrist"]
+             else "  [WARN] not the wrist-first field mode"))
 
     if symmetry:
         print(f"  operator symm : median {_num(symmetry.get('median_deg'), 2)} deg "

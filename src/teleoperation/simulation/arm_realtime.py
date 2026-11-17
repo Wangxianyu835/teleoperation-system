@@ -293,6 +293,10 @@ HOLD_REASONS = ("calibrating", "no_pose_landmarks", "reach_below_min", "other")
 #: ``_posture_target``），也不受 ``travel_limit`` 逐轴夹断的影响（目标天然落在机器人
 #: 自己那根「上臂+前臂」可达球面上，逐轴夹断正是把 g1 的幅度压成 40 mm 的那个上限）。
 MAP_MODES = ("chain", "segments", "posture")
+#: 腕姿态目标的坐标系口径：
+#: ``wrist`` = 手相对前臂的局部旋转（推荐；前臂方向由位置任务负责）；
+#: ``hand`` = 历史口径，整只手掌坐标系相对中性的旋转（包含前臂方向变化）。
+ORIENTATION_MODES = ("wrist", "hand")
 #: 中性标定量出来的「上臂 / 前臂」段长（米）的合理区间，**超出就当标定坏了**。
 #: 为什么需要（2026-11-17 那三场 live 的实测）：``k = 机器人段长 / 你的段长``，而你的段长是
 #: 深度压扁的受害者 —— 同一个人同一天三场的 ``k_前臂`` 分别是 1.02 / 1.34 / **3.79**
@@ -610,6 +614,45 @@ def relative_palm_rotation(hand_world, arm_world, neutral_frame, side):
                                 neutral_frame)
 
 
+def relative_palm_wrist_rotation(hand_world, arm_world, neutral_local_frame, side):
+    """手相对**前臂**的局部旋转；前臂本身的姿态变化由手臂位置任务负责。
+
+    历史口径 ``relative_palm_rotation`` 返回 ``R_hand_neutral^T R_hand_now``。当操作者
+    抬臂/摆肘时，这个旋转里会包含整条前臂的方向变化；把它交给只转腕的 IK，会让腕部
+    用尽行程去补偿肩肘，现场表现为“摆臂时腕卡死”或“只有整条臂在动”。
+
+    这里用三点基 ``wrist_orientation_frame`` 给前臂定义一个独立坐标系 ``F``，再用
+    掌面基 ``H`` 表示手在前臂上的局部姿态：
+
+        W_neutral = F_neutral^T H_neutral
+        W_now     = F_now^T H_now
+        W_relative = W_neutral^T W_now
+
+    整个人和手臂作为一个刚体转动时，``F`` 与 ``H`` 同步转动，``W_relative`` 严格是
+    单位阵；只有手掌相对前臂旋前/旋后、腕屈/腕偏时它才变化。这正好对应机器人已经由
+    位置 IK 完成的前臂方向，加一个只由腕链兑现的局部姿态。
+
+    ``neutral_local_frame`` 是标定（或迟到补采）时保存的 ``F^T H``。当前帧的掌面基和
+    前臂三点基必须都可用；否则返回 ``None``，由调用方保持上一帧或只走位置模式，不从
+    缺失的数据里猜一个腕角。
+    """
+    if neutral_local_frame is None:
+        return None
+    current_wrist = wrist_orientation_frame(arm_world)
+    current_palm = palm_orientation_frame(hand_world, arm_world, side)
+    if current_wrist is None or current_palm is None:
+        return None
+    current_local = current_wrist.T @ current_palm
+    rotation = np.asarray(neutral_local_frame, dtype=np.float64).T @ current_local
+    # 两次相减都来自实测基，乘积理论上仍是真旋转；投影一次，避免浮点误差进入 IK。
+    left, _singular, right_t = np.linalg.svd(rotation)
+    rotation = left @ right_t
+    if float(np.linalg.det(rotation)) < 0.0:
+        left[:, -1] *= -1.0
+        rotation = left @ right_t
+    return rotation
+
+
 def _average_rotation(matrices):
     """一组 3x3 旋转的均值 -> 最接近的真旋转（SVD 投影）；没有可用值时 None。"""
     usable = [np.asarray(matrix, dtype=np.float64) for matrix in matrices
@@ -789,6 +832,9 @@ def _neutral_default() -> dict:
             # 掌面基的中性腕坐标系（第三轴 = 掌面法向，见 ``palm_orientation_frame``）。
             # 老记录 / 标定期间一直没手点时是 None -> 姿态退回三点基（历史行为）。
             "orientation_palm": None,
+            # 手相对前臂的局部姿态 ``F_neutral^T H_neutral``：腕姿态的 ``wrist`` 口径
+            # 用它作为零点；它和绝对掌面基分开存，晚期补采时不会把前臂方向变化算进腕。
+            "orientation_palm_local": None,
             # 上臂段 (肘-肩) 与「前臂+手」段 (腕-肘) 的中性向量：两段式映射要用的基准。
             # 老记录里没有这两项 -> None，那一侧自动退回整段 gain（不会算错，只是不生效）。
             "upper": None, "fore": None,
@@ -825,6 +871,10 @@ def load_neutral(path) -> dict:
             # 同一帧的**掌面基**（第三轴 = 掌面法向）：只有它带旋前/旋后。老记录没有
             # 这一段 -> None，姿态自动退回三点基，行为与改动前逐字一致。
             "orientation_palm": _neutral_rotation(entry.get("orientation_palm")),
+            # 掌面基相对前臂基的局部姿态。新记录直接存；老记录读入时按
+            # ``F_neutral^T H_neutral`` 现场补齐，兼容已有 neutral JSON。
+            "orientation_palm_local": _neutral_rotation(
+                entry.get("orientation_palm_local")),
             # 两段式映射（--arm-map segments）的基准：上臂段 / 「前臂+手」段。
             "upper": _neutral_vector(entry.get("upper"), 3),
             "fore": _neutral_vector(entry.get("fore"), 3),
@@ -835,6 +885,12 @@ def load_neutral(path) -> dict:
             "palm_reference_frame": entry.get("palm_reference_frame"),
             "palm_reference_pose_deg": entry.get("palm_reference_pose_deg"),
         }
+        record = neutral[side]
+        if (record["orientation_palm_local"] is None
+                and record["orientation"] is not None
+                and record["orientation_palm"] is not None):
+            record["orientation_palm_local"] = (
+                record["orientation"].T @ record["orientation_palm"])
     return {"sides": neutral, "axis_map": payload.get("axis_map"),
             "created": payload.get("created"), "path": str(path)}
 
@@ -872,6 +928,11 @@ def save_neutral(path, sides: dict, extra: dict | None = None) -> Path:
                                  [float(value) for value in
                                   np.asarray(entry["orientation_palm"],
                                              dtype=np.float64).reshape(9)]),
+            "orientation_palm_local": (
+                None if entry.get("orientation_palm_local") is None else
+                [float(value) for value in
+                 np.asarray(entry["orientation_palm_local"],
+                            dtype=np.float64).reshape(9)]),
             # 两段式映射的基准（上臂段 / 「前臂+手」段，米）。没采到就写 null。
             "upper": None if entry.get("upper") is None else
                      [float(v) for v in np.asarray(entry["upper"]).reshape(3)],
@@ -941,6 +1002,7 @@ class RealtimeArmBridge:
                  normalise_arm_length: bool = True,
                  arm_length_band=ARM_LENGTH_BAND,
                  orientation: str = "auto",
+                 orientation_mode: str = "hand",
                  palm_hold_s: float = PALM_HOLD_S,
                  max_orientation_rate_deg_s: float = MAX_ORIENTATION_RATE_DEG_S,
                  max_orientation_step_deg: float = MAX_ORIENTATION_STEP_DEG,
@@ -982,6 +1044,10 @@ class RealtimeArmBridge:
         if orientation not in ("off", "auto", "on"):
             raise ValueError(
                 f"orientation must be 'off', 'auto' or 'on', got {orientation!r}")
+        if orientation_mode not in ORIENTATION_MODES:
+            raise ValueError(
+                f"orientation_mode must be one of {ORIENTATION_MODES}, "
+                f"got {orientation_mode!r}")
         self.profiles = {}
         for profile in profiles:
             if isinstance(profile, ArmProfile):
@@ -1020,6 +1086,9 @@ class RealtimeArmBridge:
         self.normalise_arm_length = bool(normalise_arm_length)
         self.arm_length_band = (float(arm_length_band[0]), float(arm_length_band[1]))
         self.orientation = orientation
+        #: ``wrist`` 只传“手相对前臂”的局部旋转；``hand`` 保留历史整手坐标系相对旋转。
+        #: CLI 默认 ``wrist``；库默认 ``hand``，避免旧探针和离线 A/B 静默换口径。
+        self.orientation_mode = str(orientation_mode)
         #: 掌面基丢帧时沿用上一次掌面旋转的窗口（秒，见 ``PALM_HOLD_S``）。0 = 立即退回三点基。
         if float(palm_hold_s) < 0.0:
             raise ValueError("palm_hold_s must be >= 0 (0 turns the hold off)")
@@ -1697,6 +1766,17 @@ class RealtimeArmBridge:
         # ``samples`` 只数簇内的帧：散出去的几帧本来就不该算「这一侧采到了」。
         palm_note = self._palm_basis_note(side, len(palms) - outliers, spread, overall)
         entry["orientation_palm"] = None if (palm_note or basis is None) else basis
+        # 局部基准必须逐帧做 ``F_i^T H_i`` 再平均，不能拿平均后的 F 和 H 现乘：
+        # 后者在标定期间手臂稍微移动时会凭空产生腕部偏置。簇外掌面帧不参与。
+        local_samples = [
+            sample[2].T @ sample[5]
+            for sample in samples
+            if sample[2] is not None and sample[5] is not None
+            and (basis is None
+                 or _rotation_angle_deg(sample[5], basis) <= PALM_MAX_SPREAD_DEG)]
+        entry["orientation_palm_local"] = (
+            None if palm_note or basis is None
+            else _average_rotation(local_samples))
         #: 这份基准是「标定那一次采的」还是「运行中补采的迟到基准」（见 ``PALM_LATE_FRAMES``）。
         #: 空串 = 没有可用基准（``orientation_palm`` 为 None）。
         entry["palm_reference_source"] = ("" if entry["orientation_palm"] is None else "neutral")
@@ -1765,6 +1845,11 @@ class RealtimeArmBridge:
         # 多少度的固定偏移（相对映射本来就是这样：零点挪了，读数就挪了）。必须报出来 ——
         # 现场看到「腕立起来时是歪的」要能对上这个数，而不是以为桥又坏了。
         arm = data.get("arm")
+        wrist_now = wrist_orientation_frame(arm)
+        if wrist_now is not None:
+            # 迟到基的``局部零点``也取在补采这一刻；不能继续拿标定时的前臂基与
+            # 现在的手掌基相减，否则前臂已经转过的 80-90 度会原样变成腕部偏置。
+            entry["orientation_palm_local"] = wrist_now.T @ basis
         fore_now = _unit_direction(None if arm is None else np.asarray(arm)[2] - np.asarray(arm)[1])
         fore_rest = _unit_direction(entry.get("fore"))
         entry["palm_reference_pose_deg"] = (None if fore_now is None or fore_rest is None
@@ -1992,6 +2077,7 @@ class RealtimeArmBridge:
             # 这一帧的姿态用的是哪条基（palm_normal / three_point / None）。现场排查先看它：
             # three_point 说明掌面基退化了 —— 那时腕对旋前不敏感是"正常"的。
             "orientation_source": state.get("orientation_source"),
+            "orientation_mode": self.orientation_mode,
         }
         if state["source"] == SOURCE_HAND and state["hand"] is not None:
             return self._fallback_target(profile, side, state, info)
@@ -2211,6 +2297,26 @@ class RealtimeArmBridge:
         if entry is None:
             return None, None
         arm = data.get("arm")
+        if self.orientation_mode == "wrist":
+            # 只取手相对前臂的局部旋转：前臂方向变化已经由 posture/位置 IK 完成，
+            # 再塞给腕会让腕替肩肘补偿，甚至顶在限位上。
+            relative = relative_palm_wrist_rotation(
+                data.get("world_hand"), arm,
+                entry.get("orientation_palm_local"), side)
+            if relative is not None:
+                from teleoperation.retargeting.arm.wrist_targets import (
+                    rotation_matrix_to_quaternion)
+
+                held = tuple(float(value) for value in
+                             rotation_matrix_to_quaternion(relative))
+                self._palm_hold[side] = (held, 0.0)
+                return held, "palm_normal"
+            held = self._palm_hold.get(side)
+            if held is not None and held[1] <= self.palm_hold_s:
+                self.counts["palm_held"][side] += 1
+                return held[0], "palm_hold"
+            # 三点基测不到手相对前臂的姿态（它把前臂方向也吃了进去），不伪造零腕角。
+            return None, None
         # 掌面基优先：它比三点基多一维（旋前/旋后）。
         relative = relative_palm_rotation(data.get("world_hand"), arm,
                                           entry.get("orientation_palm"), side)
@@ -2505,6 +2611,7 @@ class RealtimeArmBridge:
         return {
             "axis_map": self.axis_map.describe(),
             "orientation": self.orientation,
+            "orientation_mode": self.orientation_mode,
             # 姿态目标的口径：相对中性（每台各自乘自己的中性 EE 朝向）。
             "orientation_frame": "neutral_relative",
             "normalise_arm_length": self.normalise_arm_length,
@@ -2600,6 +2707,8 @@ class RealtimeArmBridge:
                                "palm_samples": self.neutral[side].get("palm_samples", 0),
                                "orientation_palm_recorded":
                                    self.neutral[side].get("orientation_palm") is not None,
+                               "orientation_palm_local_recorded":
+                                   self.neutral[side].get("orientation_palm_local") is not None,
                                # 掌面基被判不可用的原因 + 那几帧彼此的散度（空串/None = 能用
                                # 或这一侧没手点）：与 ``palm_samples`` 一起看，就是
                                # 「有样本却没有基」的那张单子（见 PALM_MIN_SAMPLE_FRACTION）。

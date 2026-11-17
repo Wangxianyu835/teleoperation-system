@@ -34,6 +34,7 @@ from teleoperation.simulation.arm_realtime import (
     MAX_ORIENTATION_RATE_DEG_S,
     MAX_ORIENTATION_STEP_DEG,
     MIN_ELBOW_PLANE_SINE,
+    ORIENTATION_MODES,
     PALM_HOLD_S,
     PALM_LATE_FRAMES,
     PALM_LATE_SPREAD_DEG,
@@ -47,6 +48,7 @@ from teleoperation.simulation.arm_realtime import (
     load_neutral,
     palm_orientation_frame,
     relative_palm_rotation,
+    relative_palm_wrist_rotation,
     relative_wrist_rotation,
     save_neutral,
     wrist_orientation_frame,
@@ -1065,6 +1067,147 @@ class NeutralOrientationTests(unittest.TestCase):
         self.assertIn("no elbow", entry.info["orientation_source"])
 
 
+class WristLocalOrientationTests(unittest.TestCase):
+    """``orientation_mode="wrist"``：前臂方向归位置任务，腕只跟局部旋转。
+
+    现场「手臂映射准了，但手腕几乎没作用」的剩余机制是：旧口径把整只手相对中性的
+    旋转原样交给只转腕的 IK。操作者正常摆臂时，前臂方向本来就会变，腕于是一直替
+    肩/肘补偿，真正的手腕旋前/屈伸反而被限位和位置误差压住。
+    """
+
+    FRAMES = 4
+    RATE_OFF = {"max_orientation_rate_deg_s": 0.0,
+                "max_orientation_step_deg": 0.0}
+
+    def _bridge(self, mode="wrist", with_hand=True):
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",),
+                                   calibration_frames=self.FRAMES,
+                                   orientation="on", orientation_mode=mode,
+                                   **self.RATE_OFF)
+        for _ in range(self.FRAMES):
+            bridge.update(
+                arms_world={"right": bent_arm("right")},
+                hands={"world_right": open_hand()} if with_hand else None,
+                frame_dt=0.1)
+        return bridge
+
+    def _target(self, bridge, arm_points, hand_points):
+        return bridge.update(
+            arms_world={"right": arm_points},
+            hands={"world_right": hand_points},
+            frame_dt=0.1)["h1_2"]["right"]
+
+    def test_rigid_arm_motion_keeps_the_local_wrist_at_zero(self):
+        """抬臂/摆肘时手与前臂一起转：局部腕角必须仍是 0，不能塞给腕关节。"""
+        neutral_arm = bent_arm("right")
+        neutral_hand = open_hand()
+        rotation = axis_angle((0.3, 0.2, 0.93), 0.9)
+        moved_arm = rotate_arm(neutral_arm, rotation, neutral_arm[0])
+        moved_hand = rotate_arm(neutral_hand, rotation, neutral_arm[0])
+
+        local = self._target(self._bridge("wrist"), moved_arm, moved_hand)
+        self.assertEqual(local.info["orientation_source"], "palm_normal")
+        self.assertEqual(local.info["orientation_mode"], "wrist")
+        self.assertLess(_quaternion_angle_deg(local.orientation), 1e-6)
+
+        historic = self._target(self._bridge("hand"), moved_arm, moved_hand)
+        self.assertEqual(historic.info["orientation_mode"], "hand")
+        self.assertGreater(_quaternion_angle_deg(historic.orientation), 30.0)
+
+    def test_a_real_hand_twist_is_still_sent_in_wrist_mode(self):
+        """只绕前臂轴拧手：局部腕旋转保持不变，仍然要有 40 度。"""
+        target = self._target(self._bridge("wrist"), bent_arm("right"),
+                              twisted_hand("right", 40.0))
+        self.assertEqual(target.info["orientation_source"], "palm_normal")
+        self.assertAlmostEqual(_quaternion_angle_deg(target.orientation), 40.0,
+                               delta=1.0)
+
+    def test_both_hands_put_a_positive_twist_on_the_same_local_axis(self):
+        """左手关键点绕序是镜像的；局部公式仍必须让两侧 +40° 落在同一个 x 轴。"""
+        for side in ("left", "right"):
+            bridge = RealtimeArmBridge(
+                PROFILES, sides=(side,), calibration_frames=self.FRAMES,
+                orientation="on", orientation_mode="wrist", **self.RATE_OFF)
+            for _ in range(self.FRAMES):
+                bridge.update(
+                    arms_world={side: bent_arm(side)},
+                    hands={f"world_{side}": open_hand()},
+                    frame_dt=0.1)
+            target = bridge.update(
+                arms_world={side: bent_arm(side)},
+                hands={f"world_{side}": twisted_hand(side, 40.0)},
+                frame_dt=0.1)["h1_2"][side]
+            with self.subTest(side=side):
+                self.assertAlmostEqual(_quaternion_angle_deg(target.orientation),
+                                       40.0, delta=1.0)
+                self.assertGreater(float(target.orientation[0]), 0.30)
+                self.assertLess(abs(float(target.orientation[1])), 1e-9)
+                self.assertLess(abs(float(target.orientation[2])), 1e-9)
+
+    def test_without_a_palm_the_local_mode_does_not_fabricate_three_point_motion(self):
+        """三点基没有旋前维；局部口径宁可不发姿态，也不把前臂运动冒充成腕运动。"""
+        target = self._target(self._bridge("wrist", with_hand=False),
+                              bent_arm("right"), open_hand())
+        self.assertIsNone(target.orientation)
+        self.assertIsNone(target.info["orientation_source"])
+
+    def test_a_late_reference_anchors_the_local_wrist_at_the_late_pose(self):
+        """迟到补采发生在手臂已经移动后：那一刻的局部腕角仍必须是 0。"""
+        bridge = RealtimeArmBridge(
+            PROFILES, sides=("right",), calibration_frames=self.FRAMES,
+            orientation="on", orientation_mode="wrist",
+            palm_wait_frames=0, **self.RATE_OFF)
+        for _ in range(self.FRAMES):
+            bridge.update(arms_world={"right": bent_arm("right")},
+                          hands=None, frame_dt=0.1)
+        neutral = bent_arm("right")
+        moved_arm = rotate_arm(
+            neutral, axis_angle((0.2, 0.7, 0.3), 1.4), neutral[0])
+        last = None
+        for _ in range(PALM_LATE_FRAMES):
+            last = bridge.update(
+                arms_world={"right": moved_arm},
+                hands={"world_right": open_hand()},
+                frame_dt=0.1)["h1_2"]["right"]
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertEqual(entry["palm_reference_source"], "late")
+        self.assertTrue(entry["orientation_palm_local_recorded"])
+        self.assertLess(_quaternion_angle_deg(last.orientation), 1e-6)
+        hand = open_hand()
+        twisted_hand_points = rotate_arm(
+            hand,
+            axis_angle(moved_arm[2] - moved_arm[1], np.radians(40.0)),
+            hand[0])
+        twisted = bridge.update(
+            arms_world={"right": moved_arm},
+            hands={"world_right": twisted_hand_points},
+            frame_dt=0.1)["h1_2"]["right"]
+        self.assertAlmostEqual(_quaternion_angle_deg(twisted.orientation),
+                               40.0, delta=1.0)
+
+    def test_the_mode_name_is_validated(self):
+        self.assertEqual(ORIENTATION_MODES, ("wrist", "hand"))
+        with self.assertRaises(ValueError):
+            RealtimeArmBridge(PROFILES, sides=("right",),
+                              orientation_mode="handish")
+        args = build_parser().parse_args([])
+        self.assertEqual(args.arm_orientation_mode, "wrist")
+        self.assertEqual(args.arm_orientation_scope, "wrist")
+
+    def test_the_helper_is_identity_under_a_rigid_transform(self):
+        arm = bent_arm("right")
+        hand = open_hand()
+        forearm = wrist_orientation_frame(arm)
+        palm = palm_orientation_frame(hand, arm, "right")
+        rotation = axis_angle((0.0, 1.0, 0.0), 0.7)
+        moved_arm = rotate_arm(arm, rotation, arm[0])
+        moved_hand = rotate_arm(hand, rotation, arm[0])
+        relative = relative_palm_wrist_rotation(
+            moved_hand, moved_arm, forearm.T @ palm, "right")
+        self.assertIsNotNone(relative)
+        np.testing.assert_allclose(relative, np.eye(3), atol=1e-12)
+
+
 class OrientationSlewTests(unittest.TestCase):
     """腕姿态目标的角速度上限（``MAX_ORIENTATION_RATE_DEG_S`` / ``--arm-orientation-rate-deg-s``）。
 
@@ -2069,19 +2212,21 @@ class QuickcheckLauncherTests(unittest.TestCase):
         self.assertEqual(self.launcher.with_field_flags([]),
                          ["--arm-elbow-follow", "operator",
                           "--arm-orientation", "on",
-                          "--arm-orientation-scope", "arm",
+                          "--arm-orientation-scope", "wrist",
+                          "--arm-orientation-mode", "wrist",
                           "--arm-ik-mode", "pose"])
         args = build_parser().parse_args(self.launcher.with_field_flags([]))
         self.assertEqual(args.arm_elbow_follow, "operator")
         self.assertEqual(args.arm_orientation, "on")
-        self.assertEqual(args.arm_orientation_scope, "arm")
+        self.assertEqual(args.arm_orientation_scope, "wrist")
+        self.assertEqual(args.arm_orientation_mode, "wrist")
         self.assertEqual(args.arm_ik_mode, "pose")
 
     def test_your_own_arm_flags_win(self):
-        argv = self.launcher.with_field_flags(["--arm-orientation-scope", "wrist",
+        argv = self.launcher.with_field_flags(["--arm-orientation-scope", "arm",
                                                "--arm-orientation=off"])
         self.assertEqual(argv.count("--arm-orientation-scope"), 1)
-        self.assertEqual(argv[argv.index("--arm-orientation-scope") + 1], "wrist")
+        self.assertEqual(argv[argv.index("--arm-orientation-scope") + 1], "arm")
         self.assertNotIn("--arm-orientation", argv)     # =off 也算写了，不许再补 on
         self.assertIn("--arm-ik-mode", argv)            # 没写的那几项照补
 
