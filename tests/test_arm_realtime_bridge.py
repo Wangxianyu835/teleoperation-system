@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import importlib.util
 import csv
+import io
+import contextlib
 import json
 import sys
 import tempfile
@@ -33,6 +35,11 @@ from teleoperation.simulation.arm_realtime import (
     MAX_ORIENTATION_STEP_DEG,
     MIN_ELBOW_PLANE_SINE,
     PALM_HOLD_S,
+    PALM_LATE_FRAMES,
+    PALM_LATE_SPREAD_DEG,
+    PALM_MAX_SPREAD_DEG,
+    SYMMETRY_MAX_SAMPLES,
+    SYMMETRY_SAME_SIDE_DEG,
     AxisMap,
     RealtimeArmBridge,
     arm_reach,
@@ -254,8 +261,10 @@ class CalibrateModeTests(unittest.TestCase):
         np.testing.assert_allclose(pinned.position, working.position, atol=0.0)
 
     def test_track_mode_follows_the_operator_before_the_neutral_is_complete(self):
+        # palm_wait_frames=0：这些夹具不给手点，等手点的语义归 PalmWaitTests 管，
+        # 这里只钉「中和没攒够也跟手」。
         bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=30,
-                                   calibrate_mode="track")
+                                   calibrate_mode="track", palm_wait_frames=0)
         hold = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=30)
         for _ in range(3):                       # 现场要求站定 30 帧，这里站 3 帧
             bridge.update(arms_world={"right": arm("right")})
@@ -277,7 +286,7 @@ class CalibrateModeTests(unittest.TestCase):
     def test_track_and_hold_converge_to_the_same_neutral(self):
         frames = [arm("right")] * 3 + [arm("right", wrist_offset=(0.0, 0.0, 0.02))]
         tracking = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=4,
-                                     calibrate_mode="track")
+                                     calibrate_mode="track", palm_wait_frames=0)
         hold = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=4)
         for frame in frames:
             tracking.update(arms_world={"right": frame})
@@ -294,7 +303,7 @@ class CalibrateModeTests(unittest.TestCase):
 
     def test_held_frames_are_classified_for_the_field_log(self):
         bridge = RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=2,
-                                   calibrate_mode="track")
+                                   calibrate_mode="track", palm_wait_frames=0)
         bridge.update(arms_world={"right": None})              # 一条数据都没有
         bridge.update(arms_world={"right": arm("right")})      # 有效
         bridge.update(arms_world={"right": arm("right")})      # 标定恰好攒够
@@ -1474,6 +1483,188 @@ class SegmentsMappingTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# 2026-11-17：k（机器人段长 / 你的段长）的左右对称性与「坏标定不许进链路」
+# --------------------------------------------------------------------------- #
+def foreshortened_arm(side: str, upper: float = 0.30, fore: float = 0.20) -> np.ndarray:
+    """段长可调的米制 (肩, 肘, 腕)：``fore=0.06`` 复现"深度压扁"的那一场标定。
+
+    现场依据（2026-11-17 三场 live 的 ``segment_scales``）：同一个人同一天量出来的
+    ``k_前臂`` 是 1.02 / 1.34 / **3.79**（h1_2 前臂 0.229 m ÷ 你的 0.060 m），而同一份
+    记录的右臂一直是 0.99（0.23 m）。一个人左右前臂不可能差 4 倍 —— 所以「左手不如右手」
+    的头号嫌疑是**标定那一场左臂的关键点被深度压扁**，不是求解器也不是机器人。
+    """
+    sign = 1.0 if side == "left" else -1.0
+    shoulder = np.array([0.17 * sign, -0.35, 0.0])
+    elbow = shoulder + np.array([0.0, upper, 0.0])
+    wrist = elbow + np.array([0.0, fore, 0.0])
+    return np.stack((shoulder, elbow, wrist))
+
+
+class SegmentScaleTrustTests(unittest.TestCase):
+    """``k = 机器人段长 / 你的段长``：姿势变了它不变，标定坏了它不许生效。"""
+
+    def test_the_same_arm_held_differently_gives_the_same_k(self):
+        # 绕肩转 45.8 度是**刚体**运动：段长不变，k 就不该变。
+        straight = calibrated_bent(sides=SIDES, robot_links=segment_links())
+        rotated = RealtimeArmBridge(PROFILES, sides=SIDES, calibration_frames=4,
+                                    robot_links=segment_links())
+        for _ in range(4):
+            rotated.update(arms_world={"left": swung_bent_arm("left", 0.8),
+                                       "right": bent_arm("right")})
+        for name in PAPER_ROBOTS:
+            profile = profile_for(name)
+            with self.subTest(robot=name):
+                np.testing.assert_allclose(rotated._segment_scales(profile, "left"),
+                                           straight._segment_scales(profile, "right"),
+                                           atol=1e-9)
+
+    def test_both_sides_of_a_symmetric_neutral_give_the_same_k(self):
+        bridge = calibrated_bent(sides=SIDES, robot_links=segment_links())
+        for name in PAPER_ROBOTS:
+            profile = profile_for(name)
+            with self.subTest(robot=name):
+                np.testing.assert_allclose(bridge._segment_scales(profile, "left"),
+                                           bridge._segment_scales(profile, "right"),
+                                           atol=1e-9)
+                self.assertEqual(bridge.segment_scale_note("left"), "")
+                self.assertEqual(bridge.segment_scale_note("right"), "")
+
+    def test_a_foreshortened_forearm_disables_that_side_only(self):
+        bridge = RealtimeArmBridge(PROFILES, sides=SIDES, calibration_frames=4,
+                                   robot_links=segment_links())
+        for _ in range(4):
+            bridge.update(arms_world={"left": foreshortened_arm("left", fore=0.06),
+                                      "right": foreshortened_arm("right", fore=0.20)})
+        profile = profile_for("h1_2")
+        # 0.06 m 的前臂 -> h1_2 的 k 会是 3.8 倍：判它不可用，退回整段 gain。
+        self.assertIsNone(bridge._segment_scales(profile, "left"))
+        self.assertIn("forearm", bridge.segment_scale_note("left"))
+        self.assertIn("0.060", bridge.segment_scale_note("left"))
+        # 另一侧照旧 —— 左右互不牵连（判据只看**你的**段长，与机器人无关）。
+        np.testing.assert_allclose(bridge._segment_scales(profile, "right"),
+                                   (0.30 / 0.30, 0.20 / 0.20), atol=1e-9)
+        self.assertEqual(bridge.segment_scale_note("right"), "")
+        # 报告里必须留痕：事后才知道「那一场 k 为什么没生效」。
+        notes = bridge.summary()["segment_scale_notes"]
+        self.assertEqual(notes["right"], "")
+        self.assertIn("0.060", notes["left"])
+
+    def test_a_bad_side_falls_back_to_the_whole_segment_recipe(self):
+        bridge = RealtimeArmBridge(PROFILES, sides=("left",), calibration_frames=4,
+                                   map_mode="segments", robot_links=segment_links())
+        for _ in range(4):
+            bridge.update(arms_world={"left": foreshortened_arm("left", fore=0.06)})
+        entry = bridge.update(arms_world={"left": swung_bent_arm("left", 0.8)})["h1_2"]["left"]
+        # 不是崩、不是静默 —— 如实写清楚这一帧走的是哪条口径。
+        self.assertEqual(entry.info["map"], "chain (segments unavailable)")
+        self.assertTrue(np.isfinite(entry.position).all())
+
+    def test_the_live_loop_warns_once_per_side(self):
+        # 现场那条 [WARN] 是一次性的：静默退回才是最坏的结果（人只会觉得"今天这机器不对劲"）。
+        from teleoperation.simulation.realtime_teleop import _warn_bad_segment_scales
+
+        bridge = RealtimeArmBridge(PROFILES, sides=SIDES, calibration_frames=4,
+                                   robot_links=segment_links())
+        for _ in range(4):
+            bridge.update(arms_world={"left": foreshortened_arm("left", fore=0.06),
+                                      "right": foreshortened_arm("right", fore=0.20)})
+        warned = set()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            _warn_bad_segment_scales(bridge, SIDES, warned)
+            _warn_bad_segment_scales(bridge, SIDES, warned)
+        text = output.getvalue()
+        self.assertEqual(text.count("[WARN] segment scales OFF"), 1)
+        self.assertIn("(left)", text)
+        self.assertEqual(warned, {"left"})
+    def test_a_symmetric_neutral_has_no_asymmetry_note(self):
+        bridge = calibrated_bent(sides=SIDES, robot_links=segment_links())
+        self.assertEqual(bridge.segment_asymmetry_note(), "")
+        self.assertEqual(bridge.summary()["segment_asymmetry_note"], "")
+
+    def test_an_in_band_but_lopsided_forearm_is_flagged(self):
+        # 现场最常见的一次坏标定：0.17 vs 0.23 m —— **两端都在带宽内**，带宽护栏一声不吭，
+        # 但 k_前臂 从 0.99 变 1.35，前臂位移被放大 35%（那一场左 residual 是右的 1.9 倍）。
+        bridge = RealtimeArmBridge(PROFILES, sides=SIDES, calibration_frames=4,
+                                   robot_links=segment_links())
+        for _ in range(4):
+            bridge.update(arms_world={"left": foreshortened_arm("left", fore=0.17),
+                                      "right": foreshortened_arm("right", fore=0.23)})
+        # 带宽护栏不管这一档（两个值都在 0.12-0.45 里）。
+        self.assertEqual(bridge.segment_scale_note("left"), "")
+        self.assertEqual(bridge.segment_scale_note("right"), "")
+        note = bridge.segment_asymmetry_note()
+        self.assertIn("1.35x", note)
+        self.assertIn("forearm", note)
+        self.assertIn("0.170/0.230", note)
+        # 深度压扁只会让人量得**更短**，所以短的那一侧才是嫌疑人。
+        self.assertIn("(left) is the suspect", note)
+        self.assertEqual(bridge.summary()["segment_asymmetry_note"], note)
+
+    def test_asymmetry_is_reported_but_never_changes_the_control(self):
+        # 只告警不改控制：单次采集分不清"左手量短了"还是"右手量长了"，静默换配方
+        # 就是又一次把配方偷偷换掉。两侧的 k 必须照旧可用。
+        bridge = RealtimeArmBridge(PROFILES, sides=SIDES, calibration_frames=4,
+                                   map_mode="segments", robot_links=segment_links())
+        for _ in range(4):
+            bridge.update(arms_world={"left": foreshortened_arm("left", fore=0.17),
+                                      "right": foreshortened_arm("right", fore=0.23)})
+        profile = profile_for("h1_2")
+        self.assertIsNotNone(bridge._segment_scales(profile, "left"))
+        self.assertIsNotNone(bridge._segment_scales(profile, "right"))
+        self.assertTrue(bridge.segment_asymmetry_note())
+        entry = bridge.update(arms_world={side: swung_bent_arm(side, 0.8)
+                                          for side in SIDES})["h1_2"]
+        for side in SIDES:
+            self.assertNotIn("unavailable", entry[side].info["map"])
+
+    def test_a_lopsided_upper_arm_names_that_side_not_the_forearm(self):
+        # 文案里「短的是嫌疑人」必须按**最不对称的那一段**判：上臂不对称、前臂对称时，
+        # 若还按前臂说「the shorter one」就会把人指到错的地方去改标定。
+        bridge = RealtimeArmBridge(PROFILES, sides=SIDES, calibration_frames=4,
+                                   robot_links=segment_links())
+        for _ in range(4):
+            bridge.update(arms_world={"left": foreshortened_arm("left", upper=0.22, fore=0.23),
+                                      "right": foreshortened_arm("right", upper=0.34,
+                                                                 fore=0.23)})
+        note = bridge.segment_asymmetry_note()
+        self.assertIn("upper arm", note)
+        self.assertIn("the shorter one (left) is the suspect", note)
+        # 反向：上臂左长右短 -> 嫌疑人换成右侧（不是恒定指向左边）。
+        flipped = RealtimeArmBridge(PROFILES, sides=SIDES, calibration_frames=4,
+                                    robot_links=segment_links())
+        for _ in range(4):
+            flipped.update(arms_world={"left": foreshortened_arm("left", upper=0.34,
+                                                                 fore=0.23),
+                                       "right": foreshortened_arm("right", upper=0.22,
+                                                                  fore=0.23)})
+        self.assertIn("the shorter one (right) is the suspect",
+                      flipped.segment_asymmetry_note())
+
+    def test_the_asymmetry_warning_needs_both_sides_and_fires_once(self):
+        from teleoperation.simulation.realtime_teleop import _warn_asymmetric_segment_scales
+
+        bridge = RealtimeArmBridge(PROFILES, sides=SIDES, calibration_frames=4,
+                                   robot_links=segment_links())
+        for _ in range(4):
+            bridge.update(arms_world={"left": foreshortened_arm("left", fore=0.17),
+                                      "right": foreshortened_arm("right", fore=0.23)})
+        warned = set()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            # 只跑一侧时不该喊：比的是"你的左臂 vs 你的右臂"。
+            _warn_asymmetric_segment_scales(bridge, ("left",), warned)
+            self.assertEqual(output.getvalue(), "")
+            _warn_asymmetric_segment_scales(bridge, SIDES, warned)
+            _warn_asymmetric_segment_scales(bridge, SIDES, warned)
+        text = output.getvalue()
+        self.assertEqual(text.count("[WARN] left/right calibration mismatch"), 1)
+        self.assertIn("1.35x", text)
+
+
+
+
+# --------------------------------------------------------------------------- #
 # 2026-10-13 晚：方向口径（--arm-map posture）—— 现场判定两种位移口径都不像之后加的
 # --------------------------------------------------------------------------- #
 #: 每台一套**不同**的假连杆长（米，与实测量级一致）：方向口径的幅度不该随臂长变。
@@ -1851,6 +2042,86 @@ class ElbowFollowPresetTests(unittest.TestCase):
         self.assertEqual(args.arm_elbow_follow, self.launcher.ELBOW_BUILD)
 
 
+def load_quickcheck_launcher():
+    """按路径加载 ``devtools/run_arm_quickcheck.py``（现场入口只许 import，不许改）。"""
+    if str(DEVTOOLS) not in sys.path:
+        sys.path.insert(0, str(DEVTOOLS))
+    spec = importlib.util.spec_from_file_location(
+        "run_arm_quickcheck", DEVTOOLS / "run_arm_quickcheck.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class QuickcheckLauncherTests(unittest.TestCase):
+    """``devtools/run_arm_quickcheck.py``：不碰现场入口，也能把现场档跑起来并打一屏读数。
+
+    为什么要有它（2026-11-17）：用户要求 ``devtools/run_realtime_arm_windows.py`` 保持 HEAD
+    的样子（它工作区里曾钉着一段 ``WRIST_PRESET``，已 ``git checkout --`` 回退），于是入口默认
+    又回到 ``--arm-orientation off``，也就是"手腕不动"。新文件把现场档**显式**补进参数表，
+    这里钉住三件事：补的就是那四项、你自己写的优先、摘要读不到报告也不许抛。
+    """
+
+    def setUp(self):
+        self.launcher = load_quickcheck_launcher()
+
+    def test_it_pins_the_field_build(self):
+        self.assertEqual(self.launcher.with_field_flags([]),
+                         ["--arm-elbow-follow", "operator",
+                          "--arm-orientation", "on",
+                          "--arm-orientation-scope", "arm",
+                          "--arm-ik-mode", "pose"])
+        args = build_parser().parse_args(self.launcher.with_field_flags([]))
+        self.assertEqual(args.arm_elbow_follow, "operator")
+        self.assertEqual(args.arm_orientation, "on")
+        self.assertEqual(args.arm_orientation_scope, "arm")
+        self.assertEqual(args.arm_ik_mode, "pose")
+
+    def test_your_own_arm_flags_win(self):
+        argv = self.launcher.with_field_flags(["--arm-orientation-scope", "wrist",
+                                               "--arm-orientation=off"])
+        self.assertEqual(argv.count("--arm-orientation-scope"), 1)
+        self.assertEqual(argv[argv.index("--arm-orientation-scope") + 1], "wrist")
+        self.assertNotIn("--arm-orientation", argv)     # =off 也算写了，不许再补 on
+        self.assertIn("--arm-ik-mode", argv)            # 没写的那几项照补
+
+    def test_both_spellings_of_frames_and_report_count_as_written(self):
+        self.assertTrue(self.launcher.has_flag(["--frames", "150"], "--frames"))
+        self.assertTrue(self.launcher.has_flag(["--frames=150"], "--frames"))
+        self.assertFalse(self.launcher.has_flag(["--frame", "150"], "--frames"))
+        self.assertTrue(self.launcher.has_flag(["--report=out.json"], "--report"))
+
+    def test_the_digest_survives_a_missing_report(self):
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            self.launcher.digest(Path("no_such_quickcheck_report.json"))
+        self.assertIn("no report to read", stream.getvalue())
+
+    def test_the_digest_shows_symmetry_and_the_late_palm_basis(self):
+        report = Path(tempfile.mkdtemp()) / "quickcheck.json"
+        report.write_text(json.dumps({
+            "processed_frames": 900, "fps": 12.5, "elapsed_seconds": 72.0,
+            "bridge": {
+                "operator_symmetry": {"frames": 800, "median_deg": 8.5, "p90_deg": 20.0,
+                                      "max_deg": 120.0, "same_side_frames": 3,
+                                      "note": "both arms were mirror images"},
+                "neutral": {"left": {"palm_reference_source": "late",
+                                     "palm_reference_frame": 367,
+                                     "palm_reference_pose_deg": 132.8,
+                                     "palm_spread_deg": 4.8, "palm_outliers": 1}},
+                "counts": {"palm_late": {"left": 1, "right": 0}},
+            },
+        }, ensure_ascii=False), encoding="utf-8")
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            self.launcher.digest(report)
+        text = stream.getvalue()
+        self.assertIn("median 8.50 deg", text)
+        self.assertIn("3/800 frames same-side", text)
+        self.assertIn("late @frame 367, 132.8 deg", text)               # 迟到基准的偏置要露出来
+        self.assertIn("left palm basis was learned 132.8 deg", text)     # 超 60 度必须报警
+
+
 class WristTraceColumnTests(unittest.TestCase):
     """``--wrist-trace`` 是取证格式：表头与每一行的列数必须一致，``ori_source`` 要落地。
 
@@ -2019,6 +2290,361 @@ class PalmBasisVisibilityTests(unittest.TestCase):
         self.assertEqual(buffer.getvalue(), "")
 
 
+class PalmBasisTrustTests(unittest.TestCase):
+    """掌面基的**可信度闸门**：样本太少或彼此不一致 -> 就当没有（退回三点基）。
+
+    2026-11-17 现场 15:40 那场（``outputs/tmp_realtime/arm_run_20261117_154001.json``）：
+    30 帧标定里左手 ``palm_samples=0``、右手 12，右手拿这 12 帧的均值当基准，于是同一场
+    ``orientation_error_deg`` 左 0.6-1.6 度 / 右 **24.9-122.5 度**，h1_2 右腕三个关节
+    ``at_limit: true``（左三个全在中段），``residual_mm`` 左 2.5-9.4 / 右 45-256 mm ——
+    现场看到的就是「右手卡住不动、手腕怎么拧都不对」。判据见
+    ``arm_realtime.PALM_MIN_SAMPLE_FRACTION`` / ``PALM_MAX_SPREAD_DEG``。
+    """
+
+    FRAMES = 6
+
+    @staticmethod
+    def _hand(twist_deg: float = 0.0):
+        """掌面朝相机的手；``twist_deg`` 绕 world y 俯仰一下 = 换一个掌面朝向。"""
+        hand = open_hand()
+        if not twist_deg:
+            return hand
+        return rotate_arm(hand, axis_angle((0.0, 1.0, 0.0), np.radians(twist_deg)),
+                          (0.5, 0.5, 0.0))
+
+    def _bridge(self, palm_frames: int, frames: int = None, twist_deg: float = 0.0):
+        """前 ``palm_frames`` 帧给手（奇数帧带 ``twist_deg``），其余帧只有手臂。"""
+        frames = self.FRAMES if frames is None else frames
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",),
+                                   calibration_frames=frames, frame_dt=0.1)
+        for index in range(frames):
+            hand = None
+            if index < palm_frames:
+                hand = {"world_right": self._hand(0.0 if index % 2 == 0 else twist_deg)}
+            bridge.update(arms_world={"right": bent_arm("right")}, hands=hand, frame_dt=0.1)
+        return bridge
+
+    def test_a_basis_from_too_few_frames_is_rejected_with_the_count_in_the_note(self):
+        # 10 帧标定、只有 4 帧看得见手：低于一半 -> 不算数。
+        bridge = self._bridge(palm_frames=4, frames=10)
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertEqual(entry["palm_samples"], 4)
+        self.assertFalse(entry["orientation_palm_recorded"])
+        self.assertIn("4/10", entry["palm_note"])
+        self.assertIn("calibration frames", entry["palm_note"])
+        # 这一帧还不能补：迟到基准要**连续** 8 帧稳定的掌面基（见 PALM_LATE_FRAMES），
+        # 在那之前如实退回三点基（不会把腕推进限位）。
+        update = bridge.update(arms_world={"right": bent_arm("right")},
+                               hands={"world_right": self._hand()}, frame_dt=0.1)
+        self.assertEqual(update["h1_2"]["right"].info["orientation_source"], "three_point")
+
+    def test_a_basis_whose_samples_disagree_is_rejected_with_the_spread_in_the_note(self):
+        bridge = self._bridge(palm_frames=self.FRAMES, twist_deg=90.0)
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertEqual(entry["palm_samples"], self.FRAMES)
+        self.assertFalse(entry["orientation_palm_recorded"])
+        self.assertGreater(entry["palm_spread_deg"], 25.0)
+        self.assertIn("disagree", entry["palm_note"])
+        self.assertIn("deg", entry["palm_note"])
+
+    def test_a_steady_basis_is_kept_and_reports_a_small_spread(self):
+        bridge = self._bridge(palm_frames=self.FRAMES)
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertTrue(entry["orientation_palm_recorded"])
+        self.assertEqual(entry["palm_note"], "")
+        self.assertLessEqual(entry["palm_spread_deg"], 1.0)
+        self.assertEqual(bridge.palm_basis_note("right"), "")
+
+    def test_the_verdict_and_the_spread_survive_save_and_load(self):
+        rejected = self._bridge(palm_frames=self.FRAMES, twist_deg=90.0)
+        fresh = RealtimeArmBridge(PROFILES, sides=("right",),
+                                  calibration_frames=self.FRAMES, frame_dt=0.1)
+        fresh.load_neutral(rejected.neutral_record())
+        note = fresh.palm_basis_note("right")
+        self.assertIn("disagree", note)
+        entry = fresh.summary()["neutral"]["right"]
+        self.assertFalse(entry["orientation_palm_recorded"])
+        self.assertGreater(entry["palm_spread_deg"], 25.0)
+        self.assertEqual(entry["palm_note"], note)
+
+    def test_a_few_flipped_samples_no_longer_kill_the_basis(self):
+        """多数簇（``_palm_cluster``）：8 帧看得见手、其中 2 帧掌面差了 45 度 -> 仍然可用。
+
+        现场那两场（15:40 / 16:00）的散度 55 / 165 度不是「人转了手」，是那几帧的法向取反。
+        把正反两拨一起平均得到的既不正也不反，于是闸门把**整场**的旋前判死；现在只把散出去
+        的那几帧记成 ``palm_outliers``，多数一致的仍然可用。
+        """
+        frames = 10
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",),
+                                   calibration_frames=frames, frame_dt=0.1)
+        for index in range(frames):
+            if index >= 8:
+                hand = None                                   # 最后两帧手不在画面里
+            elif index >= 6:
+                hand = {"world_right": self._hand(90.0)}      # 这两帧掌面转过 45 度（翻号/半遮挡）
+            else:
+                hand = {"world_right": self._hand()}
+            bridge.update(arms_world={"right": bent_arm("right")}, hands=hand, frame_dt=0.1)
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertTrue(entry["orientation_palm_recorded"], entry["palm_note"])
+        self.assertEqual(entry["palm_note"], "")
+        self.assertEqual(entry["palm_reference_source"], "neutral")
+        self.assertEqual(entry["palm_outliers"], 2)
+        # ``palm_spread_deg`` 是**全部**样本相对基准的最大夹角：它如实报到 90 度，
+        # 说明确实有帧被判出簇（``palm_outliers``）；判死与否只看「簇有多大 + 簇内散度」。
+        self.assertGreater(entry["palm_spread_deg"], PALM_MAX_SPREAD_DEG)
+
+    def test_clustering_does_not_loosen_the_frame_count_guard(self):
+        """10 帧里只有 4 帧看得见手、且两两不一致 -> 最大簇只有 2 帧，仍然判死。
+
+        聚簇只能挡「少数坏帧」，不能把「手只露了一下」变成可用：12/30 帧凑出来的基准
+        会把六个腕关节推进限位（见 ``PALM_MIN_SAMPLE_FRACTION``）。
+        """
+        frames = 10
+        bridge = RealtimeArmBridge(PROFILES, sides=("right",),
+                                   calibration_frames=frames, frame_dt=0.1)
+        for index in range(frames):
+            if index >= 4:
+                hand = None
+            elif index % 2:
+                hand = {"world_right": self._hand(90.0)}
+            else:
+                hand = {"world_right": self._hand()}
+            bridge.update(arms_world={"right": bent_arm("right")}, hands=hand, frame_dt=0.1)
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertEqual(entry["palm_samples"], 4)
+        self.assertFalse(entry["orientation_palm_recorded"])
+        self.assertIn("2/10", entry["palm_note"])
+
+    def test_the_warning_says_the_basis_was_rejected_and_why(self):
+        import io
+        from contextlib import redirect_stdout
+
+        from teleoperation.simulation.realtime_teleop import _warn_missing_palm_basis
+
+        bridge = self._bridge(palm_frames=self.FRAMES, twist_deg=90.0)
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            _warn_missing_palm_basis(bridge, ("right",), set())
+        text = buffer.getvalue()
+        self.assertEqual(text.count("[WARN]"), 1, text)
+        self.assertIn("palm_samples=6", text)
+        self.assertIn("basis rejected", text)
+        self.assertIn("disagree", text)
+
+
+class PalmLateReferenceTests(unittest.TestCase):
+    """中性里没有掌面基时，运行中补采一次（``arm_realtime.PALM_LATE_FRAMES``）。
+
+    这一条对应现场那句「手腕还是不会转」。取证（``outputs/tmp_realtime/live_run_1600_wrist.csv``，
+    883 帧 ×3 台 ×2 侧）：``ori_source`` 是 ``palm_normal`` 的只有 **3 行**（右 0 行），
+    其余全是 ``three_point``；而三点基的第三轴取「上臂 x 前臂」的手臂平面法向，
+    **对绕前臂的自转完全不敏感**。也就是说，只要中性那次没采到掌面基，这一整场
+    「手怎么拧、机器人手腕一动不动」是数学上注定的，不是桥的问题。
+    """
+
+    FRAMES = 6
+
+    def _bridge(self, **kwargs):
+        kwargs.setdefault("calibrate_mode", "hold")
+        kwargs.setdefault("palm_wait_frames", 0)
+        return RealtimeArmBridge(PROFILES, sides=("right",), calibration_frames=self.FRAMES,
+                                 frame_dt=0.1, **kwargs)
+
+    def _feed(self, bridge, count, hand=None):
+        """喂 ``count`` 帧；``hand`` 是那一侧的 world 手（``None`` = 这一帧没手点）。"""
+        hands = None if hand is None else {"world_right": hand}
+        last = None
+        for _ in range(count):
+            last = bridge.update(arms_world={"right": bent_arm("right")},
+                                 hands=hands, frame_dt=0.1)
+        return last
+
+    def test_a_neutral_without_a_palm_basis_gets_one_on_the_fly(self):
+        # 关掉「每帧最多走多少度」那条限幅（下一条用例专门测它），这里只想看姿态目标本身。
+        bridge = self._bridge(max_orientation_step_deg=0.0)
+        self._feed(bridge, self.FRAMES)                    # 手臂在、手还没进画面
+        self.assertFalse(bridge.calibrating)
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertFalse(entry["orientation_palm_recorded"])
+        self.assertEqual(entry["palm_reference_source"], "")
+        self.assertEqual(bridge.palm_reference_note("right"), "")
+        # 手进来并站住 8 帧 -> 补采（第 8 帧就生效：采完之后同一帧就按掌面基算）
+        last = self._feed(bridge, PALM_LATE_FRAMES, hand=open_hand())
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertTrue(entry["orientation_palm_recorded"])
+        self.assertEqual(entry["palm_reference_source"], "late")
+        self.assertEqual(entry["palm_reference_frame"], self.FRAMES + PALM_LATE_FRAMES)
+        self.assertEqual(entry["palm_note"], "")
+        self.assertEqual(bridge.counts["palm_late"]["right"], 1)
+        self.assertEqual(last["h1_2"]["right"].info["orientation_source"], "palm_normal")
+        self.assertIn("palm reference acquired", bridge.palm_reference_note("right"))
+        # 零点取在「此刻」：这一帧与标定姿势的前臂方向差 ~0 度 -> 腕不带固定偏移。
+        self.assertIsNotNone(entry["palm_reference_pose_deg"])
+        self.assertLess(entry["palm_reference_pose_deg"], 1.0)
+        self.assertIn("deg away from the calibration pose", bridge.palm_reference_note("right"))
+        # **这就是「腕会转」**：拧 40 度，姿态目标真的跟到 40 度（改前是 three_point/0 度）。
+        twisted = bridge.update(arms_world={"right": bent_arm("right")},
+                                hands={"world_right": twisted_hand("right", 40.0)},
+                                frame_dt=0.1)["h1_2"]["right"]
+        self.assertEqual(twisted.info["orientation_source"], "palm_normal")
+        angle = _quaternion_angle_deg(twisted.orientation)
+        self.assertGreater(angle, 30.0)
+        self.assertLess(angle, 50.0)
+
+    def test_the_window_must_be_consecutive_so_a_dropped_frame_restarts_it(self):
+        bridge = self._bridge()
+        self._feed(bridge, self.FRAMES)
+        self._feed(bridge, PALM_LATE_FRAMES - 1, hand=open_hand())
+        self._feed(bridge, 1)                              # 手丢一帧
+        self._feed(bridge, PALM_LATE_FRAMES - 1, hand=open_hand())
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertFalse(entry["orientation_palm_recorded"], "7 + 7 帧不是连续 8 帧")
+        self._feed(bridge, 1, hand=open_hand())
+        self.assertEqual(bridge.summary()["neutral"]["right"]["palm_reference_source"], "late")
+
+    def test_a_hand_that_keeps_moving_never_becomes_a_reference(self):
+        """零点只有站在不动时才谈得上：来回拧手的帧永远凑不满一个稳定窗口。"""
+        bridge = self._bridge()
+        self._feed(bridge, self.FRAMES)
+        for index in range(20):
+            hand = (open_hand() if index % 2 == 0 else twisted_hand("right", 90.0))
+            self._feed(bridge, 1, hand=hand)
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertFalse(entry["orientation_palm_recorded"])
+        self.assertEqual(entry["palm_reference_source"], "")
+        self.assertEqual(bridge.counts["palm_late"]["right"], 0)
+        self.assertGreater(PALM_LATE_SPREAD_DEG, 0.0)      # 判据是「几帧彼此一致」，不是恒真
+
+    def test_a_neutral_that_has_a_palm_basis_never_gets_a_late_one(self):
+        bridge = self._bridge()
+        self._feed(bridge, self.FRAMES, hand=open_hand())
+        self.assertEqual(bridge.summary()["neutral"]["right"]["palm_reference_source"], "neutral")
+        self._feed(bridge, PALM_LATE_FRAMES + 2, hand=open_hand())
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertEqual(entry["palm_reference_source"], "neutral")
+        self.assertEqual(bridge.counts["palm_late"]["right"], 0)
+        self.assertEqual(bridge.palm_reference_note("right"), "")
+
+    def test_the_cli_reports_the_late_reference_instead_of_a_permanent_warning(self):
+        from teleoperation.simulation.realtime_teleop import _warn_missing_palm_basis
+
+        bridge = self._bridge()
+        self._feed(bridge, self.FRAMES)
+        warned = set()
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            _warn_missing_palm_basis(bridge, ("right",), warned)
+        self.assertEqual(buffer.getvalue().count("[WARN]"), 1)
+        self.assertIn("three_point", buffer.getvalue())    # 说清「暂时」会怎样
+        self._feed(bridge, PALM_LATE_FRAMES, hand=open_hand())
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            _warn_missing_palm_basis(bridge, ("right",), warned)
+        text = buffer.getvalue()
+        self.assertEqual(text.count("[WARN]"), 0, text)    # 已经有基了，不再喊「整场没有」
+        self.assertEqual(text.count("[INFO]"), 1, text)
+        self.assertIn("palm reference acquired", text)
+
+    def test_a_late_reference_survives_save_and_load(self):
+        """补采到的基准单独存盘再读回来：来源照样是 ``late``，旋前照样跟得上。"""
+        bridge = self._bridge()
+        self._feed(bridge, self.FRAMES)
+        self._feed(bridge, PALM_LATE_FRAMES, hand=open_hand())
+        with tempfile.TemporaryDirectory() as folder:
+            path = save_neutral(Path(folder) / "neutral.json", bridge.neutral_record())
+            reloaded = RealtimeArmBridge(PROFILES, sides=("right",),
+                                         calibration_frames=self.FRAMES,
+                                         neutral=load_neutral(path), frame_dt=0.1)
+        entry = reloaded.summary()["neutral"]["right"]
+        self.assertTrue(entry["orientation_palm_recorded"])
+        self.assertEqual(entry["palm_reference_source"], "late")
+        self.assertIsNotNone(entry["palm_reference_pose_deg"])
+        target = reloaded.update(arms_world={"right": bent_arm("right")},
+                                 hands={"world_right": twisted_hand("right", 40.0)},
+                                 frame_dt=0.1)["h1_2"]["right"]
+        self.assertEqual(target.info["orientation_source"], "palm_normal")
+
+
+class PalmWaitTests(unittest.TestCase):
+    """``track`` 模式下「先等一次手点再计帧」（``arm_realtime.PALM_WAIT_FRAMES``）。
+
+    现场那场（``outputs/tmp_realtime/live_run_1552.log``）的日志就是这几条用例要钉的东西：
+    ``frame=20 hand valid=left=0 right=0 | cal=track left=20/30 right=0/30`` —— 手臂在、
+    手不在，窗口照样在烧。等，但不能无限等（到上限就照旧计数，绝不卡在``cal=``）。
+    """
+
+    FRAMES = 6
+
+    def _bridge(self, calibrate_mode="track", wait=20, frames=None):
+        return RealtimeArmBridge(PROFILES, sides=("right",),
+                                 calibration_frames=(self.FRAMES if frames is None else frames),
+                                 calibrate_mode=calibrate_mode, palm_wait_frames=wait,
+                                 frame_dt=0.1)
+
+    def _feed(self, bridge, count, hands=False):
+        last = None
+        for _ in range(count):
+            last = bridge.update(arms_world={"right": bent_arm("right")},
+                                 hands=({"world_right": open_hand()} if hands else None),
+                                 frame_dt=0.1)
+        return last
+
+    def test_track_mode_waits_for_the_hand_points_before_counting_frames(self):
+        bridge = self._bridge()
+        self._feed(bridge, 12)
+        # 12 帧手臂、0 帧手：一帧都不算进度，但能看出「在等」。
+        self.assertTrue(bridge.calibrating)
+        self.assertEqual(bridge.calibration_progress()["right"], (0, self.FRAMES))
+        self.assertIn("w=12", bridge.status())
+        # 手一出现：计数开始，攒够 6 帧就有掌面基，而且散度是干净的。
+        self._feed(bridge, self.FRAMES, hands=True)
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertFalse(bridge.calibrating)
+        self.assertEqual(entry["palm_samples"], self.FRAMES)
+        self.assertTrue(entry["orientation_palm_recorded"])
+        self.assertEqual(entry["palm_note"], "")
+
+    def test_waiting_still_publishes_a_temporary_neutral_so_the_arm_follows(self):
+        bridge = self._bridge()
+        update = self._feed(bridge, 3)
+        self.assertTrue(bridge.calibrating)
+        self.assertIsNotNone(update["h1_2"]["right"].position)
+
+    def test_the_wait_is_bounded_so_a_run_without_hands_still_finishes(self):
+        # 等 3 帧就放弃：12 帧手臂里 3 帧放过、9 帧计数 -> 6 帧的标定照样完成。
+        bridge = self._bridge(wait=3)
+        update = self._feed(bridge, 12)
+        self.assertFalse(bridge.calibrating)
+        entry = bridge.summary()["neutral"]["right"]
+        self.assertEqual(entry["palm_samples"], 0)
+        self.assertFalse(entry["orientation_palm_recorded"])
+        # 没有样本就没有 note（那是 _warn_missing_palm_basis 按 palm_samples=0 报的事）。
+        self.assertEqual(entry["palm_note"], "")
+        self.assertEqual(update["h1_2"]["right"].info["orientation_source"], "three_point")
+
+    def test_hold_mode_never_waits(self):
+        # 历史行为逐字不变：hold 模式 6 帧就完成，不管手在不在。
+        bridge = self._bridge(calibrate_mode="hold", wait=90)
+        self._feed(bridge, self.FRAMES)
+        self.assertFalse(bridge.calibrating)
+        self.assertEqual(bridge.summary()["neutral"]["right"]["palm_samples"], 0)
+
+    def test_zero_disables_the_wait(self):
+        bridge = self._bridge(wait=0)
+        self._feed(bridge, self.FRAMES)
+        self.assertFalse(bridge.calibrating)
+        self.assertNotIn("w=", bridge.status())
+
+    def test_recalibration_clears_the_wait_counters(self):
+        bridge = self._bridge()
+        self._feed(bridge, 4)
+        self.assertIn("w=4", bridge.status())
+        bridge.reset(recalibrate=True)
+        self.assertNotIn("w=4", bridge.status())
+        self.assertEqual(bridge.calibration_progress()["right"], (0, self.FRAMES))
+
+
 class PalmBasisChiralityTests(unittest.TestCase):
     """左右手的掌面基必须**同手性** —— 2026-11-16 深夜：「右手跟得上、左手反着拧，三台一起」。
 
@@ -2177,5 +2803,148 @@ class PalmBasisChiralityTests(unittest.TestCase):
         return (rotation @ (hand - wrist).T).T + wrist
 
 
+class OperatorSymmetryTests(unittest.TestCase):
+    """「你的两条手臂是不是镜像」——把现场那句「左臂跟着右臂」变成一个数字。
 
+    背景（2026-11-17 现场）："屈臂、双手放胸前、把肘向外打开，结果左臂跟着右臂的方向动"。
+    桥的这一层**不可能**把镜像手势算成同向：``AxisMap`` 是两侧共用的一个线性映射（置换 +
+    符号），而按侧的那三个量（肩锚点 / 上臂长 / 前臂长）实测左右镜像到 0.07 mm
+    （``outputs/tmp_probe/probe_arm_anchor_mirror.py``：h1_2 0.07 / g1 0.01 / gr1_t2 5.4 mm）。
+    线性映射 + 镜像输入 -> 输出必然镜像。
+
+    于是「同向」只可能来自**输入本身**：一侧手点被挡/跑偏，或手势本来就不对称。这两种情况
+    的处理完全不同，所以必须能从报告里分开看 —— 这组用例把两种输入各自钉住。
+    """
+
+    FRAMES = 4
+
+    def _bridge(self, **kwargs):
+        kwargs.setdefault("calibrate_mode", "hold")
+        kwargs.setdefault("palm_wait_frames", 0)
+        return RealtimeArmBridge(PROFILES, sides=SIDES, calibration_frames=self.FRAMES,
+                                 frame_dt=0.1, **kwargs)
+
+    @staticmethod
+    def _arm(side, upper):
+        """一侧 (肩, 肘, 腕)：上臂方向**直接给**（前臂固定朝上前方，肘是弯的）。"""
+        sign = 1.0 if side == "left" else -1.0
+        shoulder = np.array([0.17 * sign, -0.35, 0.0])
+        direction = np.asarray(upper, dtype=np.float64)
+        direction = direction / np.linalg.norm(direction)
+        elbow = shoulder + 0.30 * direction
+        fore = np.array([0.0, -0.30, 0.30])
+        wrist = elbow + 0.30 * fore / np.linalg.norm(fore)
+        return np.stack((shoulder, elbow, wrist))
+
+    def _feed(self, bridge, left_upper, right_upper, frames=None):
+        arms = {"left": self._arm("left", left_upper),
+                "right": self._arm("right", right_upper)}
+        last = None
+        for _ in range(int(frames or self.FRAMES)):
+            last = bridge.update(arms_world=arms, hands=None, frame_dt=0.1)
+        return last
+
+    def test_mirrored_arms_report_no_same_side_frames(self):
+        """把肘向外打开（左手朝我左、右手朝我右）= 镜像手势 -> 偏差 0 度。"""
+        bridge = self._bridge()
+        self._feed(bridge, (0.5, 0.85, 0.0), (-0.5, 0.85, 0.0))
+        symmetry = bridge.summary()["operator_symmetry"]
+        self.assertEqual(symmetry["frames"], self.FRAMES)
+        self.assertLess(symmetry["median_deg"], 1.0)
+        self.assertEqual(symmetry["same_side_frames"], 0)
+        self.assertIn("mirror images", symmetry["note"])
+
+    def test_two_arms_swinging_the_same_way_are_reported(self):
+        """两条上臂朝**同一边**摆（现场看到的那种输入）-> 偏差远大于阈值。"""
+        bridge = self._bridge()
+        self._feed(bridge, (0.5, 0.85, 0.0), (0.5, 0.85, 0.0))
+        symmetry = bridge.summary()["operator_symmetry"]
+        self.assertEqual(symmetry["frames"], self.FRAMES)
+        self.assertGreater(symmetry["median_deg"], SYMMETRY_SAME_SIDE_DEG)
+        self.assertEqual(symmetry["same_side_frames"], self.FRAMES)
+        self.assertIn("the same way", symmetry["note"])
+
+    def test_one_side_alone_is_not_counted(self):
+        """只有一侧可用时不记：拿单侧数据凑出来的「对称」是假的。"""
+        bridge = self._bridge()
+        bridge.update(arms_world={"right": self._arm("right", (0.5, 0.85, 0.0))},
+                      hands=None, frame_dt=0.1)
+        symmetry = bridge.summary()["operator_symmetry"]
+        self.assertEqual(symmetry["frames"], 0)
+        self.assertEqual(symmetry["note"], "no frame had both arms usable")
+
+    def test_sample_buffer_is_capped_but_counting_continues(self):
+        """封顶只影响内存：超出的帧记进 ``frames_not_sampled``，不静默丢。"""
+        bridge = self._bridge()
+        bridge._symmetry = [0.0] * SYMMETRY_MAX_SAMPLES
+        self._feed(bridge, (0.5, 0.85, 0.0), (-0.5, 0.85, 0.0), frames=2)
+        symmetry = bridge.summary()["operator_symmetry"]
+        self.assertEqual(symmetry["frames"], SYMMETRY_MAX_SAMPLES)
+        self.assertEqual(symmetry["frames_not_sampled"], 2)
+
+
+
+
+# --------------------------------------------------------------------------- #
+# 2026-11-17 15:40 场：「手有时卡住不动」—— 卡住的是哪只手、多久、为什么都要说出来
+# --------------------------------------------------------------------------- #
+class HandStallWarningTests(unittest.TestCase):
+    """``realtime_teleop._warn_stalled_hand``：``angles is None`` 时保持上一帧是**故意**的
+    （绝不让关节跳），所以现场看到的「手卡住不动」必须由日志解释，而不是只有一个
+    ``invalid=`` 在涨。
+
+    实测（``outputs/tmp_realtime/live_run_1547.log`` + ``arm_run_20261117_154001.json``）：
+    右手 486 帧里 172 帧没有角度（35%），左只有 37；单次丢帧被
+    ``TemporalBuffer(reset_on_missing=True)`` 放大成 3 帧，成串丢失就成片「不动」。
+    """
+
+    def _warn(self, **kwargs):
+        from teleoperation.simulation.realtime_teleop import _warn_stalled_hand
+
+        warned = kwargs.pop("warned", set())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            _warn_stalled_hand(kwargs.pop("side", "right"), kwargs.pop("streak", 20),
+                               kwargs.pop("raw_frame", None), warned, **kwargs)
+        return output.getvalue(), warned
+
+    def test_a_brief_dropout_never_warns(self):
+        # 单次丢帧 = 3 帧没有角度（三帧缓冲），那是常态，不值得刷一条 WARN。
+        text, warned = self._warn(streak=3)
+        self.assertEqual(text, "")
+        self.assertEqual(warned, set())
+
+    def test_a_long_stall_names_the_side_the_frames_and_the_reason(self):
+        window = SimpleNamespace(metadata={"invalid_reasons": {"right": "missing"}})
+        text, warned = self._warn(streak=172, raw_frame={"metadata": {}}, window=window,
+                                  interval=0.1)
+        self.assertIn("[WARN] right hand: no angles for 172 frames (~17.2 s)", text)
+        self.assertIn("holds its last pose (it never jumps)", text)
+        self.assertIn("the arm keeps following", text)
+        self.assertIn("MediaPipe reported no hand points for that hand", text)
+        self.assertIn("one arm length away", text)
+        self.assertEqual(warned, {"right"})
+        # 同一侧第二次不再喊：一场只留一条，复发看状态行的 invalid=。
+        again, _ = self._warn(streak=400, warned=warned)
+        self.assertEqual(again, "")
+
+    def test_the_camera_layer_reason_is_used_when_the_pipeline_has_none(self):
+        raw_frame = {"metadata": {"invalid_reasons": {
+            "right": "Duplicate handedness: Right; refusing to overwrite a hand"}}}
+        text, _ = self._warn(streak=20, raw_frame=raw_frame)
+        self.assertIn("Duplicate handedness: Right", text)
+
+    def test_without_any_reason_it_blames_the_three_frame_buffer(self):
+        window = SimpleNamespace(metadata={"invalid_reasons": {"right": None}})
+        text, _ = self._warn(streak=20, raw_frame={"metadata": {}}, window=window)
+        self.assertIn("3 clean frames in a row", text)
+        self.assertNotIn("MediaPipe reported no hand points", text)
+
+    def test_the_two_sides_are_tracked_independently(self):
+        warned = set()
+        left, warned = self._warn(side="left", streak=20, raw_frame={}, warned=warned)
+        right, warned = self._warn(side="right", streak=20, raw_frame={}, warned=warned)
+        self.assertIn("left hand", left)
+        self.assertIn("right hand", right)
+        self.assertEqual(warned, {"left", "right"})
 

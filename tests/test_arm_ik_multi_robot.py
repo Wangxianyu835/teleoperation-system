@@ -1515,3 +1515,85 @@ class WristJointStepTests(unittest.TestCase):
                          adapter.wrist_step_clamped)
         self.assertGreater(summary["wrist_step_clamped"]["h1_2"], 0)
 
+
+
+# --------------------------------------------------------------------------- #
+# 2026-11-17：论文求解器的帧预算 —— 「一次迭代只许一次 FK」
+# --------------------------------------------------------------------------- #
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
+class PaperSolverFrameBudgetTests(unittest.TestCase):
+    """线搜索的候选点**不许**碰 PyBullet —— 现场 3.7 fps 的根因就是这个。
+
+    原实现每评估一个候选点就真跑一次 FK（7 次 ``resetJointState`` + 1 次
+    ``getLinkState``）：4 档回溯 x 最多 40 次迭代 x 6 条臂 ≈ 每帧上千次 PyBullet 往返，
+    三台机器人同场景时单次往返更贵，实测帧率 3.0-3.7。改成用线性化误差打分
+    （``e(q+Δ) ≈ e - J·Δ``，见 ``paper_arm_ik._minimize``）之后候选点评估是纯 numpy：
+    单次求解 2.7-3.6 ms -> 1.0-2.3 ms，三台同跑 3.0-3.7 -> 10.8-12.8 fps。
+
+    这里钉住那个不变量：**单次求解里 ``_ee_pose`` 的调用次数 == 迭代次数**。
+    谁把候选点改回"真跑一次 FK"，这个等式立刻变成 4 倍以上，用例就红。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+        from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+
+        cls.scene = ThreeRobotHandScene(sides=SIDES, gui=False)
+        cls.driver = ArmSceneDriver(cls.scene, sides=("right",), robots=("h1_2",),
+                                    ik_iterations=30, residual_threshold=1e-4,
+                                    ik_solver="paper")
+        cls.adapter = cls.driver.ik["h1_2"]
+        cls.solver = cls.adapter._paper_ik("right")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.adapter = cls.solver = None
+        cls.driver = None
+        cls.scene.close()
+
+    def count_fk(self):
+        """把 ``_ee_pose`` 换成计数器：它是 ``_minimize`` 里唯一的 FK 出口。"""
+        solver = self.solver
+        original = solver._ee_pose
+        calls = []
+
+        def wrapped():
+            calls.append(True)
+            return original()
+
+        solver._ee_pose = wrapped
+        self.addCleanup(lambda: setattr(solver, "_ee_pose", original))
+        return calls
+
+    def solve_towards(self, offset) -> None:
+        wrist = np.asarray(self.adapter.arm_points("right")["wrist"], dtype=np.float64)
+        orientation = tuple(float(value) for value in self.adapter._orientation("right"))
+        self.adapter.solve("right", wrist + np.asarray(offset, dtype=np.float64),
+                           orientation=orientation, source="world")
+
+    def test_one_forward_kinematics_call_per_iteration(self):
+        calls = self.count_fk()
+        self.solve_towards((0.0, 0.0, 0.02))
+        self.assertEqual(len(calls), max(1, int(self.solver.iterations)))
+
+    def test_a_dead_end_target_gives_up_and_still_never_scores_with_fk(self):
+        # 目标搬到 1 m 外 = 顶在关节限位上：四档回溯全被拒 -> 两次迭代就 break（实测 2）。
+        # 修 "_minimize" 的空转之前这里是跑满上限（40 次迭代、每次约 11 次 PyBullet 调用），
+        # 现场表现是"卡，还不动"。
+        calls = self.count_fk()
+        self.solve_towards((1.0, 0.0, 0.0))
+        self.assertLessEqual(int(self.solver.iterations), 4)
+        self.assertEqual(len(calls), int(self.solver.iterations))
+
+    def test_the_iteration_cap_stays_in_the_measured_band(self):
+        # 40 是历史值（空转时白烧帧），30 是现在上限；低到 10 以下残差就回升。
+        # 环境变量 ``PAPER_IK_MAX_ITER`` 可以覆盖，但只允许在带内（调参不是改契约）。
+        from teleoperation.simulation.paper_arm_ik import MAX_ITERATIONS
+
+        self.assertGreaterEqual(int(MAX_ITERATIONS), 10)
+        self.assertLessEqual(int(MAX_ITERATIONS), 60)
+        self.solve_towards((1.0, 0.0, 0.0))
+        self.assertLessEqual(int(self.solver.iterations), int(MAX_ITERATIONS))
+

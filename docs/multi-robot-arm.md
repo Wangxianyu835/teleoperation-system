@@ -1,6 +1,6 @@
 # 多机器人手臂驱动：按 robot_type 选臂并驱动机器人关节
 
-最后更新：2026-11-16（§8.19 **「另外两台的手根本不转」**：profile 表里 g1 / gr1_t2 是 `position` 口径，姿态那一遍根本不跑 —— 45 度拧腕实测腕关节变化 0.05 度；新增 `--arm-ik-mode`，`pose` 让三台一起转腕，实测肩+肘最大变化 0.17 度、取向残差 0.2-25.9 度；报告新增 `wrist_usage` 判定「拧不过去是不是腕顶到限位」，同一次回放里 gr1_t2 右腕 roll `usage 1.0 / at_limit` 正好对上它 58.53 度的残差）| 2026-11-16（§8.18 **「一拧手腕，整条手臂跟着抬、带着摆」**：pose 口径的朝向那一遍把误差摊到 7 个自由度上，腕装不满时肩/肘替它分担；新增 `--arm-orientation-scope`，默认 `wrist` = 肩/肘抄回位置解、朝向只由 `elbow_roll + wrist_pitch + wrist_yaw` 兑现 —— 实测肩+肘最大变化 129.22 -> 0.09 度、肘点位移 285.13 -> 0.38 mm，代价「腕 3 自由度装不下所有朝向」也一并记下）| 2026-11-09（§8.17.11 **GR1-T2 的肘被中性姿势弯到了反面**：`ARM_NEUTRAL` 按关节名给 +1.2 rad，而 gr1_t2 的肘关节正方向是伸直方向（斜率 -0.999），加载时前臂因此朝后（基座系 x=-0.79，另两台 +0.56）；`arm_ik._level_elbow_pose` 把这类关节对 0 取反 —— 同一个弯角、换到另一侧，启动行与报告 `elbow_pose_fix` 都能核对）| 2026-10-14 深夜（§8.16 **「肘/小臂不跟手」的机制是 PyBullet `restPoses` 把解往加载姿势拽**：探针 A/B 把「精确可达目标」的残差从 6.6-140.1 mm 打到 0.0 mm / 拽动 35.0 度打到 0.00 度，证明主因是零空间代价项而不是链路帧口径；但同一条现场录制上换 `--arm-rest-poses live` **不是一边倒的赢**（肘任务只 3/6 侧变好、腕精度中位 17.2 -> 40.5 mm 变差），所以 CLI 默认仍留在 `current`、`live` 只作实验档）| 前一轮 §8.15「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」的根因是那场跑在默认 `chain` 口径上（`--arm-map` 默认改 `posture`、`report_table.py` 加行程与夹断列）| 前一轮 §8.14 中性标定永远等不到数据（`--arm-calibrate-mode track`、`record_posture` 静默丢腕命令、`--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
+最后更新：2026-11-17（§8.22 **「右手卡住不动、手腕怎么拧都不对」**：不是 IK、不是行程 —— 中性掌面基只从 30 帧标定里的 **12** 帧凑出来（左手 0 帧），那份基准整体偏了一个大角度，h1_2 右腕 `elbow_roll/wrist_pitch/wrist_yaw` 三个关节同时 `at_limit`、朝向残差 72.3 度、位置残差 120-256 mm，而同一场左手 0.6-1.6 度 / 2.5-9.4 mm；新增掌面基可信度闸门 `PALM_MIN_SAMPLE_FRACTION` / `PALM_MAX_SPREAD_DEG`，不合格就如实退回三点基并把原因写进 `neutral[side]["palm_note"]` 与那条 `[WARN]`）| 2026-11-16（§8.19 **「另外两台的手根本不转」**：profile 表里 g1 / gr1_t2 是 `position` 口径，姿态那一遍根本不跑 —— 45 度拧腕实测腕关节变化 0.05 度；新增 `--arm-ik-mode`，`pose` 让三台一起转腕，实测肩+肘最大变化 0.17 度、取向残差 0.2-25.9 度；报告新增 `wrist_usage` 判定「拧不过去是不是腕顶到限位」，同一次回放里 gr1_t2 右腕 roll `usage 1.0 / at_limit` 正好对上它 58.53 度的残差）| 2026-11-16（§8.18 **「一拧手腕，整条手臂跟着抬、带着摆」**：pose 口径的朝向那一遍把误差摊到 7 个自由度上，腕装不满时肩/肘替它分担；新增 `--arm-orientation-scope`，默认 `wrist` = 肩/肘抄回位置解、朝向只由 `elbow_roll + wrist_pitch + wrist_yaw` 兑现 —— 实测肩+肘最大变化 129.22 -> 0.09 度、肘点位移 285.13 -> 0.38 mm，代价「腕 3 自由度装不下所有朝向」也一并记下）| 2026-11-09（§8.17.11 **GR1-T2 的肘被中性姿势弯到了反面**：`ARM_NEUTRAL` 按关节名给 +1.2 rad，而 gr1_t2 的肘关节正方向是伸直方向（斜率 -0.999），加载时前臂因此朝后（基座系 x=-0.79，另两台 +0.56）；`arm_ik._level_elbow_pose` 把这类关节对 0 取反 —— 同一个弯角、换到另一侧，启动行与报告 `elbow_pose_fix` 都能核对）| 2026-10-14 深夜（§8.16 **「肘/小臂不跟手」的机制是 PyBullet `restPoses` 把解往加载姿势拽**：探针 A/B 把「精确可达目标」的残差从 6.6-140.1 mm 打到 0.0 mm / 拽动 35.0 度打到 0.00 度，证明主因是零空间代价项而不是链路帧口径；但同一条现场录制上换 `--arm-rest-poses live` **不是一边倒的赢**（肘任务只 3/6 侧变好、腕精度中位 17.2 -> 40.5 mm 变差），所以 CLI 默认仍留在 `current`、`live` 只作实验档）| 前一轮 §8.15「大臂抬不起来 / 张不开怀抱 / GR1-T2 前臂还是反的」的根因是那场跑在默认 `chain` 口径上（`--arm-map` 默认改 `posture`、`report_table.py` 加行程与夹断列）| 前一轮 §8.14 中性标定永远等不到数据（`--arm-calibrate-mode track`、`record_posture` 静默丢腕命令、`--help` 崩溃）| 分支：cs/multi-robot-arm（基线 10ebd9f，队友线 HEAD d8bca93）
 相关代码：`src/teleoperation/simulation/arm_ik.py`、`arm_profiles.py`、`arm_scene_driver.py`、
 `arm_realtime.py`、`realtime_teleop.py`、`arm_preview.py`
 相关测试：`tests/test_arm_ik_multi_robot.py`（48 个用例）、`tests/test_arm_realtime_bridge.py`（84 个用例）、
@@ -2823,5 +2823,544 @@ gr1_t2 `wrist_roll` 只有 ±35°，同一个符号错误在每台上的表现�
 如实说：这次**没有**做 2 —— 它会把「跟手」换成「不动」，和 #42/#43 那两轮的方向相反；
 先把 8.20.13 的符号修完、现场确认右手那套手感也出现在左手上，再决定要不要加这条开关。
 
+### 8.21 「左手还是不如右手」：不是求解器、也不是 h1_2 —— 标定里那一侧被深度压扁（2026-11-17）
 
+§8.12 末尾留过一条待办：「③ 左手普遍比右手差（h1_2 左 21 度 vs 右 5 度）是输入质量还是映射的
+左右不对称 —— 需要一份**左右对称的**动作录制来分离」。这一节把它结清，而且发现**不需要新录制**：
+`--wrist-trace` 本来就是每帧左右各一行，同一次采集里两侧的输入质量是同一时刻的对照。
+
+#### 8.21.1 先把已有两份录制按侧拆开（新探针）
+
+`outputs/tmp_probe/wrist_trace_compare.py`（只读 CSV，不碰 PyMuBullet、不需要相机）：
+
+```powershell
+cd F:\simulation_platform
+E:\python3.11.7\python.exe outputs\tmp_probe\wrist_trace_compare.py `
+    outputs\tmp_realtime\wrist_live.csv outputs\tmp_realtime\live4.csv
+```
+
+`wrist_live.csv`（2026-11-17 13:32，1313 帧 / 163 s，三台同时跑）：
+
+| 侧 | err_med | err_p90 | **res_med** | ori_sent | palm_normal | palm_hold | three_point | turn_med | wrist_a 行程 |
+|---|---|---|---|---|---|---|---|---|---|
+| left | 117.9 | 261.9 | **50.7** | 99% | 57% | 9% | 33% | 96.4 | 5.664 |
+| right | 95.8 | 228.6 | **26.1** | 99% | 58% | 8% | 33% | 101.7 | 4.318 |
+
+逐机器人（同一份输入喂三台）：
+
+| 机器人 | 左 err_med / res_med | 右 err_med / res_med | res 倍数 |
+|---|---|---|---|
+| g1 | 93.2 / 35.4 | 82.0 / 17.7 | 2.0x |
+| gr1_t2 | 106.8 / 61.8 | 71.7 / 36.9 | 1.7x |
+| h1_2 | 150.9 / 65.7 | 132.9 / 32.4 | 2.0x |
+
+带符号误差（`target - actual` 的中位数，mm；左/右）：
+
+| 录制 | 侧 | x | y | z |
+|---|---|---|---|---|
+| wrist_live | left | +4.0 | -23.2 | **-69.0** |
+| wrist_live | right | -0.7 | +9.1 | **-44.0** |
+| live4 | left | **-151.8** | +65.3 | -39.5 |
+| live4 | right | -90.8 | -44.6 | -32.6 |
+
+三条结论，每条都指向同一个方向：
+
+1. **输入侧不是原因**。`palm_normal` / `palm_hold` / `three_point` 的占比左右几乎逐位相同
+   （57/9/33 vs 58/8/33）——「丢手」在两侧一样多。§8.20 那套丢手链解释不了左右差异。
+2. **也不是 h1_2**。左手在 **g1 和 gr1_t2 上同样更差**（2.0x / 1.7x），比例和 h1_2 一样。
+   三台一起变差，只能是喂给三台的那个**目标点**不一样。
+3. **是偏置，不是抖动**。带符号误差的中位数稳定非零（z 左 -69 / 右 -44 mm；live4 的 x 左 -152
+   / 右 -91 mm），而 p90 很小 —— 不是"跟不上"的随机差，是"一直在同一个方向上差那么多"。
+   另外 `err - residual`（斜坡/步长还没来得及走完的那部分）左右相同（67 vs 70 mm），
+   所以**斜坡也不是左手专属**；左手独有的差异全在 `residual_mm`（求解器自己的残差）。
+
+顺手结掉另一条待办（§8.20.14 末尾「再决定要不要加 `orientation_scope=wrist`」）：
+这一场跑的是 `scope=arm`，而 `ori_err_deg`（下发姿态后实测差多少）六侧中位数是
+**g1 3.9 / 3.8、gr1_t2 5.5 / 3.6、h1_2 5.0 / 3.0 度**（左 / 右）—— 姿态那一维已经被追到
+3-5 度，左手只比右手多 0.4-1.4 度。所以 **`WRIST_PRESET` 不做改动**（继续 `scope=arm`），
+现场那个"拧了不动"不属于这一场，也不能拿它当换 `scope` 的理由。
+
+
+#### 8.21.2 机制：`k` 被放大，目标就被甩得更远
+
+`k = 机器人段长 / 你的段长`，而你的段长是深度压扁的受害者。同一个人、同一天三场：
+
+| 场次 | 你的左前臂 | `k_前臂`（h1_2） | 你的右前臂 | `k_前臂`（右） |
+|---|---|---|---|---|
+| 第 1 场 | 0.23 m | 1.02 | 0.23 m | 0.99 |
+| 第 2 场 | **0.17 m** | **1.34** | 0.23 m | 0.99 |
+| 第 3 场 | **0.060 m** | **3.79** | 0.23 m | 0.99 |
+
+右臂三场都稳定在 0.99，左臂在三场之间跳 —— 一个人左右前臂不可能差 4 倍，所以这不是"你的左臂
+短"，是**标定那一场左臂的关键点被压扁了**（离镜头远 / 侧身 / 遮挡，右手恰好没被压）。
+
+链路是通的：`k_前臂` 1.34 = 前臂位移被放大 34% -> 目标甩得更远 -> 更容易落在可达边界外 ->
+`solution/residual` 变大。这与 §8.21.1 第 3 条（左手独有差异全在 residual）以及偏置量比
+（1.6x）都吻合。
+
+**方向性**：深度压扁只会让人量得**更短**，不会更长。所以当左右段长不一致时，**短的那一侧**
+才是嫌疑人 —— 这条写进了告警文案，不是靠猜。
+
+
+
+
+#### 8.21.3 三道护栏（都只拦坏输入，不动好输入）
+
+| 护栏 | 位置 | 判据 | 后果 |
+|---|---|---|---|
+| 段长带宽 | `SEGMENT_LENGTH_BAND_M = (0.12, 0.45)` | **逐侧**：你量出的上臂/前臂出界 | 那一侧的 `_segment_scales()` 返回 `None`，退回整段 gain；`info["map"]` 如实写 `chain (segments unavailable)` |
+| 逐侧留痕 | `segment_scale_note(side)` / `summary()["segment_scale_notes"]` | 同上 | 报告里那一段是 null 时，这里写明为什么（0.060 m 这种数字直接进文案） |
+| 左右不对称 | `SEGMENT_ASYMMETRY_MAX = 1.25` + `segment_asymmetry_note()` | 两侧都在、且同一条段长的比值 > 1.25 | **只告警不改控制**；`summary()["segment_asymmetry_note"]` 留痕 |
+
+现场会看到的两条一次性告警（`_warn_bad_segment_scales` / `_warn_asymmetric_segment_scales`，
+都跟着 `--print-every` 的节奏走、各只喊一次）：
+
+```
+[WARN] segment scales OFF (left): left calibrated forearm 0.060 m is outside 0.12-0.45 m
+       (pose landmarks bad) -> the per-segment recipe (map_mode=segments) is disabled
+       this run and falls back to the whole-segment gain. Stand one arm length from the
+       camera with BOTH arms fully in frame (elbows included) and recalibrate.
+[WARN] left/right calibration mismatch: left/right calibrated segments differ 1.35x on
+       forearm (upper 0.300/0.300 m, forearm 0.170/0.230 m); the shorter one (left) is
+       the suspect (depth flattening only shortens), recalibrate with both arms in frame
+```
+
+**为什么不对称那条不自动改控制**：单次采集分不清是「左手量短了」还是「右手量长了」，
+而把某一侧从 `segments` 静默换成 `chain` 就是又一次「配方被偷偷换掉」（§8.15 判定 chain 两侧
+都不像）。所以它只负责把手指指向标定，配方本身不动 —— 想验就自己加 `--arm-map chain` 对照。
+
+#### 8.21.4 验收（命令 + 退出码 + 关键不变量）
+
+| 命令 | 退出码 | 关键不变量 |
+|---|---|---|
+| `E:\python3.11.7\python.exe outputs\tmp_probe\wrist_trace_compare.py outputs\tmp_realtime\wrist_live.csv outputs\tmp_realtime\live4.csv` | 0 | 上面 §8.21.1 的四张表；JSON 写到 `outputs/tmp_probe/wrist_trace_compare.json` |
+| `E:\python3.11.7\python.exe -m pytest tests\test_arm_realtime_bridge.py tests\test_arm_ik_multi_robot.py -q` | **0** | `202 passed, 177 subtests passed`（改前 197；本轮新增 5 条） |
+| `E:\python3.11.7\python.exe -m pytest tests -q` | **0** | `465 passed, 3 skipped, 442 subtests passed`（改前 452 / 3）；末尾 `nanobind: leaked ...` 是队友 `roboticstoolbox` 既有的引用计数提示，不是失败 |
+| `E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict` | **0** | 第一遍 **FAIL**：`paper_arm_ik.py` 里两处四元数乘写成了 `U+2297`（`⊗`）。改成 ASCII `(*)` 后 `[OK]` |
+
+新增用例（判据都是可算的数，不靠"看起来对"）：
+
+- `SegmentScaleTrustTests.test_a_symmetric_neutral_has_no_asymmetry_note` —— 对称中性时
+  `segment_asymmetry_note()` 与 `summary()["segment_asymmetry_note"]` 都必须是空串（护栏不许误报）；
+- `..._test_an_in_band_but_lopsided_forearm_is_flagged` —— 前臂 0.17 / 0.23 m：带宽护栏
+  **必须沉默**（两个值都在带内），不对称护栏必须报 `1.35x`、点名 `(left) is the suspect`，
+  并进报告；
+- `..._test_asymmetry_is_reported_but_never_changes_the_control` —— 同一份坏标定下
+  `_segment_scales` 两侧都**必须仍可用**、`info["map"]` 里不许出现 `unavailable`
+  （钉住「只告警不改控制」这条约定，谁把它改成自动降级，这条就红）；
+- `..._test_the_asymmetry_warning_needs_both_sides_and_fires_once` —— 只跑一侧时**不喊**
+  （比的是"你的左臂 vs 你的右臂"），两侧都在时喊且只喊一次。
+- `..._test_a_lopsided_upper_arm_names_that_side_not_the_forearm` —— 上臂不对称、前臂对称时
+  文案必须说 `upper arm`，且"嫌疑人"按**最不对称的那一段**判（上臂左短 -> left、左长 -> right），
+  不许写死前臂（第一版就是写死前臂，会把人指到错的地方去改标定）。
+
+顺带补的一条真 bug：`segment_asymmetry_note()` 第一版写死遍历 `("left", "right")`，
+单侧跑（`sides=("right",)`）时 `summary()` 直接 `KeyError: 'left'` —— 被上面第 3、4 条和
+`CalibrateModeTests` 一起抓出来，改成按 `self.sides` 取、缺一侧就不判。
+
+#### 8.21.5 如实说
+
+- **全部证据来自已有录制**（11-17 13:32 与 11-16 22:56 两场），本轮没有新的现场采集。
+  这是有意的：结论要能被"不需要相机"地复算，`wrist_trace_compare.py` 就是为此留下的。
+- **`live4.csv` 不能与今天的数字直接比**：它是 11-16 的，跑在 `MAX_ITERATIONS` 提到 30 之前，
+  所以那一份 `residual_mm ≈ err_mm`（187.7 vs 188.2，误差几乎全在求解器），而 11-17 那份是
+  50.7 vs 117.9（约一半在斜坡/步长）。跨场只比**左右比值**，不比绝对值。
+- **不对称判据分不清哪一侧错**，只能说"有一侧量错了"。「短的是嫌疑人」是逻辑推断
+  （深度压扁只会缩短），不是测量结果 —— 所以它只告警。
+- **左手那 67 mm 的 `err - residual` 没动**：那是斜坡/每帧步长还没走完的部分，左右一样多
+  （67 vs 70 mm），属于 §8.20.9 那一档，与本节无关。
+- **下一轮**：① 现场重标（**两臂都在画面里**、离镜头一臂远），确认两条 `[WARN]` 都不出现；
+  ② 出现 `left/right calibration mismatch` 就说明标定环境是根因，下一步是加大
+  `--arm-calibrate-frames` 并改成"运动中取样"（现在要求静止，静止时人反而容易侧身）；
+  ③ 若重标后左手 `residual` 仍高于右手 1.5 倍以上，那就不是标定了，回来查可达性与
+  `solution_*` 那一组字段。
+
+---
+
+### 8.22 「右手卡住不动、手腕怎么拧都不对」：中性掌面基只用了 12/30 帧（2026-11-17）
+
+引言：上一节（§8.21）查的是**位置通道**（左右 `k` 不对称）。这一节是同一场现场在换了
+「双手都在画面里」的重启之后*更严重*的抱怨：**「效果很差，有时候手会卡住就不动，
+而且手腕很不准确」**。结论与位置、与 IK、与 h1_2 的行程都无关 —— 是**中性掌面基的采集
+时机**：右手那份基准只从 30 帧标定里的 12 帧凑出来，而左手一帧都没有。
+
+#### 8.22.1 症状 → 数字
+
+现场那一场是 `outputs/tmp_realtime/arm_run_20261117_154001.json`（585 帧 / 54.8 s /
+9.77 fps，`--arm-map posture` + `--arm-orientation on` + 默认 30 帧标定）：
+
+| 报告字段 | 左 | 右 |
+| --- | --- | --- |
+| `arm.residual_mm`（h1_2 / gr1_t2 / g1） | 3.3 / 2.5 / 9.4 mm | **120.2 / 45.3 / 256.2 mm** |
+| `arm.orientation_error_deg`（同上） | 0.61 / 1.60 / 0.70 度 | **72.27 / 24.89 / 122.53 度** |
+| `arm.wrist_usage.h1_2.*` | `elbow_roll 0.547` / `pitch 0.385` / `yaw 0.634`，全无 `at_limit` | **三个关节全 `at_limit: true`**（`elbow_roll 0.000` / `pitch 0.000` / `yaw 0.999`） |
+| `bridge.neutral.side.palm_samples` | **0** | **12** |
+
+左手 `0.6 度 / 3 mm` 说明整条链路（相机 → 三点基 → posture 口径 → IK）**是通的**；
+右手三个腕关节**同时**顶在行程两端，这不是「腕转不动」（§8.19 的桩回放里 h1_2 左右都只
+用到 17 度、没有 `at_limit`），而是**目标本身偏了一个大角度**：越拧越顶，最后钉死。
+
+#### 8.22.2 机制：`cal` 计的是「手臂帧」，掌面基要的是「手点帧」
+
+`_collect_calibration` 攒满 `--arm-calibrate-frames`（默认 30）就 `complete`，而掌面基是
+这 30 帧里**能给出 `palm_orientation_frame` 的那几帧**的均值。两件事的时间尺度差一个量级：
+
+- pose 手臂关键点：**第 1 帧就有**（`cal` 在 ~第 30 帧填满，约 3 s）；
+- 手部 21 点：现场要 **5-7 s** 才稳定锁上（同一场 HUD `hand valid=left=0` @frame 20、
+  `right=4` @frame 40，而 `cal=ok` 已经发生）。
+
+于是「中性窗口」在**任何一帧掌面基出现之前**就关掉了。左手是 0 帧（诚实退化 → 三点基
+→ 反而不顶限位），右手是「手刚进画面那 12 帧」—— 半遮挡 / 掌面翻号的样本被
+`_average_rotation` 平均成了一个**偏了大角度但仍合法**的旋转，于是每一帧的
+`R_neutral^T @ R_now` 都带一个恒定偏置，腕链被推着往一个方向拧到底。
+
+为什么逐帧的 `MIN_PALM_SINE` 拦不住：它判的是**单帧是否退化**（法向与前臂几乎平行），
+而这 12 帧每一帧单独看都「合法」，坏的是**这组样本彼此不一致**。
+
+#### 8.22.3 修法：给掌面基加可信度闸门（不合格就当没有）
+
+`arm_realtime.py`：
+
+```python
+PALM_MIN_SAMPLE_FRACTION = 0.5    # 样本帧数 >= 标定帧的一半
+PALM_MAX_SPREAD_DEG = 25.0        # 这几帧彼此相对均值的最大夹角
+```
+
+- `_rotation_spread_deg(matrices, centre)` —— 一组旋转相对均值的**最大**夹角；
+- `_refresh_neutral` 里：`palm_note = _palm_basis_note(side, len(palms), spread)`，
+  **`orientation_palm = None if palm_note else basis`** —— 不合格就当没有，
+  这一侧整场退回三点基（拧腕不跟，但**不会把腕推进限位**）；
+- 结论进报告：`summary()["neutral"][side]["palm_note"]` / `["palm_spread_deg"]`，
+  `palm_basis_note(side)` 是给 CLI 用的同一条（与 `segment_scale_note` 同一个套路）；
+- `load_neutral` / `neutral_record` 都带上这两个字段（存盘再载入结论不丢）；
+- `realtime_teleop._warn_missing_palm_basis` 的告警里追加
+  `basis rejected: ...`，否则现场只会看到「没有掌面基」而去反复摆手掌，而真正该改的是
+  **标定时手要一直在画面里且别动**。
+
+阈值怎么定的（可复算）：`tests/test_arm_realtime_bridge.py::PalmBasisTrustTests` 那个
+夹具里，把 `open_hand()` 绕 world y 转 **40 度**，两个掌面基的散度只有 **20.5 度**
+（x 轴来自 pose 前臂方向、是固定的，手转动的效果被摊薄），转 **90 度** 才越过 25 度。
+也就是说：**标定期间手真的转动 < 半个 40 度不会被误杀，翻号/半遮挡那种上百度的才会被判死**。
+
+#### 8.22.4 修法二：标定先等一次「手点」（`arm_realtime.PALM_WAIT_FRAMES`）
+
+闸门只保证「不把腕顶死」。8.22.3 的 25 度那条线是在**采集之后**判的，而现场下一次重启
+（`outputs/tmp_realtime/live_run_1552.log`）直接把根因放在日志里：
+
+```
+frame=20  fps=10.3 hand valid=left=0 right=0 invalid=8 | cal=track left=20/30 right=0/30  arm L=P R=-
+frame=100 fps=10.6 hand valid=left=0 right=0 invalid=8 | cal=track left=26/30 right=0/30  arm L=P R=-
+```
+
+**手臂 pose 关键点从第 1 帧就有，手部 21 点一帧都没有**，而「30 帧中性窗口」照样在烧。
+手册那句「站好别动 30 帧」在这里是做不到的：人还没到能认出手的距离，窗口就关了。
+所以加一条**只对 `track` 模式**的等待：
+
+```python
+PALM_WAIT_FRAMES = 90          # 最多等 90 帧（10 fps 下约 9 s）
+```
+
+- 某一侧**从没见过掌面基**时，这一帧**只追加样本、不计入标定**（`_counted` 不动）——
+  临时中性照旧发布，**手臂仍然从看见你手臂的第一帧就开始跟**，等待不影响跟手；
+- 见过一次之后就不再等（手再丢了也照常计数），所以不会出现「等个没完」；
+- 等满 `palm_wait_frames` 还没有手点就照旧计数 = 回到改动前的行为，
+  **绝不会卡在 `cal=`**（这是本节最重要的一条：宁可丢旋前，也不能让整场标定停住）；
+- `hold` 模式完全不走这条路径（历史行为逐字不变）；
+- 上限可改：`--arm-palm-wait-frames N`（`0` = 不等，A/B 用）；报告里落
+  `bridge.palm_wait_frames` 与 `palm_wait_frames_used{side}`；
+- HUD 能看出「在等」：`cal=track left=0/30 w=19 right=0/30`——`w=` 就是等掉了几帧
+  （`calibration_progress()` 与 `status()` 都改成按 `_counted` 报，不再按样本条数）。
+
+实测（`live_run_1600.log`，同一台机器、同一个摄像头）：重启后左 `w=19`、右 `w=11`，
+即**本来会被烧掉的 19/11 帧没有白烧**；手臂在第 ~100 帧开始跟（`arm L=P R=P`）。
+这一场手部模型最终仍只抓到 19/18 帧掌面样本，散度 165 度 / 55 度 —— 闸门如实判死
+（见下面那条日志），所以这一场依然只有三点基，但**没有**把腕推进限位。
+
+顺带修掉一条自相矛盾的旧文案：标定一完成时那段通用告警说「collected without metric hand
+points」，而同一场明明有 19 帧样本（只是被判死）。现在只留 `_warn_missing_palm_basis`
+那一条带原因的话：
+
+```
+[WARN] left: the neutral has no palm basis (orientation_palm is None, palm_samples=19;
+       basis rejected: left palm basis samples disagree by 165.0 deg (max 25): the hand moved
+       or was half hidden while the neutral was built) -> pronation/supination is NOT tracked
+       this run (ori_source stays three_point, the wrist will not follow a twist).
+```
+
+#### 8.22.5 新增用例
+
+- `test_a_basis_from_too_few_frames_is_rejected_with_the_count_in_the_note` ——
+  10 帧标定只有 4 帧看得见手：`palm_samples=4`、`orientation_palm_recorded=False`、
+  `palm_note` 里必须出现 `4/10` 与 `calibration frames`，且之后把手伸进来
+  `orientation_source` 仍是 `three_point`（补不回来，钉住语义）；
+- `test_a_basis_whose_samples_disagree_is_rejected_with_the_spread_in_the_note` ——
+  6 帧全有手、其中一半转了 90 度：`palm_spread_deg > 25`、note 里有 `disagree`；
+- `test_a_steady_basis_is_kept_and_reports_a_small_spread` —— 静止的手：基**必须保留**、
+  `palm_note` 空串、散度 ≤ 1 度（不许把正常标定误杀）；
+- `test_the_verdict_and_the_spread_survive_save_and_load` —— `neutral_record()` →
+  `load_neutral()` 之后 `palm_note` / `palm_spread_deg` / `orientation_palm_recorded` 一致；
+- `test_the_warning_says_the_basis_was_rejected_and_why` —— 告警一条、含
+  `palm_samples=6` 与 `basis rejected ... disagree`（现场第一眼就能分清「没手点」与
+  「有手点但不可信」）。
+
+等手点那一半（`PalmWaitTests`，同一批文件）：
+
+- `..._test_track_mode_waits_for_the_hand_points_before_counting_frames` —— 12 帧手臂、
+  0 帧手：`calibrating` 仍为 True、进度 `(0, 6)`、`status()` 里有 `w=12`；手一出现就计数，
+  攒够后 `palm_samples=6` 且散度干净（不许把「等」变成「永远等」）；
+- `..._test_waiting_still_publishes_a_temporary_neutral_so_the_arm_follows` ——
+  等待期间 `position` 仍非 None（钉住「等的是计数，不是跟手」）；
+- `..._test_the_wait_is_bounded_so_a_run_without_hands_still_finishes` ——
+  `palm_wait_frames=3` 时 12 帧内照样标定完成、`palm_samples=0`、`ori_source=three_point`
+  （宁可丢旋前，不能卡住）；
+- `..._test_hold_mode_never_waits` / `..._test_zero_disables_the_wait` —— 历史行为与 A/B 基线；
+- `..._test_recalibration_clears_the_wait_counters` —— `reset(recalibrate=True)` 之后
+  `w=` 归零（重新站一次就是重新等）。
+
+`pytest tests` → **476 passed, 3 skipped, 442 subtests passed**（本轮改前 465）；
+`check_gbk_safe.py --strict` → 0；`--help` 里能看到 `--arm-palm-wait-frames`。
+
+#### 8.22.6 如实说
+
+- **这两条改动合起来只治「腕被顶死」与「窗口白烧」，不凭空造出旋前**：被判死的侧面退回
+  三点基后，旋前/旋后整场没有（`ori_source` 恒为 `three_point`）。要真正拿到那一维，
+  中性必须在**手已经被认出来且不乱动**的时候采。16:00 那次重启就是这样：
+  等手点的逻辑确实等掉了 19/11 帧，但手部模型最终只给出 19/18 帧、散度 165 度 / 55 度
+  （半遮挡 + 人还在动），闸门照章判死 —— **这一场仍然是三点基**，只是不再把腕拧到底。
+- **手部模型能不能认出来，本轮没有证据可以归因**：日志只告诉我们 `hand valid=0` 与
+  掌面样本散度极大，「是距离不够 / 光线 / 半遮挡 / 手腕朝向」这几个可能都还在。
+  下一步该做的是**带着这两个数字**（`palm_samples`、`palm_spread_deg`）去调现场条件，
+  而不是再改判据。
+- **等手点是「静默的语义变更」**：`track` 模式下 HUD 进度现在按**计入的帧数**报，
+  所以同样站 3 s，HUD 可能显示 `left=0/30 w=19` 而不是 `left=19/30`。这不是变慢，
+  是那 19 帧本来不算数（它们没有掌面基）。`CalibrateModeTests` 里那三处夹具显式写了
+  `palm_wait_frames=0`，因为它们不给手点、且要钉的是「中和没攒够也跟手」本身。
+- **只判左右各自的可信度，不判「哪一侧的基更接近真值」**：判据只涉及采集过程
+  （帧数、样本间散度），与机器人无关，所以一次标定就能定论。
+- **`25 度` 是个工程阈值，不是解剖学常数**：它的标定含义见 8.22.3 的 40/90 度实验；
+  真要更严，代价是正常标定里「手轻微动了一下」也会被判死（旋前一整场丢失）。
+- **下一轮**：① 人先在摄像头窗口里站好（画面里能看到自己、双掌朝镜头）再启动，
+  确认 HUD 的 `w=` 很小且 `cal=ok` 时 `palm_note` 为空；② 报告里 `wrist_usage`
+  不再出现三个 `at_limit`、`orientation_error_deg` 左右同量级；③ 若 `palm_samples`
+  仍上不去，那就是手部模型侧的现场条件（距离/光线/遮挡），按 ② 的两个数字去调，
+  不再动这里的判据。
+
+---
+
+### 8.23 「手腕还是不转」：中性没有掌面基 = 整场没有旋前，改成运行中补采一次（2026-11-17）
+
+现场的那句话是「你运行的代码手腕还是不会转动」。上一节把闸门做对了，但那份结论的意思是
+**这一场就是三点基**，而三点基的第三轴取「上臂 x 前臂」的手臂平面法向 —— 对绕前臂的自转
+**完全不敏感**。取证（`outputs/tmp_realtime/live_run_1600_wrist.csv`，883 帧 x 3 台 x 2 侧）：
+
+```
+ori_source=palm_normal 的行数：3（其中右侧 0）
+ori_source=three_point 的行数：其余全部
+```
+
+也就是说：**只要标定那 30 帧没采到掌面基，「手怎么拧、机器人手腕一动不动」是数学上注定的**，
+不是桥坏了、也不是 IK 不行。
+
+#### 8.23.1 修法：连续 8 帧稳定的掌面基 = 迟到基准（`PALM_LATE_FRAMES`）
+
+```python
+PALM_LATE_FRAMES = 8          # 连续 8 帧、每帧与窗口内其余帧夹角 <= 12 度
+PALM_LATE_SPREAD_DEG = 12.0
+```
+
+- `_acquire_palm_reference(side, data)` 在 `_operator_state` **之前**调用，所以采到的那一帧起
+  `_raw_orientation` 就走 `palm_normal`；
+- 只在**中性没有可用掌面基**时工作（已有 `orientation_palm` 就把窗口清空返回），
+  所以正常标定那场的路径逐字不变；
+- 断帧（手丢了）或某一帧与窗口不一致 -> **整窗清空重来**：零点只有「此刻站着不动」时才谈得上；
+- 采到后写进 `neutral[side]`：`palm_reference_source="late"`、`palm_reference_frame`、
+  `palm_reference_pose_deg`（见 8.23.3），`palm_note` 清空，`counts["palm_late"][side] += 1`；
+- CLI 打一条 `[INFO] ... palm reference acquired at frame N ...`，并把原来那条 WARN 的措辞
+  从「这一整场都不跟」改成「**在看见稳定手掌之前**不跟」（`_warn_missing_palm_basis`）——
+  只喊 WARN 不报「后来采到了」，现场会以为腕永远不转。
+
+#### 8.23.2 顺带：闸门从「全部样本一个均值」改成「多数簇」（`_palm_cluster`）
+
+16:00 那两场的散度 55 / 165 度不是「人转了手」，是**那几帧的掌面法向取反**（左右手翻号 /
+半遮挡）。把正反两拨一起平均得到的基准既不正也不反，于是 25 度那条线把整场判死。现在：
+
+- `_palm_cluster(matrices)` 在样本里找**最大的一簇**（簇内每个成员与簇心夹角 <= 25 度），
+  簇外的帧记成 `palm_outliers`（进报告，不参与均值）；
+- 判据用**簇内帧数**，而且要求**过半**（`samples <= wanted` 就判死，不是 `<`）：
+  恰好一半的帧彼此一致 = 另一半说的是别的事，那份均值仍然不代表任何一帧；
+- `palm_spread_deg` 报的是**全部**样本相对基准的最大夹角（散出去的也照实报），
+  `palm_outliers` 单独计数：现场一眼能分清「帧数不够」与「帧数够但有坏帧」。
+
+#### 8.23.3 如实说
+
+- **迟到基准的零点不是标定那一刻**：腕从「你被采到时的那个姿势」起读数为零，所以你与标定
+  姿势的差别会变成一个**固定偏移**。这个数落在 `palm_reference_pose_deg`（前臂方向夹角，度），
+  `[INFO]` 里也写着 `N deg away from the calibration pose` —— 现场看到「立正时腕是歪的」
+  要能对上这个数，而不是以为桥又坏了。
+- **它不替代正确的标定**：能重来一次标定（双掌朝镜头、站住 30 帧）永远更好；这一条是
+  「已经开跑了、又不想重启」的兜底。
+- **左右方向那一问本节没有答案**：离线量到的是「各自绕自己前臂，镜像手势在各自掌面坐标系里
+  读数同号（+40/+40）、在世界上是镜像关系」；`wrist_trace` 里的 `palm_turn_deg` 是**无符号**
+  的，所以「左手和右手动的方向相同」这件事在现有数据里无法区分是腕的自转、还是姿态口径的
+  摆臂方向。下一轮要么加一列带符号的 `palm_twist_deg`，要么现场先说清是哪一路。
+
+#### 8.23.4 新增用例（`PalmLateReferenceTests` + 两条簇判据）
+
+- `test_a_neutral_without_a_palm_basis_gets_one_on_the_fly` —— 标定 6 帧没有手 -> 手进来站 8 帧：
+  `palm_reference_source="late"`、`palm_reference_frame=14`、`counts["palm_late"]=1`，
+  然后**拧 40 度，姿态目标真的是 40 度**（改前是 `three_point` / 0 度）；
+- `test_the_window_must_be_consecutive_so_a_dropped_frame_restarts_it` —— 7 + 7 帧不算，
+  第 8 帧连续才算；
+- `test_a_hand_that_keeps_moving_never_becomes_a_reference` —— 来回拧 90 度的帧永远凑不满；
+- `test_a_neutral_that_has_a_palm_basis_never_gets_a_late_one` —— 正常标定不被这条路径影响；
+- `test_the_cli_reports_the_late_reference_instead_of_a_permanent_warning` —— 先 1 条 `[WARN]`、
+  采到后 `[WARN]` 不增、`[INFO]` 1 条；
+- `test_a_late_reference_survives_save_and_load` —— 存盘再载入仍是 `late`，旋前照样跟；
+- `PalmBasisTrustTests.test_a_few_flipped_samples_no_longer_kill_the_basis` —— 8 帧有手、
+  其中 2 帧掌面差 90 度：基**保留**、`palm_outliers=2`；
+- `PalmBasisTrustTests.test_clustering_does_not_loosen_the_frame_count_guard` —— 10 帧只有 4 帧
+  看得见手且两两不一致：最大簇 2 帧，note 里 `2/10`，照样判死。
+
+`pytest tests` -> **484 passed, 3 skipped, 442 subtests passed**。
+
+---
+
+### 8.24 「左臂跟着右臂摆」：先把这一问变成一个数字（2026-11-17 现场第二次，`operator_symmetry`）
+
+§8.23 修完「腕不转」之后，现场换了一个说法：**手不转了，但摆臂是错的** —— 屈臂、双手放胸前，
+把肘**向外**打开，结果**左臂跟着右臂的方向**动（应该是镜像）。这一条和 8.23.3 结尾那半句
+「左右方向那一问本节没有答案」是同一个问题，所以先说结论：
+
+> **桥这一层不可能把镜像手势算成同向的。**「同向」只能来自输入本身。
+
+#### 8.24.1 为什么可以先排除桥
+
+- `AxisMap` 是**两侧共用**的一个线性映射（只有置换 + 符号，没有逐侧参数），中性/增益/限幅
+  也都是按侧对称地取的；
+- 按侧取的那三个量（肩锚点、上臂长、前臂长）实测就是镜像的：
+
+  ```
+  outputs/tmp_probe/probe_arm_anchor_mirror.py（PyBullet 里量真机 rig）
+    h1_2     锚点镜像误差 0.07 mm
+    g1       0.01 mm
+    gr1_t2   5.4 mm
+  ```
+
+- 线性映射 + 镜像输入 -> 输出**必然**镜像。
+
+离线复现脚本 `outputs/tmp_probe/check_elbow_flare.py`（不碰 PyBullet，只喂桥）：造「胸前 ->
+开肘」两帧，A 组输入镜像、B 组输入故意不镜像，看 h1_2 腕目标：
+
+```
+A. 输入是镜像的（两条手臂朝各自外侧打开）
+   left  delta=[ 0.0237  0.0617 -0.0152]   right delta=[ 0.0237 -0.0617 -0.0152]
+   left - mirror(right) = 0.00 mm；两侧位移方向夹角 131.0 deg      <- 各自向外，镜像
+B. 输入本身不镜像（两条上臂朝**同一边**摆）
+   left  delta=[ 0.0237  0.0617 -0.0152]   right delta=[ 0.0237  0.0617 -0.0152]
+   left - mirror(right) = 129.82 mm；两侧位移方向夹角 0.0 deg      <- 同向，正是现场那个
+```
+
+B 组就是现场那句话的**输入侧**：桥忠实地把它映成了同向。所以接下来要回答的不是「桥哪里
+算错了」，而是「**现场那一帧的输入到底是不是镜像的**」。这个只能量化，不能靠猜。
+
+#### 8.24.2 新指标：`summary()["operator_symmetry"]`
+
+在**操作者自己的坐标系**里算，与 `AxisMap`、相机外参、轴向约定全都无关（`lateral` 用当帧
+两肩连线现算）：
+
+```python
+lateral = unit(左肩 - 右肩)                        # 你这一帧的左右轴
+dev     = angle(u_left, mirror(u_right, lateral))  # 0 度 = 完美镜像
+```
+
+```python
+SYMMETRY_SAME_SIDE_DEG = 45.0    # 超过这个角度记一帧「同向」
+SYMMETRY_MAX_SAMPLES = 20000     # 样本封顶（只影响内存，计数照旧）
+```
+
+`_note_symmetry(arms)` 在 `update()` 里每帧调用一次，**只攒数字、不参与任何控制量**；两侧缺
+任一侧就**不记**（不拿单侧数据凑一个假对称）。`symmetry_summary()` 给出：
+
+| 字段 | 含义 |
+| --- | --- |
+| `frames` | 真正记下的帧数（两侧都有手臂） |
+| `frames_not_sampled` | 超过 `SYMMETRY_MAX_SAMPLES` 之后又来了多少帧 |
+| `median_deg` / `p90_deg` / `max_deg` | 镜像偏差（度）：小 = 输入镜像，大 = 输入同向 |
+| `same_side_frames` | 偏差 > 45 度的帧数 |
+| `threshold_deg` | 就是 `SYMMETRY_SAME_SIDE_DEG` |
+| `note` | 一句话结论（`both arms were mirror images ...` / `both arms moved the same way ...`） |
+
+CLI 在报告里打一行（与 `wrist` / 手臂那些行挨着）：
+
+```
+  arm operator symmetry: median 3.1 deg (p90 8.4, max 61.2), 2/1893 frames had both arms
+  moving the same way [both arms were mirror images of each other (the bridge copies that as is)]
+```
+
+#### 8.24.3 现场怎么读这一行
+
+- **`median` 很小（< 10 度）但现象还在** -> 输入是镜像的，桥也算对了：问题在下游（IK / 关节
+  限位 / 遮挡后的 `h1_2` 那一路），这时再去看 `--arm-map`、`--arm-elbow-follow` 那一侧；
+- **`median` 很大（> 45 度）** -> 你摆的就不是镜像手势，或**一侧手点被挡/跑偏**：先看
+  `counts["fallback"]` / `arm_quality` 里那一侧，再看 mediapipe 一侧的落点（§8.22 的
+  `palm_*`、`arm_reach` 都是同一类证据）；
+- **`same_side_frames` 只在少数帧** -> 不是长期同向，而是某几帧的坏帧（半遮挡、手过中线），
+  这种应该由 `max_deg` / `p90` 的差距看出来，不必改映射。
+
+#### 8.24.4 新增用例（`OperatorSymmetryTests`，4 条）
+
+- `test_mirrored_arms_report_no_same_side_frames` —— 两条上臂各自向外：`median < 1 度`、
+  `same_side_frames == 0`、note 是 `mirror images`；
+- `test_two_arms_swinging_the_same_way_are_reported` —— 两条上臂朝同一边：`median > 45 度`、
+  `same_side_frames == 帧数`、note 是 `moved the same way`；
+- `test_one_side_alone_is_not_counted` —— 只有一侧有手臂：`frames == 0`、note
+  `no frame had both arms usable`（不拿单侧凑对称）；
+- `test_sample_buffer_is_capped_but_counting_continues` —— 样本封顶后 `frames_not_sampled`
+  继续涨，帧数不静默丢。
+
+`pytest tests` -> **488 passed, 3 skipped, 442 subtests passed**（基线 484，+4 条）。
+
+这套指标**不改任何控制量**，所以即使现场确认「确实是输入不镜像」，也还要再决定是
+「提醒操作者」还是「对一侧做补偿」—— 那是下一节的事。
+
+#### 8.24.5 现场入口不许改之后：`devtools/run_arm_quickcheck.py`（2026-11-17）
+
+`devtools/run_realtime_arm_windows.py` 是**现场入口，改不得**。它工作区里曾经多过一段
+`WRIST_PRESET`（`--arm-orientation on` + `--arm-orientation-scope arm` + `--arm-ik-mode pose`），
+2026-11-17 按要求 `git checkout --` 回退 —— 它回到 HEAD 的样子，窗口默认又是 `--arm-orientation off`，
+也就是「手腕不动」。
+
+替代品是**新文件** `devtools/run_arm_quickcheck.py`：只 import 那两个启动器里的公开函数
+（`arrange_two_windows` / `check_arm_entry` / `prepare_environment` / `run_check`），一个字都不写它们。
+
+| 它做的事 | 说明 |
+| --- | --- |
+| 现场档 | `FIELD_FLAGS` 里显式钉 `--arm-elbow-follow operator` + 那三项腕档；你自己写的同名 `--arm-*` 优先 |
+| 自动收工 | 不给 `--frames` 就跑 900 帧（约 70 s）自己退；`--frames 0` 一直跑到窗口里按 q/Esc |
+| 自动报告 | 不给 `--report` 就写 `outputs/tmp_realtime/arm_quickcheck_<时间>.json` |
+| 一屏读数 | 跑完把 `operator_symmetry`、掌面基（是不是 `late`、偏多少度）、标定、残差 + 姿态误差打成一段 |
+
+现场就一条命令::
+
+    E:\python3.11.7\python.exe devtools\run_arm_quickcheck.py
+    E:\python3.11.7\python.exe devtools\run_arm_quickcheck.py --frames 0     # q/Esc 停
+    E:\python3.11.7\python.exe devtools\run_arm_quickcheck.py --check        # 只体检
+
+它最后那一屏就是 §8.24.3 的判据，只是先替你分好类::
+
+    operator symm : median  < 45 度 -> 输入是镜像，屏幕若还不对就去查下游
+                    median >= 45 度 -> 输入本身同向，查输入侧
+    palm basis    : late @frame N, X deg —— 那个 X 就是这条臂带的固定偏置，先排它
+    calibration   : segment scales OFF / reach below 0.30 m = 站太近或整条手臂没进画面
+
+2026-11-17 那次 1200 帧实拍（§8.24 开头那份证据）用同一个入口跑出来：`median 10.09`、
+`p90 23.98`、`43/1132` 同向帧；同一份报告里左掌面基是 `late @frame 367, 132.8 deg` ——
+**这条 132.8 度才是那一场真正该查的东西**，摘要会把它单独打一行。
+
+用例 `QuickcheckLauncherTests`（5 条）钉住：补的就是那四项且入口 parser 收得下、你自己写的优先
+（`--arm-orientation=off` 也算写了，不再补 `on`）、`--frames` / `--report` 两种写法都算写了、
+报告读不到时摘要不抛、摘要必须露出 `median` / 同向帧数 / `late @frame 367, 132.8 deg` 和那条
+60 度报警。`pytest tests` -> **493 passed, 3 skipped, 442 subtests passed**（§8.24.4 的 4 条 + 本节 5 条）。
+
+---
 

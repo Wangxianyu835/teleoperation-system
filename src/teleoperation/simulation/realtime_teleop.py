@@ -129,6 +129,7 @@ from teleoperation.simulation.arm_preview import (
 from teleoperation.simulation.arm_profiles import loadable_robots, profile_for
 from teleoperation.simulation.arm_ik import (ELBOW_PASS_ORDERS, ELBOW_RECOVERY_COOLDOWN_FRAMES,
                                              ELBOW_RECOVERY_DEG, ELBOW_RECOVERY_MARGIN_DEG,
+                                             IK_SOLVERS,
                                              MAX_WRIST_JOINT_STEP_DEG,
                                              ORIENTATION_SCOPES)
 from teleoperation.simulation.arm_realtime import (
@@ -139,6 +140,7 @@ from teleoperation.simulation.arm_realtime import (
     MAX_ORIENTATION_RATE_DEG_S,
     MAX_ORIENTATION_STEP_DEG,
     PALM_HOLD_S,
+    PALM_WAIT_FRAMES,
     TRAVEL_MODES,
     AxisMap,
     RealtimeArmBridge,
@@ -803,6 +805,17 @@ def build_parser() -> argparse.ArgumentParser:
                              "axis, so turning the wrist moves the mount point). Combine "
                              "with --arm-orientation on to actually send the target; A/B "
                              "it in the field before it becomes a profile default")
+    parser.add_argument("--arm-ik-solver", choices=IK_SOLVERS, default="paper",
+                        help="arm IK backend (default 'paper'; pass 'pybullet' for the "
+                             "historical calculateInverseKinematics path). 'paper' is the "
+                             "port of "
+                             "the TeleOpBench reference (camera_ik_h1_2_media.py): one "
+                             "weighted solve per frame -- position : orientation = 50 : 1 "
+                             "-- with a (q - q_last)^2 smoothness term, joint-limit "
+                             "projection, warm start from the previous frame and a "
+                             "[0.4, 0.3, 0.2, 0.1] weighted moving average on the output. "
+                             "It is the one that stops the whole arm from swinging when "
+                             "you only turn your wrist. See simulation/paper_arm_ik.py")
     parser.add_argument("--arm-orientation-scope", choices=ORIENTATION_SCOPES,
                         default="wrist",
                         help="which joints absorb the commanded wrist orientation "
@@ -976,6 +989,17 @@ def build_parser() -> argparse.ArgumentParser:
                              "frames (historical); track = start following from the first frame "
                              "that sees your arm and let the neutral converge (default). See "
                              "CALIBRATE_MODES in arm_realtime.py for the 2026-10-14 field evidence")
+    parser.add_argument("--arm-palm-wait-frames", type=int, default=PALM_WAIT_FRAMES,
+                        metavar="N",
+                        help="with --arm-calibrate-mode track, do not count a side's frame "
+                             "toward the neutral until the hand points have been seen at least "
+                             "once, for at most N frames (default %(default)s). Pose arm "
+                             "landmarks appear on frame 1 but the 21 hand points take 5-7 s "
+                             "to lock on, so a 30-frame window closes before any palm basis "
+                             "exists and the whole run loses pronation tracking (measured "
+                             "2026-11-17: live_run_1552.log cal=track left=26/30 while "
+                             "hand valid=left=0). The arms still follow from the first frame; "
+                             "0 = never wait (historical behaviour)")
     parser.add_argument("--arm-palm-hold-ms", type=float,
                         default=PALM_HOLD_S * 1000.0, metavar="MS",
                         help="how long the last palm-normal wrist rotation may be reused after "
@@ -1264,29 +1288,151 @@ def _write_abort_report(path, error, processed, bridge, budget_data) -> None:
 
 
 def _warn_missing_palm_basis(bridge, sides, warned) -> None:
-    """中性里没有掌面基就当场喊一声：这一整场都量不到旋前/旋后。
+    """中性里没有掌面基就当场喊一声：这一整场可能量不到旋前/旋后。
 
     机制（``arm_realtime._raw_orientation``）：掌面基要跟「中性那一刻的掌面基」相减，而中性是
     标定那 ``--arm-calibrate-frames`` 帧的均值。标定时手不在画面里 / 掌面不可见 ->
-    ``orientation_palm`` 是 None -> 整场只能退回 ``three_point``（对旋前完全不敏感，拧腕不跟）。
+    ``orientation_palm`` 是 None -> 只能退回 ``three_point``（对旋前完全不敏感，拧腕不跟）。
     2026-11-16 晚那场就是这样静悄悄丢掉整场旋前跟踪，现场只看到「手腕不跟手」，
     唯一线索是 ``--wrist-trace`` 的 ``ori_source`` 全是 ``three_point``。
+
+    2026-11-17 起不再是「一整场」：``arm_realtime.PALM_LATE_FRAMES`` 会在运行中补采一次
+    **迟到基准**（连续 8 帧稳定的掌面基）。所以这里的措辞与「采到了」那条 ``[INFO]``
+    必须成对出现 —— 只喊 WARN 不报「后来采到了」，现场会以为腕永远不转了。
     """
     if bridge is None or bridge.calibrating:
         return
     frames = getattr(bridge, "calibration_frames", 30)
     for side in sides:
+        late = bridge.palm_reference_note(side) if hasattr(bridge, "palm_reference_note") else ""
+        if late:
+            # 迟到基准采到了：同一条去重集合，键带 ``:late`` 前缀（与下面的 ``side`` 不冲突）。
+            if f"{side}:late" not in warned:
+                warned.add(f"{side}:late")
+                print(f"[INFO] {late}", flush=True)
+            continue
         if side in warned:
             continue
         entry = bridge.neutral_record().get(side) or {}
         if entry.get("orientation_palm") is not None:
             continue
         warned.add(side)
+        # 有样本却被判不可用（帧数不够 / 彼此不一致）时把**原因**写进同一条告警：
+        # 只说「没有掌面基」会让现场去反复摆手掌，而真正该改的是「标定时手要一直在画面里
+        # 且别动」（见 arm_realtime.PALM_MIN_SAMPLE_FRACTION）。
+        note = bridge.palm_basis_note(side) if hasattr(bridge, "palm_basis_note") else ""
+        because = f"; basis rejected: {note}" if note else ""
         print(f"[WARN] {side}: the neutral has no palm basis (orientation_palm is None, "
-              f"palm_samples={entry.get('palm_samples', 0)}) -> pronation/supination is NOT "
-              f"tracked this run (ori_source stays three_point, the wrist will not follow a "
-              f"twist). Restart and keep both palms facing the camera for the first "
+              f"palm_samples={entry.get('palm_samples', 0)}{because}) -> pronation/supination "
+              f"is NOT tracked until a stable palm pose is seen (ori_source stays three_point "
+              f"meanwhile). Hold that palm still and facing the camera for 8 frames to have it "
+              f"acquired on the fly, or restart and keep both palms in view for the first "
               f"{frames} frames.", flush=True)
+
+
+SEGMENT_ASYMMETRY_KEY = "asymmetry"
+
+
+def _warn_bad_segment_scales(bridge, sides, warned) -> None:
+    """标定把某一侧的手臂量得太短 / 太长就当场喊一声：那一侧的 ``k`` 已被判不可用。
+
+    为什么（2026-11-17 三场 live 的实测）：``k_前臂`` 在 1.02 / 1.34 / **3.79** 之间跳，
+    对应「你的前臂」0.23 / 0.17 / 0.060 m —— 同一个人、同一天。判据与后果见
+    ``arm_realtime.SEGMENT_LENGTH_BAND_M``：这种 k 进 ``segments`` 口径会把前臂位移放大
+    几倍（现场"抽"），所以 ``_segment_scales`` 直接返回 None，这一场退回整段 gain。
+    静默退回才是最坏的结果 —— 现场只会觉得"这机器今天不对劲"。
+    """
+    if bridge is None or bridge.calibrating:
+        return
+    for side in sides:
+        if side in warned:
+            continue
+        note = bridge.segment_scale_note(side)
+        if not note:
+            continue
+        warned.add(side)
+        print(f"[WARN] segment scales OFF ({side}): {note} -> the per-segment recipe "
+              f"(map_mode=segments) is disabled this run and falls back to the "
+              f"whole-segment gain. Stand one arm length from the camera with BOTH arms "
+              f"fully in frame (elbows included) and recalibrate.", flush=True)
+
+
+def _warn_asymmetric_segment_scales(bridge, sides, warned) -> None:
+    """左右量出来的段长差 >1.25 倍就喊一声：标定那一场有一侧的位置不对。
+
+    为什么不改控制：单次采集分不清是"左手量短了"还是"右手量长了"，而静默把某一侧从
+    ``segments`` 换成 ``chain`` 等于**又一次偷偷换配方**。改的是标定，不是运行时。
+    判据与实测见 ``arm_realtime.SEGMENT_ASYMMETRY_MAX``（那三场 left/right 前臂
+    0.23/0.23、0.17/0.23、0.060/0.23）。
+    """
+    if bridge is None or bridge.calibrating or SEGMENT_ASYMMETRY_KEY in warned:
+        return
+    if len(tuple(sides)) < 2:
+        return
+    note = bridge.segment_asymmetry_note()
+    if not note:
+        return
+    warned.add(SEGMENT_ASYMMETRY_KEY)
+    print(f"[WARN] left/right calibration mismatch: {note}", flush=True)
+
+
+#: 某一侧的手连续多少帧出不了角度就该喊一声（现场 10-13 fps，约 1.2-1.5 s）。
+#:
+#: 为什么是 15 而不是 3：``retargeting/hand/temporal.py`` 的 ``TemporalBuffer`` 是
+#: ``reset_on_missing=True`` —— **丢一帧就清空该侧缓冲**，恢复要连续 3 帧，所以单次抖动本来
+#: 就会让这一侧停 3 帧。15 帧等于连着丢了 5 次，那已经不是抖动。
+HAND_STALL_FRAMES = 15
+
+
+def _stalled_hand_reason(side, raw_frame, window=None) -> str:
+    """「这一帧为什么没有角度」：先问处理层，再问相机层，都说不清就如实说三帧缓冲。
+
+    两个来源都在手上、都一直被丢掉：``retargeting/hand/processing.py`` 每帧把
+    ``invalid_reasons[side]`` 写进 canonical metadata（``missing`` = 这一帧没有手点、
+    退化掌面、重名手……），``inputs/mediapipe.py`` 把相机层的原因写进
+    ``raw_frame["metadata"]["invalid_reasons"]``。
+    """
+    sources = []
+    metadata = getattr(window, "metadata", None)
+    if hasattr(metadata, "get"):
+        sources.append(metadata)
+    frame_metadata = raw_frame.get("metadata") if isinstance(raw_frame, dict) else None
+    if hasattr(frame_metadata, "get"):
+        sources.append(frame_metadata)
+    for source in sources:
+        for key in ("invalid_reasons", "world_invalid_reasons"):
+            message = (source.get(key) or {}).get(side)
+            if not message:
+                continue
+            if message == "missing":
+                return "MediaPipe reported no hand points for that hand"
+            return f"the pipeline reports {message!r}"
+    # 这一帧手点是好的：那就是三帧窗口还没续上。
+    return ("the points are there now, but the 3-frame buffer drops that side on any missed "
+            "frame and needs 3 clean frames in a row")
+
+
+def _warn_stalled_hand(side, streak, raw_frame, warned, window=None, interval=0.0) -> None:
+    """某一侧的手连续 ``HAND_STALL_FRAMES`` 帧出不了角度：把「哪只手、多久、为什么」喊出来。
+
+    2026-11-17 15:40 那场（``outputs/tmp_realtime/live_run_1547.log``）：右手 486 帧里
+    ``invalid=172``（35%），现场的原话是「手有时卡住不动」。机制是 ``run`` 里
+    ``angles is None -> invalid += 1; continue``：这一侧**保持上一帧**（绝不让关节跳，这是
+    故意的），所以从外面看就是手不动了；而状态行的 ``invalid=`` 只会涨、不会解释。原因其实
+    一直有（见 ``_stalled_hand_reason``），只是没人读。
+
+    每侧每场只喊一次：这是给现场看的**诊断**，反复喊只会把日志刷满；复发频率看状态行的
+    ``invalid=``。``interval`` 是实测帧间隔（``_median_interval(marks)``），0 = 还不知道。
+    """
+    if side in warned or streak < HAND_STALL_FRAMES:
+        return
+    warned.add(side)
+    seconds = f" (~{streak * interval:.1f} s)" if interval and interval > 0 else ""
+    print(f"[WARN] {side} hand: no angles for {streak} frames{seconds} -> that hand holds its "
+          f"last pose (it never jumps) while the arm keeps following "
+          f"({_stalled_hand_reason(side, raw_frame, window)}). Put that hand fully in view - "
+          f"one arm length away, palm or back of the hand facing the camera - and the fingers "
+          f"resume on their own.", flush=True)
 
 
 def run(args) -> int:
@@ -1317,9 +1463,15 @@ def run(args) -> int:
     marks = []
     #: 「中性里没有掌面基」的那一侧只喊一次（见 ``_warn_missing_palm_basis``）。
     palm_basis_warned = set()
+    #: ``_warn_bad_segment_scales`` 的已提示侧（标定量出的段长不像人就提示一次）。
+    segment_warned = set()
     samples = {side: [] for side in sides}
     invalid = {side: 0 for side in sides}
     raw_seen = {side: 0 for side in sides}
+    #: 这一侧连续多少帧没有角度（「手卡住不动」的时长，见 ``_warn_stalled_hand``）。
+    stalled = {side: 0 for side in sides}
+    #: 「这只手卡住」每侧只喊一次。
+    stalled_warned = set()
     dumped = {"hand": {side: [] for side in SIDES},
               "world": {side: [] for side in SIDES},
               "arm": {side: [] for side in SIDES},
@@ -1361,6 +1513,7 @@ def run(args) -> int:
                                     ik_mode=(None if args.arm_ik_mode == "profile"
                                              else args.arm_ik_mode),
                                     orientation_scope=args.arm_orientation_scope,
+                                    ik_solver=args.arm_ik_solver,
                                     wrist_joint_step_deg=max(
                                         0.0, float(args.arm_wrist_joint_step_deg)))
             # segments 口径与肘任务要的「机器人自己的量」：实测连杆长 + 中性腕/肘点（基座系）。
@@ -1476,6 +1629,7 @@ def run(args) -> int:
                 [profiles[name] for name in robots], sides=sides, axis_map=axis_map,
                 calibration_frames=args.arm_calibrate_frames,
                 calibrate_mode=args.arm_calibrate_mode,
+                palm_wait_frames=args.arm_palm_wait_frames,
                 orientation=args.arm_orientation, gains=gains,
                 max_travel_m=(None if args.arm_travel_mm is None
                               else float(args.arm_travel_mm) / 1000.0),
@@ -1527,12 +1681,20 @@ def run(args) -> int:
                       f"chest) for about {args.arm_calibrate_frames} frames per side; the arms "
                       "already follow from the first frame that sees your arm, and the neutral "
                       "keeps converging while you hold still.", flush=True)
+                if args.arm_palm_wait_frames > 0:
+                    # 掌面基要的是 21 点手，不是 pose 手臂：这两件事的时间尺度差一个量级
+                    # （见 arm_realtime.PALM_WAIT_FRAMES）。话要现在说，不要等标定完了再说。
+                    print(f"a side's frames only start counting once its hand points have been "
+                          f"seen (waiting at most {args.arm_palm_wait_frames} frames): keep both "
+                          f"palms facing the camera from the start, otherwise that side gets no "
+                          f"palm basis this run and pronation/supination will not be tracked.",
+                          flush=True)
             else:
                 print("keep a neutral arm pose (elbows slightly bent, hands in front of the "
                       f"chest) for about {args.arm_calibrate_frames} frames per side; until "
                       "then the arms hold their working point.", flush=True)
         started = time.perf_counter()
-        # 标定一完成就检查一次「掌面基到底采到没有」（只提示一次，见下面的 palm_warn）。
+        # 标定一完成就检查一次「掌面基到底采到没有」（见 _warn_missing_palm_basis）。
         palm_warn = True
 
         while True:
@@ -1569,6 +1731,16 @@ def run(args) -> int:
                     scene.apply(side, values)
                     samples[side].append(values)
                     latest[side] = values
+            # 「手卡住不动」要能自己解释：``angles is None`` 时这一侧保持上一帧（故意的，
+            # 绝不让关节跳），现场只看到状态行的 ``invalid=`` 在涨。窗口整个是 None（两只手
+            # 都丢了）也照样累计 —— 那条路径原来连 ``invalid`` 都不加，正是「两只手一起卡」
+            # 最难查的一种（见 ``_warn_stalled_hand``）。
+            for side in sides:
+                stalled[side] = 0 if latest[side] is not None else stalled[side] + 1
+            stall_interval = _median_interval(marks)
+            for side in sides:
+                _warn_stalled_hand(side, stalled[side], raw_frame, stalled_warned,
+                                   window=window, interval=stall_interval)
             if budget is not None:
                 since = budget.lap("retarget", since)
             targets = {}
@@ -1579,23 +1751,14 @@ def run(args) -> int:
                 targets = bridge.update(arms_world=camera.arms(), hands=raw_frame,
                                         frame_dt=frame_dt)
                 if palm_warn and not bridge.calibrating:
-                    # 只提示一次。``hold`` 模式下中性只在攒够帧那一次写，之后不再采 ——
-                    # 标定那 30 帧里手上没有米制点 / 掌面退化，``orientation_palm`` 就是
-                    # None，**整场**都会退回三点基（现场 CSV 里表现为整段
-                    # ``ori_source=three_point``）。2026-11-16 第一次现场跑就撞上了这一条：
-                    # 人还没进画面就把标定站完了，于是掌面基一次都没启用。
+                    # 标定一完成就喊，别等到每 20 帧那一次打印。这里原来还有一条**另一份**文案
+                    # （「no palm basis ... collected without metric hand points」）：
+                    # 2026-11-17 16:00 那场它和有样本却被判死的那两条**互相矛盾**
+                    # （palm_samples=19，却说"没有米制手点"），删掉、只留带原因的这条
+                    # （``_warn_missing_palm_basis`` 自己按侧去重）。
                     palm_warn = False
                     if args.arm_orientation != "off":
-                        bare = [side for side in sides
-                                if (bridge.neutral.get(side) or {}).get("orientation_palm") is None]
-                        if bare:
-                            print(f"[WARN] no palm basis for {', '.join(bare)}: the neutral was "
-                                  f"collected without metric hand points (or the palm was "
-                                  f"degenerate), so this whole run falls back to the "
-                                  f"three-point basis (ori_source=three_point, pronation is "
-                                  f"not tracked). Keep BOTH hands inside the camera window "
-                                  f"during the {args.arm_calibrate_frames} calibration frames "
-                                  f"and rerun.", flush=True)
+                        _warn_missing_palm_basis(bridge, sides, palm_basis_warned)
                 orientation_by_side = bridge.orientation_target()
                 # 「肘跟手」（``--arm-elbow-follow operator``）：操作者这一帧的肘弯（绝对角）。
                 # 与姿态口径同一个理由单独取一份（这一项机器人无关），缺数据的那一侧是 None，
@@ -1682,6 +1845,8 @@ def run(args) -> int:
                       f"invalid={sum(invalid.values())} | {arm_hud(bridge, driver, targets)}",
                       flush=True)
                 _warn_missing_palm_basis(bridge, sides, palm_basis_warned)
+                _warn_bad_segment_scales(bridge, sides, segment_warned)
+                _warn_asymmetric_segment_scales(bridge, sides, segment_warned)
                 if args.arm_trace and bridge is not None:
                     print_arm_state(processed, bridge, driver, targets, profiles)
         final = {side: scene.joint_values(side) for side in sides}
@@ -1757,6 +1922,15 @@ def run(args) -> int:
             print(f"  arm lateral guard: {arm_guarded_total_print} frames had a wrist target "
                   f"pushed back to its own side "
                   f"(limit {1000.0 * bridge.lateral_guard_m:.0f} mm)", flush=True)
+        # 「你的两条手臂是否镜像」：现场看到「左臂跟着右臂」时先看这一行 —— 0 度左右说明输入
+        # 本身是镜像的（问题在别处），数字大说明输入就不是镜像手势/一侧手点跑偏
+        # （见 arm_realtime.SYMMETRY_SAME_SIDE_DEG）。
+        symmetry = bridge.summary().get("operator_symmetry") or {}
+        if symmetry.get("frames"):
+            print(f"  arm operator symmetry: median {symmetry['median_deg']} deg "
+                  f"(p90 {symmetry['p90_deg']}, max {symmetry['max_deg']}), "
+                  f"{symmetry['same_side_frames']}/{symmetry['frames']} frames had both arms "
+                  f"moving the same way [{symmetry['note']}]", flush=True)
     if preview is not None:
         print(f"camera preview: window={'on' if preview.show else 'off'} "
               f"mirror={'on' if preview.mirror else 'off'} "
@@ -1843,6 +2017,15 @@ def run(args) -> int:
             print(f"  arm  {side}: source={entry['source']} "
                   f"delta_op_cm={entry['delta_op_cm']} reach_m={entry['operator_reach_m']} "
                   f"elbow_deg={entry['elbow_bend_deg']}")
+        # 事后复盘用：k 被判不可用时，报告里的 ``segment_scales`` 是 null，这一行说明为什么。
+        for side in sides:
+            note = bridge.segment_scale_note(side)
+            if note:
+                print(f"  arm  {side}: segment scales OFF: {note}", flush=True)
+        # 左右不对称是「左手差」最常见的真因（同一个人左右前臂不可能差 1.35 倍）。
+        asymmetry = bridge.segment_asymmetry_note()
+        if asymmetry:
+            print(f"  arm  both: left/right calibration mismatch: {asymmetry}", flush=True)
     if bridge is not None:
         # 「这一帧为什么没跟手」的分布（HOLD_REASONS）：现场判断"手臂不动"的第一手证据 ——
         # 2026-10-14 那场只看 HUD 的 cal=15/30 是猜不出原因的，这一行直接给出分类。

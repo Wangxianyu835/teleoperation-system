@@ -112,6 +112,8 @@ ORIENTATION_FRAMES = ("absolute", "neutral")
 #: 而真机转腕只用腕关节。把腕以前的关节钉住，朝向就只由 ``WRIST_KEYWORD`` 命中的那几个
 #: 关节吸收（h1_2 是 wrist_roll/pitch/yaw）。数字见 ``devtools/probe_wrist_twist.py``。
 ORIENTATION_SCOPES = ("wrist", "arm")
+#: 求解后端（见 ``paper_arm_ik.py``）：``"pybullet"`` 历史路径，``"paper"`` 论文移植。
+IK_SOLVERS = ("pybullet", "paper")
 #: 腕关节「贴到限位」的判据（**占本关节行程的比例**，0 = 下限，1 = 上限）：``wrist_usage``
 #: 用它标 ``at_limit``。区间取 ``[1 - WRIST_LIMIT_USAGE, WRIST_LIMIT_USAGE]`` 之外为贴限位。
 #:
@@ -298,7 +300,11 @@ class PyBulletArmIK:
                  elbow_recovery_cooldown: int = ELBOW_RECOVERY_COOLDOWN_FRAMES,
                  lock_others: bool = False,
                  orientation_scope: str = "wrist",
-                 max_wrist_joint_step_deg: float = 0.0):
+                 max_wrist_joint_step_deg: float = 0.0,
+                 # 构造函数默认仍是历史路径：脚本任务（SimulationEnv 里那 30 个）与全部测试
+                 # 走的就是它，改默认会让整条流水线跟着变。**实时遥操作**已经在 CLI 层把默认
+                 # 切到 "paper"（``realtime_teleop.py --arm-ik-solver``），见 paper_arm_ik.py 文件头。
+                 ik_solver: str = "pybullet"):
         import pybullet as p
 
         if profile is None:
@@ -337,6 +343,14 @@ class PyBulletArmIK:
         #: 腕链关节每帧的步长上限（**度**，0 = 关）。见 ``MAX_WRIST_JOINT_STEP_DEG`` 与
         #: ``_limit_wrist_step``：限的是「解」和「写回去的关节状态」两处，只动腕链。
         self.max_wrist_joint_step_deg = max(0.0, float(max_wrist_joint_step_deg))
+        #: 求解后端：``"pybullet"``（``calculateInverseKinematics``，历史路径）或
+        #: ``"paper"``（``paper_arm_ik.PaperArmIK``，移植自 TeleOpBench
+        #: ``camera_ik_h1_2_media.py``：位置 50 : 姿态 1 + 帧间平滑项 + 热启动 +
+        #: 输出加权滑动平均）。见 ``IK_SOLVERS`` 与 ``paper_arm_ik`` 文件头。
+        if ik_solver not in IK_SOLVERS:
+            raise ValueError(
+                f"ik_solver must be one of {IK_SOLVERS}, got {ik_solver!r}")
+        self.ik_solver = str(ik_solver)
         #: 每侧最后一次**放行**的腕链角度（链式基准，与 ``arm_realtime._last_orientation``
         #: 同一套写法：拿上一帧放行值当起点，误差不累积）。
         self.last_commanded = {}
@@ -1490,6 +1504,20 @@ class PyBulletArmIK:
         }
         if self.ik_lock_others:
             arguments = self._locked_arguments(side, arguments)
+        if self.ik_solver == "paper":
+            # 论文求解路径：位置 50 : 姿态 1 的加权目标 + 平滑项 + 热启动 + 输出滤波，
+            # 一次求解同时给出位置和姿态（见 ``paper_arm_ik.PaperArmIK``）。
+            target_orientation = orientation
+            if target_orientation is None:
+                target_orientation = tuple(float(v) for v in self._orientation(side))
+            values = self._paper_ik(side).solve(world, target_orientation)
+            self.last_target_world[side] = world
+            self.last_orientation[side] = target_orientation
+            self.last_posture[side] = {str(name): float(value)
+                                       for name, value in dict(posture or {}).items()}
+            self.last_elbow_world[side] = elbow_world
+            self.last_solution_cost.pop(side, None)
+            return values
         solution, target_orientation = self._ik_sequence(
             side, world, elbow_world, orientation, arguments, elbow_pass, warm_start)
         if elbow_world is not None:
@@ -1511,6 +1539,18 @@ class PyBulletArmIK:
         # 腕链步长上限（``MAX_WRIST_JOINT_STEP_DEG``）：解与关节状态一起限，默认 0 = 关。
         solution = self._limit_wrist_step(side, solution)
         return self._arm_values(side, solution)
+
+    def _paper_ik(self, side: str):
+        """每侧缓存一个 ``paper_arm_ik.PaperArmIK``（``ik_solver="paper"`` 用）。"""
+        cache = getattr(self, "_paper_ik_cache", None)
+        if cache is None:
+            cache = self._paper_ik_cache = {}
+        solver = cache.get(side)
+        if solver is None:
+            from teleoperation.simulation.paper_arm_ik import PaperArmIK
+            solver = PaperArmIK(self, side)
+            cache[side] = solver
+        return solver
 
     def _limit_wrist_step(self, side: str, solution) -> list:
         """腕链关节单帧最多走 ``max_wrist_joint_step_deg`` 度（0 = 关，原样返回）。

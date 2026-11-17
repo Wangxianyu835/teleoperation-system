@@ -137,6 +137,85 @@ MIN_PALM_SINE = 0.05
 #: 量不到旋前的基更接近事实：腕的目标本来是连续的。超过窗口才如实退回 ``three_point``
 #: （无限保持会让腕锁在旧姿态上不跟手）。
 PALM_HOLD_S = 0.5
+#: 中性掌面基的**可信度闸门**：样本帧数至少占标定帧的 ``PALM_MIN_SAMPLE_FRACTION``，
+#: 且这几帧彼此相对均值的最大夹角不得超过 ``PALM_MAX_SPREAD_DEG``。不合格就当没有
+#: （``orientation_palm`` 给 None，退回三点基），原因写进 ``neutral[side]["palm_note"]``。
+#:
+#: 为什么逐帧的 ``MIN_PALM_SINE`` 不够（2026-11-17 现场 15:40 那场，报告
+#: ``outputs/tmp_realtime/arm_run_20261117_154001.json``）：标定那 30 帧里左手
+#: ``palm_samples=0``（手还没进画面）、右手 **12**（手刚进画面那几帧）。左手机缘巧合地
+#: 退回三点基，右手却把这 12 帧的均值当成基准，于是同一场里：
+#: ``arm.residual_mm`` 左 h1_2/gr1_t2/g1 = 3.3/2.5/9.4 mm，右 **120.2/45.3/256.2 mm**；
+#: ``arm.orientation_error_deg`` 左 0.6/1.6/0.7 度，右 **72.3/24.9/122.5 度**；
+#: ``arm.wrist_usage`` 里 h1_2 右腕 ``elbow_roll/wrist_pitch/wrist_yaw`` 三个都
+#: ``at_limit: true``（左三个 0.385-0.634，无一个顶限位）。现场看到的就是
+#: **「右手卡住不动、手腕怎么拧都不对」**。
+#: 三个腕关节同时顶限位不是行程问题（§8.19 的桩回放里 h1_2 左右都只用到 17 度、
+#: 没有 ``at_limit``），而是基准本身偏了一个大角度 —— 目标越拧越顶，最后钉死在限位上。
+#:
+#: 判据为什么是「帧数比例 + 散度」两条：帧数挡住「手只露了一下」，散度挡住
+#: 「露的那几下彼此不一致（半遮挡 / 掌面翻号）」—— 一组自相矛盾的样本，均值再准也不是
+#: 任何一帧的姿势。两条都不过时宁可退回三点基（旋前不跟，但**不会把腕推进限位**），
+#: 也不拿一份可疑的基准去驱动六个腕关节。
+PALM_MIN_SAMPLE_FRACTION = 0.5
+PALM_MAX_SPREAD_DEG = 25.0
+#: 中性里**没有**可用掌面基时，运行中补采一次「迟到基准」：要**连续** ``PALM_LATE_FRAMES``
+#: 帧、且这几帧彼此夹角都不超过 ``PALM_LATE_SPREAD_DEG`` 才认。
+#:
+#: 为什么必须有（2026-11-17 16:00 那场的 ``--wrist-trace`` 统计，
+#: ``outputs/tmp_realtime/live_run_1600_wrist.csv``）：2500+ 行里 ``ori_source`` 是
+#: ``palm_normal`` 的只有 **3 行**（右 0 行），其余全是 ``three_point``。三点基的第三轴
+#: 取「上臂 x 前臂」的手臂平面法向，**对绕前臂的自转完全不敏感** —— 于是整场「手怎么拧、
+#: 机器人手腕一动不动」，这不是桥没接上，是那一维在数学上就没被喂进去
+#: （见 ``palm_orientation_frame``）。而这份基准一旦被闸门判死（或手点晚到、窗口已关），
+#: 之前的行为就是**整场失去旋前**，没有任何补救路径。
+#:
+#: 迟到基准补的就是这条路：中性没有掌面基时，等手上真的出现一段**稳定**的掌面基，
+#: 就地把它当基准。代价是「零点」取在那一刻而不是标定那一刻 —— 所以要求连续 8 帧一致
+#: （人站着不动时手点很稳，8 帧 ≈ 0.8-1.3 s），并在报告里写 ``palm_reference_source="late"``
+#: 与 ``palm_reference_frame``，不假装它就是中性。
+#:
+#: 只在**标定完成之后**才采（``calibrating`` 为 False）：标定期间 ``_refresh_neutral``
+#: 每帧都会重写 ``orientation_palm``，那时候采会被下一帧盖掉。
+PALM_LATE_FRAMES = 8
+PALM_LATE_SPREAD_DEG = 12.0
+
+#: 「你的两条手臂是不是镜像的」：两条上臂方向相对**你肩膀连线**的镜像偏差超过这么多度，
+#: 就记一帧 ``same_side``（= 两侧朝同一边摆，不是镜像手势）。
+#:
+#: 为什么需要这个数字（2026-11-17 现场："屈臂、双手放胸前、把肘向外打开，左臂跟着右臂的
+#: 方向动"）：桥的这一层**不可能**把镜像手势算成同向 —— 轴映射 ``AxisMap`` 是两侧共用的
+#: 一个线性映射（置换+符号），而按侧的三个量（肩锚点 / 上臂长 / 前臂长）实测左右镜像到
+#: 0.07 mm（``outputs/tmp_probe/probe_arm_anchor_mirror.py``：h1_2 0.07 / g1 0.01 /
+#: gr1_t2 5.4 mm），线性映射 + 镜像输入 -> 输出必然镜像。所以现场那句「左跟着右」只可能
+#: 来自**输入本身不镜像**（一侧手点被挡/跑偏，或手势本来就不对称）或者 IK 那一层。
+#:
+#: 这个量在**操作者自己的坐标系**里算，与 ``AxisMap`` 无关：
+#:
+#:     lateral = unit(左肩 - 右肩)          # 操作者自己的左右轴，每帧现算
+#:     dev     = angle(u_left, mirror(u_right, lateral))
+#:
+#: ``dev`` 小 = 输入是镜像的（桥会如实给出镜像的两条手臂）；``dev`` 大 = 输入不是镜像手势，
+#: 桥只能照抄 —— 报告里如实写出来，别让人再去猜「是不是桥算错了」。
+SYMMETRY_SAME_SIDE_DEG = 45.0
+#: 对称性采样最多记多少帧（够算中位/最大，又不至于跑一晚吃掉内存）。
+SYMMETRY_MAX_SAMPLES = 20000
+#: ``track`` 模式下，这一侧**还没见过掌面基**时先不把帧计入中性标定，最多等这么多帧。
+#:
+#: 为什么必须有这一条（2026-11-17 15:52 那次重启的现场日志
+#: ``outputs/tmp_realtime/live_run_1552.log``）：手臂 pose 关键点从**第 1 帧**就有，
+#: 手部 21 点要 5-7 s 才锁上 —— 于是「30 帧中性窗口」在任何一帧掌面基出现之前就烧完了：
+#:     frame=20  hand valid=left=0 right=0 invalid=8 | cal=track left=20/30 right=0/30
+#:     frame=100 hand valid=left=0 ... | cal=track left=26/30 ...
+#: 手册那句「站好别动 30 帧」在这里是**做不到**的：人还没走到手部模型能认出来的距离，
+#: 窗口就关了，这一整场就注定只有三点基（拧腕不跟），而后加的闸门只会如实把那份
+#: 12/30 帧的坏基判死 —— 丢旋前的原因没解决，只是不再把腕推进限位。
+#:
+#: 语义边界：只等**计入标定**这件事，**不等跟手** —— ``track`` 模式下样本照旧每帧追加、
+#: 临时中性照旧发布，手臂从看见你手臂的第一帧就开始跟。到 ``PALM_WAIT_FRAMES`` 还没有
+#: 手点就照旧计数（等于回到改动前的行为），所以不会出现「永远标定不完」。
+#: ``hold`` 模式完全不受影响（历史行为逐字不变）。
+PALM_WAIT_FRAMES = 90
 #: 腕姿态目标（下发给 IK 的那一份相对旋转）的最大角速度（度/秒）：``0`` = 关（A/B 基线）。
 #:
 #: 为什么 ``PALM_HOLD_S`` 之后还需要这一层（2026-11-16 第二次现场，CSV 见
@@ -214,6 +293,31 @@ HOLD_REASONS = ("calibrating", "no_pose_landmarks", "reach_below_min", "other")
 #: ``_posture_target``），也不受 ``travel_limit`` 逐轴夹断的影响（目标天然落在机器人
 #: 自己那根「上臂+前臂」可达球面上，逐轴夹断正是把 g1 的幅度压成 40 mm 的那个上限）。
 MAP_MODES = ("chain", "segments", "posture")
+#: 中性标定量出来的「上臂 / 前臂」段长（米）的合理区间，**超出就当标定坏了**。
+#: 为什么需要（2026-11-17 那三场 live 的实测）：``k = 机器人段长 / 你的段长``，而你的段长是
+#: 深度压扁的受害者 —— 同一个人同一天三场的 ``k_前臂`` 分别是 1.02 / 1.34 / **3.79**
+#: （h1_2 前臂 0.229 m ÷ 你的 0.060 m），同一份记录的右臂却是 0.99（0.23 m）。
+#: 一个人左右前臂不可能差 4 倍，所以 k=3.79 只能说明那一场的姿态关键点被压扁了。
+#: 这种 k 一进 ``segments`` 口径就会把前臂位移放大 3.8 倍（现场"左手抽"的半个原因），
+#: 所以宁可判它不可用、退回整段 gain（``info["map"]`` 会写 ``chain (segments unavailable)``），
+#: 并且把原因写进 ``segment_scale_notes`` —— 别让它静默生效。
+#: 0.12 m 是成年人前臂的宽松下限（真实 0.20-0.32），0.45 m 是上限（超过就是关键点跳飞了）。
+SEGMENT_LENGTH_BAND_M = (0.12, 0.45)
+#: 左右两侧**量出来的**同一条段长的允许比值（大/小）。超过就是标定坏了。
+#:
+#: 为什么带宽护栏不够（2026-11-17 追到机制）：三道护栏里 ``SEGMENT_LENGTH_BAND_M`` 只拦
+#: "明显不像人"的段长，而现场最普通的一次坏标定是 **前臂 0.17 m vs 0.23 m**（比值 1.35）
+#: —— 两端都在带宽内，护栏一声不吭，``k_前臂`` 却从 0.99 变成 1.35，前臂位移被放大 35%。
+#: 那一场的 ``--wrist-trace`` 逐侧对比（outputs/tmp_probe/wrist_trace_compare.py）显示：
+#: 左右 ``palm_normal``/``palm_hold`` 比例几乎相同（57/9 vs 58/8，**输入侧一样**），
+#: 但左手 ``residual_mm`` 中位 50.7 而右手 26.1，且 ``err`` 的带符号分量左手是右手的
+#: 1.6 倍（dz -69 mm vs -44 mm）—— 目标被放大 -> 甩得更远 -> 更难够到 -> residual 翻倍。
+#: 同一个人左右上臂/前臂的真实差异 <10%（解剖学量级），所以比值超过 1.25 只能是标定误差。
+#:
+#: **只告警，不改控制**：单次采集分不清是"左手量短了"还是"右手量长了"，而静默把某一侧
+#: 从 ``segments`` 换成 ``chain`` 又是一次"配方被偷偷换掉"（历史判定 chain 两侧都不像）。
+#: 真要改的是标定：重标 / 加大 ``--arm-calibrate-frames``，告警就是把手指指向那里。
+SEGMENT_ASYMMETRY_MAX = 1.25
 #: 人手臂关节的最大角速度（度/秒）：单帧方向变化超过它，就当作关键点跳变而不是你的手。
 #: 上限的依据：肩关节峰值约 500 度/秒（日常摆动 100-300），所以 600 是"比人快"的界。
 #: 实测这本来历（outputs/tmp_realtime/live_long_frames.npz，口径见
@@ -521,6 +625,65 @@ def _average_rotation(matrices):
     return rotation
 
 
+def _rotation_angle_deg(first, second) -> float:
+    """两个 3x3 旋转之间的夹角（度）：``acos((tr(a^T b) - 1) / 2)``。
+
+    ``_rotation_spread_deg`` 与「迟到基准」的连续性判据（``PALM_LATE_SPREAD_DEG``）共用
+    这一个口径 —— 「这几帧彼此差多少度」在报告里和在这里必须是同一个数。
+    """
+    a = np.asarray(first, dtype=np.float64)
+    b = np.asarray(second, dtype=np.float64)
+    cosine = (float(np.trace(a.T @ b)) - 1.0) / 2.0
+    return float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))))
+
+
+def _rotation_spread_deg(matrices, centre) -> float:
+    """一组 3x3 旋转相对 ``centre`` 的**最大**夹角（度）；没有可用值 = ``0.0``。
+
+    用途只有一个：判「这几帧掌面基是不是同一个姿势」（见 ``PALM_MIN_SAMPLE_FRACTION``）。
+    标定时手刚进画面 / 半遮挡 / 掌面翻号，逐帧的法向可以差上百十度，``_average_rotation``
+    照样算得出一个真旋转 —— 但那不是任何一帧的姿势，拿它当基准就是把腕目标整体拨偏。
+    """
+    if centre is None:
+        return 0.0
+    worst = 0.0
+    for matrix in matrices:
+        if matrix is None:
+            continue
+        worst = max(worst, _rotation_angle_deg(matrix, centre))
+    return worst
+
+
+def _palm_cluster(palms):
+    """一组掌面基里**彼此一致的最大一簇**：``(均值, 簇内最大夹角, 被丢掉的帧数)``。
+
+    为什么不直接对全部样本取均值（``_average_rotation``）：标定窗口里总有几帧掌面翻号 /
+    半遮挡，实测两场（2026-11-17 15:40 与 16:00）掌面基的散度是 55 与 **165** 度 ——
+    165 度不是「人转了手」，是那几帧的法向取反了。把正反两拨一起平均，得到的既不是正
+    也不是反（接近正交），而这份垃圾基准会被``PALM_MAX_SPREAD_DEG`` 判死，于是**整场
+    丢掉旋前**（同一场 ``ori_source`` 里 ``palm_normal`` 只有 3 行，见 ``PALM_LATE_FRAMES``）。
+
+    改成「最大一致簇」：以每一帧为候选中心，数有多少帧落在 ``PALM_MAX_SPREAD_DEG`` 之内，
+    取最大的那一簇做均值，其余帧数如实报成 ``palm_outliers``。闸门的两条判据随之改成
+    「簇的大小够不够占标定帧的比例」+「簇内散度」—— 少数坏帧不再一票否决，多数一致
+    仍然一票否决（12/30 帧凑出来的基准依旧过不去）。
+    """
+    usable = [np.asarray(matrix, dtype=np.float64) for matrix in palms if matrix is not None]
+    if not usable:
+        return None, 0.0, 0
+    best = None
+    for candidate in usable:
+        members = [other for other in usable
+                   if _rotation_angle_deg(other, candidate) <= PALM_MAX_SPREAD_DEG]
+        if best is None or len(members) > len(best):
+            best = members
+    basis = _average_rotation(best)
+    if basis is None:                     # 理论到不了（每帧至少和自己一致），保险
+        return None, 0.0, len(usable)
+    return basis, _rotation_spread_deg(best, basis), len(usable) - len(best)
+
+
+
 @dataclass(frozen=True)
 class AxisMap:
     """操作者系的轴到机器人基座系的轴：每个机器人轴由哪一个操作者轴、带什么符号。
@@ -667,6 +830,10 @@ def load_neutral(path) -> dict:
             "fore": _neutral_vector(entry.get("fore"), 3),
             "samples": int(entry.get("samples", 0)),
             "complete": bool(entry.get("complete", False)) and offset is not None,
+            # 掌面基的来路 / 零点偏移（报告与 CLI 的 ``[INFO]`` 用；缺了也能跑）。
+            "palm_reference_source": str(entry.get("palm_reference_source") or ""),
+            "palm_reference_frame": entry.get("palm_reference_frame"),
+            "palm_reference_pose_deg": entry.get("palm_reference_pose_deg"),
         }
     return {"sides": neutral, "axis_map": payload.get("axis_map"),
             "created": payload.get("created"), "path": str(path)}
@@ -712,6 +879,11 @@ def save_neutral(path, sides: dict, extra: dict | None = None) -> Path:
                     [float(v) for v in np.asarray(entry["fore"]).reshape(3)],
             "samples": int(entry.get("samples", 0)),
             "complete": bool(entry.get("complete", False)),
+            # 掌面基的来路（标定那次 / 运行中补采）+ 零点偏移：只影响报告的可解释性，
+            # 少了也能跑（读回来当作 "neutral"）。
+            "palm_reference_source": str(entry.get("palm_reference_source", "")),
+            "palm_reference_frame": entry.get("palm_reference_frame"),
+            "palm_reference_pose_deg": entry.get("palm_reference_pose_deg"),
         }
     target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return target
@@ -764,6 +936,7 @@ class RealtimeArmBridge:
     def __init__(self, profiles=(), sides=SIDES, axis_map=None,
                  calibration_frames: int = 30,
                  calibrate_mode: str = "hold",
+                 palm_wait_frames: int = PALM_WAIT_FRAMES,
                  arm_length_reference: float = REFERENCE_REACH_M,
                  normalise_arm_length: bool = True,
                  arm_length_band=ARM_LENGTH_BAND,
@@ -873,6 +1046,23 @@ class RealtimeArmBridge:
         #: ``_raw_orientation``：掌面基要跟中性里的 ``orientation_palm`` 相减，它是 None 就
         #: 只能退回三点基）。2026-11-16 晚那场就是标定那 30 帧手不在画面里，整场丢旋前跟踪。
         self._palm_samples = {side: 0 for side in self.sides}
+        #: 这一侧**已经见过**掌面基（之后丢了就不再等，见 ``PALM_WAIT_FRAMES``）。
+        self._palm_seen = {side: False for side in self.sides}
+        #: 为了等手点，已经**放过**多少帧没计入标定（到 ``palm_wait_frames`` 就停止等）。
+        self._palm_wait = {side: 0 for side in self.sides}
+        #: 「迟到基准」的候选窗口：每侧最近几帧掌面基（见 ``PALM_LATE_FRAMES``）。
+        #: 只在标定完成后、且中性里没有掌面基时才攒；一断帧就清空（必须**连续**）。
+        self._palm_late = {side: [] for side in self.sides}
+        #: 真正计入标定的帧数（``calibration_frames`` 与 HUD 进度都按它）。
+        #: 与 ``len(_samples[side])`` 的差 = 为等手点而放过的那几帧。
+        self._counted = {side: 0 for side in self.sides}
+        #: 「你的两条手臂是否镜像」的逐帧镜像偏差（度，见 ``SYMMETRY_SAME_SIDE_DEG``）。
+        #: 只在这里攒数字，不参与任何控制量；报告里给中位/最大与 ``same_side`` 帧数。
+        self._symmetry = []
+        #: 攒不进去（超过 ``SYMMETRY_MAX_SAMPLES``）之后又来了多少帧 —— 计数照旧，样本封顶。
+        self._symmetry_extra = 0
+        #: 等手点的上限（帧；``0`` = 不等，A/B 与历史行为）。
+        self.palm_wait_frames = max(0, int(palm_wait_frames))
         self._last_state = {side: None for side in self.sides}
         #: 关键点跳变护栏的角速度上限（度/秒）：0 = 关（A/B 用）。见 ``_guard_direction``。
         self.max_direction_rate_deg_s = max(0.0, float(max_direction_rate_deg_s))
@@ -904,6 +1094,8 @@ class RealtimeArmBridge:
                        "oriented": {side: 0 for side in self.sides},
                        #: 掌面基这一帧丢了、沿用上一帧掌面旋转的帧数（见 ``PALM_HOLD_S``）。
                        "palm_held": {side: 0 for side in self.sides},
+                       #: 运行中补采到「迟到基准」的次数（0/1；见 ``PALM_LATE_FRAMES``）。
+                       "palm_late": {side: 0 for side in self.sides},
                        #: 姿态目标被限速削过的帧数（见 ``MAX_ORIENTATION_RATE_DEG_S``）。
                        "orientation_clamped": {side: 0 for side in self.sides},
                        "clamped": {side: 0 for side in self.sides},
@@ -942,6 +1134,19 @@ class RealtimeArmBridge:
                 "samples": int(entry.get("samples", 0)),
                 # 标定期间拿到掌面基的帧数（0/缺 = 这一整场量不到旋前，见 _palm_samples）。
                 "palm_samples": int(entry.get("palm_samples", 0)),
+                # 掌面基不可用的原因 / 那几帧彼此的散度（空串 + 缺 = 能用或没样本）。
+                "palm_note": str(entry.get("palm_note") or ""),
+                "palm_spread_deg": (None if entry.get("palm_spread_deg") is None
+                                    else float(entry["palm_spread_deg"])),
+                # 掌面基是标定那次采的还是运行中补采的（``neutral`` / ``late`` / 空串）。
+                # 补采的那个零点不是标定那一刻，报告里必须分辨得出来（见 PALM_LATE_FRAMES）。
+                "palm_reference_source": str(entry.get("palm_reference_source") or ""),
+                "palm_reference_frame": (None if entry.get("palm_reference_frame") is None
+                                         else int(entry["palm_reference_frame"])),
+                # 迟到基准取零点时离标定姿势多远（度）：腕从那个姿势起读数为零。
+                "palm_reference_pose_deg": (None if entry.get("palm_reference_pose_deg") is None
+                                            else float(entry["palm_reference_pose_deg"])),
+                "palm_outliers": int(entry.get("palm_outliers") or 0),
                 "complete": bool(entry.get("complete", False)) and offset is not None,
             }
 
@@ -1005,15 +1210,124 @@ class RealtimeArmBridge:
             if entries:
                 self.robot_anchors[str(robot_type)] = entries
 
-    def _segment_scales(self, profile, side):
-        """``(k_上臂, k_前臂)`` = 机器人连杆长 / 你的连杆长；缺数据就 ``None``。"""
-        robot = self.robot_links.get(profile.robot_type, {}).get(side)
+    def _human_segments(self, side):
+        """中性标定量出来的 ``(上臂长, 前臂长)``（米）；还没标定就是 ``None``。"""
         entry = self.neutral[side]
-        if not robot or entry.get("upper") is None or entry.get("fore") is None:
+        if entry.get("upper") is None or entry.get("fore") is None:
             return None
-        human_upper = float(np.linalg.norm(entry["upper"]))
-        human_fore = float(np.linalg.norm(entry["fore"]))
+        return (float(np.linalg.norm(entry["upper"])),
+                float(np.linalg.norm(entry["fore"])))
+
+    def segment_scale_note(self, side) -> str:
+        """这一侧的 ``k`` 为什么不能用（空串 = 能用 / 还没标定）。
+
+        判据只涉及**你的**段长，与机器人无关，所以一条中性记录就能定论：标定那
+        ``--arm-calibrate-frames`` 帧里手臂被深度压扁（离镜头太远 / 侧身 / 遮挡）时，
+        量出来的前臂会比真实短一截，``k`` 就被放大成几倍。见 ``SEGMENT_LENGTH_BAND_M``。
+        """
+        lengths = self._human_segments(side)
+        if lengths is None:
+            return ""
+        low, high = SEGMENT_LENGTH_BAND_M
+        for name, length in zip(("upper arm", "forearm"), lengths):
+            if low <= length <= high:
+                continue
+            return (f"{side} calibrated {name} {length:.3f} m is outside "
+                    f"{low:.2f}-{high:.2f} m (pose landmarks bad)")
+        return ""
+
+    def palm_basis_note(self, side) -> str:
+        """这一侧的掌面基为什么被判不可用（空串 = 能用 / 还没有样本）。
+
+        与 ``segment_scale_note`` 同一个套路：**判据只涉及采集过程，不涉及机器人**，
+        所以一次标定就能定论，且不合格时只会让这一侧退回三点基（旋前不跟），
+        不会把六个腕关节推向限位（见 ``PALM_MIN_SAMPLE_FRACTION`` 的实测数字）。
+        """
+        return str(self.neutral[side].get("palm_note") or "")
+
+    def _palm_basis_note(self, side, samples: int, spread_deg: float,
+                         outliers_spread_deg: float = None) -> str:
+        """``palm_basis_note`` 的判据本体：``samples`` = **多数簇**里的帧数（见 ``_palm_cluster``）。
+
+        样本数为 ``0`` 时返回空串 —— 那是「这一侧根本没手点」，由
+        ``realtime_teleop._warn_missing_palm_basis`` 按 ``palm_samples=0`` 报，
+        与「有样本但不可信」是两件不同的事，不能混成一条。
+
+        **必须是过半**（``<=`` 就判死，不是 ``<``）：恰好一半的帧彼此一致 = 另一半的帧
+        说的是别的事，那份均值仍然不代表任何一帧。现场那两场（15:40 / 16:00）的散度
+        55 / 165 度就是这种「一半正一半反」的样子，只看「有没有 15 帧」是拦不住的。
+
+        ``outliers_spread_deg`` = 散出去的那几帧相对基准的最大夹角（簇外散度）：两条判据
+        都不成立时说清是哪一条 —— 「帧数不够」和「帧数够但彼此矛盾」现场要改的事不一样。
+        """
+        if samples <= 0:
+            return ""
+        frames = int(self.calibration_frames)
+        wanted = max(2, int(round(float(frames) * PALM_MIN_SAMPLE_FRACTION)))
+        reasons = []
+        if samples <= wanted:
+            reasons.append(f"only {samples}/{frames} calibration frames are consistent "
+                           f"(needs a clear majority, > {wanted}): the hand was barely in "
+                           f"view while the neutral was built")
+        if spread_deg > PALM_MAX_SPREAD_DEG:
+            reasons.append(f"the {samples} consistent frames still disagree by "
+                           f"{spread_deg:.1f} deg (max {PALM_MAX_SPREAD_DEG:.0f}): the hand "
+                           f"moved while the neutral was built")
+        if not reasons:
+            return ""
+        if outliers_spread_deg is not None and outliers_spread_deg > PALM_MAX_SPREAD_DEG:
+            # 只作证据：散出去的那几帧离基准有多远（``_palm_cluster`` 已经把它们踢出簇，
+            # 但它们正是「为什么会判死」的现场解释 —— 掌面翻号 / 半遮挡）。
+            reasons.append(f"the rest disagree by up to {outliers_spread_deg:.1f} deg "
+                           f"(flipped normals / half-hidden frames)")
+        return f"{side} palm basis rejected: " + "; ".join(reasons)
+
+    def segment_asymmetry_note(self) -> str:
+        """左右量出来的段长差得太多时的原因文本；空串 = 正常 / 数据不够。
+
+        与 ``segment_scale_note`` 分开的原因：那一条是**逐侧**的（一侧坏了只废掉那一侧），
+        这一条必须**两侧都在**才有意义（比的是你的左臂和你的右臂）。判据同样只涉及你的
+        段长、与机器人无关，所以一台机器人的中性记录就够判所有机器人。
+
+        实测三场（2026-11-17）：右前臂一直是 0.23 m，左前臂 0.23 / 0.17 / 0.060 m
+        —— 0.23 那场比值 1.00 不响，0.17 那场 1.35 响，0.060 那场已被带宽护栏拦下。
+        见 ``SEGMENT_ASYMMETRY_MAX``。
+        """
+        lengths = {side: self._human_segments(side) for side in self.sides}
+        if len(lengths) < 2 or any(value is None for value in lengths.values()):
+            return ""
+        # 只有 left/right 都在 ``sides`` 里时才比得了（单侧跑时这一条无意义）。
+        if "left" not in lengths or "right" not in lengths:
+            return ""
+        left, right = lengths["left"], lengths["right"]
+        worst, worst_name, worst_index = 1.0, "", 1
+        for name, index in (("upper arm", 0), ("forearm", 1)):
+            values = (left[index], right[index])
+            if min(values) <= 1e-6:
+                return ""
+            ratio = max(values) / min(values)
+            if ratio > worst:
+                worst, worst_name, worst_index = ratio, name, index
+        if worst <= SEGMENT_ASYMMETRY_MAX:
+            return ""
+        # 「哪一侧可疑」要按**最不对称的那一段**判，不能写死前臂（上臂也可能不对称）。
+        shorter = "left" if left[worst_index] < right[worst_index] else "right"
+        return (f"left/right calibrated segments differ {worst:.2f}x on {worst_name} "
+                f"(upper {left[0]:.3f}/{right[0]:.3f} m, forearm {left[1]:.3f}/"
+                f"{right[1]:.3f} m); the shorter one ({shorter}) is the suspect "
+                f"(depth flattening only shortens), recalibrate with both arms in frame")
+
+    def _segment_scales(self, profile, side):
+        """``(k_上臂, k_前臂)`` = 机器人连杆长 / 你的连杆长；缺数据或标定不可信就 ``None``。"""
+        robot = self.robot_links.get(profile.robot_type, {}).get(side)
+        lengths = self._human_segments(side)
+        if not robot or lengths is None:
+            return None
+        human_upper, human_fore = lengths
         if human_upper <= 1e-6 or human_fore <= 1e-6:
+            return None
+        # 坏标定不许进链路：宁可退回整段 gain，也不要把前臂位移放大 3.8 倍。
+        if self.segment_scale_note(side):
             return None
         return (float(robot["upper"]) / human_upper, float(robot["fore"]) / human_fore)
 
@@ -1141,15 +1455,20 @@ class RealtimeArmBridge:
         return any(not self.neutral[side]["complete"] for side in self.sides)
 
     def calibration_progress(self) -> dict:
-        """``{side: (已有帧数, 需要的帧数)}``。"""
-        return {side: (len(self._samples[side]), self.calibration_frames)
+        """``{side: (计入标定的帧数, 需要的帧数)}``（放过等手点的帧不算，见 ``PALM_WAIT_FRAMES``）。"""
+        return {side: (self._counted[side], self.calibration_frames)
                 for side in self.sides}
 
     def status(self) -> str:
-        """HUD 用的一行中性标定状态（``track`` 模式多一个前缀，表示已经在跟手）。"""
+        """HUD 用的一行中性标定状态（``track`` 模式多一个前缀，表示已经在跟手）。
+
+        等手点的那几个侧面挂 ``+w``：``cal=track left=20/30 w=12 right=0/30 w=0`` ——
+        现场一眼能分清「我没站好」与「它没在等」。
+        """
         if not self.calibrating:
             return "cal=ok"
-        parts = " ".join(f"{side}={len(self._samples[side])}/{self.calibration_frames}"
+        parts = " ".join(f"{side}={self._counted[side]}/{self.calibration_frames}"
+                         + (f" w={self._palm_wait[side]}" if self._palm_wait[side] else "")
                          for side in self.sides)
         if self.calibrate_mode == "track":
             return f"cal=track {parts}"
@@ -1185,6 +1504,8 @@ class RealtimeArmBridge:
                 self._palm_hold[side] = (held[0], held[1] + self.frame_dt)
         normalized, world = _hand_frames(hands)
         arms = _side_map(arms_world)
+        # 「你的两条手臂是否镜像」——只记数字，不参与控制（见 SYMMETRY_SAME_SIDE_DEG）。
+        self._note_symmetry(arms)
         inputs = {}
         for side in self.sides:
             inputs[side] = self._frame_inputs(side, arms.get(side), normalized.get(side),
@@ -1224,6 +1545,66 @@ class RealtimeArmBridge:
             "reason": reason,
         }
 
+    @staticmethod
+    def _mirror_across(vector, axis) -> np.ndarray:
+        """``vector`` 相对「法向 = ``axis`` 的平面」的镜像（只反掉沿 ``axis`` 的那一维）。"""
+        values = np.asarray(vector, dtype=np.float64)
+        normal = np.asarray(axis, dtype=np.float64)
+        return values - 2.0 * float(np.dot(values, normal)) * normal
+
+    def _note_symmetry(self, arms) -> None:
+        """记一帧「两条上臂是不是镜像」（度，见 ``SYMMETRY_SAME_SIDE_DEG``）。
+
+        ``lateral`` 用**你这一帧的两肩连线**现算，所以这个量与 ``AxisMap``、与相机外参都无关：
+        它只回答「输入本身是不是镜像手势」。两侧缺任一侧就**不记**（不拿单侧数据凑数）。
+        只攒数字，不参与任何控制量。
+        """
+        left, right = arms.get("left"), arms.get("right")
+        if not (_is_points(left, (3, 3)) and _is_points(right, (3, 3))):
+            return
+        left = np.asarray(left, dtype=np.float64)
+        right = np.asarray(right, dtype=np.float64)
+        lateral = _unit_direction(left[0] - right[0])
+        u_left = _unit_direction(left[1] - left[0])
+        u_right = _unit_direction(right[1] - right[0])
+        if lateral is None or u_left is None or u_right is None:
+            return
+        mirrored = _unit_direction(self._mirror_across(u_right, lateral))
+        if mirrored is None:
+            return
+        cosine = float(np.dot(u_left, mirrored))
+        deviation = float(np.degrees(np.arccos(max(-1.0, min(1.0, cosine)))))
+        if len(self._symmetry) < SYMMETRY_MAX_SAMPLES:
+            self._symmetry.append(deviation)
+        else:
+            self._symmetry_extra += 1
+
+    def symmetry_summary(self) -> dict:
+        """「你的两条手臂是否镜像」的报告段（度）。见 ``SYMMETRY_SAME_SIDE_DEG``。
+
+        ``median_deg`` 小 -> 输入是镜像手势，桥会如实给出镜像的两条手臂；大 -> 两侧朝同一边
+        摆（或一侧手点被挡/跑偏），桥只能照抄。两种情况的处理完全不同，所以必须能分开看。
+        """
+        samples = list(self._symmetry)
+        if not samples:
+            return {"frames": 0, "frames_not_sampled": self._symmetry_extra,
+                    "median_deg": None, "p90_deg": None, "max_deg": None,
+                    "same_side_frames": 0, "threshold_deg": SYMMETRY_SAME_SIDE_DEG,
+                    "note": "no frame had both arms usable"}
+        values = np.asarray(samples, dtype=np.float64)
+        median = float(np.median(values))
+        note = ("both arms were mirror images of each other (the bridge copies that as is)"
+                if median <= SYMMETRY_SAME_SIDE_DEG else
+                "both arms moved the same way instead of as mirror images: the bridge can only "
+                "copy that (a hidden/misdetected side or a gesture that is not mirrored)")
+        return {"frames": len(samples), "frames_not_sampled": self._symmetry_extra,
+                "median_deg": round(median, 2),
+                "p90_deg": round(float(np.percentile(values, 90.0)), 2),
+                "max_deg": round(float(values.max()), 2),
+                "same_side_frames": int(np.count_nonzero(
+                    values > SYMMETRY_SAME_SIDE_DEG)),
+                "threshold_deg": SYMMETRY_SAME_SIDE_DEG, "note": note}
+
     def _collect_calibration(self, side, data) -> None:
         """中性姿势采样：只取有效帧，攒够 ``calibration_frames`` 帧后取中位数。
 
@@ -1245,6 +1626,14 @@ class RealtimeArmBridge:
         palm_frame = palm_orientation_frame(data.get("world_hand"), points, side)
         if palm_frame is not None:
             self._palm_samples[side] += 1
+            self._palm_seen[side] = True
+        # 等手点：这一侧还没见过掌面基时先不计数（样本照旧追加，跟手不受影响）。
+        # 见 ``PALM_WAIT_FRAMES``：手臂第 1 帧就有、手部 21 点要 5-7 s，不等就必然
+        # 「窗口在手伸进来之前烧完」。
+        if self._waiting_for_palm(side, palm_frame):
+            self._palm_wait[side] += 1
+        else:
+            self._counted[side] += 1
         self._samples[side].append((points[2] - points[0], arm_reach(points),
                                     wrist_orientation_frame(points),
                                     points[1] - points[0], points[2] - points[1],
@@ -1253,6 +1642,24 @@ class RealtimeArmBridge:
                                     palm_frame))
         self._refresh_neutral(side)
 
+    def _waiting_for_palm(self, side, palm_frame) -> bool:
+        """这一帧要不要**放过**（只追加样本、不计入标定），就为了等一次手点。
+
+        只在 ``track`` 模式下、且这一侧**从没见过**掌面基、且还没等满 ``palm_wait_frames``
+        时成立。``hold`` 模式永远 False（历史行为逐字不变）。
+        """
+        if palm_frame is not None:
+            return False
+        if self.calibrate_mode != "track":
+            return False
+        if self._palm_seen[side]:
+            return False
+        return self._palm_wait[side] < self.palm_wait_frames
+
+    def _samples_enough(self, side) -> bool:
+        """这一侧标定够不够：按**计入的帧数**算（``_counted``，见 ``PALM_WAIT_FRAMES``）。"""
+        return self._counted[side] >= self.calibration_frames
+
     def _refresh_neutral(self, side) -> None:
         """把已有样本的中位数写进 ``neutral[side]``；攒够 ``calibration_frames`` 才算完成。
 
@@ -1260,11 +1667,14 @@ class RealtimeArmBridge:
         profile 的中性工作点上（历史行为，改前逐字一致）。
         ``track``：样本有 1 帧就发布一个**临时**中性（``complete`` 仍为 False），攒够帧后
         自动收敛成与 ``hold`` 同一个终值（同一批样本、同一个中位数）。
+
+        「攒够」按 ``_counted`` 算而不是 ``len(samples)``：为了等手点而放过的那一帧也是
+        样本（临时中性要用），但不能算作标定进度（见 ``PALM_WAIT_FRAMES``）。
         """
         samples = self._samples[side]
         if not samples:
             return
-        enough = len(samples) >= self.calibration_frames
+        enough = self._samples_enough(side)
         if not enough and self.calibrate_mode != "track":
             return
         entry = self.neutral[side]
@@ -1275,9 +1685,30 @@ class RealtimeArmBridge:
         entry["offset"] = np.median(offsets, axis=0)
         entry["reach"] = float(np.median(reaches))
         entry["orientation"] = _average_rotation([sample[2] for sample in samples])
-        # 掌面基单独取均值：全是 None（这一侧一直没手点 / 老记录）就给 None，
+        # 掌面基取**最大一致簇**的均值（见 ``_palm_cluster``）：正反两拨一起平均只会
+        # 得到一个既不正也不反的垃圾基准。全是 None（这一侧一直没手点 / 老记录）就给 None，
         # 姿态那边自动退回三点基 —— 绝不把「没有」当成单位阵。
-        entry["orientation_palm"] = _average_rotation([sample[5] for sample in samples])
+        palms = [sample[5] for sample in samples if sample[5] is not None]
+        basis, spread, outliers = _palm_cluster(palms)
+        # 簇外散度：散出去的那几帧相对基准有多远（0 = 全部帧都进了一个簇）。
+        overall = _rotation_spread_deg([palm for palm in palms], basis)
+        # 样本不够 / 彼此不一致 -> 这份基准不可用（见 PALM_MIN_SAMPLE_FRACTION）：
+        # 现场「右手卡住不动、手腕怎么拧都不对」就是拿 12/30 帧凑出来的基准驱动腕链。
+        # ``samples`` 只数簇内的帧：散出去的几帧本来就不该算「这一侧采到了」。
+        palm_note = self._palm_basis_note(side, len(palms) - outliers, spread, overall)
+        entry["orientation_palm"] = None if (palm_note or basis is None) else basis
+        #: 这份基准是「标定那一次采的」还是「运行中补采的迟到基准」（见 ``PALM_LATE_FRAMES``）。
+        #: 空串 = 没有可用基准（``orientation_palm`` 为 None）。
+        entry["palm_reference_source"] = ("" if entry["orientation_palm"] is None else "neutral")
+        #: 迟到基准是在第几帧采的（``palm_reference_source="late"`` 时才有意义）。
+        entry["palm_reference_frame"] = None
+        #: 这几帧掌面基相对基准的最大夹角（度）：大于 ``PALM_MAX_SPREAD_DEG`` = 标定时手在动 /
+        #: 半遮挡，均值不代表任何一帧。现场只能从这一列看出「基是凑出来的」。
+        entry["palm_spread_deg"] = round(overall, 2)
+        #: 掌面基为什么不可用（空串 = 能用 / 这一侧没有手点）。
+        entry["palm_note"] = palm_note
+        #: 有掌面基却被判「不在多数簇里」的帧数（掌面翻号 / 半遮挡，见 ``_palm_cluster``）。
+        entry["palm_outliers"] = int(outliers)
         entry["upper"] = np.median(uppers, axis=0)
         entry["fore"] = np.median(fores, axis=0)
         entry["samples"] = int(len(samples))
@@ -1285,6 +1716,79 @@ class RealtimeArmBridge:
         #: 全是 ``three_point`` 是看不出来的，要这一列才知道「标定时机不对」）。
         entry["palm_samples"] = int(self._palm_samples[side])
         entry["complete"] = bool(enough)
+
+    def _acquire_palm_reference(self, side, data) -> None:
+        """中性里没有掌面基时，运行中补采一次「迟到基准」（见 ``PALM_LATE_FRAMES``）。
+
+        判据是**连续** ``PALM_LATE_FRAMES`` 帧、每帧与前几帧的夹角都不超过
+        ``PALM_LATE_SPREAD_DEG``：断帧 / 一致性被打破就整窗清空重来。这条不是为了
+        「把噪声平均掉」，而是为了确认「人此刻是站着不动的」—— 零点取在这一刻，只有
+        静止时才谈得上零点。
+
+        采到之后写进 ``neutral[side]``（与 ``_refresh_neutral`` 同一组键），于是
+        ``_raw_orientation`` 从下一帧起就走 ``palm_normal`` 那条路，旋前/旋后**真的**
+        进得去。`palm_reference_source="late"` / `palm_reference_frame` 如实记下它不是
+        标定那一帧，报告与 CLI 都能分辨。
+
+        为什么不在标定期间采：``_refresh_neutral`` 每帧都重写 ``orientation_palm``，
+        采到的值下一帧就被盖掉（所以 ``self.calibrating`` 时直接返回）。
+        """
+        if self.orientation == "off":
+            return
+        entry = self.neutral.get(side)
+        if entry is None or self.calibrating or not self._has_neutral(side):
+            return
+        buffer = self._palm_late[side]
+        if entry.get("orientation_palm") is not None:
+            # 已经有基准（标定那次采的，或本侧已经补采过）：这个窗口不再需要。
+            buffer.clear()
+            return
+        frame = palm_orientation_frame(data.get("world_hand"), data.get("arm"), side)
+        if frame is None:
+            buffer.clear()
+            return
+        if buffer and _rotation_spread_deg(buffer + [frame], frame) > PALM_LATE_SPREAD_DEG:
+            # 这一帧和窗口里已经攒下的不一致：窗口作废、从这一帧重新开始数。
+            buffer.clear()
+        buffer.append(frame)
+        if len(buffer) < PALM_LATE_FRAMES:
+            return
+        basis = _average_rotation(buffer)
+        if basis is None:
+            buffer.clear()
+            return
+        entry["orientation_palm"] = basis
+        entry["palm_reference_source"] = "late"
+        entry["palm_reference_frame"] = int(self.frames)
+        entry["palm_spread_deg"] = round(_rotation_spread_deg(buffer, basis), 2)
+        # 这个零点取在**此刻**，所以「此刻你的前臂方向」与中性那一刻差多少，腕就带着
+        # 多少度的固定偏移（相对映射本来就是这样：零点挪了，读数就挪了）。必须报出来 ——
+        # 现场看到「腕立起来时是歪的」要能对上这个数，而不是以为桥又坏了。
+        arm = data.get("arm")
+        fore_now = _unit_direction(None if arm is None else np.asarray(arm)[2] - np.asarray(arm)[1])
+        fore_rest = _unit_direction(entry.get("fore"))
+        entry["palm_reference_pose_deg"] = (None if fore_now is None or fore_rest is None
+                                            else round(_angle_between_deg(fore_now, fore_rest), 1))
+        # 判死的那条理由已经不成立了：现在有基准，且它是刚刚逐帧核对过的。
+        entry["palm_note"] = ""
+        self.counts["palm_late"][side] += 1
+        buffer.clear()
+
+    def palm_reference_note(self, side) -> str:
+        """迟到基准采到了就返回一行说明（空串 = 没有迟到基准）。
+
+        CLI 用它打一条 ``[INFO]``：不解释的话，现场看到「腕突然开始跟手拧了」会
+        以为是自己按错了什么键 —— 实际是这一侧第 N 帧才第一次看见稳定的手。
+        """
+        entry = self.neutral.get(side) or {}
+        if entry.get("palm_reference_source") != "late":
+            return ""
+        offset = entry.get("palm_reference_pose_deg")
+        suffix = ("" if offset is None else
+                  f", {offset:.0f} deg away from the calibration pose"
+                  f" (the wrist reads zero from that pose)")
+        return (f"{side} palm reference acquired at frame {entry.get('palm_reference_frame')} "
+                f"(the neutral had none){suffix}: pronation now tracks twists from this pose")
 
     def _guard_direction(self, side, upper, fore):
         """单帧方向变化超过人手臂的物理上限 -> 判为关键点跳变，保持上一帧。
@@ -1332,6 +1836,9 @@ class RealtimeArmBridge:
             # 跳变护栏当成跳变（实测左臂 30% 的帧被判跳变，一部分就是这么来的）。
             self._last_direction.pop(side, None)
             self._glitch_streak.pop(side, None)
+        # 中性里没有掌面基时，在这里补采一次「迟到基准」（见 ``PALM_LATE_FRAMES``）：
+        # 放在姿态计算之前，采到的那一帧起 ``_raw_orientation`` 就走掌面基。
+        self._acquire_palm_reference(side, data)
         if self._has_neutral(side) and data["arm"] is not None:
             points = data["arm"]
             offset = points[2] - points[0]
@@ -2006,11 +2513,18 @@ class RealtimeArmBridge:
             # 三台机器人一动不动，报告里却看不到这一点。写进来，下次先看数字再猜。
             "calibrate_mode": self.calibrate_mode,
             "calibration_frames": self.calibration_frames,
+            # 等手点的上限（帧；0 = 不等）。见 ``PALM_WAIT_FRAMES``：手臂第 1 帧就有、
+            # 手部 21 点要 5-7 s，不等就是「窗口在手伸进来之前烧完」。
+            "palm_wait_frames": self.palm_wait_frames,
+            "palm_wait_frames_used": {side: self._palm_wait[side] for side in self.sides},
             "calibration_progress": {side: list(value) for side, value
                                      in self.calibration_progress().items()},
             # 2026-10-13 三个护栏：行程等比缩 / 横向护栏 / 标定可信度。都在报告里留痕，
             # 免得下一次看数字的人以为 gain 1.4 那种值真是"算"出来的。
             "travel_mode": self.travel_mode,
+            # 「你的两条手臂是不是镜像」：0 度左右 = 输入是镜像手势（桥如实照抄），
+            # 大 = 两侧朝同一边摆/一侧手点跑偏（见 SYMMETRY_SAME_SIDE_DEG）。
+            "operator_symmetry": self.symmetry_summary(),
             "lateral_guard_m": self.lateral_guard_m,
             "gain_quality_guard": self.gain_quality_guard,
             "min_plausible_reach_m": self.min_plausible_reach_m,
@@ -2059,6 +2573,13 @@ class RealtimeArmBridge:
                                                    self._segment_scales(profile, side)])
                                       for side in self.sides}
                                for name, profile in self.profiles.items()},
+            #: 哪一侧的 k 被判为不可用、为什么（空串 = 能用 / 还没标定）。见
+            #: ``SEGMENT_LENGTH_BAND_M``：这是「标定那一场手臂被压扁」的唯一事后证据。
+            "segment_scale_notes": {side: self.segment_scale_note(side)
+                                    for side in self.sides},
+            #: 左右段长差太多时的原因（空串 = 正常 / 数据不够）。见
+            #: ``SEGMENT_ASYMMETRY_MAX``：这条与机器人无关，只判你的左右臂是否对称。
+            "segment_asymmetry_note": self.segment_asymmetry_note(),
             "neutral_base_m": {name: {side: list(self._neutral(profile, side))
                                       for side in self.sides}
                                for name, profile in self.profiles.items()},
@@ -2079,6 +2600,24 @@ class RealtimeArmBridge:
                                "palm_samples": self.neutral[side].get("palm_samples", 0),
                                "orientation_palm_recorded":
                                    self.neutral[side].get("orientation_palm") is not None,
+                               # 掌面基被判不可用的原因 + 那几帧彼此的散度（空串/None = 能用
+                               # 或这一侧没手点）：与 ``palm_samples`` 一起看，就是
+                               # 「有样本却没有基」的那张单子（见 PALM_MIN_SAMPLE_FRACTION）。
+                               "palm_note": self.neutral[side].get("palm_note", ""),
+                               "palm_spread_deg": self.neutral[side].get("palm_spread_deg"),
+                               # 掌面基的来路：``neutral`` = 标定那次采的，``late`` =
+                               # 中性没有、运行中补采的（``palm_reference_frame`` 是第几帧），
+                               # 空串 = 这一侧整场没有掌面基（旋前不跟，见 PALM_LATE_FRAMES）。
+                               "palm_reference_source":
+                                   self.neutral[side].get("palm_reference_source", ""),
+                               "palm_reference_frame":
+                                   self.neutral[side].get("palm_reference_frame"),
+                               # 迟到基准取零点时，前臂方向与标定那一刻差多少度：腕从那个
+                               # 姿势起读数为零，所以这个数就是「腕立正时的固定偏移」。
+                               "palm_reference_pose_deg":
+                                   self.neutral[side].get("palm_reference_pose_deg"),
+                               # 判死时被踢出多数簇的帧数（掌面翻号 / 半遮挡，见 _palm_cluster）。
+                               "palm_outliers": self.neutral[side].get("palm_outliers", 0),
                                "complete": self.neutral[side]["complete"]}
                         for side in self.sides},
             # 「肘跟手」（``--arm-elbow-follow operator``）用的两个操作者量：中性那一帧的
@@ -2098,6 +2637,8 @@ class RealtimeArmBridge:
                        # 掌面基丢帧、沿用上一帧掌面旋转的帧数（见 ``PALM_HOLD_S``）：
                        # 它占 ``frames`` 的比例就是现场的手点丢帧率。
                        "palm_held": dict(self.counts["palm_held"]),
+                       # 运行中补采到迟到基准的次数（0/1；见 ``PALM_LATE_FRAMES``）。
+                       "palm_late": dict(self.counts["palm_late"]),
                        # 姿态目标被限速削过的帧数（见 ``MAX_ORIENTATION_RATE_DEG_S``）。
                        "orientation_clamped": dict(self.counts["orientation_clamped"]),
                        "clamped": dict(self.counts["clamped"]),
@@ -2120,6 +2661,7 @@ class RealtimeArmBridge:
         self._last_state = {side: None for side in self.sides}
         self._last_direction = {}
         self._palm_hold = {side: None for side in self.sides}
+        self._palm_late = {side: [] for side in self.sides}
         self._last_orientation = {}
         self.counts = {"frames": 0,
                        "valid": {side: 0 for side in self.sides},
@@ -2127,6 +2669,7 @@ class RealtimeArmBridge:
                        "fallback": {side: 0 for side in self.sides},
                        "oriented": {side: 0 for side in self.sides},
                        "palm_held": {side: 0 for side in self.sides},
+                       "palm_late": {side: 0 for side in self.sides},
                        "orientation_clamped": {side: 0 for side in self.sides},
                        "clamped": {side: 0 for side in self.sides},
                        "guarded": {side: 0 for side in self.sides},
@@ -2142,6 +2685,9 @@ class RealtimeArmBridge:
             self._samples = {side: [] for side in self.sides}
             self.neutral = {side: _neutral_default() for side in self.sides}
             self._palm_samples = {side: 0 for side in self.sides}
+            self._palm_seen = {side: False for side in self.sides}
+            self._palm_wait = {side: 0 for side in self.sides}
+            self._counted = {side: 0 for side in self.sides}
 
 
 def _round_or_none(value, digits: int):

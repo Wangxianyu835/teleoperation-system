@@ -92,7 +92,8 @@ class ArmSceneDriver:
                  elbow_recovery_deg=None, elbow_recovery_margin_deg=None,
                  elbow_recovery_cooldown=None, shoulder_anchors=None,
                  shoulder_anchor_key: str = "upper", lock_others: bool = False,
-                 orientation_scope: str = "wrist", wrist_joint_step_deg=None):
+                 orientation_scope: str = "wrist", wrist_joint_step_deg=None,
+                 ik_solver: str = "pybullet"):
         self.scene = scene
         self.p = scene.p
         self.cid = scene.cid
@@ -175,6 +176,9 @@ class ArmSceneDriver:
                 settings["elbow_recovery_cooldown"] = int(self.elbow_recovery_cooldown)
             settings["lock_others"] = self.lock_others
             settings["orientation_scope"] = self.orientation_scope
+            #: 求解后端（``arm_ik.IK_SOLVERS``）：``"paper"`` = TeleOpBench 求解器的移植，
+            #: 见 ``simulation/paper_arm_ik.py``。
+            settings["ik_solver"] = str(ik_solver)
             #: 腕链关节每帧的步长上限（度，``None`` = 各 adapter 自己的默认 = 关）。见
             #: ``arm_ik.MAX_WRIST_JOINT_STEP_DEG``：朝向上限守住了但单个关节仍能跳 200 度。
             if wrist_joint_step_deg is not None:
