@@ -1260,6 +1260,109 @@ class OrientationScopeTests(unittest.TestCase):
 
 @unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
+class HandBaseOrientationTests(unittest.TestCase):
+    """Target the visible native hand frame instead of the wrist-link frame.
+
+    h1_2 mounts the hand onto the wrist through a fixed 90-degree rotation; g1 and
+    gr1_t2 also have their own palm-axis conventions. Targeting the wrist link thus
+    leaves the visible palm vertical when the operator palm is horizontal. These
+    tests use the measured native finger/thumb/palm axes and the fixed mount.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from teleoperation.applications.three_robot_scene import ThreeRobotHandScene
+        from teleoperation.simulation.arm_scene_driver import ArmSceneDriver
+
+        cls.scene = ThreeRobotHandScene(sides=SIDES, gui=False)
+        cls.driver = ArmSceneDriver(
+            cls.scene, sides=SIDES, ik_mode="pose", orientation_scope="wrist",
+            ik_solver="paper")
+        cls.driver.step(3)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.driver = None
+        cls.scene.close()
+
+    @staticmethod
+    def _unit(vector):
+        vector = np.asarray(vector, dtype=np.float64)
+        return vector / float(np.linalg.norm(vector))
+
+    @staticmethod
+    def _angle(first, second):
+        return math.degrees(math.acos(float(np.clip(
+            np.asarray(first) @ np.asarray(second), -1.0, 1.0))))
+
+    def reset_to_load_pose(self, adapter, side):
+        for index, _name in adapter.arm[side]:
+            adapter.p.resetJointState(
+                adapter.body, index, float(adapter.hold[index]),
+                physicsClientId=adapter.cid)
+        getattr(adapter, "_paper_ik_cache", {}).pop(side, None)
+
+    def desired_frame(self, adapter, side):
+        """x along the robot forearm and z as horizontal/vertical as the base allows."""
+        points = {name: adapter.to_base(point)
+                  for name, point in adapter.arm_points(side).items()}
+        x_axis = self._unit(np.asarray(points["wrist"]) - np.asarray(points["elbow"]))
+        source = np.array([0.0, 0.0, 1.0])
+        if abs(float(source @ x_axis)) > 0.9:
+            source = np.array([1.0, 0.0, 0.0])
+        z_axis = self._unit(source - float(source @ x_axis) * x_axis)
+        y_axis = np.cross(z_axis, x_axis)
+        return np.column_stack([x_axis, y_axis, z_axis]), points["wrist"]
+
+    def test_each_native_hand_trips_back_to_its_current_wrist_pose(self):
+        for robot, adapter in self.driver.ik.items():
+            for side in SIDES:
+                frame = adapter.hand_geometry_base(side)
+                self.assertIsNotNone(frame, f"{robot}/{side}")
+                target = adapter.hand_target_orientation(side, frame)
+                current = adapter.measure(side)[1]
+                difference = adapter.p.getDifferenceQuaternion(
+                    current, target, physicsClientId=adapter.cid)
+                error = math.degrees(2.0 * math.acos(
+                    min(1.0, abs(float(difference[3])))))
+                with self.subTest(robot=robot, side=side):
+                    self.assertLess(error, 0.1)
+
+    def test_the_hand_follows_the_forearm_direction(self):
+        """Straight raised arm: native finger direction must follow the forearm."""
+        for robot, adapter in self.driver.ik.items():
+            for side in SIDES:
+                desired, wrist = self.desired_frame(adapter, side)
+                self.reset_to_load_pose(adapter, side)
+                target = adapter.hand_target_orientation(side, desired)
+                adapter.solve(side, wrist, source="base", orientation=target,
+                              orientation_frame="absolute")
+                achieved = adapter.hand_geometry_base(side)
+                with self.subTest(robot=robot, side=side):
+                    self.assertLess(self._angle(desired[:, 0], achieved[:, 0]),
+                                    12.0)
+
+    def test_the_target_palm_normal_is_reached_unless_the_wrist_is_at_its_stop(self):
+        for robot, adapter in self.driver.ik.items():
+            for side in SIDES:
+                desired, wrist = self.desired_frame(adapter, side)
+                self.reset_to_load_pose(adapter, side)
+                target = adapter.hand_target_orientation(side, desired)
+                adapter.solve(side, wrist, source="base", orientation=target,
+                              orientation_frame="absolute")
+                achieved = adapter.hand_geometry_base(side)
+                normal_error = self._angle(desired[:, 2], achieved[:, 2])
+                at_limit = any(cell["at_limit"]
+                               for cell in adapter.wrist_usage(side).values())
+                with self.subTest(robot=robot, side=side):
+                    if at_limit:
+                        self.assertLess(normal_error, 75.0)
+                    else:
+                        self.assertLess(normal_error, 15.0)
+
+
 class PoseModeOnEveryRobotTests(unittest.TestCase):
     """``ik_mode="pose"`` 覆盖：g1 / gr1_t2 的腕到底能不能转（2026-11-16 实测）。
 

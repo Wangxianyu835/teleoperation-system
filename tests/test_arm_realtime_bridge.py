@@ -43,6 +43,7 @@ from teleoperation.simulation.arm_realtime import (
     SYMMETRY_SAME_SIDE_DEG,
     AxisMap,
     RealtimeArmBridge,
+    anatomical_hand_frame,
     arm_reach,
     elbow_bend_degrees,
     load_neutral,
@@ -1186,12 +1187,12 @@ class WristLocalOrientationTests(unittest.TestCase):
                                40.0, delta=1.0)
 
     def test_the_mode_name_is_validated(self):
-        self.assertEqual(ORIENTATION_MODES, ("wrist", "hand"))
+        self.assertEqual(ORIENTATION_MODES, ("hand_base", "wrist", "hand"))
         with self.assertRaises(ValueError):
             RealtimeArmBridge(PROFILES, sides=("right",),
                               orientation_mode="handish")
         args = build_parser().parse_args([])
-        self.assertEqual(args.arm_orientation_mode, "wrist")
+        self.assertEqual(args.arm_orientation_mode, "hand_base")
         self.assertEqual(args.arm_orientation_scope, "wrist")
 
     def test_the_helper_is_identity_under_a_rigid_transform(self):
@@ -1206,6 +1207,35 @@ class WristLocalOrientationTests(unittest.TestCase):
             moved_hand, moved_arm, forearm.T @ palm, "right")
         self.assertIsNotNone(relative)
         np.testing.assert_allclose(relative, np.eye(3), atol=1e-12)
+
+    def test_hand_base_mode_exposes_the_current_palm_frame(self):
+        """Absolute hand mode must give IK the current palm axes, not only a delta."""
+        bridge = RealtimeArmBridge(
+            PROFILES, sides=("right",), calibration_frames=self.FRAMES,
+            orientation="on", orientation_mode="hand_base", **self.RATE_OFF)
+        for _ in range(self.FRAMES):
+            bridge.update(arms_world={"right": bent_arm("right")},
+                          hands={"world_right": open_hand()}, frame_dt=0.1)
+        hand = twisted_hand("right", 25.0)
+        arm = bent_arm("right")
+        bridge.update(arms_world={"right": arm},
+                      hands={"world_right": hand}, frame_dt=0.1)
+        expected = bridge.axis_map.matrix() @ anatomical_hand_frame(
+            hand, arm, "right")
+        np.testing.assert_allclose(
+            bridge.hand_frame_target()["right"], expected, atol=1e-12)
+        bridge.update(arms_world={"right": arm}, hands=None, frame_dt=0.1)
+        self.assertIsNone(bridge.hand_frame_target()["right"])
+
+    def test_the_anatomical_frame_puts_thumb_side_on_positive_y_both_hands(self):
+        for side in ("left", "right"):
+            hand = open_hand()
+            frame = anatomical_hand_frame(hand, bent_arm(side), side)
+            thumb = hand[4] - hand[0]
+            thumb /= np.linalg.norm(thumb)
+            with self.subTest(side=side):
+                self.assertGreater(float(frame[:, 1] @ thumb), 0.95)
+                self.assertAlmostEqual(float(np.linalg.det(frame)), 1.0, places=12)
 
 
 class OrientationSlewTests(unittest.TestCase):
@@ -2213,13 +2243,13 @@ class QuickcheckLauncherTests(unittest.TestCase):
                          ["--arm-elbow-follow", "operator",
                           "--arm-orientation", "on",
                           "--arm-orientation-scope", "wrist",
-                          "--arm-orientation-mode", "wrist",
+                          "--arm-orientation-mode", "hand_base",
                           "--arm-ik-mode", "pose"])
         args = build_parser().parse_args(self.launcher.with_field_flags([]))
         self.assertEqual(args.arm_elbow_follow, "operator")
         self.assertEqual(args.arm_orientation, "on")
         self.assertEqual(args.arm_orientation_scope, "wrist")
-        self.assertEqual(args.arm_orientation_mode, "wrist")
+        self.assertEqual(args.arm_orientation_mode, "hand_base")
         self.assertEqual(args.arm_ik_mode, "pose")
 
     def test_your_own_arm_flags_win(self):
@@ -2256,6 +2286,8 @@ class QuickcheckLauncherTests(unittest.TestCase):
                                      "palm_spread_deg": 4.8, "palm_outliers": 1}},
                 "counts": {"palm_late": {"left": 1, "right": 0}},
             },
+            "arm": {"hand_orientation_error_deg": {
+                "h1_2": {"left": 3.2, "right": 4.8}}},
         }, ensure_ascii=False), encoding="utf-8")
         stream = io.StringIO()
         with contextlib.redirect_stdout(stream):
@@ -2265,6 +2297,8 @@ class QuickcheckLauncherTests(unittest.TestCase):
         self.assertIn("3/800 frames same-side", text)
         self.assertIn("late @frame 367, 132.8 deg", text)               # 迟到基准的偏置要露出来
         self.assertIn("left palm basis was learned 132.8 deg", text)     # 超 60 度必须报警
+        self.assertIn("palm/hand axes", text)
+        self.assertIn("h1_2 3.2/4.8 deg", text)
 
 
 class WristTraceColumnTests(unittest.TestCase):

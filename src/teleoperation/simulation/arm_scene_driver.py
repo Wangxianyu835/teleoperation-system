@@ -277,7 +277,8 @@ class ArmSceneDriver:
 
     def apply_each(self, side: str, targets, source: str = "base",
                    orientation=None, orientation_frame: str = "absolute",
-                   elbows=None, elbow_bend_deg=None) -> dict:
+                   elbows=None, elbow_bend_deg=None,
+                   hand_frame=None) -> dict:
         """One frame for one side with a target per robot: ``{robot_type: position}``.
 
         ``elbows`` = optional ``{robot_type: point}`` in the same space: the paper's
@@ -292,6 +293,13 @@ class ArmSceneDriver:
         doing it, and each robot converts the same number through its own measured elbow
         joint and bend slope.  ``None`` (default) leaves the reference exactly where it
         was, so an older caller is byte-for-byte unchanged.
+
+        ``hand_frame`` = current operator palm frame in robot **base** axes
+        (columns: finger direction, thumb side, palm normal). When present, each
+        adapter converts it through its own native hand geometry and fixed wrist
+        mount, then solves for the resulting EE orientation. This targets the
+        visible palm instead of the wrist link and removes each robot's mounting
+        rotation.
 
         Returns ``{robot_type: {"ee": link, "ik_mode": ..., "joints": {name: angle}}}``
         so a demo, a test or a report can state exactly which arm was driven.
@@ -325,15 +333,27 @@ class ArmSceneDriver:
                     1000.0 * float(np.linalg.norm(np.asarray(shift, dtype=np.float64))), 2)
             posture = (None if elbow_bend_deg is None
                        else adapter.posture_from_bend(side, elbow_bend_deg))
+            target_orientation = orientation
+            target_frame = orientation_frame
+            orientation_source = "neutral_relative"
+            if hand_frame is not None and adapter.ik_mode == "pose":
+                target_orientation = adapter.hand_target_orientation(
+                    side, hand_frame, source="base")
+                if target_orientation is not None:
+                    adapter.last_hand_frame_base[side] = np.asarray(
+                        hand_frame, dtype=np.float64).copy()
+                    target_frame = "absolute"
+                    orientation_source = "hand_base"
             values = adapter.solve(side, wanted,
-                                   orientation=orientation, source=source,
-                                   orientation_frame=orientation_frame,
+                                   orientation=target_orientation, source=source,
+                                   orientation_frame=target_frame,
                                    elbow=elbow,
                                    elbow_pass=self.elbow_pass,
                                    posture=posture)
             adapter.apply(side, values)
             reports[robot_type] = {"ee": adapter.ee[side][1],
                                    "ik_mode": adapter.ik_mode,
+                                   "target_orientation_source": orientation_source,
                                    "shoulder_shift_mm": self.shoulder_shift_mm.get(
                                        robot_type, {}).get(side, 0.0),
                                    #: 这一帧交给零空间项的那个参考角（空的 = 历史行为）。
@@ -474,6 +494,11 @@ class ArmSceneDriver:
         return self._per_side(
             lambda adapter, side: round(adapter.orientation_error_deg(side), 2), sides)
 
+    def hand_orientation_errors_deg(self, sides=None) -> dict:
+        """Worst visible-hand axis error for ``hand_base`` targets (degrees)."""
+        return self._per_side(
+            lambda adapter, side: round(adapter.hand_frame_error_deg(side), 2), sides)
+
     def wrist_usage(self, sides=None) -> dict:
         """``{robot: {side: {joint: {"usage", "at_limit"}}}}``: 腕关节还剩多少行程。
 
@@ -557,6 +582,7 @@ class ArmSceneDriver:
                                     for robot_type, entry in self.released.items()},
             "residual_mm": self.residuals_mm(),
             "orientation_error_deg": self.orientation_errors_deg(),
+            "hand_orientation_error_deg": self.hand_orientation_errors_deg(),
             # 腕关节还剩多少行程（``at_limit`` = 这一维就是「转不过去」的物理上限）。
             "wrist_usage": self.wrist_usage(),
             # 姿势：肩/肘/上臂到底有没有参与（论文说肘不用管，这里量它有没有动）；

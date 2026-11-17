@@ -294,9 +294,17 @@ HOLD_REASONS = ("calibrating", "no_pose_landmarks", "reach_below_min", "other")
 #: 自己那根「上臂+前臂」可达球面上，逐轴夹断正是把 g1 的幅度压成 40 mm 的那个上限）。
 MAP_MODES = ("chain", "segments", "posture")
 #: 腕姿态目标的坐标系口径：
-#: ``wrist`` = 手相对前臂的局部旋转（推荐；前臂方向由位置任务负责）；
+#: ``hand_base`` = 直接目标可见手掌的手指/拇指/掌面三轴（CLI 默认）；
+#: ``wrist`` = 手相对前臂的局部旋转（历史实验口径）；
 #: ``hand`` = 历史口径，整只手掌坐标系相对中性的旋转（包含前臂方向变化）。
-ORIENTATION_MODES = ("wrist", "hand")
+ORIENTATION_MODES = ("hand_base", "wrist", "hand")
+#: 21 点掌面基 -> 机器人原生手掌几何轴的逐侧符号。
+#: 掌面基为了左右同手性，左手的 ``y=z*x`` 实际指向小指侧；原生手几何帧的 y 是拇指侧、
+#: z=x*y。左手因此要同时翻 y/z（det 仍为 +1），右手保持原样。
+HAND_SEMANTIC_SIGNS = {
+    "left": np.array([1.0, -1.0, -1.0]),
+    "right": np.array([1.0, 1.0, 1.0]),
+}
 #: 中性标定量出来的「上臂 / 前臂」段长（米）的合理区间，**超出就当标定坏了**。
 #: 为什么需要（2026-11-17 那三场 live 的实测）：``k = 机器人段长 / 你的段长``，而你的段长是
 #: 深度压扁的受害者 —— 同一个人同一天三场的 ``k_前臂`` 分别是 1.02 / 1.34 / **3.79**
@@ -601,6 +609,22 @@ def palm_orientation_frame(hand_world, arm_world, side):
     z_axis = normal / sine
     y_axis = np.cross(z_axis, x_axis)
     return np.stack((x_axis, y_axis, z_axis), axis=1)
+
+
+def anatomical_hand_frame(hand_world, arm_world, side):
+    """21 点手 -> ``[手指方向, 拇指侧, 掌面法向]``，左右都保持右手系。
+
+    ``palm_orientation_frame`` 的第三轴经过左右镜像修正，适合做相对旋转；但它的左手
+    y 轴实际落在小指侧，不能直接套到机器人原生手的“拇指侧”轴。这里只做逐侧符号
+    变换，不重新估法向，轴仍严格正交。
+    """
+    frame = palm_orientation_frame(hand_world, arm_world, side)
+    if frame is None:
+        return None
+    signs = HAND_SEMANTIC_SIGNS.get(side)
+    if signs is None:
+        return None
+    return frame @ np.diag(signs)
 
 
 def relative_palm_rotation(hand_world, arm_world, neutral_frame, side):
@@ -1086,9 +1110,12 @@ class RealtimeArmBridge:
         self.normalise_arm_length = bool(normalise_arm_length)
         self.arm_length_band = (float(arm_length_band[0]), float(arm_length_band[1]))
         self.orientation = orientation
-        #: ``wrist`` 只传“手相对前臂”的局部旋转；``hand`` 保留历史整手坐标系相对旋转。
-        #: CLI 默认 ``wrist``；库默认 ``hand``，避免旧探针和离线 A/B 静默换口径。
+        #: ``hand_base`` 直接目标可见手掌三轴；``wrist`` 只传局部腕旋转；``hand`` 保留
+        #: 历史整手相对旋转。CLI 默认 ``hand_base``；库默认 ``hand``，避免旧探针静默换口径。
         self.orientation_mode = str(orientation_mode)
+        #: 这一帧当前手掌几何坐标系（列 = 指向前 / 拇指侧 / 掌面法向），已由
+        #: ``AxisMap`` 换到机器人基座轴。``hand_base`` 模式直接消费它。
+        self._current_hand_frames = {side: None for side in self.sides}
         #: 掌面基丢帧时沿用上一次掌面旋转的窗口（秒，见 ``PALM_HOLD_S``）。0 = 立即退回三点基。
         if float(palm_hold_s) < 0.0:
             raise ValueError("palm_hold_s must be >= 0 (0 turns the hold off)")
@@ -1579,6 +1606,10 @@ class RealtimeArmBridge:
         for side in self.sides:
             inputs[side] = self._frame_inputs(side, arms.get(side), normalized.get(side),
                                               world.get(side))
+            frame = anatomical_hand_frame(
+                inputs[side].get("world_hand"), inputs[side].get("arm"), side)
+            self._current_hand_frames[side] = (
+                None if frame is None else self.axis_map.matrix() @ frame)
             self._collect_calibration(side, inputs[side])
         self.frames += 1
         self.counts["frames"] = self.frames
@@ -2297,7 +2328,7 @@ class RealtimeArmBridge:
         if entry is None:
             return None, None
         arm = data.get("arm")
-        if self.orientation_mode == "wrist":
+        if self.orientation_mode in ("hand_base", "wrist"):
             # 只取手相对前臂的局部旋转：前臂方向变化已经由 posture/位置 IK 完成，
             # 再塞给腕会让腕替肩肘补偿，甚至顶在限位上。
             relative = relative_palm_wrist_rotation(
@@ -2426,6 +2457,18 @@ class RealtimeArmBridge:
         if self.orientation == "off":
             return {side: None for side in self.sides}
         return {side: (self._last_state.get(side) or {}).get("orientation")
+                for side in self.sides}
+
+    def hand_frame_target(self) -> dict:
+        """Current palm frame in robot-base axes: ``x=fingers, y=thumb, z=normal``.
+
+        This is the absolute target for ``orientation_mode="hand_base"``. Unlike the
+        relative wrist modes it keeps the visible native hand aligned with the mapped
+        operator hand at every pose, including a straight raised arm and a horizontal
+        palm. ``None`` on a side means this frame has no usable pose arm + world hand.
+        """
+        return {side: (None if self._current_hand_frames.get(side) is None
+                       else self._current_hand_frames[side].copy())
                 for side in self.sides}
 
     @staticmethod
@@ -2790,6 +2833,7 @@ class RealtimeArmBridge:
                        "gain_guarded": {side: 0 for side in self.sides},
                        "held_reason": {side: {kind: 0 for kind in HOLD_REASONS}
                                        for side in self.sides}}
+        self._current_hand_frames = {side: None for side in self.sides}
         if recalibrate:
             self._samples = {side: [] for side in self.sides}
             self.neutral = {side: _neutral_default() for side in self.sides}

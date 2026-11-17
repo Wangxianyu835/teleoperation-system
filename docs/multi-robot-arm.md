@@ -3427,3 +3427,67 @@ CLI 在报告里打一行（与 `wrist` / 手臂那些行挨着）：
 报告应为 `orientation_mode=wrist`、`orientation_scope=wrist`，摆臂时 h1_2 的
 `elbow_roll` 不再被前臂运动顶满，专门旋前时腕链的行程和 `orientation_error_deg` 同时变化。
 
+---
+
+### 8.26 手掌不跟前臂、水平掌变竖直：目标必须是“看得见的手”，不是腕连杆（2026-11-17）
+
+#### 8.26.1 8.25 的局部口径为什么仍不对
+
+现场复测给出两句明确症状：
+
+1. 手臂与手掌沿一条直线向上抬，机器人手臂抬起，但手掌没有跟成一条线；
+2. 操作者手掌水平时，机器人手掌竖直。
+
+§8.25 把刚体抬臂时的局部腕目标压成单位阵，意味着“腕连杆保持原来的**世界朝向**”。手虽然
+固定在腕上，但腕为了保持世界朝向会主动反向补偿前臂转动，视觉上正好是“手掌不跟手臂”。
+另一方面，姿态约束一直作用在 `wrist_yaw_link`；实际手掌还经过固定安装：
+
+- h1_2：腕 → `L/R_hand_base_link` 的固定旋转，左右各带 90° 量级安装偏置；
+- gr1_t2：腕端是 `hand_pitch_link`，手掌底座再往下；
+- g1：`hand_palm_link` 同样有自己的掌心轴约定。
+
+因此“腕连杆姿态误差很小”不等于“画面上手掌方向正确”。
+
+#### 8.26.2 新口径：`hand_base`
+
+默认模式改为 `--arm-orientation-mode hand_base`。每台机器人在加载时测量：
+
+    hand_frame_local = 手指方向 / 拇指侧 / 掌面法向（手底座系）
+    hand_mount       = R_ee_neutral^T R_hand_base_neutral
+
+运行时把人手的解剖几何帧（同样是 x=手指方向、y=拇指侧、z=掌面法向）经 `AxisMap`
+映射到机器人基座系，再依次换算：
+
+    R_hand_base_world = R_base_world * HandFrame * hand_frame_local^T
+    R_ee_world        = R_hand_base_world * hand_mount^T
+
+IK 最终求解的是这个 `R_ee_world`，所以约束对象是**实际手掌**，固定安装旋转已在中间消掉。
+`--arm-orientation-scope wrist` 仍只允许腕链吸收姿态误差。
+
+21 点掌面基的左手 `y=z*x` 实际落在小指侧；直接当“拇指侧”会把左手掌面镜像。新增
+`anatomical_hand_frame()`，逐侧使用 `(1,-1,-1) / (1,+1,+1)`，把左手同时翻 y/z，保持
+右手系并对到机器人原生手几何轴。
+
+报告新增：
+
+- `bridge.orientation_mode = "hand_base"`；
+- `arm.hand_orientation_error_deg`：实际手掌三轴与目标三轴的最大夹角；
+- `arm.robots[*].hand_base` / `hand_frame_local`：每侧用了哪个手底座、测到的手掌轴。
+
+#### 8.26.3 验收
+
+| 判据 | 结果 |
+| --- | --- |
+| 六侧原生手掌的当前几何帧回代 `hand_target_orientation()` | EE 四元数回差 `< 0.1°` |
+| 目标手指方向 = 当前机器人前臂方向 | 六侧最大误差约 **1–6°** |
+| 目标掌面法向可兑现的侧 | 误差 `< 15°`；若该侧腕关节已 `at_limit`，测试明确接受物理上限而不是静默判过 |
+| h1_2 右 90° 拧腕离线回放（`wrist_fixture.npz`） | 腕位置残差 **1.5 mm**，EE 姿态误差 **1.4°**，实际手掌轴误差 **1.4°** |
+| `pytest tests/test_arm_realtime_bridge.py -q` | **187 passed**，18 subtests |
+| `pytest tests/test_arm_ik_multi_robot.py -q -k HandBaseOrientationTests` | **3 passed**，18 subtests |
+| `pytest tests -q` | **510 passed, 3 skipped, 464 subtests passed** |
+
+已知边界：g1 左腕在合成“尽量水平掌面”目标中会顶到 `wrist_roll` ±113° 限位，掌面法向仍可
+相差约 65°。这不是固定安装方向算错，而是该构型下三腕自由度装不下目标；报告会同时显示
+`hand_orientation_error_deg` 和 `wrist_usage[*].at_limit`。下一步若要消除这一侧残差，需要在
+“允许肩肘做极小补偿”和“严格只转腕”之间做显式档位，不能静默把整条手臂交出去。
+

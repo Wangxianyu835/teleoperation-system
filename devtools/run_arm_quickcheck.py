@@ -61,7 +61,7 @@ DEFAULT_FRAMES = 900
 FIELD_FLAGS = (("--arm-elbow-follow", "operator"),
                ("--arm-orientation", "on"),
                ("--arm-orientation-scope", "wrist"),
-               ("--arm-orientation-mode", "wrist"),
+               ("--arm-orientation-mode", "hand_base"),
                ("--arm-ik-mode", "pose"))
 
 
@@ -159,7 +159,7 @@ def digest(report: "Path | None") -> None:
                      for robot in (arm_block.get("robots") or {}).values()
                      if isinstance(robot, dict)})
     print(f"  wrist mode    : orientation={mode}, scope={'/'.join(scopes) or '?'}"
-          + ("" if mode == "wrist" and scopes == ["wrist"]
+          + ("" if mode == "hand_base" and scopes == ["wrist"]
              else "  [WARN] not the wrist-first field mode"))
 
     if symmetry:
@@ -198,6 +198,9 @@ def digest(report: "Path | None") -> None:
         print(f"  wrist residual: {_side_pair(arm_block['residual_mm'], 'mm')} (left/right)")
     if arm_block.get("orientation_error_deg"):
         print(f"  orientation   : {_side_pair(arm_block['orientation_error_deg'], 'deg')} (left/right)")
+    if arm_block.get("hand_orientation_error_deg"):
+        print(f"  palm/hand axes: "
+              f"{_side_pair(arm_block['hand_orientation_error_deg'], 'deg')} (left/right)")
     gap = (data.get("arm_forearm_gap_mm") or {}).get("min_mm") or {}
     if gap:
         print("  forearm gap   : "

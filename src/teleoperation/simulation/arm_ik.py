@@ -54,6 +54,12 @@ from teleoperation.simulation.arm_profiles import (
     profile_for,
     resolve_joint_names,
 )
+from teleoperation.simulation.hand_mount import (
+    find_hand_base_link,
+    measure_hand_frame,
+    robot_hand_link_indices,
+)
+from teleoperation.retargeting.arm.wrist_targets import rotation_matrix_to_quaternion
 
 PHYSICS_DT = 1.0 / 240.0
 ARM_FORCE = 200.0
@@ -432,11 +438,37 @@ class PyBulletArmIK:
                      for index in self.indices}
         #: Wrist orientation at build time; the default pose target keeps it.
         self.neutral_orientation = {side: self._orientation(side) for side in self.sides}
+        #: Native hand-base frame and geometric palm axes, measured at load time.
+        #: ``hand_frame_local`` columns are finger direction / thumb side / palm normal
+        #: in the hand-base frame; ``hand_mount`` is the fixed EE -> hand-base rotation.
+        self.hand_base = {}
+        self.hand_frame_local = {}
+        self.hand_mount = {}
+        for side in self.sides:
+            index, name = find_hand_base_link(
+                self.body, self.robot_type, side, self.cid)
+            self.hand_base[side] = (index, name)
+            if index is None:
+                self.hand_frame_local[side] = None
+                self.hand_mount[side] = None
+                continue
+            state = p.getLinkState(self.body, index, computeForwardKinematics=True,
+                                   physicsClientId=self.cid)
+            hand_rotation = np.asarray(
+                p.getMatrixFromQuaternion(state[5]), dtype=np.float64).reshape(3, 3)
+            ee_rotation = np.asarray(
+                p.getMatrixFromQuaternion(self.neutral_orientation[side]),
+                dtype=np.float64).reshape(3, 3)
+            links = robot_hand_link_indices(self.body, side, self.cid)
+            self.hand_frame_local[side] = measure_hand_frame(
+                self.body, state[4], state[5], self.cid, link_indices=links)
+            self.hand_mount[side] = ee_rotation.T @ hand_rotation
         #: Position of each movable joint inside a PyBullet IK solution vector.
         self.position_of = {index: position
                             for position, index in enumerate(self.indices)}
         self.last_target_world = {}
         self.last_orientation = {}
+        self.last_hand_frame_base = {}
         self.last_posture = {}
         #: 这一帧交给「肘位置任务」的世界坐标点（``None`` = 没给，走单目标那条路）。
         self.last_elbow_world = {}
@@ -490,6 +522,66 @@ class PyBulletArmIK:
                                     computeForwardKinematics=True,
                                     physicsClientId=self.cid)
         return tuple(float(value) for value in state[5])
+
+    def base_rotation(self) -> np.ndarray:
+        """World axes of this robot's base, columns = base x/y/z."""
+        _position, orientation = self.p.getBasePositionAndOrientation(
+            self.body, physicsClientId=self.cid)
+        return np.asarray(
+            self.p.getMatrixFromQuaternion(orientation),
+            dtype=np.float64).reshape(3, 3)
+
+    def hand_geometry_base(self, side: str):
+        """Current native-hand geometric frame, expressed in the robot base frame."""
+        index, _name = self.hand_base.get(side, (None, None))
+        local = self.hand_frame_local.get(side)
+        if index is None or local is None:
+            return None
+        state = self.p.getLinkState(self.body, index, computeForwardKinematics=True,
+                                    physicsClientId=self.cid)
+        hand_rotation = np.asarray(
+            self.p.getMatrixFromQuaternion(state[5]), dtype=np.float64).reshape(3, 3)
+        return self.base_rotation().T @ hand_rotation @ local
+
+    def hand_frame_error_deg(self, side: str) -> float:
+        """Worst angular error between the desired and measured visible hand axes."""
+        desired = self.last_hand_frame_base.get(side)
+        actual = self.hand_geometry_base(side)
+        if desired is None or actual is None:
+            return 0.0
+        worst = 0.0
+        for axis in range(3):
+            dot = float(np.clip(desired[:, axis] @ actual[:, axis], -1.0, 1.0))
+            worst = max(worst, degrees(acos(dot)))
+        return float(worst)
+
+    def hand_target_orientation(self, side: str, frame_base, source: str = "base"):
+        """EE-link quaternion that puts the native hand on a desired geometric frame.
+
+        ``frame_base`` uses the same columns as MediaPipe's palm frame:
+        ``x`` = finger/forearm direction, ``y`` = thumb side, ``z`` = palm normal.
+        This is in one robot's base frame. The fixed wrist -> hand-base mount and the
+        native hand's own finger-axis convention are removed here, so the IK no longer
+        leaves the visible palm at the robot's load-time 90-degree mounting offset.
+        """
+        if source != "base":
+            raise ValueError("hand_target_orientation currently accepts source='base'")
+        if frame_base is None:
+            return None
+        if side not in self.sides:
+            raise ValueError(f"{side!r} is not a driven side ({list(self.sides)})")
+        local = self.hand_frame_local.get(side)
+        mount = self.hand_mount.get(side)
+        if local is None or mount is None:
+            return None
+        frame_base = np.asarray(frame_base, dtype=np.float64)
+        if frame_base.shape != (3, 3):
+            raise ValueError(f"frame_base must be 3x3, got {frame_base.shape}")
+        geometry_world = self.base_rotation() @ frame_base
+        hand_base_world = geometry_world @ local.T
+        ee_world = hand_base_world @ mount.T
+        return tuple(float(value) for value in
+                     rotation_matrix_to_quaternion(ee_world))
 
     def _limb_link(self, side: str, keyword: str) -> int:
         """这一侧手臂里名字含 ``keyword`` 的第一个关节索引（= 它的子连杆索引）。
@@ -1701,6 +1793,12 @@ class PyBulletArmIK:
             "metric_offset": list(self.profile.metric_offset),
             "end_effector": {side: {"index": index, "link": link}
                              for side, (index, link) in self.ee.items()},
+            "hand_base": {side: {"index": index, "link": link}
+                          for side, (index, link) in self.hand_base.items()},
+            "hand_frame_local": {
+                side: (None if frame is None else
+                       [[round(float(value), 6) for value in row] for row in frame])
+                for side, frame in self.hand_frame_local.items()},
             "arm_joints": {side: [name for _index, name in entries]
                            for side, entries in self.arm.items()},
             #: 「肘跟手」量到的肘关节、斜率与加载姿势下的夹角（``posture_from_bend`` 用；

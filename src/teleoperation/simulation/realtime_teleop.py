@@ -708,12 +708,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "residual 70.1 -> 14.8 mm (docs/multi-robot-arm.md 8.17.10). Without "
                              "a metric hand it falls back to the 3-point frame above")
     parser.add_argument("--arm-orientation-mode", choices=ORIENTATION_MODES,
-                        default="wrist",
-                        help="wrist (default) sends only the hand's rotation relative to "
-                             "the forearm; forearm direction is already handled by the arm "
-                             "position task. hand keeps the historical full hand-frame "
-                             "rotation relative to neutral, which can make the wrist absorb "
-                             "shoulder/elbow motion and hit its limits")
+                        default="hand_base",
+                        help="hand_base (default) targets the visible robot hand's geometric "
+                             "axes: finger direction follows the mapped operator hand and the "
+                             "palm normal follows the operator palm, with each robot's fixed "
+                             "wrist -> hand mounting rotation removed. wrist keeps the local "
+                             "hand-relative-to-forearm target; hand is the historical full "
+                             "hand-frame relative target")
     parser.add_argument("--arm-elbow-follow", choices=("off", "operator"), default="off",
                         help="null-space posture reference for the arm IK. 'off' (default) = the "
                              "historical behaviour: the build-time neutral, or --arm-rest-poses. "
@@ -1770,6 +1771,10 @@ def run(args) -> int:
                     if args.arm_orientation != "off":
                         _warn_missing_palm_basis(bridge, sides, palm_basis_warned)
                 orientation_by_side = bridge.orientation_target()
+                hand_frames = (
+                    bridge.hand_frame_target()
+                    if args.arm_orientation_mode == "hand_base"
+                    and args.arm_orientation != "off" else None)
                 # 「肘跟手」（``--arm-elbow-follow operator``）：操作者这一帧的肘弯（绝对角）。
                 # 与姿态口径同一个理由单独取一份（这一项机器人无关），缺数据的那一侧是 None，
                 # 于是那一侧如实退回历史行为（不猜、不保持一个假姿势）。
@@ -1785,11 +1790,15 @@ def run(args) -> int:
                 pending = {}
                 for side in sides:
                     per_side = {name: entry[side] for name, entry in targets.items()}
+                    orientation_source = (
+                        "hand_base" if hand_frames is not None
+                        and hand_frames[side] is not None
+                        else orientation_source_label(per_side))
                     positions = {name: target.position for name, target in per_side.items()
                                  if target.position is not None}
                     if len(positions) != len(per_side):
                         pending[side] = {"status": "no_target",
-                                         "ori_source": orientation_source_label(per_side)}
+                                         "ori_source": orientation_source}
                         continue        # 还有机器人没目标：这一侧整侧跳过（保持上一帧）
                     # 肘位置任务（--arm-elbow-task）：只给量到锚点的那几台，缺的退回只喂腕。
                     elbows = {name: target.elbow for name, target in per_side.items()
@@ -1805,13 +1814,15 @@ def run(args) -> int:
                                                     orientation_frame="neutral",
                                                     elbows=elbows,
                                                     elbow_bend_deg=(None if bend_by_side is None
-                                                                    else bend_by_side[side]))
+                                                                    else bend_by_side[side]),
+                                                    hand_frame=(None if hand_frames is None
+                                                                else hand_frames[side]))
                         pending[side] = {"status": "ok", "positions": positions,
                                          "reports": reports,
-                                         "ori_source": orientation_source_label(per_side)}
+                                         "ori_source": orientation_source}
                     except Exception as error:  # noqa: BLE001 - 一台坏不该拖垮整场
                         pending[side] = {"status": f"error:{type(error).__name__}",
-                                         "ori_source": orientation_source_label(per_side)}
+                                         "ori_source": orientation_source}
                         if side not in arm_failures:
                             arm_failures[side] = f"{type(error).__name__}: {error}"
                             print(f"[WARN] {side}: arm IK failed, the arms keep their last "
