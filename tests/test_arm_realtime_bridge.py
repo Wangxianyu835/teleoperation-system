@@ -1220,8 +1220,9 @@ class WristLocalOrientationTests(unittest.TestCase):
         arm = bent_arm("right")
         bridge.update(arms_world={"right": arm},
                       hands={"world_right": hand}, frame_dt=0.1)
-        expected = bridge.axis_map.matrix() @ anatomical_hand_frame(
-            hand, arm, "right")
+        expected = (bridge.axis_map.matrix()
+                    @ anatomical_hand_frame(hand, arm, "right")
+                    @ np.diag([1.0, -1.0, -1.0]))
         np.testing.assert_allclose(
             bridge.hand_frame_target()["right"], expected, atol=1e-12)
         bridge.update(arms_world={"right": arm}, hands=None, frame_dt=0.1)
@@ -2244,12 +2245,14 @@ class QuickcheckLauncherTests(unittest.TestCase):
                           "--arm-orientation", "on",
                           "--arm-orientation-scope", "wrist",
                           "--arm-orientation-mode", "hand_base",
+                          "--arm-hand-roll-deg", "180",
                           "--arm-ik-mode", "pose"])
         args = build_parser().parse_args(self.launcher.with_field_flags([]))
         self.assertEqual(args.arm_elbow_follow, "operator")
         self.assertEqual(args.arm_orientation, "on")
         self.assertEqual(args.arm_orientation_scope, "wrist")
         self.assertEqual(args.arm_orientation_mode, "hand_base")
+        self.assertEqual(args.arm_hand_roll_deg, 180.0)
         self.assertEqual(args.arm_ik_mode, "pose")
 
     def test_your_own_arm_flags_win(self):

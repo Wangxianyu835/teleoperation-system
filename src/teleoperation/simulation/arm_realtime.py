@@ -1027,6 +1027,7 @@ class RealtimeArmBridge:
                  arm_length_band=ARM_LENGTH_BAND,
                  orientation: str = "auto",
                  orientation_mode: str = "hand",
+                 hand_roll_deg: float = 180.0,
                  palm_hold_s: float = PALM_HOLD_S,
                  max_orientation_rate_deg_s: float = MAX_ORIENTATION_RATE_DEG_S,
                  max_orientation_step_deg: float = MAX_ORIENTATION_STEP_DEG,
@@ -1113,6 +1114,18 @@ class RealtimeArmBridge:
         #: ``hand_base`` 直接目标可见手掌三轴；``wrist`` 只传局部腕旋转；``hand`` 保留
         #: 历史整手相对旋转。CLI 默认 ``hand_base``；库默认 ``hand``，避免旧探针静默换口径。
         self.orientation_mode = str(orientation_mode)
+        #: 操作者掌面约定 -> 机器人原生掌面约定的绕手指轴滚转。默认 180°：
+        #: MediaPipe 的掌心正反与机器人原生手掌可视正面相反，若直接映射会出现
+        #: “拇指内侧 vs 外侧、掌面正反互换”。0° 仅用于 A/B。
+        self.hand_roll_deg = float(hand_roll_deg)
+        if not np.isfinite(self.hand_roll_deg):
+            raise ValueError("hand_roll_deg must be finite")
+        self._hand_roll_matrix = np.array(
+            [[1.0, 0.0, 0.0],
+             [0.0, np.cos(np.radians(self.hand_roll_deg)),
+              -np.sin(np.radians(self.hand_roll_deg))],
+             [0.0, np.sin(np.radians(self.hand_roll_deg)),
+              np.cos(np.radians(self.hand_roll_deg))]], dtype=np.float64)
         #: 这一帧当前手掌几何坐标系（列 = 指向前 / 拇指侧 / 掌面法向），已由
         #: ``AxisMap`` 换到机器人基座轴。``hand_base`` 模式直接消费它。
         self._current_hand_frames = {side: None for side in self.sides}
@@ -1609,7 +1622,8 @@ class RealtimeArmBridge:
             frame = anatomical_hand_frame(
                 inputs[side].get("world_hand"), inputs[side].get("arm"), side)
             self._current_hand_frames[side] = (
-                None if frame is None else self.axis_map.matrix() @ frame)
+                None if frame is None
+                else self.axis_map.matrix() @ frame @ self._hand_roll_matrix)
             self._collect_calibration(side, inputs[side])
         self.frames += 1
         self.counts["frames"] = self.frames
@@ -2109,6 +2123,7 @@ class RealtimeArmBridge:
             # three_point 说明掌面基退化了 —— 那时腕对旋前不敏感是"正常"的。
             "orientation_source": state.get("orientation_source"),
             "orientation_mode": self.orientation_mode,
+            "hand_roll_deg": self.hand_roll_deg,
         }
         if state["source"] == SOURCE_HAND and state["hand"] is not None:
             return self._fallback_target(profile, side, state, info)
@@ -2655,8 +2670,11 @@ class RealtimeArmBridge:
             "axis_map": self.axis_map.describe(),
             "orientation": self.orientation,
             "orientation_mode": self.orientation_mode,
+            "hand_roll_deg": self.hand_roll_deg,
             # 姿态目标的口径：相对中性（每台各自乘自己的中性 EE 朝向）。
-            "orientation_frame": "neutral_relative",
+            "orientation_frame": ("native_hand_absolute"
+                                  if self.orientation_mode == "hand_base"
+                                  else "neutral_relative"),
             "normalise_arm_length": self.normalise_arm_length,
             "arm_length_reference_m": self.arm_length_reference,
             # 标定没攒够帧时的口径 + 每侧进度：2026-10-14 现场那场 4 分钟停在 cal=15/30、

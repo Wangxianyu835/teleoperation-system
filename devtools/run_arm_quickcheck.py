@@ -62,6 +62,7 @@ FIELD_FLAGS = (("--arm-elbow-follow", "operator"),
                ("--arm-orientation", "on"),
                ("--arm-orientation-scope", "wrist"),
                ("--arm-orientation-mode", "hand_base"),
+               ("--arm-hand-roll-deg", "180"),
                ("--arm-ik-mode", "pose"))
 
 
@@ -155,10 +156,12 @@ def digest(report: "Path | None") -> None:
     print(f"  frames        : {data.get('processed_frames')} at {_num(data.get('fps'))} fps "
           f"({_num(data.get('elapsed_seconds'))} s)")
     mode = bridge.get("orientation_mode", "?")
+    hand_roll = bridge.get("hand_roll_deg", "?")
     scopes = sorted({str(robot.get("orientation_scope", "?"))
                      for robot in (arm_block.get("robots") or {}).values()
                      if isinstance(robot, dict)})
-    print(f"  wrist mode    : orientation={mode}, scope={'/'.join(scopes) or '?'}"
+    print(f"  wrist mode    : orientation={mode}, scope={'/'.join(scopes) or '?'}, "
+          f"hand roll={hand_roll} deg"
           + ("" if mode == "hand_base" and scopes == ["wrist"]
              else "  [WARN] not the wrist-first field mode"))
 
