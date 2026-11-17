@@ -720,6 +720,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "the native robot hand (default 180: fixes the observed palm "
                              "front/back and thumb inward/outward reversal; 0 is the A/B "
                              "baseline)")
+    parser.add_argument("--arm-jitter-filter", choices=("on", "off"), default="on",
+                        help="adaptive low-pass on metric pose points and the hand-frame "
+                             "target (default on): slow/static landmarks are smoothed while "
+                             "fast motion automatically raises the cutoff. off = raw MediaPipe "
+                             "input plus the existing IK slew/weighted filter")
     parser.add_argument("--arm-elbow-follow", choices=("off", "operator"), default="off",
                         help="null-space posture reference for the arm IK. 'off' (default) = the "
                              "historical behaviour: the build-time neutral, or --arm-rest-poses. "
@@ -1647,6 +1652,7 @@ def run(args) -> int:
                 orientation=args.arm_orientation, gains=gains,
                 orientation_mode=args.arm_orientation_mode,
                 hand_roll_deg=args.arm_hand_roll_deg,
+                jitter_filter=(args.arm_jitter_filter == "on"),
                 max_travel_m=(None if args.arm_travel_mm is None
                               else float(args.arm_travel_mm) / 1000.0),
                 travel_mode=args.arm_travel_mode,

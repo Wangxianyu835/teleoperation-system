@@ -63,6 +63,7 @@ FIELD_FLAGS = (("--arm-elbow-follow", "operator"),
                ("--arm-orientation-scope", "wrist"),
                ("--arm-orientation-mode", "hand_base"),
                ("--arm-hand-roll-deg", "180"),
+               ("--arm-jitter-filter", "on"),
                ("--arm-ik-mode", "pose"))
 
 
@@ -157,6 +158,7 @@ def digest(report: "Path | None") -> None:
           f"({_num(data.get('elapsed_seconds'))} s)")
     mode = bridge.get("orientation_mode", "?")
     hand_roll = bridge.get("hand_roll_deg", "?")
+    jitter_filter = bridge.get("jitter_filter", "?")
     scopes = sorted({str(robot.get("orientation_scope", "?"))
                      for robot in (arm_block.get("robots") or {}).values()
                      if isinstance(robot, dict)})
@@ -164,6 +166,7 @@ def digest(report: "Path | None") -> None:
           f"hand roll={hand_roll} deg"
           + ("" if mode == "hand_base" and scopes == ["wrist"]
              else "  [WARN] not the wrist-first field mode"))
+    print(f"  jitter filter : {jitter_filter}")
 
     if symmetry:
         print(f"  operator symm : median {_num(symmetry.get('median_deg'), 2)} deg "

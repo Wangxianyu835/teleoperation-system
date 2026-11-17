@@ -42,12 +42,15 @@ from teleoperation.simulation.arm_realtime import (
     SYMMETRY_MAX_SAMPLES,
     SYMMETRY_SAME_SIDE_DEG,
     AxisMap,
+    AdaptiveArmPointFilter,
+    AdaptiveRotationFilter,
     RealtimeArmBridge,
     anatomical_hand_frame,
     arm_reach,
     elbow_bend_degrees,
     load_neutral,
     palm_orientation_frame,
+    quaternion_angle_deg,
     relative_palm_rotation,
     relative_palm_wrist_rotation,
     relative_wrist_rotation,
@@ -1066,6 +1069,57 @@ class NeutralOrientationTests(unittest.TestCase):
         self.assertEqual(entry.source, "hand")
         self.assertIsNone(entry.orientation)
         self.assertIn("no elbow", entry.info["orientation_source"])
+
+
+class AdaptiveJitterFilterTests(unittest.TestCase):
+    """MediaPipe 慢速噪声的 3 帧中值 + 自适应低通。"""
+
+    DT = 0.14
+
+    @staticmethod
+    def _axis_quaternion(degrees_value):
+        return np.array([np.sin(np.radians(degrees_value) / 2.0),
+                         0.0, 0.0, np.cos(np.radians(degrees_value) / 2.0)])
+
+    def test_a_single_pose_point_spike_is_removed(self):
+        filter_ = AdaptiveArmPointFilter()
+        base = np.array([[0.0, 0.0, 0.0],
+                         [0.1, 0.0, 0.0],
+                         [0.2, 0.0, 0.0]])
+        for _ in range(3):
+            filtered = filter_.update("right", base, self.DT)
+        spike = base.copy()
+        spike[2, 2] += 0.02
+        filtered = filter_.update("right", spike, self.DT)
+        np.testing.assert_allclose(filtered, base, atol=1e-12)
+
+    def test_two_frames_of_real_motion_pass_the_point_filter(self):
+        filter_ = AdaptiveArmPointFilter()
+        base = np.array([[0.0, 0.0, 0.0],
+                         [0.1, 0.0, 0.0],
+                         [0.2, 0.0, 0.0]])
+        stepped = base + np.array([0.0, 0.12, 0.0])
+        for _ in range(3):
+            filter_.update("right", base, self.DT)
+        filter_.update("right", stepped, self.DT)
+        filtered = filter_.update("right", stepped, self.DT)
+        self.assertGreater(float(filtered[1, 1] - base[1, 1]), 0.09)
+
+    def test_a_single_rotation_spike_is_removed_but_motion_passes(self):
+        filter_ = AdaptiveRotationFilter()
+        identity = self._axis_quaternion(0.0)
+        turned = self._axis_quaternion(40.0)
+        for _ in range(3):
+            filter_.update("right", identity, self.DT)
+        held = filter_.update("right", turned, self.DT)
+        self.assertLess(quaternion_angle_deg(held, identity), 1e-6)
+        filter_.update("right", turned, self.DT)
+        moved = filter_.update("right", turned, self.DT)
+        self.assertGreater(quaternion_angle_deg(moved, identity), 30.0)
+
+    def test_the_cli_exposes_the_filter_and_defaults_it_on(self):
+        args = build_parser().parse_args([])
+        self.assertEqual(args.arm_jitter_filter, "on")
 
 
 class WristLocalOrientationTests(unittest.TestCase):
@@ -2246,6 +2300,7 @@ class QuickcheckLauncherTests(unittest.TestCase):
                           "--arm-orientation-scope", "wrist",
                           "--arm-orientation-mode", "hand_base",
                           "--arm-hand-roll-deg", "180",
+                          "--arm-jitter-filter", "on",
                           "--arm-ik-mode", "pose"])
         args = build_parser().parse_args(self.launcher.with_field_flags([]))
         self.assertEqual(args.arm_elbow_follow, "operator")
@@ -2253,6 +2308,7 @@ class QuickcheckLauncherTests(unittest.TestCase):
         self.assertEqual(args.arm_orientation_scope, "wrist")
         self.assertEqual(args.arm_orientation_mode, "hand_base")
         self.assertEqual(args.arm_hand_roll_deg, 180.0)
+        self.assertEqual(args.arm_jitter_filter, "on")
         self.assertEqual(args.arm_ik_mode, "pose")
 
     def test_your_own_arm_flags_win(self):

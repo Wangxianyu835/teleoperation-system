@@ -3482,9 +3482,9 @@ IK 最终求解的是这个 `R_ee_world`，所以约束对象是**实际手掌**
 | 目标手指方向 = 当前机器人前臂方向 | 六侧最大误差约 **1–6°** |
 | 目标掌面法向可兑现的侧 | 误差 `< 15°`；若该侧腕关节已 `at_limit`，测试明确接受物理上限而不是静默判过 |
 | h1_2 右 90° 拧腕离线回放（`wrist_fixture.npz`） | 腕位置残差 **1.5 mm**，EE 姿态误差 **1.4°**，实际手掌轴误差 **1.4°** |
-| `pytest tests/test_arm_realtime_bridge.py -q` | **187 passed**，18 subtests |
+| `pytest tests/test_arm_realtime_bridge.py -q` | **191 passed**，18 subtests |
 | `pytest tests/test_arm_ik_multi_robot.py -q -k HandBaseOrientationTests` | **3 passed**，18 subtests |
-| `pytest tests -q` | **510 passed, 3 skipped, 464 subtests passed** |
+| `pytest tests -q` | **514 passed, 3 skipped, 464 subtests passed** |
 
 已知边界：g1 左腕在合成“尽量水平掌面”目标中会顶到 `wrist_roll` ±113° 限位，掌面法向仍可
 相差约 65°。这不是固定安装方向算错，而是该构型下三腕自由度装不下目标；报告会同时显示
@@ -3521,4 +3521,54 @@ IK 最终求解的是这个 `R_ee_world`，所以约束对象是**实际手掌**
 最后一行是机械行程上限，不是再次翻号：同一报告 `wrist_usage.g1.right.roll.at_limit=true`。
 若现场静态姿势下仍是 180° 反，则先核对摘要 `hand roll=180.0 deg`；若已经显示 180° 但仍
 反，说明该机器人的原生手模型坐标轴需要单独校正，不能再全局翻转。
+
+---
+
+### 8.27 轻微手臂/腕抖动：先分清输入噪声与 IK 抖动（2026-11-17）
+
+#### 8.27.1 现场数字
+
+`outputs/tmp_realtime/arm_quickcheck_20261117_233702.json`（438 帧 / 7.25 fps /
+帧间隔中位 136.9 ms）：
+
+| 量 | 六个机位范围 |
+| --- | --- |
+| 操作者相邻帧命令转角中位 | **3.5–3.9°** |
+| 操作者命令 p90 | **9.3–12.2°** |
+| 操作者命令最大 | **28.8–75.9°** |
+| 机器人上臂实际 jerk 中位 | 0.95–1.26° |
+| 机器人前臂实际 jerk 中位 | 1.47–1.77° |
+| 机器人上臂/前臂 jerk p90 | 3.0–8.7° |
+| `direction_glitch` | 左 7 / 右 5 帧 |
+
+结论：**主要噪声在 MediaPipe pose 输入**，IK 已经把多数尖峰压低；“轻微但持续”的剩余抖动
+来自低帧率下每帧几个度的关键点波动。7 fps 时 1° 的输入变化在画面上停留 137 ms，比 30 fps
+明显得多。腕目标另有 5/22 帧分别触发左/右姿态限速，说明掌面数据也有偶发尖峰。
+
+#### 8.27.2 自适应输入滤波
+
+新增 `--arm-jitter-filter {on,off}`，现场档默认 `on`。两个滤波都在机器人基座映射之前：
+
+1. **3 帧中值 + One-Euro 手臂点滤波**：先选最近三帧逐坐标中值，单帧 3D 关键点尖峰不会
+   进入控制；截止频率 `1.0 + 8.0 * speed_m_s` Hz，真实快速摆臂会随速度自动放开。
+2. **3 帧四元数 medoid + 自适应 SLERP**：单个坏掌面帧被中值拒绝；连续两帧同方向转动才
+   能改变目标。截止频率 `0.8 + 0.01 * speed_deg_s` Hz。
+
+它是**前置滤波**，现有的 IK 输出 `[0.4,0.3,0.2,0.1]` 加权平均、目标斜坡、腕角速度/单帧
+步长上限全部保留。快速动作靠“带宽随速度上升”避免固定强低通的拖影，不是简单把机器人变慢。
+
+报告新增 `bridge.jitter_filter` / `bridge.jitter_filter_params`；快速检查摘要打印：
+
+    jitter filter : True
+
+关闭作 A/B：
+
+    E:\python3.11.7\python.exe devtools\run_arm_quickcheck.py --frames 0 --arm-jitter-filter off
+
+单元判据：
+
+- 单个 20 mm pose 点尖峰：滤波输出与基准点 `allclose(atol=1e-12)`；
+- 连续两帧 12 cm 的真实移动：第二帧至少通过 9 cm；
+- 单帧 40° 掌面跳变：输出仍为单位姿态；连续三帧 40°：输出超过 30°；
+- 90° 拧腕旧回放开启滤波后：腕位置残差 1.5 mm、手掌轴误差约 4.8°。
 

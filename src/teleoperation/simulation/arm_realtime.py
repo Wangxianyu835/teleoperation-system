@@ -250,6 +250,13 @@ MAX_ORIENTATION_RATE_DEG_S = 540.0
 #: 下速率只放 18 度/帧）。要在低帧率下把「真快」与「坏帧」分开，只能等「缓一帧回看」
 #: （给每帧加一帧延迟），本轮没做。
 MAX_ORIENTATION_STEP_DEG = 30.0
+#: 操作者 3D 手臂点的自适应低通（One-Euro 形式）：慢速/静止时多滤，快速运动时
+#: 截止频率随速度上升，避免固定强滤波造成明显拖影。
+ARM_INPUT_FILTER_MIN_CUTOFF_HZ = 1.0
+ARM_INPUT_FILTER_BETA = 8.0
+#: 手掌目标旋转的自适应低通。这里的速度单位是度/秒，所以 beta 比米制位置小。
+HAND_TARGET_FILTER_MIN_CUTOFF_HZ = 0.8
+HAND_TARGET_FILTER_BETA = 0.01
 #: 目标超出行程上限后的做法：``clip`` = 逐轴剪断（**默认**）；``scale`` = 整条位移等比缩到上限。
 #: 2026-10-13 单轴隔离 + 正弦跟随实测（E:\cache\tmp\probe_axis_response.py / probe_sine.py，
 #: 数字写进 docs/multi-robot-arm.md §8.8）：一次真实现场复合位移 (-9.3, +6.4, +24.5) cm
@@ -480,6 +487,142 @@ def _quaternion_scaled(quaternion, fraction: float):
     scaled_half = half * float(min(max(fraction, 0.0), 1.0))
     return np.array([axis[0] * np.sin(scaled_half), axis[1] * np.sin(scaled_half),
                      axis[2] * np.sin(scaled_half), np.cos(scaled_half)], dtype=np.float64)
+
+
+def _filter_alpha(cutoff_hz: float, dt: float) -> float:
+    """First-order low-pass coefficient for ``old + alpha * (new - old)``."""
+    cutoff_hz = max(1e-6, float(cutoff_hz))
+    dt = max(1e-6, float(dt))
+    return float(1.0 - np.exp(-2.0 * np.pi * cutoff_hz * dt))
+
+
+class AdaptiveArmPointFilter:
+    """Per-side One-Euro filter for the three metric pose points.
+
+    MediaPipe pose world points jitter by several degrees per frame while the
+    operator is nearly still. A fixed low-pass removes this but adds obvious lag
+    during intentional motion. The cutoff rises with measured point speed, so slow
+    frames are smoothed while fast reaches stay responsive.
+    """
+
+    def __init__(self, min_cutoff_hz=ARM_INPUT_FILTER_MIN_CUTOFF_HZ,
+                 beta=ARM_INPUT_FILTER_BETA):
+        self.min_cutoff_hz = max(0.0, float(min_cutoff_hz))
+        self.beta = max(0.0, float(beta))
+        self._history = {}
+        self._last_speed = {}
+        self._last_target = {}
+        self._filtered = {}
+
+    def reset(self, side: str) -> None:
+        self._history.pop(side, None)
+        self._last_speed.pop(side, None)
+        self._last_target.pop(side, None)
+        self._filtered.pop(side, None)
+
+    def update(self, side: str, points, dt: float):
+        current = np.asarray(points, dtype=np.float64)
+        if current.shape != (3, 3) or not np.isfinite(current).all():
+            return None
+        previous = self._filtered.get(side)
+        history = self._history.setdefault(side, [])
+        history.append(current.copy())
+        del history[:-3]
+        if previous is None or len(history) == 1:
+            target = current.copy()
+            self._history[side] = [target.copy()]
+            self._last_target[side] = target.copy()
+            self._filtered[side] = current.copy()
+            self._last_speed[side] = 0.0
+            return current.copy()
+        # A one-frame spike is removed by selecting the 3-frame coordinate median.
+        # Persistent motion changes the median by the second frame, so real motion
+        # opens the bandwidth instead of being mistaken for noise forever.
+        target = np.median(np.stack(history), axis=0)
+        last_target = self._last_target.get(side, target)
+        speed = float(np.linalg.norm(target - last_target) / max(1e-6, dt))
+        smooth_speed = 0.7 * self._last_speed.get(side, speed) + 0.3 * speed
+        self._last_speed[side] = smooth_speed
+        if self.min_cutoff_hz <= 0.0:
+            filtered = target.copy()
+        else:
+            cutoff = self.min_cutoff_hz + self.beta * smooth_speed
+            alpha = _filter_alpha(cutoff, dt)
+            filtered = previous + alpha * (target - previous)
+        self._last_target[side] = target.copy()
+        self._filtered[side] = filtered
+        return filtered
+
+
+class AdaptiveRotationFilter:
+    """Per-side quaternion filter whose bandwidth follows angular speed."""
+
+    def __init__(self, min_cutoff_hz=HAND_TARGET_FILTER_MIN_CUTOFF_HZ,
+                 beta=HAND_TARGET_FILTER_BETA):
+        self.min_cutoff_hz = max(0.0, float(min_cutoff_hz))
+        self.beta = max(0.0, float(beta))
+        self._history = {}
+        self._last_speed = {}
+        self._last_target = {}
+        self._filtered = {}
+
+    def reset(self, side: str) -> None:
+        self._history.pop(side, None)
+        self._last_speed.pop(side, None)
+        self._last_target.pop(side, None)
+        self._filtered.pop(side, None)
+
+    @staticmethod
+    def _slerp(first, second, fraction: float):
+        first = np.asarray(first, dtype=np.float64)
+        second = np.asarray(second, dtype=np.float64)
+        if float(np.dot(first, second)) < 0.0:
+            second = -second
+        cosine = float(np.clip(np.dot(first, second), -1.0, 1.0))
+        if cosine > 0.9995:
+            value = first + fraction * (second - first)
+            return value / max(1e-12, float(np.linalg.norm(value)))
+        half = float(np.arccos(cosine))
+        sine = float(np.sin(half))
+        value = (float(np.sin((1.0 - fraction) * half) / sine) * first
+                 + float(np.sin(fraction * half) / sine) * second)
+        return value / max(1e-12, float(np.linalg.norm(value)))
+
+    def update(self, side: str, quaternion, dt: float):
+        current = np.asarray(quaternion, dtype=np.float64).reshape(4)
+        norm = float(np.linalg.norm(current))
+        if not np.isfinite(norm) or norm <= 1e-12:
+            return None
+        current = current / norm
+        previous = self._filtered.get(side)
+        history = self._history.setdefault(side, [])
+        history.append(current.copy())
+        del history[:-3]
+        if previous is None or len(history) == 1:
+            self._history[side] = [current.copy()]
+            self._last_target[side] = current.copy()
+            self._filtered[side] = current.copy()
+            self._last_speed[side] = 0.0
+            return current.copy()
+        # Pick the medoid of three quaternions. A single bad palm frame cannot win
+        # the median; two consecutive frames in a new direction can.
+        target = min(
+            enumerate(history),
+            key=lambda item: (sum(
+                quaternion_angle_deg(item[1], other) for other in history),
+                -item[0]))[1]
+        last_target = self._last_target.get(side, target)
+        speed = quaternion_angle_deg(last_target, target) / max(1e-6, dt)
+        smooth_speed = 0.7 * self._last_speed.get(side, speed) + 0.3 * speed
+        self._last_speed[side] = smooth_speed
+        if self.min_cutoff_hz <= 0.0:
+            filtered = target.copy()
+        else:
+            cutoff = self.min_cutoff_hz + self.beta * smooth_speed
+            filtered = self._slerp(previous, target, _filter_alpha(cutoff, dt))
+        self._last_target[side] = target.copy()
+        self._filtered[side] = filtered
+        return filtered
 
 
 def elbow_bend_degrees(shoulder, elbow, wrist) -> float:
@@ -1028,6 +1171,7 @@ class RealtimeArmBridge:
                  orientation: str = "auto",
                  orientation_mode: str = "hand",
                  hand_roll_deg: float = 180.0,
+                 jitter_filter: bool = False,
                  palm_hold_s: float = PALM_HOLD_S,
                  max_orientation_rate_deg_s: float = MAX_ORIENTATION_RATE_DEG_S,
                  max_orientation_step_deg: float = MAX_ORIENTATION_STEP_DEG,
@@ -1126,6 +1270,10 @@ class RealtimeArmBridge:
               -np.sin(np.radians(self.hand_roll_deg))],
              [0.0, np.sin(np.radians(self.hand_roll_deg)),
               np.cos(np.radians(self.hand_roll_deg))]], dtype=np.float64)
+        #: MediaPipe 慢速抖动的前置自适应滤波。关闭只为 A/B；快速运动时带宽自动上升。
+        self.jitter_filter = bool(jitter_filter)
+        self._arm_filter = AdaptiveArmPointFilter()
+        self._hand_filter = AdaptiveRotationFilter()
         #: 这一帧当前手掌几何坐标系（列 = 指向前 / 拇指侧 / 掌面法向），已由
         #: ``AxisMap`` 换到机器人基座轴。``hand_base`` 模式直接消费它。
         self._current_hand_frames = {side: None for side in self.sides}
@@ -1612,18 +1760,34 @@ class RealtimeArmBridge:
             if held is not None:
                 self._palm_hold[side] = (held[0], held[1] + self.frame_dt)
         normalized, world = _hand_frames(hands)
-        arms = _side_map(arms_world)
+        raw_arms = _side_map(arms_world)
         # 「你的两条手臂是否镜像」——只记数字，不参与控制（见 SYMMETRY_SAME_SIDE_DEG）。
-        self._note_symmetry(arms)
+        self._note_symmetry(raw_arms)
+        arms = dict(raw_arms)
+        if self.jitter_filter:
+            for side in self.sides:
+                filtered = self._arm_filter.update(
+                    side, raw_arms.get(side), self.frame_dt)
+                if filtered is not None:
+                    arms[side] = filtered
         inputs = {}
         for side in self.sides:
             inputs[side] = self._frame_inputs(side, arms.get(side), normalized.get(side),
                                               world.get(side))
             frame = anatomical_hand_frame(
                 inputs[side].get("world_hand"), inputs[side].get("arm"), side)
-            self._current_hand_frames[side] = (
-                None if frame is None
-                else self.axis_map.matrix() @ frame @ self._hand_roll_matrix)
+            target_frame = (None if frame is None
+                            else self.axis_map.matrix() @ frame @ self._hand_roll_matrix)
+            if target_frame is not None and self.jitter_filter:
+                from teleoperation.retargeting.arm.wrist_targets import (
+                    matrix_from_quaternion, rotation_matrix_to_quaternion)
+
+                target_quaternion = rotation_matrix_to_quaternion(target_frame)
+                filtered_quaternion = self._hand_filter.update(
+                    side, target_quaternion, self.frame_dt)
+                if filtered_quaternion is not None:
+                    target_frame = matrix_from_quaternion(filtered_quaternion)
+            self._current_hand_frames[side] = target_frame
             self._collect_calibration(side, inputs[side])
         self.frames += 1
         self.counts["frames"] = self.frames
@@ -2671,6 +2835,13 @@ class RealtimeArmBridge:
             "orientation": self.orientation,
             "orientation_mode": self.orientation_mode,
             "hand_roll_deg": self.hand_roll_deg,
+            "jitter_filter": self.jitter_filter,
+            "jitter_filter_params": {
+                "arm_min_cutoff_hz": ARM_INPUT_FILTER_MIN_CUTOFF_HZ,
+                "arm_beta": ARM_INPUT_FILTER_BETA,
+                "hand_min_cutoff_hz": HAND_TARGET_FILTER_MIN_CUTOFF_HZ,
+                "hand_beta": HAND_TARGET_FILTER_BETA,
+            },
             # 姿态目标的口径：相对中性（每台各自乘自己的中性 EE 朝向）。
             "orientation_frame": ("native_hand_absolute"
                                   if self.orientation_mode == "hand_base"
@@ -2832,6 +3003,8 @@ class RealtimeArmBridge:
         self._last_direction = {}
         self._palm_hold = {side: None for side in self.sides}
         self._palm_late = {side: [] for side in self.sides}
+        self._arm_filter = AdaptiveArmPointFilter()
+        self._hand_filter = AdaptiveRotationFilter()
         self._last_orientation = {}
         self.counts = {"frames": 0,
                        "valid": {side: 0 for side in self.sides},
