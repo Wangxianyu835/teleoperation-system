@@ -502,6 +502,42 @@ class TrialRunnerTests(unittest.TestCase):
         self.assertTrue(result["wall_limit_hit"], "用户按 q 应当结束 trial")
         self.assertLessEqual(result["steps"], 13, result)
 
+    def test_transient_success_does_not_end_the_trial(self):
+        env = self._env()
+        try:
+            calls = {"count": 0}
+
+            def transient():
+                calls["count"] += 1
+                return calls["count"] <= 3
+
+            env.task.check_success = transient
+            result = EVAL.run_trial(
+                env, np.zeros((60, env.action_dim), dtype=np.float64), 60,
+                success_hold_steps=10)
+        finally:
+            env.close()
+        self.assertFalse(result["success"], result)
+        self.assertLess(result["success_streak_max_steps"], 10, result)
+
+    def test_success_must_hold_for_the_configured_window(self):
+        env = self._env()
+        try:
+            calls = {"count": 0}
+
+            def sustained():
+                calls["count"] += 1
+                return calls["count"] >= 5
+
+            env.task.check_success = sustained
+            result = EVAL.run_trial(
+                env, np.zeros((30, env.action_dim), dtype=np.float64), 30,
+                success_hold_steps=10)
+        finally:
+            env.close()
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["steps"], 14, result)
+
     def test_snapshot_writes_a_real_png(self):
         env = self._env()
         try:

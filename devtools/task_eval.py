@@ -89,6 +89,8 @@ BENCH_MIN_X = 0.18
 SETTLE_STEPS = 600
 #: 一次 trial 最多跑多少仿真秒（论文没人给它无限时间）
 DEFAULT_MAX_SIM_S = 60.0
+SUCCESS_HOLD_STEPS = 120
+SUCCESS_TABLE_MARGIN_M = 0.08
 #: 论文 Table 1 里被拿去做量化对比的 10 个代表任务
 DEFAULT_TASKS = ("pushcube", "pickcube", "pickplacecube", "uprearcup", "balltrashcan",
                  "ballmug", "ballbimanual", "potbimanual", "pottomatoplate",
@@ -1893,7 +1895,8 @@ def joint_positions(env) -> np.ndarray:
         return np.zeros(0)
 
 
-def run_trial(env, actions, max_steps: int, max_wall_s: float = None) -> dict:
+def run_trial(env, actions, max_steps: int, max_wall_s: float = None,
+              success_hold_steps: int = SUCCESS_HOLD_STEPS) -> dict:
     """逐步推进并每帧查判据；**自己算仿真时间**（baseline 用 time.time()，空转也要等 300 s）。
 
     ``actions`` 可以是动作数组，也可以是 ``callable(step) -> action``：摄像头策略的动作
@@ -1904,6 +1907,9 @@ def run_trial(env, actions, max_steps: int, max_wall_s: float = None) -> dict:
     completion = None
     step = 0
     wall_hit = False
+    success_streak = 0
+    success_streak_max = 0
+    success_rejected_reason = ""
     before = joint_positions(env)
     t0 = time.time()
     for step in range(int(max_steps)):
@@ -1928,10 +1934,19 @@ def run_trial(env, actions, max_steps: int, max_wall_s: float = None) -> dict:
             else:
                 env.task.apply_action(action, joint_indices=env.action_joint_indices)
         p.stepSimulation(physicsClientId=env.client)
-        if env.task.check_success():
-            success = True
-            completion = (step + 1) * DT
-            break
+        criterion = bool(env.task.check_success())
+        supported, support_reason = task_objects_supported(env)
+        if criterion and supported:
+            success_streak += 1
+            success_streak_max = max(success_streak_max, success_streak)
+            if success_streak >= max(1, int(success_hold_steps)):
+                success = True
+                completion = (step + 1) * DT
+                break
+        else:
+            if criterion and support_reason:
+                success_rejected_reason = support_reason
+            success_streak = 0
         if max_wall_s is not None and (step % 24) == 23 and time.time() - t0 > max_wall_s:
             wall_hit = True
             break
@@ -1946,7 +1961,10 @@ def run_trial(env, actions, max_steps: int, max_wall_s: float = None) -> dict:
             "sim_time_s": round((step + 1) * DT, 3),
             "joint_travel_rad": round(travel, 4),
             "wall_s": round(time.time() - t0, 2),
-            "wall_limit_hit": bool(wall_hit)}
+            "wall_limit_hit": bool(wall_hit),
+            "success_hold_steps": max(1, int(success_hold_steps)),
+            "success_streak_max_steps": int(success_streak_max),
+            "success_rejected_reason": success_rejected_reason or None}
 
 
 def object_positions(env) -> dict:
@@ -1957,6 +1975,32 @@ def object_positions(env) -> dict:
         except p.error:
             continue
     return out
+
+
+def task_objects_supported(env) -> tuple:
+    """Return ``(ok, reason)`` for dynamic objects still on the task bench."""
+    table = env.task.objects.get(TABLE_KEY)
+    if table is None:
+        return True, ""
+    try:
+        _low, high = aabb(env.client, table)
+    except p.error:
+        return False, "table is not readable"
+    floor = float(high[2]) - SUCCESS_TABLE_MARGIN_M
+    for key, body in env.task.objects.items():
+        if key == TABLE_KEY:
+            continue
+        try:
+            if float(p.getDynamicsInfo(
+                    body, -1, physicsClientId=env.client)[0]) <= 0.0:
+                continue
+            position = np.asarray(p.getBasePositionAndOrientation(
+                body, physicsClientId=env.client)[0], dtype=np.float64)
+        except p.error:
+            return False, f"{key} is not readable"
+        if float(position[2]) < floor:
+            return False, f"{key} fell below the tabletop"
+    return True, ""
 
 
 def annotate_task_objects(env) -> list:
@@ -2082,7 +2126,8 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                   settle_steps: int = SETTLE_STEPS, scene: bool = True,
                   render: bool = False, verbose: bool = True,
                   policy_options: dict = None, max_wall_s: float = None,
-                  snapshot_dir: str = None) -> dict:
+                  snapshot_dir: str = None,
+                  success_hold_steps: int = SUCCESS_HOLD_STEPS) -> dict:
     """一个任务跑 N 个 trial，返回 report（含每个 trial 的 JSON 段）。"""
     from teleoperation.simulation.environment import SimulationEnv
 
@@ -2152,7 +2197,9 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
             actions, policy_meta = build_actions(policy, env, actions_path, max_steps,
                                                  **options)
             live = actions if callable(actions) else None
-            result = run_trial(env, actions, max_steps, max_wall_s=max_wall_s)
+            result = run_trial(
+                env, actions, max_steps, max_wall_s=max_wall_s,
+                success_hold_steps=success_hold_steps)
             trial = dict(result, trial=index, **policy_meta,
                          scene=scene_report, initial_objects=initial_objects,
                          final_objects=object_positions(env))
@@ -2393,6 +2440,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "（default on）")
     parser.add_argument("--max-sim-s", type=float, default=DEFAULT_MAX_SIM_S,
                         help="一个 trial 最多多少**仿真**秒（默认 60）")
+    parser.add_argument("--success-hold-ms", type=float, default=500.0,
+                        help="任务判据必须连续成立多久才算成功（default 500 ms）")
     parser.add_argument("--settle-steps", type=int, default=SETTLE_STEPS,
                         help="场景摆好后空转多少步（默认 600 = 2.5 s）")
     parser.add_argument("--no-scene", action="store_true", help="不套场景层（baseline 原样跑）")
@@ -2463,6 +2512,8 @@ def main(argv=None) -> int:
         print("[FAIL] unknown task(s): %s" % unknown)
         return 2
     max_steps = max(1, int(round(args.max_sim_s / DT)))
+    success_hold_steps = max(
+        1, int(round(max(0.0, float(args.success_hold_ms)) / 1000.0 / DT)))
     if args.policy == "scripted":
         from task_scripted import IK_EVERY_STEPS, SPEED_M_S
         options = {"side": args.side,
@@ -2506,7 +2557,8 @@ def main(argv=None) -> int:
                                scene=not args.no_scene, render=args.render,
                                policy_options=options,
                                max_wall_s=args.max_wall_s,
-                               snapshot_dir=args.snapshot_dir)
+                               snapshot_dir=args.snapshot_dir,
+                               success_hold_steps=success_hold_steps)
         reports.append(report)
         summary = report["summary"]
         print("[%s] %s/%s: %d/%d success, mean %s s" % (
