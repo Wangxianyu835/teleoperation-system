@@ -201,11 +201,19 @@ def _pinch_endpoint(robot_type, side: str, selected_finger: str, name: str,
                 "thumb_proximal_yaw": -1.74, "thumb_proximal_pitch": 1.0,
                 "thumb_distal": 1.04, "finger_proximal": -1.57,
                 "finger_intermediate": -1.74},
+            ("right", "grasp"): {
+                "thumb_proximal_yaw": -1.74, "thumb_proximal_pitch": 1.0,
+                "thumb_distal": 1.04, "finger_proximal": -1.57,
+                "finger_intermediate": -1.74},
+            ("left", "grasp"): {
+                "thumb_proximal_yaw": -1.74, "thumb_proximal_pitch": 1.0,
+                "thumb_distal": 1.04, "finger_proximal": -1.57,
+                "finger_intermediate": -1.74},
         }.get((side, selected_finger), {})
         for role in ("thumb_proximal_yaw", "thumb_proximal_pitch", "thumb_distal"):
             if role in lower and role in values:
                 return min(max(values[role], low), high)
-        if selected_finger == "fist" or selected_finger in lower:
+        if selected_finger in ("fist", "grasp") or selected_finger in lower:
             if "_proximal_joint" in lower:
                 return min(max(values["finger_proximal"], low), high)
             if "_intermediate_joint" in lower:
@@ -236,11 +244,19 @@ def _pinch_endpoint(robot_type, side: str, selected_finger: str, name: str,
                 "thumb_0_joint": 0.0, "thumb_1_joint": 1.0472,
                 "thumb_2_joint": 0.0, "finger_0_joint": -1.5708,
                 "finger_1_joint": -1.7453},
+            ("right", "grasp"): {
+                "thumb_0_joint": 0.0, "thumb_1_joint": -1.0472,
+                "thumb_2_joint": 0.0, "finger_0_joint": 1.5708,
+                "finger_1_joint": 0.0},
+            ("left", "grasp"): {
+                "thumb_0_joint": 0.0, "thumb_1_joint": 1.0472,
+                "thumb_2_joint": 0.0, "finger_0_joint": -1.5708,
+                "finger_1_joint": 0.0},
         }.get((side, selected_finger), {})
         for role in ("thumb_0_joint", "thumb_1_joint", "thumb_2_joint"):
             if role in lower and role in values:
                 return min(max(values[role], low), high)
-        if selected_finger == "fist" or selected_finger in lower:
+        if selected_finger in ("fist", "grasp") or selected_finger in lower:
             if "_0_joint" in lower:
                 return min(max(values["finger_0_joint"], low), high)
             if "_1_joint" in lower:
@@ -249,7 +265,7 @@ def _pinch_endpoint(robot_type, side: str, selected_finger: str, name: str,
         values = {
             ("right", "index"): {
                 "thumb_proximal_yaw": 0.6, "thumb_proximal_pitch": 0.6,
-                "thumb_intermediate": 0.4, "thumb_distal": 0.0,
+                "thumb_intermediate": 0.0, "thumb_distal": 0.6,
                 "finger_proximal": 1.7, "finger_intermediate": 0.0},
             ("right", "middle"): {
                 "thumb_proximal_yaw": 1.3, "thumb_proximal_pitch": 0.25,
@@ -271,12 +287,20 @@ def _pinch_endpoint(robot_type, side: str, selected_finger: str, name: str,
                 "thumb_proximal_yaw": 1.3, "thumb_proximal_pitch": 0.6,
                 "thumb_intermediate": 0.8, "thumb_distal": 1.2,
                 "finger_proximal": 1.7, "finger_intermediate": 1.7},
+            ("right", "grasp"): {
+                "thumb_proximal_yaw": 0.6, "thumb_proximal_pitch": 0.6,
+                "thumb_intermediate": 0.0, "thumb_distal": 0.6,
+                "finger_proximal": 1.7, "finger_intermediate": 0.0},
+            ("left", "grasp"): {
+                "thumb_proximal_yaw": 1.3, "thumb_proximal_pitch": 0.6,
+                "thumb_intermediate": 0.4, "thumb_distal": 1.2,
+                "finger_proximal": 1.7, "finger_intermediate": 0.0},
         }.get((side, selected_finger), {})
         for role in ("thumb_proximal_yaw", "thumb_proximal_pitch",
                      "thumb_intermediate", "thumb_distal"):
             if role in lower and role in values:
                 return min(max(values[role], low), high)
-        if selected_finger == "fist" or selected_finger in lower:
+        if selected_finger in ("fist", "grasp") or selected_finger in lower:
             if "_proximal_joint" in lower:
                 return min(max(values["finger_proximal"], low), high)
             if "_intermediate_joint" in lower:
@@ -290,7 +314,7 @@ def _make_pinch_closure(joints, mapping, finger: str, strength: float,
     if not finger or strength <= 0.0:
         return
     keys = (("thumb", "index", "middle", "ring", "pinky")
-            if finger == "fist" else ("thumb", finger))
+            if finger in ("fist", "grasp") else ("thumb", finger))
     for _dim, name, _sign, low, high in mapping:
         lower_name = name.lower()
         if not any(key in lower_name for key in keys):

@@ -1154,6 +1154,7 @@ class CameraPolicy:
                  hand_smoothing: float = 0.25, hand_limit_mode: str = "clamp",
                  hand_device: str = "cpu", table_clearance_m: float = 0.06,
                  table_guard: bool = False,
+                 grasp_assist: bool = True,
                  arm_force: float = 200.0, hand_force: float = 200.0,
                  ik_mode: str = "pose", wrist_pose: bool = True,
                  ik_solver: str = "paper",
@@ -1161,6 +1162,7 @@ class CameraPolicy:
         from teleoperation.simulation.arm_ik import PyBulletArmIK
         from teleoperation.simulation.arm_profiles import profile_for
         from teleoperation.simulation.arm_realtime import RealtimeArmBridge
+        from teleoperation.simulation.hand_mount import find_hand_base_link
         from teleoperation.simulation.realtime_teleop import (
             CameraFrameSource,
             ReplayFrameSource,
@@ -1181,6 +1183,7 @@ class CameraPolicy:
         self.hand_limit_mode = str(hand_limit_mode)
         self.table_clearance_m = max(0.0, float(table_clearance_m))
         self.table_guard_enabled = bool(table_guard)
+        self.grasp_assist_enabled = bool(grasp_assist)
         self.arm_force = max(1.0, float(arm_force))
         self.hand_force = max(1.0, float(hand_force))
         if ik_mode not in ("position", "pose"):
@@ -1245,6 +1248,12 @@ class CameraPolicy:
         self.last_arm_world = None
         self.last_arm_error_mm = None
         self.hand_names = list(env.robot_loader.hand_joints.get(self.side, []))
+        self.grasp_link, self.grasp_link_name = find_hand_base_link(
+            env.robot_id, env.robot_type, self.side, env.client)
+        self.grasp_constraint = None
+        self.grasped_object = None
+        self.grasp_attach_count = 0
+        self.grasp_release_count = 0
         self.hand_adapter = None
         self.hand_retargeter = None
         self.hand_backend_name = "off"
@@ -1512,6 +1521,13 @@ class CameraPolicy:
             self.side, wanted, source="base", elbow=elbow,
             orientation=orientation, orientation_frame=orientation_frame,
             posture=posture, elbow_pass="last")
+        if orientation is not None:
+            values = self.adapter.refine_orientation(
+                self.side, wanted, orientation, source="base",
+                orientation_frame=orientation_frame, arm_values=values)
+            if hand_frame is not None:
+                self.adapter.last_hand_frame_base[self.side] = np.asarray(
+                    hand_frame, dtype=np.float64).copy()
         solution_residual_mm = float(self.adapter.residual_mm(self.side))
         if actual_before is not None and self.last_arm_target_world is not None:
             self.last_arm_error_mm = round(1000.0 * float(np.linalg.norm(
@@ -1582,6 +1598,67 @@ class CameraPolicy:
                 env.robot_id, int(joint), p.POSITION_CONTROL,
                 targetPosition=float(self.action[slot]), force=force,
                 physicsClientId=env.client)
+        self._update_grasp_assist(env)
+
+    def _update_grasp_assist(self, env) -> None:
+        """Latch a physically contacted object only while the operator is closing."""
+        if not self.grasp_assist_enabled or self.grasp_link is None:
+            return
+        strength = float((self.last_pinch or {}).get("strength") or 0.0)
+        if self.grasp_constraint is not None:
+            if strength < 0.15:
+                p.removeConstraint(self.grasp_constraint,
+                                   physicsClientId=env.client)
+                self.grasp_constraint = None
+                self.grasped_object = None
+                self.grasp_release_count += 1
+                print("[camera] grasp released: open hand detected", flush=True)
+            return
+        if strength < 0.35:
+            return
+        candidates = []
+        for key, body in env.task.objects.items():
+            if key == TABLE_KEY:
+                continue
+            try:
+                if float(p.getDynamicsInfo(
+                        body, -1, physicsClientId=env.client)[0]) <= 0.0:
+                    continue
+                contacts = p.getContactPoints(
+                    bodyA=env.robot_id, bodyB=body,
+                    physicsClientId=env.client)
+            except p.error:
+                continue
+            if len(contacts) < 2:
+                continue
+            position = np.asarray(p.getBasePositionAndOrientation(
+                body, physicsClientId=env.client)[0], dtype=np.float64)
+            state = p.getLinkState(
+                env.robot_id, self.grasp_link, computeForwardKinematics=True,
+                physicsClientId=env.client)
+            distance = float(np.linalg.norm(
+                np.asarray(state[4], dtype=np.float64) - position))
+            candidates.append((distance, key, body, state))
+        if not candidates:
+            return
+        _distance, key, body, hand_state = min(candidates, key=lambda item: item[0])
+        obj_pos, obj_orn = p.getBasePositionAndOrientation(
+            body, physicsClientId=env.client)
+        inverse_pos, inverse_orn = p.invertTransform(
+            hand_state[4], hand_state[5], physicsClientId=env.client)
+        rel_pos, rel_orn = p.multiplyTransforms(
+            inverse_pos, inverse_orn, obj_pos, obj_orn, physicsClientId=env.client)
+        self.grasp_constraint = p.createConstraint(
+            env.robot_id, self.grasp_link, body, -1, p.JOINT_FIXED,
+            [0, 0, 0], parentFramePosition=[0, 0, 0],
+            childFramePosition=list(rel_pos),
+            parentFrameOrientation=[0, 0, 0, 1],
+            childFrameOrientation=list(rel_orn),
+            physicsClientId=env.client)
+        self.grasped_object = key
+        self.grasp_attach_count += 1
+        print("[camera] grasp attached: %s (hand gap %.0f mm)"
+              % (key, _distance * 1000.0), flush=True)
 
     def __call__(self, step: int):
         """``run_trial`` 每步调一次；每 ``substeps`` 步读一帧摄像头。"""
@@ -1602,6 +1679,7 @@ class CameraPolicy:
                            "hand_joints": self.hand_names,
                            "table_clearance_m": self.table_clearance_m,
                            "table_guard": self.table_guard_enabled,
+                           "grasp_assist": self.grasp_assist_enabled,
                            "arm_force": self.arm_force,
                            "hand_force": self.hand_force,
                            "ik_mode": self.ik_mode,
@@ -1638,6 +1716,10 @@ class CameraPolicy:
                 "actual_hand_joints": actual_hand,
                 "table_guard_count": self.table_guard_count,
                 "table_guard_enabled": self.table_guard_enabled,
+                "grasp_assist": self.grasp_assist_enabled,
+                "grasp_attach_count": self.grasp_attach_count,
+                "grasp_release_count": self.grasp_release_count,
+                "grasped_object": self.grasped_object,
                 "last_table_guard": self.last_table_guard,
                 "arm_force": self.arm_force,
                 "hand_force": self.hand_force,
@@ -2163,6 +2245,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-wrist-pose", choices=("on", "off"), default="on",
                         help="--policy camera 是否把操作者手腕/掌面姿态传给 IK"
                              "（default on；off 为只跟位置的旧 A/B 行为）")
+    parser.add_argument("--camera-grasp-assist", choices=("on", "off"), default="on",
+                        help="--policy camera 在手指已产生多处接触且正在握拳时"
+                             "锁定物体到手掌，松手解除（default on）")
     parser.add_argument("--camera-target-speed-mm-s", type=float, default=600.0,
                         help="--policy camera 腕目标最大跟随速度（default 600 mm/s）")
     parser.add_argument("--max-sim-s", type=float, default=DEFAULT_MAX_SIM_S,
@@ -2265,6 +2350,7 @@ def main(argv=None) -> int:
                    "ik_mode": args.camera_ik_mode,
                    "ik_solver": args.camera_ik_solver,
                    "wrist_pose": args.camera_wrist_pose == "on",
+                   "grasp_assist": args.camera_grasp_assist == "on",
                    "target_speed_m_s": max(
                        0.0, float(args.camera_target_speed_mm_s)) / 1000.0}
 

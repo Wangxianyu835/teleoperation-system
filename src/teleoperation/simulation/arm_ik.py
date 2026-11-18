@@ -1632,6 +1632,57 @@ class PyBulletArmIK:
         solution = self._limit_wrist_step(side, solution)
         return self._arm_values(side, solution)
 
+    def refine_orientation(self, side: str, position, orientation, source="base",
+                           orientation_frame="absolute", arm_values=None):
+        """Refine wrist orientation on top of a position solution.
+
+        The paper solver weights translation 50 times more strongly than rotation,
+        which is excellent for smooth arm reaching but leaves a grasp-relevant palm
+        orientation under-constrained. This pass starts from that position solution,
+        pins the shoulder/elbow, and solves position + orientation using only the
+        wrist-chain joints. It never changes the location command and returns the
+        input arm values unchanged when the required pieces are unavailable.
+        """
+        if side not in self.arm:
+            raise ValueError(f"{side!r} is not a driven side of this adapter")
+        if orientation is None or self.ik_mode != "pose" or not self.wrist[side]:
+            return dict(arm_values or self.joint_values(side))
+        if orientation_frame == "neutral":
+            orientation = quaternion_multiply(
+                self.neutral_orientation[side],
+                tuple(float(value) for value in orientation))
+        elif orientation_frame != "absolute":
+            raise ValueError(f"orientation_frame must be absolute or neutral, "
+                             f"got {orientation_frame!r}")
+        current = [float(self.p.getJointState(self.body, index,
+                                              physicsClientId=self.cid)[0])
+                   for index in self.indices]
+        for name, value in dict(arm_values or {}).items():
+            index = self.index_of.get(name)
+            if index is not None:
+                current[self.position_of[index]] = float(value)
+        self._teleport(side, current)
+        world = self.target_in_world(position, source)
+        arguments = {
+            "lowerLimits": self.limits["lower"],
+            "upperLimits": self.limits["upper"],
+            "jointRanges": self.limits["range"],
+            "restPoses": self._rest_poses(),
+            "maxNumIterations": self.ik_iterations,
+            "residualThreshold": self.residual_threshold,
+            "physicsClientId": self.cid,
+        }
+        if self.ik_lock_others:
+            arguments = self._locked_arguments(side, arguments)
+        candidate = self._ik_call(
+            side, world, tuple(float(v) for v in orientation),
+            self._orientation_arguments(side, arguments, current))
+        refined = self._hold(side, candidate, current, self._wrist_ids(side))
+        self._teleport(side, refined)
+        self.last_target_world[side] = world
+        self.last_orientation[side] = tuple(float(v) for v in orientation)
+        return self._arm_values(side, refined)
+
     def _paper_ik(self, side: str):
         """每侧缓存一个 ``paper_arm_ik.PaperArmIK``（``ik_solver="paper"`` 用）。"""
         cache = getattr(self, "_paper_ik_cache", None)

@@ -107,6 +107,7 @@ class CameraHandPolicyTests(unittest.TestCase):
         self.assertEqual(args.camera_ik_mode, "pose")
         self.assertEqual(args.camera_ik_solver, "paper")
         self.assertEqual(args.camera_wrist_pose, "on")
+        self.assertEqual(args.camera_grasp_assist, "on")
         self.assertEqual(args.camera_target_speed_mm_s, 600.0)
         self.assertFalse(args.camera_table_guard)
 
@@ -149,7 +150,7 @@ class CameraHandPolicyTests(unittest.TestCase):
             np.zeros(17), mapping, pinch=(finger, strength, ratio),
             robot_type="h1_2", side="right")
         self.assertEqual(joints["R_index_proximal_joint"], 1.5)
-        self.assertEqual(joints["R_thumb_intermediate_joint"], 0.4)
+        self.assertEqual(joints["R_thumb_intermediate_joint"], 0.0)
         self.assertEqual(joints["R_middle_proximal_joint"], 0.0)
 
     def test_a_fist_triggers_all_native_fingers_even_without_thumb_tip_contact(self):
@@ -180,6 +181,24 @@ class CameraHandPolicyTests(unittest.TestCase):
         for name in ("R_index_proximal_joint", "R_middle_proximal_joint",
                      "R_ring_proximal_joint", "R_pinky_proximal_joint"):
             self.assertGreater(joints[name], 0.5)
+
+    def test_grasp_uses_a_shallow_finger_hook_instead_of_crushing_the_object(self):
+        from teleoperation.robots.native_hand import map_dofs
+
+        mapping = [
+            (2, "R_index_proximal_joint", 1.0, 0.0, 1.7),
+            (3, "R_index_intermediate_joint", 1.0, 0.0, 1.7),
+            (5, "R_middle_proximal_joint", 1.0, 0.0, 1.7),
+            (6, "R_middle_intermediate_joint", 1.0, 0.0, 1.7),
+            (16, "R_thumb_intermediate_joint", 1.0, 0.0, 0.8),
+        ]
+        joints, _ = map_dofs(
+            np.zeros(17), mapping, pinch=("grasp", 1.0, 0.5),
+            robot_type="h1_2", side="right")
+        self.assertAlmostEqual(joints["R_index_proximal_joint"], 1.7)
+        self.assertEqual(joints["R_index_intermediate_joint"], 0.0)
+        self.assertAlmostEqual(joints["R_middle_proximal_joint"], 1.7)
+        self.assertEqual(joints["R_middle_intermediate_joint"], 0.0)
 
     def test_native_pinch_uses_each_robot_hand_axis_not_farthest_limit(self):
         from teleoperation.robots.native_hand import map_dofs
