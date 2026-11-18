@@ -88,6 +88,8 @@ class CameraHandPolicyTests(unittest.TestCase):
         policy.hand_clipped = 0
         policy.last_hand = {}
         policy._pinch_signal = lambda _points: (None, 0.0, None)
+        policy.calibrated = True
+        policy.tracking_frames = policy.startup_hold_frames = 12
 
         policy._update_hand(object())
         self.assertAlmostEqual(policy.action[1], 0.7)
@@ -108,6 +110,7 @@ class CameraHandPolicyTests(unittest.TestCase):
         self.assertEqual(args.camera_ik_solver, "paper")
         self.assertEqual(args.camera_wrist_pose, "on")
         self.assertEqual(args.camera_grasp_assist, "on")
+        self.assertEqual(args.camera_freeze_objects, "on")
         self.assertEqual(args.camera_target_speed_mm_s, 600.0)
         self.assertFalse(args.camera_table_guard)
 
@@ -122,6 +125,16 @@ class CameraHandPolicyTests(unittest.TestCase):
             [0.1, 0.0, 0.1], bounds, clearance_m=0.06)
         self.assertFalse(active)
         np.testing.assert_allclose(unchanged, [0.1, 0.0, 0.1])
+
+    def test_first_tracking_target_starts_from_the_measured_wrist(self):
+        policy = object.__new__(EVAL.CameraPolicy)
+        policy.last_commanded_target = None
+        policy.target_speed_m_s = 0.6
+        policy.last_frame_dt = 0.05
+        commanded, limited = policy._slew_target(
+            (0.40, 0.20, 1.10), start_position=(0.20, 0.00, 1.00))
+        np.testing.assert_allclose(commanded, (0.20, 0.00, 1.00))
+        self.assertFalse(limited)
 
     def test_a_mediapipe_pinch_drives_native_thumb_and_finger_closure(self):
         from teleoperation.robots.native_hand import map_dofs, pinch_signal

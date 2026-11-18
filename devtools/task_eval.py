@@ -1158,7 +1158,9 @@ class CameraPolicy:
                  arm_force: float = 200.0, hand_force: float = 200.0,
                  ik_mode: str = "pose", wrist_pose: bool = True,
                  ik_solver: str = "paper",
-                 target_speed_m_s: float = 0.60):
+                 target_speed_m_s: float = 0.60,
+                 startup_hold_frames: int = 12,
+                 freeze_objects: bool = True):
         from teleoperation.simulation.arm_ik import PyBulletArmIK
         from teleoperation.simulation.arm_profiles import profile_for
         from teleoperation.simulation.arm_realtime import RealtimeArmBridge
@@ -1192,6 +1194,10 @@ class CameraPolicy:
         self.wrist_pose = bool(wrist_pose)
         self.ik_solver = str(ik_solver)
         self.target_speed_m_s = max(0.0, float(target_speed_m_s))
+        self.startup_hold_frames = max(0, int(startup_hold_frames))
+        self.tracking_frames = 0
+        self.freeze_objects = bool(freeze_objects)
+        self.frozen_objects = {}
         self.last_frame_dt = 1.0 / float(CAMERA_NOMINAL_FPS)
         self.last_commanded_target = None
         self.target_slew_limited = 0
@@ -1287,6 +1293,7 @@ class CameraPolicy:
         self.unmapped = missing_names
         self.stopped = False
         self.calibrated = False
+        self._freeze_unattended_objects(env)
         print("[camera] 机器人这一侧臂由你的右手驱动（--side 可换）："
               "手往画面右侧移 = 机器人往它自己左边移（方块在它左边，y 从 -0.20 到 +0.30）；"
               "手往镜头方向收 = 机器人往前伸。看 PyBullet 窗口跟，别盯着字", flush=True)
@@ -1302,6 +1309,42 @@ class CameraPolicy:
         else:
             print("[camera] native hand mapping OFF: hand joints keep their reset angles",
                   flush=True)
+
+    # ------------------------------------------------------------------ #
+    def _freeze_unattended_objects(self, env) -> None:
+        """Keep task objects still while the camera is calibrating or unattended."""
+        if not self.freeze_objects:
+            return
+        for key, body in env.task.objects.items():
+            if key == TABLE_KEY:
+                continue
+            try:
+                mass = float(p.getDynamicsInfo(
+                    body, -1, physicsClientId=env.client)[0])
+                if mass <= 0.0:
+                    continue
+                p.resetBaseVelocity(
+                    body, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+                    physicsClientId=env.client)
+                p.changeDynamics(
+                    body, -1, mass=0.0, physicsClientId=env.client)
+                self.frozen_objects[key] = (body, mass)
+            except p.error:
+                continue
+
+    def _unfreeze_task_objects(self, env) -> None:
+        if not self.frozen_objects:
+            return
+        for key, (body, mass) in list(self.frozen_objects.items()):
+            try:
+                p.changeDynamics(
+                    body, -1, mass=float(mass), physicsClientId=env.client)
+                p.resetBaseVelocity(
+                    body, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+                    physicsClientId=env.client)
+            except p.error:
+                continue
+            self.frozen_objects.pop(key, None)
 
     # ------------------------------------------------------------------ #
     def _draw_preview(self, raw, upper, target) -> bool:
@@ -1347,6 +1390,13 @@ class CameraPolicy:
     def _update_hand(self, window) -> None:
         """Retarget this side's hand and write native joint targets into ``action``."""
         if not self.hand_enabled or self.hand_adapter is None:
+            return
+        if (not getattr(self, "calibrated", False)
+                or self.tracking_frames < self.startup_hold_frames):
+            # Keep both the arm and fingers still until the post-calibration hold
+            # expires. Otherwise an early noisy hand frame can hit a nearby task
+            # object before tracking has actually started.
+            self.last_hand = {"valid": False, "reason": "startup hold"}
             return
         if window is None:
             self.hand_invalid_frames += 1
@@ -1443,10 +1493,19 @@ class CameraPolicy:
         }
         return tuple(float(value) for value in self.adapter.to_base(guarded)), True
 
-    def _slew_target(self, position):
+    def _slew_target(self, position, start_position=None):
         """Limit one camera-frame wrist move to the configured Cartesian speed."""
         wanted = np.asarray(position, dtype=np.float64)
-        if self.last_commanded_target is None or self.target_speed_m_s <= 0.0:
+        if self.last_commanded_target is None:
+            # The bridge has no command history before the first tracking frame.
+            # Start from the robot's measured wrist, never from an arbitrary first
+            # operator target: that first-frame jump is what swept objects off the
+            # table in the live cup trial.
+            self.last_commanded_target = np.asarray(
+                wanted if start_position is None else start_position,
+                dtype=np.float64).copy()
+            return tuple(float(value) for value in self.last_commanded_target), False
+        if self.target_speed_m_s <= 0.0:
             self.last_commanded_target = wanted.copy()
             return tuple(float(value) for value in wanted), False
         previous = np.asarray(self.last_commanded_target, dtype=np.float64)
@@ -1492,7 +1551,23 @@ class CameraPolicy:
         if target.position is None:
             self.bad_sides += 1
             return
-        wanted, target_slew_limited = self._slew_target(target.position)
+        if self.calibrated:
+            self.tracking_frames += 1
+            if self.tracking_frames <= self.startup_hold_frames:
+                self.last_info = {
+                    "valid": True,
+                    "held": True,
+                    "reason": "post-calibration startup hold",
+                    "startup_hold_remaining": (
+                        self.startup_hold_frames - self.tracking_frames),
+                }
+                return
+            if self.tracking_frames == self.startup_hold_frames + 1:
+                self._unfreeze_task_objects(self.env)
+        start_base = (None if actual_before is None
+                      else self.adapter.to_base(actual_before))
+        wanted, target_slew_limited = self._slew_target(
+            target.position, start_position=start_base)
         wanted, table_guarded = self._guard_target_above_table(wanted)
         if table_guarded:
             self.last_commanded_target = np.asarray(wanted, dtype=np.float64)
@@ -1686,6 +1761,8 @@ class CameraPolicy:
                            "ik_solver": self.ik_solver,
                            "wrist_pose": self.wrist_pose,
                            "target_speed_m_s": self.target_speed_m_s,
+                           "startup_hold_frames": self.startup_hold_frames,
+                           "freeze_objects": self.freeze_objects,
                            "unmapped_joints": list(self.unmapped)}}
 
     def report(self) -> dict:
@@ -1727,6 +1804,10 @@ class CameraPolicy:
                 "ik_solver": self.ik_solver,
                 "wrist_pose": self.wrist_pose,
                 "target_speed_m_s": self.target_speed_m_s,
+                "startup_hold_frames": self.startup_hold_frames,
+                "tracking_frames": self.tracking_frames,
+                "freeze_objects": self.freeze_objects,
+                "frozen_objects_remaining": sorted(self.frozen_objects),
                 "target_slew_limited_frames": self.target_slew_limited,
                 "last_arm_target_world": (None if self.last_arm_target_world is None else
                                           [round(float(v), 4)
@@ -1751,6 +1832,11 @@ class CameraPolicy:
 
     def close(self) -> None:
         try:
+            if self.grasp_constraint is not None:
+                p.removeConstraint(self.grasp_constraint,
+                                   physicsClientId=self.env.client)
+                self.grasp_constraint = None
+            self._unfreeze_task_objects(self.env)
             if self.preview:
                 import cv2
 
@@ -2298,6 +2384,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "锁定物体到手掌，松手解除（default on）")
     parser.add_argument("--camera-target-speed-mm-s", type=float, default=600.0,
                         help="--policy camera 腕目标最大跟随速度（default 600 mm/s）")
+    parser.add_argument("--camera-startup-hold-frames", type=int, default=12,
+                        help="标定完成后手臂保持当前姿势多少摄像头帧再开始跟随"
+                             "（default 12，约 0.5-0.8 s）")
+    parser.add_argument("--camera-freeze-objects", choices=("on", "off"),
+                        default="on",
+                        help="标定和启动保持期间冻结可动物体，开始跟随后再恢复物理"
+                             "（default on）")
     parser.add_argument("--max-sim-s", type=float, default=DEFAULT_MAX_SIM_S,
                         help="一个 trial 最多多少**仿真**秒（默认 60）")
     parser.add_argument("--settle-steps", type=int, default=SETTLE_STEPS,
@@ -2400,7 +2493,10 @@ def main(argv=None) -> int:
                    "wrist_pose": args.camera_wrist_pose == "on",
                    "grasp_assist": args.camera_grasp_assist == "on",
                    "target_speed_m_s": max(
-                       0.0, float(args.camera_target_speed_mm_s)) / 1000.0}
+                       0.0, float(args.camera_target_speed_mm_s)) / 1000.0,
+                   "startup_hold_frames": max(
+                       0, int(args.camera_startup_hold_frames)),
+                   "freeze_objects": args.camera_freeze_objects == "on"}
 
     reports = []
     for name in tasks:
