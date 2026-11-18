@@ -1873,6 +1873,40 @@ def object_positions(env) -> dict:
     return out
 
 
+def annotate_task_objects(env) -> list:
+    """Draw object names and the cube -> target direction in the GUI."""
+    if not getattr(env, "_render", False):
+        return []
+    ids = []
+    for key, body in sorted(env.task.objects.items()):
+        if key == TABLE_KEY:
+            continue
+        try:
+            position = np.asarray(p.getBasePositionAndOrientation(
+                body, physicsClientId=env.client)[0], dtype=np.float64)
+            _low, high = aabb(env.client, body)
+        except p.error:
+            continue
+        ids.append(p.addUserDebugText(
+            key, [float(position[0]), float(position[1]), float(high[2] + 0.05)],
+            textColorRGB=[1.0, 0.85, 0.2], textSize=1.1, lifeTime=0,
+            physicsClientId=env.client))
+    cube = env.task.objects.get("cube")
+    target = env.task.objects.get("target")
+    if cube is not None and target is not None:
+        cube_pos = np.asarray(p.getBasePositionAndOrientation(
+            cube, physicsClientId=env.client)[0], dtype=np.float64)
+        target_pos = np.asarray(p.getBasePositionAndOrientation(
+            target, physicsClientId=env.client)[0], dtype=np.float64)
+        cube_pos[2] += 0.06
+        target_pos[2] += 0.06
+        ids.append(p.addUserDebugLine(
+            cube_pos.tolist(), target_pos.tolist(),
+            lineColorRGB=[0.1, 1.0, 0.25], lineWidth=4.0, lifeTime=0,
+            physicsClientId=env.client))
+    return ids
+
+
 def robot_contact_summary(env) -> dict:
     """Robot link <-> task-object contacts at the end of a trial.
 
@@ -2027,6 +2061,7 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                     "%s=%s" % (key, [round(float(v), 3) for v in value])
                     for key, value in sorted(initial_objects.items())
                     if key != TABLE_KEY), flush=True)
+            annotate_task_objects(env)
 
             actions, policy_meta = build_actions(policy, env, actions_path, max_steps,
                                                  **options)
