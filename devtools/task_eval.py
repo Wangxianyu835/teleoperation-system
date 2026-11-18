@@ -1256,6 +1256,8 @@ class CameraPolicy:
         self.last_valid_hand = {}
         self.pinch_finger_frames = {}
         self.last_pinch = None
+        self.max_pinch_strength = 0.0
+        self.max_fist_strength = 0.0
         self.hand_calibration_status = {}
         if self.hand_enabled:
             checkpoint = Path(hand_checkpoint) if hand_checkpoint else realtime_checkpoint("world")
@@ -1395,6 +1397,11 @@ class CameraPolicy:
         if finger is not None:
             self.pinch_finger_frames[finger] = (
                 self.pinch_finger_frames.get(finger, 0) + 1)
+            self.max_pinch_strength = max(
+                self.max_pinch_strength, float(strength))
+            if finger == "fist":
+                self.max_fist_strength = max(
+                    self.max_fist_strength, float(strength))
         self.last_pinch = {
             "finger": finger,
             "strength": round(float(strength), 3),
@@ -1626,6 +1633,8 @@ class CameraPolicy:
                 "last_valid_hand": self.last_valid_hand,
                 "pinch_finger_frames": dict(self.pinch_finger_frames),
                 "last_pinch": self.last_pinch,
+                "max_pinch_strength": round(self.max_pinch_strength, 3),
+                "max_fist_strength": round(self.max_fist_strength, 3),
                 "actual_hand_joints": actual_hand,
                 "table_guard_count": self.table_guard_count,
                 "table_guard_enabled": self.table_guard_enabled,

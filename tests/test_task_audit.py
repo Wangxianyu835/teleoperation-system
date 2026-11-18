@@ -131,9 +131,11 @@ class CameraHandPolicyTests(unittest.TestCase):
         points[17] = [0.0, -0.08, 0.0]
         points[4] = [0.01, 0.04, 0.0]
         points[8] = [0.01, 0.04, 0.0]
-        points[12] = [0.08, 0.0, 0.0]
-        points[16] = [0.08, 0.0, 0.0]
-        points[20] = [0.08, 0.0, 0.0]
+        points[9] = [0.0, 0.06, 0.0]
+        points[12] = [0.0, -0.10, 0.0]
+        points[13] = [0.0, -0.02, 0.0]
+        points[16] = [0.0, -0.18, 0.0]
+        points[20] = [0.0, -0.24, 0.0]
         finger, strength, ratio = pinch_signal(points)
         self.assertEqual(finger, "index")
         self.assertEqual(ratio, 0.0)
@@ -149,6 +151,35 @@ class CameraHandPolicyTests(unittest.TestCase):
         self.assertEqual(joints["R_index_proximal_joint"], 1.5)
         self.assertEqual(joints["R_thumb_intermediate_joint"], 0.4)
         self.assertEqual(joints["R_middle_proximal_joint"], 0.0)
+
+    def test_a_fist_triggers_all_native_fingers_even_without_thumb_tip_contact(self):
+        from teleoperation.robots.native_hand import map_dofs, pinch_signal
+
+        points = np.zeros((21, 3), dtype=np.float64)
+        points[5] = [0.0, 0.08, 0.0]
+        points[17] = [0.0, -0.08, 0.0]
+        points[4] = [0.02, 0.02, 0.0]
+        for mcp, tip in ((5, 8), (9, 12), (13, 16), (17, 20)):
+            points[mcp] = [0.0, 0.04 if mcp < 13 else -0.04, 0.0]
+            points[tip] = [0.01, 0.02 if tip < 13 else -0.02, 0.0]
+        finger, strength, ratio = pinch_signal(points)
+        self.assertEqual(finger, "fist")
+        self.assertGreater(strength, 0.5)
+        self.assertGreater(ratio, 0.0)
+
+        mapping = [
+            (2, "R_index_proximal_joint", 1.0, 0.0, 1.5),
+            (5, "R_middle_proximal_joint", 1.0, 0.0, 1.5),
+            (8, "R_ring_proximal_joint", 1.0, 0.0, 1.5),
+            (11, "R_pinky_proximal_joint", 1.0, 0.0, 1.5),
+            (16, "R_thumb_intermediate_joint", 1.0, 0.0, 1.2),
+        ]
+        joints, _ = map_dofs(
+            np.zeros(17), mapping, pinch=(finger, strength, ratio),
+            robot_type="h1_2", side="right")
+        for name in ("R_index_proximal_joint", "R_middle_proximal_joint",
+                     "R_ring_proximal_joint", "R_pinky_proximal_joint"):
+            self.assertGreater(joints[name], 0.5)
 
     def test_native_pinch_uses_each_robot_hand_axis_not_farthest_limit(self):
         from teleoperation.robots.native_hand import map_dofs

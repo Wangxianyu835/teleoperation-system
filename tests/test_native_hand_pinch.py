@@ -58,6 +58,25 @@ class NativeHandPinchSimulationTests(unittest.TestCase):
                 self.assertTrue(gaps_mm, "no pinch geometry was measured")
                 self.assertLess(min(gaps_mm), 5.0, gaps_mm)
 
+    def test_fist_curls_every_finger_on_each_native_hand(self):
+        for _frame in range(30):
+            self.scene.apply(
+                "right", np.zeros(18, dtype=np.float64),
+                pinch=("fist", 1.0, 0.5))
+            self.scene.step()
+
+        expected = {
+            "h1_2": ("R_index_proximal_joint", 1),
+            "gr1_t2": ("R_index_proximal_joint", -1),
+            "g1": ("right_hand_index_0_joint", 1),
+        }
+        for joint, value in self.scene.joint_values("right").items():
+            robot = joint.split(".", 1)[0]
+            name, sign = expected[robot]
+            if joint.endswith(name):
+                with self.subTest(robot=robot, joint=joint):
+                    self.assertGreater(value * sign, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

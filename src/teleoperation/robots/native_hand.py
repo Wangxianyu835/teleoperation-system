@@ -110,12 +110,14 @@ L21_LIMITS = {
 
 
 def pinch_signal(world_hand):
-    """MediaPipe world 21 points -> ``(finger, strength, ratio)`` for pinch closure.
+    """MediaPipe world 21 points -> ``(finger, strength, ratio)`` for hand closure.
 
     The native hands have different palm sizes and joint axes from L21. Copying the
     joint angles alone therefore does not guarantee that thumb and finger tips meet.
     This measures the operator's thumb-to-tip distance relative to palm width and
-    drives the selected native finger/thumb pair toward its closure end.
+    drives the selected native finger/thumb pair toward its closure end. A fist does
+    not necessarily bring the thumb to the index tip, so finger curl is measured
+    separately and returns ``finger="fist"`` when several fingers are closed.
     """
     points = np.asarray(world_hand, dtype=np.float64) if world_hand is not None else None
     if points is None or points.shape != (21, 3) or not np.isfinite(points).all():
@@ -145,6 +147,19 @@ def pinch_signal(world_hand):
     # ratio 0.20 = firm pinch, 1.00 = open. Using the full range matters: a real
     # pinch often measures around 0.25-0.35 in MediaPipe world coordinates.
     strength = float(np.clip((1.0 - ratio) / 0.80, 0.0, 1.0))
+    # A fist closes the four fingers even when the thumb rests across their middle
+    # phalanges instead of touching the index tip. Use the median per-finger curl
+    # so a single index pinch does not trigger a whole-hand grasp.
+    spans = np.array([
+        np.linalg.norm(points[tip] - points[mcp]) / palm_width
+        for mcp, tip in ((5, 8), (9, 12), (13, 16), (17, 20))
+    ], dtype=np.float64)
+    curl = np.clip((1.0 - spans) / 0.55, 0.0, 1.0)
+    grasp_strength = float(np.median(curl))
+    if grasp_strength >= 0.10 and grasp_strength >= strength:
+        return "fist", grasp_strength, ratio
+    if strength < 0.10:
+        return None, 0.0, ratio
     return finger, strength, ratio
 
 
@@ -178,11 +193,19 @@ def _pinch_endpoint(robot_type, side: str, selected_finger: str, name: str,
                 "thumb_proximal_yaw": -1.74, "thumb_proximal_pitch": 0.61,
                 "thumb_distal": 1.04, "finger_proximal": -1.57,
                 "finger_intermediate": -0.87},
+            ("right", "fist"): {
+                "thumb_proximal_yaw": -1.74, "thumb_proximal_pitch": 1.0,
+                "thumb_distal": 1.04, "finger_proximal": -1.57,
+                "finger_intermediate": -1.74},
+            ("left", "fist"): {
+                "thumb_proximal_yaw": -1.74, "thumb_proximal_pitch": 1.0,
+                "thumb_distal": 1.04, "finger_proximal": -1.57,
+                "finger_intermediate": -1.74},
         }.get((side, selected_finger), {})
         for role in ("thumb_proximal_yaw", "thumb_proximal_pitch", "thumb_distal"):
             if role in lower and role in values:
                 return min(max(values[role], low), high)
-        if selected_finger in lower:
+        if selected_finger == "fist" or selected_finger in lower:
             if "_proximal_joint" in lower:
                 return min(max(values["finger_proximal"], low), high)
             if "_intermediate_joint" in lower:
@@ -205,11 +228,19 @@ def _pinch_endpoint(robot_type, side: str, selected_finger: str, name: str,
                 "thumb_0_joint": 0.0, "thumb_1_joint": 1.0472,
                 "thumb_2_joint": 0.873, "finger_0_joint": -1.5708,
                 "finger_1_joint": -0.873},
+            ("right", "fist"): {
+                "thumb_0_joint": 0.0, "thumb_1_joint": -1.0472,
+                "thumb_2_joint": 0.0, "finger_0_joint": 1.5708,
+                "finger_1_joint": 1.7453},
+            ("left", "fist"): {
+                "thumb_0_joint": 0.0, "thumb_1_joint": 1.0472,
+                "thumb_2_joint": 0.0, "finger_0_joint": -1.5708,
+                "finger_1_joint": -1.7453},
         }.get((side, selected_finger), {})
         for role in ("thumb_0_joint", "thumb_1_joint", "thumb_2_joint"):
             if role in lower and role in values:
                 return min(max(values[role], low), high)
-        if selected_finger in lower:
+        if selected_finger == "fist" or selected_finger in lower:
             if "_0_joint" in lower:
                 return min(max(values["finger_0_joint"], low), high)
             if "_1_joint" in lower:
@@ -232,12 +263,20 @@ def _pinch_endpoint(robot_type, side: str, selected_finger: str, name: str,
                 "thumb_proximal_yaw": 1.3, "thumb_proximal_pitch": 0.6,
                 "thumb_intermediate": 0.8, "thumb_distal": 1.2,
                 "finger_proximal": 1.7, "finger_intermediate": 0.85},
+            ("right", "fist"): {
+                "thumb_proximal_yaw": 1.3, "thumb_proximal_pitch": 0.6,
+                "thumb_intermediate": 0.8, "thumb_distal": 1.2,
+                "finger_proximal": 1.7, "finger_intermediate": 1.7},
+            ("left", "fist"): {
+                "thumb_proximal_yaw": 1.3, "thumb_proximal_pitch": 0.6,
+                "thumb_intermediate": 0.8, "thumb_distal": 1.2,
+                "finger_proximal": 1.7, "finger_intermediate": 1.7},
         }.get((side, selected_finger), {})
         for role in ("thumb_proximal_yaw", "thumb_proximal_pitch",
                      "thumb_intermediate", "thumb_distal"):
             if role in lower and role in values:
                 return min(max(values[role], low), high)
-        if selected_finger in lower:
+        if selected_finger == "fist" or selected_finger in lower:
             if "_proximal_joint" in lower:
                 return min(max(values["finger_proximal"], low), high)
             if "_intermediate_joint" in lower:
@@ -250,7 +289,8 @@ def _make_pinch_closure(joints, mapping, finger: str, strength: float,
     """Blend the native thumb and selected finger toward a model-specific pinch."""
     if not finger or strength <= 0.0:
         return
-    keys = ("thumb", finger)
+    keys = (("thumb", "index", "middle", "ring", "pinky")
+            if finger == "fist" else ("thumb", finger))
     for _dim, name, _sign, low, high in mapping:
         lower_name = name.lower()
         if not any(key in lower_name for key in keys):
