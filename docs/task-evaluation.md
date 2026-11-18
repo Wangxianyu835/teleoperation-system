@@ -436,7 +436,7 @@ E:\python3.11.7\python.exe devtools\task_eval.py `
 如果第 1、2 项成功而第 3 项失败，问题优先归到包络抓取而不是基础手部映射；如果第 1 项就失败，
 先看 `unmapped_joints`、`hand_clipped_joints` 和该机器人原生手映射，而不是先改 30 个任务。
 
-验收（2026-11-18）：`pytest tests -q` -> **516 passed, 3 skipped, 464 subtests passed**；
+验收（2026-11-18）：`pytest tests -q` -> **517 passed, 3 skipped, 464 subtests passed**；
 摄像头短冒烟报告 `camera_hand_smoke.json` 退出码 0，H1-2 的 12 个原生手关节、geometric
 后端与任务动作向量均已加载。短冒烟时画面无人，所以 `hand_valid_frames=0` 是输入侧事实，
 不是接线失败。
@@ -446,5 +446,32 @@ E:\python3.11.7\python.exe devtools\task_eval.py `
 `robot_object_contacts={}`（没有机器人 link 与桌/方块接触）。方块从
 `(0.303, 0, 0.520)` 被轻微推到 `(0.346, -0.022, 0.520)`，但没有抬起，因此失败点已从
 “卡桌/手臂不动”转到抓取接触与闭合时机。下一轮只调局部抓取，不再改任务布局。
+
+另外，现场如果把右手继续往下压，摄像头目标仍可能指定到桌面实体内部，造成“手又钻到
+桌下并卡住”。摄像头档新增桌面目标护栏：目标位于桌面 x/y 投影内时，腕点至少保持在
+桌面上方 `--camera-table-clearance-mm`（默认 60 mm）；桌前沿以外仍允许向下。报告记录
+`camera.table_guard_count` 与 `camera.last_table_guard`，可直接区分“输入想穿桌”和
+“机械臂自己穿桌”。
+
+### 8.3 摄像头任务“手在动、机械臂完全不动”（2026-11-18）
+
+根因不是摄像头，也不是 hold 电机：`CameraPolicy` 创建 `PyBulletArmIK` 时没有覆盖
+`ik_mode`，因此 H1-2 沿用了 profile 的 `pose` 模式。摄像头任务只提供位置目标；第二遍
+姿态 IK 会把位置解重新拽回近似加载姿态，结果恰好是：
+
+- 手指走另一条直接关节链，能抽搐/开合；
+- 七个臂关节看起来完全不动。
+
+修法：
+
+- 摄像头任务默认显式 `--camera-ik-mode position`；
+- 手臂和手指分离施力：`--camera-arm-force 1000`、`--camera-hand-force 300`；
+- 每 20 帧打印目标腕点、实际腕点与滞后毫米数；
+- trial 报告记录 `last_arm_target_world` / `last_arm_world` / `last_arm_error_mm`。
+
+v11 实测中，连续两帧从目标 `[0.061,-0.063,0.346]`、实际
+`[0.063,-0.061,0.343]`（4.2 mm 滞后）到快速横移后的 199.6 mm 暂态，随后收敛到
+31.8 mm；机械臂已实际跟随。该次后段长时间无人，最终没有完成抓取，因此不能把这次
+`success=false` 当作握力失败。
 
 

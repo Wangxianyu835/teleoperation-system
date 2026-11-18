@@ -100,6 +100,22 @@ class CameraHandPolicyTests(unittest.TestCase):
         self.assertEqual(args.camera_hand, "on")
         self.assertEqual(args.hand_backend, "auto")
         self.assertEqual(args.hand_limit_mode, "clamp")
+        self.assertEqual(args.camera_table_clearance_mm, 60.0)
+        self.assertEqual(args.camera_arm_force, 1000.0)
+        self.assertEqual(args.camera_hand_force, 300.0)
+        self.assertEqual(args.camera_ik_mode, "position")
+
+    def test_table_guard_only_lifts_targets_over_the_table_footprint(self):
+        bounds = (np.array([0.2, -0.4, 0.0]), np.array([1.2, 0.4, 0.5]))
+        guarded, active = EVAL.guard_table_target(
+            [0.6, 0.0, 0.1], bounds, clearance_m=0.06)
+        self.assertTrue(active)
+        np.testing.assert_allclose(guarded, [0.6, 0.0, 0.56])
+        # In front of the table, lowering the hand is legal.
+        unchanged, active = EVAL.guard_table_target(
+            [0.1, 0.0, 0.1], bounds, clearance_m=0.06)
+        self.assertFalse(active)
+        np.testing.assert_allclose(unchanged, [0.1, 0.0, 0.1])
 
 
 def registered_tasks():
