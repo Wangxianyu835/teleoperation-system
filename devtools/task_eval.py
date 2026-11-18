@@ -1150,10 +1150,11 @@ class CameraPolicy:
                  arm_map: str = "posture", hand_model=None, pose_model=None,
                  preview: bool = False, hand_enabled: bool = True,
                  hand_backend: str = "auto", hand_checkpoint=None,
-                 hand_smoothing: float = 0.0, hand_limit_mode: str = "clamp",
+                 hand_smoothing: float = 0.25, hand_limit_mode: str = "clamp",
                  hand_device: str = "cpu", table_clearance_m: float = 0.06,
-                 arm_force: float = 1000.0, hand_force: float = 300.0,
-                 ik_mode: str = "position"):
+                 arm_force: float = 3000.0, hand_force: float = 300.0,
+                 ik_mode: str = "position",
+                 target_speed_m_s: float = 0.30):
         from teleoperation.simulation.arm_ik import PyBulletArmIK
         from teleoperation.simulation.arm_profiles import profile_for
         from teleoperation.simulation.arm_realtime import RealtimeArmBridge
@@ -1177,6 +1178,10 @@ class CameraPolicy:
         if ik_mode not in ("position", "pose"):
             raise ValueError("camera ik_mode must be 'position' or 'pose'")
         self.ik_mode = str(ik_mode)
+        self.target_speed_m_s = max(0.0, float(target_speed_m_s))
+        self.last_frame_dt = 1.0 / float(CAMERA_NOMINAL_FPS)
+        self.last_commanded_target = None
+        self.target_slew_limited = 0
         self.table_guard_count = 0
         self.last_table_guard = {}
         self._window = "task_eval camera (q/Esc quits)"
@@ -1206,7 +1211,8 @@ class CameraPolicy:
         self.bridge = RealtimeArmBridge(
             [profile], sides=(self.side,), map_mode=self.arm_map,
             robot_links=links, anchors=anchors, orientation="off",
-            calibration_frames=int(calibrate_frames), calibrate_mode="hold")
+            calibration_frames=int(calibrate_frames), calibrate_mode="hold",
+            jitter_filter=True)
         self.names = {name: index for index, name in enumerate(env.action_joint_names)}
         self.arm_names = set(env.robot_loader.arm_joints.get(self.side, []))
         for name in self.adapter.joint_values(self.side):
@@ -1373,6 +1379,23 @@ class CameraPolicy:
         }
         return tuple(float(value) for value in self.adapter.to_base(guarded)), True
 
+    def _slew_target(self, position):
+        """Limit one camera-frame wrist move to the configured Cartesian speed."""
+        wanted = np.asarray(position, dtype=np.float64)
+        if self.last_commanded_target is None or self.target_speed_m_s <= 0.0:
+            self.last_commanded_target = wanted.copy()
+            return tuple(float(value) for value in wanted), False
+        previous = np.asarray(self.last_commanded_target, dtype=np.float64)
+        offset = wanted - previous
+        distance = float(np.linalg.norm(offset))
+        limit = min(0.04, self.target_speed_m_s * self.last_frame_dt)
+        changed = distance > limit and limit > 0.0
+        if changed:
+            wanted = previous + offset * (limit / distance)
+            self.target_slew_limited += 1
+        self.last_commanded_target = wanted.copy()
+        return tuple(float(value) for value in wanted), changed
+
     def _read_frame(self) -> None:
         """读一帧摄像头 -> 重定向 -> IK -> 写进 ``self.action``。"""
         actual_before = None
@@ -1391,6 +1414,8 @@ class CameraPolicy:
         now = time.time()
         delta = None if self.last_frame_at is None else max(now - self.last_frame_at, 1e-3)
         self.last_frame_at = now
+        if delta is not None:
+            self.last_frame_dt = delta
         targets = self.bridge.update(arms_world=upper, hands=raw, frame_dt=delta)
         target = targets[self.env.robot_type][self.side]
         self.last_target = target.describe()
@@ -1400,7 +1425,10 @@ class CameraPolicy:
         if target.position is None:
             self.bad_sides += 1
             return
-        wanted, table_guarded = self._guard_target_above_table(target.position)
+        wanted, target_slew_limited = self._slew_target(target.position)
+        wanted, table_guarded = self._guard_target_above_table(wanted)
+        if table_guarded:
+            self.last_commanded_target = np.asarray(wanted, dtype=np.float64)
         target_world = np.asarray(
             self.adapter.target_in_world(wanted, "base"), dtype=np.float64)
         values = self.adapter.solve(self.side, wanted, source="base",
@@ -1429,6 +1457,8 @@ class CameraPolicy:
             "hand_valid": bool(self.last_hand.get("valid")),
             "table_guard": table_guarded,
             "table_guard_count": self.table_guard_count,
+            "target_slew_limited": target_slew_limited,
+            "target_slew_limited_frames": self.target_slew_limited,
             "unmapped_joints": list(self.unmapped),
         }
 
@@ -1485,6 +1515,7 @@ class CameraPolicy:
                            "arm_force": self.arm_force,
                            "hand_force": self.hand_force,
                            "ik_mode": self.ik_mode,
+                           "target_speed_m_s": self.target_speed_m_s,
                            "unmapped_joints": list(self.unmapped)}}
 
     def report(self) -> dict:
@@ -1501,6 +1532,8 @@ class CameraPolicy:
                 "arm_force": self.arm_force,
                 "hand_force": self.hand_force,
                 "ik_mode": self.ik_mode,
+                "target_speed_m_s": self.target_speed_m_s,
+                "target_slew_limited_frames": self.target_slew_limited,
                 "last_arm_target_world": (None if self.last_arm_target_world is None else
                                           [round(float(v), 4)
                                            for v in self.last_arm_target_world]),
@@ -1564,9 +1597,12 @@ def joint_positions(env) -> np.ndarray:
     indices = getattr(env, "action_joint_indices", None) or []
     if not indices:
         return np.zeros(0)
-    return np.array([float(p.getJointState(env.robot_id, int(index),
-                                           physicsClientId=env.client)[0])
-                     for index in indices])
+    try:
+        return np.array([float(p.getJointState(env.robot_id, int(index),
+                                               physicsClientId=env.client)[0])
+                         for index in indices])
+    except p.error:
+        return np.zeros(0)
 
 
 def run_trial(env, actions, max_steps: int, max_wall_s: float = None) -> dict:
@@ -1626,8 +1662,13 @@ def run_trial(env, actions, max_steps: int, max_wall_s: float = None) -> dict:
 
 
 def object_positions(env) -> dict:
-    return {key: [round(float(v), 4) for v in body_pose(env.client, body)[0]]
-            for key, body in env.task.objects.items()}
+    out = {}
+    for key, body in env.task.objects.items():
+        try:
+            out[key] = [round(float(v), 4) for v in body_pose(env.client, body)[0]]
+        except p.error:
+            continue
+    return out
 
 
 def robot_contact_summary(env) -> dict:
@@ -1659,6 +1700,29 @@ def robot_contact_summary(env) -> dict:
                          "normal_force": round(float(contact[9]), 3)})
         out[key] = rows
     return out
+
+
+def disable_robot_table_collision(env, key: str = TABLE_KEY) -> int:
+    """Keep the task table load-bearing without letting its giant proxy collider trap the robot.
+
+    The proxy table is one box spanning nearly the whole workspace. Its top is useful
+    for supporting task objects, but collision with the robot arm blocks side raises
+    and makes fingertips chatter against the plane near objects. Object/robot and
+    ground/robot collisions remain enabled.
+    """
+    table = env.task.objects.get(key)
+    if table is None:
+        return 0
+    disabled = 0
+    for link in range(-1, p.getNumJoints(env.robot_id, physicsClientId=env.client)):
+        try:
+            p.setCollisionFilterPair(
+                env.robot_id, table, int(link), -1, 0,
+                physicsClientId=env.client)
+            disabled += 1
+        except p.error:
+            continue
+    return disabled
 
 
 def snapshot(env, path, target=None, yaw: float = 55.0, pitch: float = -22.0,
@@ -1729,7 +1793,15 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                              hold_robot=(policy in (
                                                  "camera", "replay", "dummy")),
                                              layout_forward=(
-                                                 0.28 if policy == "camera" else 0.26))
+                                                 0.36 if policy == "camera" else 0.26),
+                                             layout_drop=(
+                                                 0.18 if policy == "camera" else 0.22))
+                if policy == "camera":
+                    disabled = disable_robot_table_collision(env)
+                    scene_report["robot_table_collision_links_disabled"] = disabled
+                    print("[scene] robot/table collision disabled for %d robot links; "
+                          "object and ground collisions remain on" % disabled,
+                          flush=True)
 
 
             actions, policy_meta = build_actions(policy, env, actions_path, max_steps,
@@ -1930,8 +2002,8 @@ def build_parser() -> argparse.ArgumentParser:
                         default="auto", help="手部重定向后端（default auto）")
     parser.add_argument("--hand-checkpoint", default=None,
                         help="训练好的手部 palm-local checkpoint（auto 缺失时回退 geometric）")
-    parser.add_argument("--hand-smoothing", type=float, default=0.0,
-                        help="手部 18D 输出平滑系数 0..<1（default 0）")
+    parser.add_argument("--hand-smoothing", type=float, default=0.25,
+                        help="手部 18D 输出平滑系数 0..<1（default 0.25）")
     parser.add_argument("--hand-limit-mode", choices=("clamp", "rescale"),
                         default="clamp",
                         help="L21 -> 原装手限位处理：clamp 忠实截断（default），"
@@ -1939,14 +2011,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-table-clearance-mm", type=float, default=60.0,
                         help="--policy camera 在桌面投影内时，腕目标至少离桌面这么高"
                              "（default 60 mm；0 = 关闭护栏）")
-    parser.add_argument("--camera-arm-force", type=float, default=1000.0,
-                        help="--policy camera 手臂位置电机最大力（default 1000）")
+    parser.add_argument("--camera-arm-force", type=float, default=3000.0,
+                        help="--policy camera 手臂位置电机最大力（default 3000）")
     parser.add_argument("--camera-hand-force", type=float, default=300.0,
                         help="--policy camera 手指位置电机最大力（default 300）")
     parser.add_argument("--camera-ik-mode", choices=("position", "pose"),
                         default="position",
                         help="--policy camera 的臂 IK 模式（default position；"
                              "pose 需要同时提供稳定腕姿态目标）")
+    parser.add_argument("--camera-target-speed-mm-s", type=float, default=300.0,
+                        help="--policy camera 腕目标最大跟随速度（default 300 mm/s）")
     parser.add_argument("--max-sim-s", type=float, default=DEFAULT_MAX_SIM_S,
                         help="一个 trial 最多多少**仿真**秒（默认 60）")
     parser.add_argument("--settle-steps", type=int, default=SETTLE_STEPS,
@@ -2042,7 +2116,9 @@ def main(argv=None) -> int:
                        0.0, float(args.camera_table_clearance_mm)) / 1000.0,
                    "arm_force": max(1.0, float(args.camera_arm_force)),
                    "hand_force": max(1.0, float(args.camera_hand_force)),
-                   "ik_mode": args.camera_ik_mode}
+                   "ik_mode": args.camera_ik_mode,
+                   "target_speed_m_s": max(
+                       0.0, float(args.camera_target_speed_mm_s)) / 1000.0}
 
     reports = []
     for name in tasks:

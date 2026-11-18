@@ -474,4 +474,25 @@ v11 实测中，连续两帧从目标 `[0.061,-0.063,0.346]`、实际
 31.8 mm；机械臂已实际跟随。该次后段长时间无人，最终没有完成抓取，因此不能把这次
 `success=false` 当作握力失败。
 
+进一步现场复测暴露了大块代理桌的碰撞问题：桌面虽然被腕点护栏挡住，但上臂/前臂仍会与整块
+桌体碰撞，侧抬只能到一半；手指靠近桌面时又被接触力反复弹开。摄像头任务现在额外关闭
+**机器人—桌子**碰撞（`disable_robot_table_collision()`），保留机器人—方块、机器人与地面的
+碰撞以及桌面的承物作用。报告场景段写
+`scene.robot_table_collision_links_disabled`。
+
+最终摄像头档默认值：
+
+- layout：肩前 `0.36 m`，桌面高度 `shoulder_z - 0.18 m`；
+- `--camera-ik-mode position`；
+- `--camera-arm-force 3000` / `--camera-hand-force 300`；
+- `--camera-target-speed-mm-s 300`；
+- `--camera-table-clearance-mm 60`；
+- `--hand-smoothing 0.25`；
+- `CameraPolicy` 桥开启实时档同款 `jitter_filter=True`，并对 3D 手腕目标做动态限速。
+
+v15 现场报告：右臂有效 851/950 帧、右手最终有效并写入 12 个原装关节，
+`table_guard_count=298`、`target_slew_limited_frames=638`，最终
+`robot_object_contacts={}`。此时机械臂/手的抖动与卡桌已分离；方块仍在桌面上，
+下一阶段只处理“抓取接触深度与闭合时机”。
+
 

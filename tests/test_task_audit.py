@@ -101,9 +101,10 @@ class CameraHandPolicyTests(unittest.TestCase):
         self.assertEqual(args.hand_backend, "auto")
         self.assertEqual(args.hand_limit_mode, "clamp")
         self.assertEqual(args.camera_table_clearance_mm, 60.0)
-        self.assertEqual(args.camera_arm_force, 1000.0)
+        self.assertEqual(args.camera_arm_force, 3000.0)
         self.assertEqual(args.camera_hand_force, 300.0)
         self.assertEqual(args.camera_ik_mode, "position")
+        self.assertEqual(args.camera_target_speed_mm_s, 300.0)
 
     def test_table_guard_only_lifts_targets_over_the_table_footprint(self):
         bounds = (np.array([0.2, -0.4, 0.0]), np.array([1.2, 0.4, 0.5]))
