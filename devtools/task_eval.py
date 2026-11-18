@@ -1146,6 +1146,7 @@ class CameraPolicy:
     """
 
     def __init__(self, env, side: str = "right", camera_index: int = 0,
+                 input_npz: str = None,
                  substeps: int = CAMERA_SUBSTEPS, calibrate_frames: int = 30,
                  arm_map: str = "posture", hand_model=None, pose_model=None,
                  preview: bool = False, hand_enabled: bool = True,
@@ -1153,13 +1154,17 @@ class CameraPolicy:
                  hand_smoothing: float = 0.25, hand_limit_mode: str = "clamp",
                  hand_device: str = "cpu", table_clearance_m: float = 0.06,
                  table_guard: bool = False,
-                 arm_force: float = 3000.0, hand_force: float = 300.0,
-                 ik_mode: str = "position",
+                 arm_force: float = 200.0, hand_force: float = 200.0,
+                 ik_mode: str = "pose", wrist_pose: bool = True,
+                 ik_solver: str = "paper",
                  target_speed_m_s: float = 0.60):
         from teleoperation.simulation.arm_ik import PyBulletArmIK
         from teleoperation.simulation.arm_profiles import profile_for
         from teleoperation.simulation.arm_realtime import RealtimeArmBridge
-        from teleoperation.simulation.realtime_teleop import CameraFrameSource
+        from teleoperation.simulation.realtime_teleop import (
+            CameraFrameSource,
+            ReplayFrameSource,
+        )
         from teleoperation.applications.realtime_hand_sim import build_retargeter
         from teleoperation.paths import realtime_checkpoint
         from teleoperation.robots.native_hand import NativeHandAdapter, pinch_signal
@@ -1168,6 +1173,7 @@ class CameraPolicy:
         self.env = env
         self.side = str(side)
         self.substeps = max(1, int(substeps))
+        self.input_npz = None if input_npz is None else str(input_npz)
         self.arm_map = str(arm_map)
         self.preview = bool(preview)
         self.hand_enabled = bool(hand_enabled)
@@ -1180,6 +1186,8 @@ class CameraPolicy:
         if ik_mode not in ("position", "pose"):
             raise ValueError("camera ik_mode must be 'position' or 'pose'")
         self.ik_mode = str(ik_mode)
+        self.wrist_pose = bool(wrist_pose)
+        self.ik_solver = str(ik_solver)
         self.target_speed_m_s = max(0.0, float(target_speed_m_s))
         self.last_frame_dt = 1.0 / float(CAMERA_NOMINAL_FPS)
         self.last_commanded_target = None
@@ -1190,14 +1198,22 @@ class CameraPolicy:
         missing_names = []
         hand_model = Path(hand_model or (ROOT / "datasets" / "hand_landmarker.task"))
         pose_model = Path(pose_model or (ROOT / "datasets" / "pose_landmarker_lite.task"))
-        self.source = CameraFrameSource(
-            model_asset_path=hand_model, camera_index=int(camera_index),
-            width=640, height=480, fps=30, landmark_space="world",
-            pose_model_asset_path=pose_model if pose_model.is_file() else None)
+        if self.input_npz is not None:
+            self.source = ReplayFrameSource(self.input_npz, "world")
+        else:
+            self.source = CameraFrameSource(
+                model_asset_path=hand_model, camera_index=int(camera_index),
+                width=640, height=480, fps=30, landmark_space="world",
+                pose_model_asset_path=pose_model if pose_model.is_file() else None)
         profile = profile_for(env.robot_type)
         self.adapter = PyBulletArmIK(env.robot_id, env.client,
                                      robot_type=env.robot_type, sides=(self.side,),
-                                     rest_poses="current", ik_mode=self.ik_mode)
+                                     rest_poses="current", ik_mode=self.ik_mode,
+                                     orientation_scope="wrist",
+                                     max_wrist_joint_step_deg=20.0,
+                                     lock_others=True,
+                                     arm_force=self.arm_force,
+                                     ik_solver=self.ik_solver)
         # 方向口径要的「机器人自己的量」：连杆长 + 加载时的肩/肘/腕（基座系）
         points = self.adapter.arm_points(self.side)
         shoulder = np.asarray(points["upper"], dtype=np.float64)
@@ -1210,9 +1226,13 @@ class CameraPolicy:
             "shoulder": list(self.adapter.to_base(shoulder)),
             "elbow": list(self.adapter.to_base(elbow)),
             "wrist": list(self.adapter.to_base(wrist))}}}
+        self.arm_anchor_base = np.asarray(
+            anchors[env.robot_type][self.side]["shoulder"], dtype=np.float64)
         self.bridge = RealtimeArmBridge(
             [profile], sides=(self.side,), map_mode=self.arm_map,
-            robot_links=links, anchors=anchors, orientation="off",
+            robot_links=links, anchors=anchors,
+            orientation=("on" if self.wrist_pose else "off"),
+            orientation_mode="hand_base", hand_roll_deg=180.0,
             calibration_frames=int(calibrate_frames), calibrate_mode="hold",
             jitter_filter=True)
         self.names = {name: index for index, name in enumerate(env.action_joint_names)}
@@ -1233,6 +1253,9 @@ class CameraPolicy:
         self.hand_valid_frames = 0
         self.hand_invalid_frames = 0
         self.hand_clipped = 0
+        self.last_valid_hand = {}
+        self.pinch_finger_frames = {}
+        self.last_pinch = None
         self.hand_calibration_status = {}
         if self.hand_enabled:
             checkpoint = Path(hand_checkpoint) if hand_checkpoint else realtime_checkpoint("world")
@@ -1367,6 +1390,16 @@ class CameraPolicy:
             "l21_angles": [round(float(value), 5)
                            for value in np.asarray(angles.values, dtype=np.float64)],
         }
+        self.last_valid_hand = dict(self.last_hand)
+        finger, strength, ratio = pinch
+        if finger is not None:
+            self.pinch_finger_frames[finger] = (
+                self.pinch_finger_frames.get(finger, 0) + 1)
+        self.last_pinch = {
+            "finger": finger,
+            "strength": round(float(strength), 3),
+            "ratio": None if ratio is None else round(float(ratio), 3),
+        }
 
     def _guard_target_above_table(self, position):
         """Reject wrist commands below the tabletop while over the table footprint."""
@@ -1415,11 +1448,14 @@ class CameraPolicy:
         """读一帧摄像头 -> 重定向 -> IK -> 写进 ``self.action``。"""
         actual_before = None
         try:
+            self.adapter.record_posture(self.side)
             actual_before = np.asarray(
                 self.adapter.measure(self.side)[0], dtype=np.float64)
         except Exception:  # noqa: BLE001 - disconnect / first frame
             pass
         window = self.source.next_frame()
+        if getattr(self.source, "exhausted", False):
+            self.stopped = True
         self.frames += 1
         upper = self.source.arms()
         raw = self.source.last_raw_frame or {}
@@ -1444,10 +1480,32 @@ class CameraPolicy:
         wanted, table_guarded = self._guard_target_above_table(wanted)
         if table_guarded:
             self.last_commanded_target = np.asarray(wanted, dtype=np.float64)
+        current_shoulder = np.asarray(
+            self.adapter.to_base(self.adapter.arm_points(self.side)["upper"]),
+            dtype=np.float64)
+        shoulder_shift = current_shoulder - self.arm_anchor_base
+        wanted = tuple(float(value + shift) for value, shift in zip(wanted, shoulder_shift))
+        elbow = (None if target.elbow is None else
+                 tuple(float(value + shift) for value, shift in zip(target.elbow, shoulder_shift)))
         target_world = np.asarray(
             self.adapter.target_in_world(wanted, "base"), dtype=np.float64)
-        values = self.adapter.solve(self.side, wanted, source="base",
-                                    elbow=target.elbow)
+        orientation = None
+        orientation_frame = "absolute"
+        hand_frame = self.bridge.hand_frame_target()[self.side]
+        if self.wrist_pose and hand_frame is not None:
+            orientation = self.adapter.hand_target_orientation(
+                self.side, hand_frame, source="base")
+        elif self.wrist_pose:
+            orientation = self.bridge.orientation_target()[self.side]
+            orientation_frame = "neutral"
+        bend = self.bridge.elbow_bend_target()[self.side]
+        posture = (None if bend is None
+                   else self.adapter.posture_from_bend(self.side, bend))
+        values = self.adapter.solve(
+            self.side, wanted, source="base", elbow=elbow,
+            orientation=orientation, orientation_frame=orientation_frame,
+            posture=posture, elbow_pass="last")
+        solution_residual_mm = float(self.adapter.residual_mm(self.side))
         if actual_before is not None and self.last_arm_target_world is not None:
             self.last_arm_error_mm = round(1000.0 * float(np.linalg.norm(
                 actual_before - np.asarray(self.last_arm_target_world))), 2)
@@ -1474,6 +1532,14 @@ class CameraPolicy:
             "table_guard_count": self.table_guard_count,
             "target_slew_limited": target_slew_limited,
             "target_slew_limited_frames": self.target_slew_limited,
+            "wrist_pose": self.wrist_pose,
+            "hand_frame_source": ("hand_base" if hand_frame is not None
+                                  else "wrist_relative"),
+            "hand_frame_error_deg": round(
+                float(self.adapter.hand_frame_error_deg(self.side)), 2),
+            "shoulder_shift_mm": round(
+                1000.0 * float(np.linalg.norm(shoulder_shift)), 2),
+            "solution_residual_mm": round(solution_residual_mm, 2),
             "unmapped_joints": list(self.unmapped),
         }
 
@@ -1519,6 +1585,7 @@ class CameraPolicy:
 
     def meta(self) -> dict:
         return {"camera": {"side": self.side, "substeps": self.substeps,
+                           "input_npz": self.input_npz,
                            "arm_map": self.arm_map,
                            "calibration_frames": self.bridge.calibration_frames,
                            "hand_enabled": self.hand_enabled,
@@ -1531,11 +1598,24 @@ class CameraPolicy:
                            "arm_force": self.arm_force,
                            "hand_force": self.hand_force,
                            "ik_mode": self.ik_mode,
+                           "ik_solver": self.ik_solver,
+                           "wrist_pose": self.wrist_pose,
                            "target_speed_m_s": self.target_speed_m_s,
                            "unmapped_joints": list(self.unmapped)}}
 
     def report(self) -> dict:
         """trial 结束时落盘的摄像头侧证据（判据之外，用来解释失败）。"""
+        actual_hand = {}
+        for name in self.hand_names:
+            index = self.names.get(name)
+            if index is None:
+                continue
+            try:
+                actual_hand[name] = round(float(p.getJointState(
+                    self.env.robot_id, self.env.action_joint_indices[index],
+                    physicsClientId=self.env.client)[0]), 5)
+            except Exception:
+                break
         return {"frames": self.frames, "steps": self.steps,
                 "hand_frames": dict(self.hand_frames),
                 "hand_valid_frames": self.hand_valid_frames,
@@ -1543,12 +1623,18 @@ class CameraPolicy:
                 "hand_clipped_joints": self.hand_clipped,
                 "hand_calibration_status": dict(self.hand_calibration_status),
                 "last_hand": self.last_hand,
+                "last_valid_hand": self.last_valid_hand,
+                "pinch_finger_frames": dict(self.pinch_finger_frames),
+                "last_pinch": self.last_pinch,
+                "actual_hand_joints": actual_hand,
                 "table_guard_count": self.table_guard_count,
                 "table_guard_enabled": self.table_guard_enabled,
                 "last_table_guard": self.last_table_guard,
                 "arm_force": self.arm_force,
                 "hand_force": self.hand_force,
                 "ik_mode": self.ik_mode,
+                "ik_solver": self.ik_solver,
+                "wrist_pose": self.wrist_pose,
                 "target_speed_m_s": self.target_speed_m_s,
                 "target_slew_limited_frames": self.target_slew_limited,
                 "last_arm_target_world": (None if self.last_arm_target_world is None else
@@ -1557,6 +1643,14 @@ class CameraPolicy:
                 "last_arm_world": (None if self.last_arm_world is None else
                                    [round(float(v), 4) for v in self.last_arm_world]),
                 "last_arm_error_mm": self.last_arm_error_mm,
+                "hand_frame_source": self.last_info.get("hand_frame_source"),
+                "hand_frame_error_deg": self.last_info.get("hand_frame_error_deg"),
+                "shoulder_shift_mm": self.last_info.get("shoulder_shift_mm"),
+                "solution_residual_mm": self.last_info.get(
+                    "solution_residual_mm"),
+                "solution_cost": dict(self.adapter.last_solution_cost.get(
+                    self.side) or {}),
+                "arm_posture": self.adapter.posture_summary(self.side),
                 "held_frames": self.bad_sides,
                 "left_ratio": round(self.hand_frames["left"] / max(self.frames, 1), 3),
                 "right_ratio": round(self.hand_frames["right"] / max(self.frames, 1), 3),
@@ -2009,6 +2103,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--actions", default=None, help="--policy replay 的动作文件")
     parser.add_argument("--camera-index", type=int, default=0, help="--policy camera 的相机编号")
+    parser.add_argument("--camera-input-npz", default=None,
+                        help="--policy camera 用录制帧代替摄像头做可复现回放")
     parser.add_argument("--side", default="right", choices=["left", "right"],
                         help="--policy camera 驱动哪一侧手臂（默认 right）")
     parser.add_argument("--arm-map", default="posture",
@@ -2041,14 +2137,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-table-guard", action="store_true",
                         help="把桌面投影内的腕目标强制抬到桌面上方；默认关闭，"
                              "因为摄像头任务已经关闭机器人-桌子碰撞，硬抬会逐帧跳变")
-    parser.add_argument("--camera-arm-force", type=float, default=3000.0,
-                        help="--policy camera 手臂位置电机最大力（default 3000）")
-    parser.add_argument("--camera-hand-force", type=float, default=300.0,
-                        help="--policy camera 手指位置电机最大力（default 300）")
+    parser.add_argument("--camera-arm-force", type=float, default=200.0,
+                        help="--policy camera 手臂位置电机最大力（default 200，"
+                             "与已验证的 quickcheck 链路一致）")
+    parser.add_argument("--camera-hand-force", type=float, default=200.0,
+                        help="--policy camera 手指位置电机最大力（default 200，"
+                             "与已验证的 quickcheck 链路一致）")
     parser.add_argument("--camera-ik-mode", choices=("position", "pose"),
-                        default="position",
-                        help="--policy camera 的臂 IK 模式（default position；"
-                             "pose 需要同时提供稳定腕姿态目标）")
+                        default="pose",
+                        help="--policy camera 的臂 IK 模式（default pose，"
+                             "让原生手掌朝向跟随操作者）")
+    parser.add_argument("--camera-ik-solver", choices=("paper", "pybullet"),
+                        default="paper",
+                        help="--policy camera 的 IK 后端（default paper，"
+                             "与 run_arm_quickcheck 一致）")
+    parser.add_argument("--camera-wrist-pose", choices=("on", "off"), default="on",
+                        help="--policy camera 是否把操作者手腕/掌面姿态传给 IK"
+                             "（default on；off 为只跟位置的旧 A/B 行为）")
     parser.add_argument("--camera-target-speed-mm-s", type=float, default=600.0,
                         help="--policy camera 腕目标最大跟随速度（default 600 mm/s）")
     parser.add_argument("--max-sim-s", type=float, default=DEFAULT_MAX_SIM_S,
@@ -2135,6 +2240,7 @@ def main(argv=None) -> int:
 
     else:
         options = {"side": args.side, "camera_index": args.camera_index,
+                   "input_npz": args.camera_input_npz,
                    "substeps": args.substeps, "calibrate_frames": args.calibrate_frames,
                    "arm_map": args.arm_map, "preview": args.preview,
                    "hand_enabled": args.camera_hand == "on",
@@ -2148,6 +2254,8 @@ def main(argv=None) -> int:
                    "arm_force": max(1.0, float(args.camera_arm_force)),
                    "hand_force": max(1.0, float(args.camera_hand_force)),
                    "ik_mode": args.camera_ik_mode,
+                   "ik_solver": args.camera_ik_solver,
+                   "wrist_pose": args.camera_wrist_pose == "on",
                    "target_speed_m_s": max(
                        0.0, float(args.camera_target_speed_mm_s)) / 1000.0}
 
