@@ -69,7 +69,7 @@ class CameraHandPolicyTests(unittest.TestCase):
                 return SimpleNamespace(right_angles=_Angles(), right_valid=True)
 
         class _Adapter:
-            def map(self, _dofs):
+            def map(self, _dofs, pinch=None):
                 return {"R_index_proximal_joint": 0.7,
                         "R_middle_proximal_joint": -0.4}, 2
 
@@ -87,6 +87,7 @@ class CameraHandPolicyTests(unittest.TestCase):
         policy.hand_invalid_frames = 0
         policy.hand_clipped = 0
         policy.last_hand = {}
+        policy._pinch_signal = lambda _points: (None, 0.0, None)
 
         policy._update_hand(object())
         self.assertAlmostEqual(policy.action[1], 0.7)
@@ -104,7 +105,8 @@ class CameraHandPolicyTests(unittest.TestCase):
         self.assertEqual(args.camera_arm_force, 3000.0)
         self.assertEqual(args.camera_hand_force, 300.0)
         self.assertEqual(args.camera_ik_mode, "position")
-        self.assertEqual(args.camera_target_speed_mm_s, 300.0)
+        self.assertEqual(args.camera_target_speed_mm_s, 600.0)
+        self.assertFalse(args.camera_table_guard)
 
     def test_table_guard_only_lifts_targets_over_the_table_footprint(self):
         bounds = (np.array([0.2, -0.4, 0.0]), np.array([1.2, 0.4, 0.5]))
@@ -117,6 +119,67 @@ class CameraHandPolicyTests(unittest.TestCase):
             [0.1, 0.0, 0.1], bounds, clearance_m=0.06)
         self.assertFalse(active)
         np.testing.assert_allclose(unchanged, [0.1, 0.0, 0.1])
+
+    def test_a_mediapipe_pinch_drives_native_thumb_and_finger_closure(self):
+        from teleoperation.robots.native_hand import map_dofs, pinch_signal
+
+        points = np.zeros((21, 3), dtype=np.float64)
+        points[0] = [0.0, 0.0, 0.0]
+        points[5] = [0.0, 0.08, 0.0]
+        points[17] = [0.0, -0.08, 0.0]
+        points[4] = [0.01, 0.04, 0.0]
+        points[8] = [0.01, 0.04, 0.0]
+        points[12] = [0.08, 0.0, 0.0]
+        points[16] = [0.08, 0.0, 0.0]
+        points[20] = [0.08, 0.0, 0.0]
+        finger, strength, ratio = pinch_signal(points)
+        self.assertEqual(finger, "index")
+        self.assertEqual(ratio, 0.0)
+        self.assertEqual(strength, 1.0)
+        mapping = [
+            (2, "R_index_proximal_joint", 1.0, 0.0, 1.5),
+            (16, "R_thumb_intermediate_joint", 1.0, 0.0, 1.2),
+            (5, "R_middle_proximal_joint", 1.0, 0.0, 1.5),
+        ]
+        joints, _clipped = map_dofs(
+            np.zeros(17), mapping, pinch=(finger, strength, ratio),
+            robot_type="h1_2", side="right")
+        self.assertEqual(joints["R_index_proximal_joint"], 1.5)
+        self.assertEqual(joints["R_thumb_intermediate_joint"], 0.4)
+        self.assertEqual(joints["R_middle_proximal_joint"], 0.0)
+
+    def test_native_pinch_uses_each_robot_hand_axis_not_farthest_limit(self):
+        from teleoperation.robots.native_hand import map_dofs
+
+        gr1 = [
+            (2, "R_index_proximal_joint", -1.0, -1.57, 0.0),
+            (3, "R_index_intermediate_joint", -1.0, -1.74, 0.0),
+            (14, "R_thumb_proximal_yaw_joint", -1.0, -1.74, 0.0),
+            (15, "R_thumb_proximal_pitch_joint", 1.0, 0.0, 1.22),
+            (17, "R_thumb_distal_joint", 1.0, 0.0, 1.04),
+        ]
+        joints, _ = map_dofs(
+            np.zeros(17), gr1, pinch=("index", 1.0, 0.0),
+            robot_type="gr1_t2", side="right")
+        self.assertEqual(joints["R_index_proximal_joint"], -0.785)
+        self.assertEqual(joints["R_index_intermediate_joint"], -1.74)
+        self.assertEqual(joints["R_thumb_proximal_yaw_joint"], -0.87)
+        self.assertEqual(joints["R_thumb_distal_joint"], 1.04)
+
+        g1 = [
+            (2, "right_hand_index_0_joint", 1.0, 0.0, 1.5708),
+            (3, "right_hand_index_1_joint", 1.0, 0.0, 1.7453),
+            (14, "right_hand_thumb_0_joint", 1.0, -1.0472, 1.0472),
+            (15, "right_hand_thumb_1_joint", 1.0, -1.0472, 0.7243),
+            (16, "right_hand_thumb_2_joint", 1.0, -1.7453, 0.0),
+        ]
+        joints, _ = map_dofs(
+            np.zeros(17), g1, pinch=("index", 1.0, 0.0),
+            robot_type="g1", side="right")
+        self.assertEqual(joints["right_hand_index_0_joint"], 1.5708)
+        self.assertEqual(joints["right_hand_index_1_joint"], 0.0)
+        self.assertEqual(joints["right_hand_thumb_0_joint"], 0.0)
+        self.assertEqual(joints["right_hand_thumb_1_joint"], -1.0472)
 
 
 def registered_tasks():

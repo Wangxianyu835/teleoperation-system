@@ -255,7 +255,7 @@ class ThreeRobotHandScene:
                 physicsClientId=cid)
         return distance
 
-    def apply(self, side: str, angles) -> None:
+    def apply(self, side: str, angles, pinch=None) -> None:
         """把一侧的 18 维角度写进三台机器人的原装手（力矩控制，物理里真的会动）。"""
         if side not in self.sides or not self.alive():
             return
@@ -265,7 +265,9 @@ class ThreeRobotHandScene:
             if plan is None:
                 continue
             mapping, names = plan
-            joints, clipped = map_frame(angles, mapping, self.limit_mode)
+            joints, clipped = map_frame(
+                angles, mapping, self.limit_mode, pinch=pinch,
+                robot_type=robot["type"], side=side)
             for joint_name, value in joints.items():
                 p.setJointMotorControl2(
                     robot["body"], names[joint_name], p.POSITION_CONTROL,

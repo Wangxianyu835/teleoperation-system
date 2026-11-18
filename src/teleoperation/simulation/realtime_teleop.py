@@ -121,6 +121,7 @@ from teleoperation.applications.realtime_hand_sim import (
 )
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
 from teleoperation.paths import DEFAULT_POSE_ASSET, realtime_checkpoint
+from teleoperation.robots.native_hand import pinch_signal
 from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM, RUNTIME
 from teleoperation.simulation.arm_preview import (
     ARM_PREVIEW_WINDOW,
@@ -1487,6 +1488,9 @@ def run(args) -> int:
     samples = {side: [] for side in sides}
     invalid = {side: 0 for side in sides}
     raw_seen = {side: 0 for side in sides}
+    pinch_summary = {
+        side: {"frames": 0, "finger_frames": {}, "last": None}
+        for side in sides}
     #: 这一侧连续多少帧没有角度（「手卡住不动」的时长，见 ``_warn_stalled_hand``）。
     stalled = {side: 0 for side in sides}
     #: 「这只手卡住」每侧只喊一次。
@@ -1751,9 +1755,21 @@ def run(args) -> int:
                     values = np.asarray(angles.values, dtype=np.float64)
                     if values.shape != (HAND_ANGLE_DIM,) or not np.isfinite(values).all():
                         raise ValueError(f"invalid {side} angles: shape={values.shape}")
-                    scene.apply(side, values)
+                    pinch = pinch_signal(raw_frame.get(f"world_{side}"))
+                    scene.apply(side, values, pinch=pinch)
                     samples[side].append(values)
                     latest[side] = values
+                    entry = pinch_summary[side]
+                    entry["frames"] += 1
+                    finger, strength, ratio = pinch
+                    if finger is not None:
+                        entry["finger_frames"][finger] = (
+                            entry["finger_frames"].get(finger, 0) + 1)
+                    entry["last"] = {
+                        "finger": finger,
+                        "strength": round(float(strength), 3),
+                        "ratio": None if ratio is None else round(float(ratio), 3),
+                    }
             # 「手卡住不动」要能自己解释：``angles is None`` 时这一侧保持上一帧（故意的，
             # 绝不让关节跳），现场只看到状态行的 ``invalid=`` 在涨。窗口整个是 None（两只手
             # 都丢了）也照样累计 —— 那条路径原来连 ``invalid`` 都不加，正是「两只手一起卡」
@@ -2035,6 +2051,7 @@ def run(args) -> int:
                 "valid_frames": len(samples[side]),
                 "invalid_frames": invalid[side],
                 "angles": _describe(samples[side]) if samples[side] else None,
+                "pinch": pinch_summary[side],
                 "final_joint_values": final.get(side),
             }
             for side in sides
@@ -2044,6 +2061,10 @@ def run(args) -> int:
         entry = report["sides"][side]
         print(f"  hand {side}: raw={entry['raw_detected_frames']}/{processed} "
               f"valid={entry['valid_frames']} invalid={entry['invalid_frames']}")
+        pinch = entry["pinch"]
+        if pinch["last"] is not None:
+            print(f"  pinch {side}: last={pinch['last']} "
+                  f"finger-frames={pinch['finger_frames']}", flush=True)
     if bridge is not None:
         trace = bridge.trace()
         for side, entry in sorted(trace.items()):

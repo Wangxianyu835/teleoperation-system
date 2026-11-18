@@ -217,6 +217,14 @@ def digest(report: "Path | None") -> None:
         print("  counts        : " + " | ".join(
             f"{key} left={((counts.get(key) or {}).get('left'))}"
             f" right={((counts.get(key) or {}).get('right'))}" for key in wanted))
+    for side in ("left", "right"):
+        pinch = ((data.get("sides") or {}).get(side) or {}).get("pinch") or {}
+        last = pinch.get("last")
+        if last:
+            print(f"  pinch {side:<6}: finger={last.get('finger')} "
+                  f"strength={_num(last.get('strength'), 2)} "
+                  f"ratio={_num(last.get('ratio'), 2)} "
+                  f"frames={pinch.get('finger_frames')}")
 
     median = symmetry.get("median_deg")
     if isinstance(median, (int, float)) and not isinstance(median, bool):

@@ -109,6 +109,157 @@ L21_LIMITS = {
 }
 
 
+def pinch_signal(world_hand):
+    """MediaPipe world 21 points -> ``(finger, strength, ratio)`` for pinch closure.
+
+    The native hands have different palm sizes and joint axes from L21. Copying the
+    joint angles alone therefore does not guarantee that thumb and finger tips meet.
+    This measures the operator's thumb-to-tip distance relative to palm width and
+    drives the selected native finger/thumb pair toward its closure end.
+    """
+    points = np.asarray(world_hand, dtype=np.float64) if world_hand is not None else None
+    if points is None or points.shape != (21, 3) or not np.isfinite(points).all():
+        return None, 0.0, None
+    palm_width = float(np.linalg.norm(points[5] - points[17]))
+    if palm_width < 1e-6:
+        palm_width = float(np.linalg.norm(points[9] - points[0]))
+    if palm_width < 1e-6:
+        return None, 0.0, None
+    # H1-2 and GR1-T2 cannot physically bring the thumb to the ring/pinky tips
+    # inside the URDF limits. A ring/pinky pinch therefore falls back to the
+    # nearer supported index/middle opposition instead of commanding an
+    # unreachable "pinch" that visibly leaves the fingertips far apart.
+    tips = {"index": 8, "middle": 12}
+    distances = {
+        name: float(np.linalg.norm(points[4] - points[slot]))
+        for name, slot in tips.items()
+    }
+    finger = min(distances, key=distances.get)
+    # When index and middle are nearly tied, keep the pinch on the index. MediaPipe
+    # switches between those two tips by a few millimetres during a real pinch;
+    # letting that flip the target every frame moves the thumb between two robot
+    # poses and looks like a twitch.
+    if distances["index"] <= distances[finger] + 0.10 * palm_width:
+        finger = "index"
+    ratio = distances[finger] / palm_width
+    # ratio 0.20 = firm pinch, 1.00 = open. Using the full range matters: a real
+    # pinch often measures around 0.25-0.35 in MediaPipe world coordinates.
+    strength = float(np.clip((1.0 - ratio) / 0.80, 0.0, 1.0))
+    return finger, strength, ratio
+
+
+def _pinch_endpoint(robot_type, side: str, selected_finger: str, name: str,
+                    low: float, high: float) -> float:
+    """Native-hand pose that brings a thumb/finger pair together.
+
+    "Largest absolute limit" is not a pinch for all three hands. The URDFs use
+    different axes: on GR1-T2 the index proximal joint closes at 0 while its
+    intermediate joint closes at the negative limit; on G1 the distal finger joint
+    closes at 0 and the thumb opposition sign is mirrored between hands. Driving
+    every joint to its farthest limit therefore moved some fingertips apart.
+    """
+    lower = name.lower()
+    side = "left" if "left" in lower else "right" if "right" in lower else side
+    if robot_type == "gr1_t2":
+        values = {
+            ("right", "index"): {
+                "thumb_proximal_yaw": -0.87, "thumb_proximal_pitch": 1.22,
+                "thumb_distal": 1.04, "finger_proximal": -0.785,
+                "finger_intermediate": -1.74},
+            ("right", "middle"): {
+                "thumb_proximal_yaw": -1.74, "thumb_proximal_pitch": 0.61,
+                "thumb_distal": 0.0, "finger_proximal": -1.57,
+                "finger_intermediate": -0.87},
+            ("left", "index"): {
+                "thumb_proximal_yaw": -0.87, "thumb_proximal_pitch": 1.22,
+                "thumb_distal": 0.52, "finger_proximal": -1.57,
+                "finger_intermediate": -0.87},
+            ("left", "middle"): {
+                "thumb_proximal_yaw": -1.74, "thumb_proximal_pitch": 0.61,
+                "thumb_distal": 1.04, "finger_proximal": -1.57,
+                "finger_intermediate": -0.87},
+        }.get((side, selected_finger), {})
+        for role in ("thumb_proximal_yaw", "thumb_proximal_pitch", "thumb_distal"):
+            if role in lower and role in values:
+                return min(max(values[role], low), high)
+        if selected_finger in lower:
+            if "_proximal_joint" in lower:
+                return min(max(values["finger_proximal"], low), high)
+            if "_intermediate_joint" in lower:
+                return min(max(values["finger_intermediate"], low), high)
+    if robot_type == "g1":
+        values = {
+            ("right", "index"): {
+                "thumb_0_joint": 0.0, "thumb_1_joint": -1.0472,
+                "thumb_2_joint": 0.0, "finger_0_joint": 1.5708,
+                "finger_1_joint": 0.0},
+            ("right", "middle"): {
+                "thumb_0_joint": 1.0472, "thumb_1_joint": -1.0472,
+                "thumb_2_joint": -0.873, "finger_0_joint": 1.5708,
+                "finger_1_joint": 0.873},
+            ("left", "index"): {
+                "thumb_0_joint": -1.0472, "thumb_1_joint": 1.0472,
+                "thumb_2_joint": 0.873, "finger_0_joint": -1.5708,
+                "finger_1_joint": -0.873},
+            ("left", "middle"): {
+                "thumb_0_joint": 0.0, "thumb_1_joint": 1.0472,
+                "thumb_2_joint": 0.873, "finger_0_joint": -1.5708,
+                "finger_1_joint": -0.873},
+        }.get((side, selected_finger), {})
+        for role in ("thumb_0_joint", "thumb_1_joint", "thumb_2_joint"):
+            if role in lower and role in values:
+                return min(max(values[role], low), high)
+        if selected_finger in lower:
+            if "_0_joint" in lower:
+                return min(max(values["finger_0_joint"], low), high)
+            if "_1_joint" in lower:
+                return min(max(values["finger_1_joint"], low), high)
+    if robot_type == "h1_2":
+        values = {
+            ("right", "index"): {
+                "thumb_proximal_yaw": 0.6, "thumb_proximal_pitch": 0.6,
+                "thumb_intermediate": 0.4, "thumb_distal": 0.0,
+                "finger_proximal": 1.7, "finger_intermediate": 0.0},
+            ("right", "middle"): {
+                "thumb_proximal_yaw": 1.3, "thumb_proximal_pitch": 0.25,
+                "thumb_intermediate": 0.0, "thumb_distal": 0.6,
+                "finger_proximal": 1.7, "finger_intermediate": 0.0},
+            ("left", "index"): {
+                "thumb_proximal_yaw": 1.3, "thumb_proximal_pitch": 0.6,
+                "thumb_intermediate": 0.4, "thumb_distal": 1.2,
+                "finger_proximal": 0.85, "finger_intermediate": 0.85},
+            ("left", "middle"): {
+                "thumb_proximal_yaw": 1.3, "thumb_proximal_pitch": 0.6,
+                "thumb_intermediate": 0.8, "thumb_distal": 1.2,
+                "finger_proximal": 1.7, "finger_intermediate": 0.85},
+        }.get((side, selected_finger), {})
+        for role in ("thumb_proximal_yaw", "thumb_proximal_pitch",
+                     "thumb_intermediate", "thumb_distal"):
+            if role in lower and role in values:
+                return min(max(values[role], low), high)
+        if selected_finger in lower:
+            if "_proximal_joint" in lower:
+                return min(max(values["finger_proximal"], low), high)
+            if "_intermediate_joint" in lower:
+                return min(max(values["finger_intermediate"], low), high)
+    return high if abs(high) >= abs(low) else low
+
+
+def _make_pinch_closure(joints, mapping, finger: str, strength: float,
+                        robot_type=None, side: str = "right") -> None:
+    """Blend the native thumb and selected finger toward a model-specific pinch."""
+    if not finger or strength <= 0.0:
+        return
+    keys = ("thumb", finger)
+    for _dim, name, _sign, low, high in mapping:
+        lower_name = name.lower()
+        if not any(key in lower_name for key in keys):
+            continue
+        endpoint = _pinch_endpoint(
+            robot_type, side, finger, name, low, high)
+        joints[name] += float(strength) * (endpoint - joints[name])
+
+
 def build_mapping(robot_type, side, joint_ranges):
     """生成映射表：[(数据维度, 原装手关节名, 符号, 下限, 上限), ...]"""
     pref = PREFIX[robot_type][side]
@@ -137,7 +288,8 @@ def dropped_dims(robot_type, side, mapping):
     return [d for d in DIM_NAMES if d != 0 and d not in used]
 
 
-def map_dofs(row, mapping, limit_mode='clamp'):
+def map_dofs(row, mapping, limit_mode='clamp', pinch=None,
+             robot_type=None, side='right'):
     """把一帧 17DOF 数据映射成 {关节名: 目标角度}（已按符号与限位处理）
 
     Args:
@@ -173,6 +325,9 @@ def map_dofs(row, mapping, limit_mode='clamp'):
                 clipped += 1
             v = min(max(v, lo), hi)
         joints[jn] = v
+    if pinch is not None:
+        finger, strength, _ratio = pinch
+        _make_pinch_closure(joints, mapping, finger, strength, robot_type, side)
     return joints, clipped
 
 
@@ -191,6 +346,7 @@ class NativeHandAdapter:
         self.mapping = build_mapping(robot_type, side, joint_ranges)
         self.limit_mode = limit_mode
 
-    def map(self, dofs: L21HandDOFs):
+    def map(self, dofs: L21HandDOFs, pinch=None):
         if not isinstance(dofs, L21HandDOFs): raise TypeError("NativeHandAdapter requires L21HandDOFs[17]")
-        return map_dofs(dofs.values, self.mapping, self.limit_mode)
+        return map_dofs(dofs.values, self.mapping, self.limit_mode, pinch=pinch,
+                        robot_type=self.robot_type, side=self.side)
