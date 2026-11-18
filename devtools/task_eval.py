@@ -905,7 +905,7 @@ class TaskScene:
     # -- 对外 ---------------------------------------------------------------
     def prepare(self, settle_steps: int = SETTLE_STEPS, shift: bool = True,
                 bench: bool = True, ik_workspace: bool = False,
-                side: str = None) -> dict:
+                side: str = None, hold_robot: bool = False) -> dict:
 
 
         # SCENE_OPS 用的是**作者写的绝对坐标**（0.555 = 柜面 0.55 + 半厚 0.015），
@@ -930,7 +930,10 @@ class TaskScene:
             self._pull_into_ik_workspace(side=side)
 
 
-        self._settle(settle_steps, hold=ik_workspace)
+        # Camera/replay actions only address arm + hand joints. Without holding the
+        # rest of the body, gravity folds the legs into the arm path and the arm gets
+        # blocked by its own robot before the task starts.
+        self._settle(settle_steps, hold=(ik_workspace or hold_robot))
 
 
         # 静置后物体可能被挤出去几厘米（锅被两个手柄推），最后再收一次；
@@ -1471,7 +1474,13 @@ def run_trial(env, actions, max_steps: int, max_wall_s: float = None) -> dict:
     t0 = time.time()
     for step in range(int(max_steps)):
         if callable(actions):
-            action = actions(step)
+            try:
+                action = actions(step)
+            except p.error as error:
+                if "Not connected" not in str(error):
+                    raise
+                wall_hit = True
+                break
             if getattr(actions, "stopped", False):
                 wall_hit = True
                 break
@@ -1571,7 +1580,9 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                          robot_id=env.robot_id).prepare(
                                              settle_steps,
                                              ik_workspace=(policy == "scripted"),
-                                             side=options.get("side"))
+                                             side=options.get("side"),
+                                             hold_robot=(policy in (
+                                                 "camera", "replay", "dummy")))
 
 
             actions, policy_meta = build_actions(policy, env, actions_path, max_steps,
@@ -1604,7 +1615,11 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
         finally:
             if live is not None:
                 live.close()
-            env.close()
+            try:
+                env.close()
+            except p.error:
+                # User closed the GUI window: the direct connection is already gone.
+                pass
     successes = [item for item in report["trials"] if item["success"]]
     times = [item["completion_time_s"] for item in successes]
     report["summary"] = {
