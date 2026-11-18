@@ -417,6 +417,12 @@ E:\python3.11.7\python.exe devtools\task_eval.py `
 - `camera.hand_clipped_joints`（原生行程截断次数）
 - `camera.hand_calibration_status`
 
+摄像头档与脚本档现在共用 `_layout_for_arm()` + `_pull_into_ik_workspace()`：
+`pickcube` 的旧摆法实测让手掌/掌根接触桌面（腕点残差约 **95 mm**、接触法向力最高
+3914 N），新的真实 IK 工作区摆法把桌面放在肩下 0.22 m、物体放到真 IK 可达点后，残差约
+**11 mm**，抓取前接触力为 0。任务报告新增 `robot_object_contacts`，下一条 trial 可以直接
+核对手臂是否仍撞桌。
+
 ### 8.2 验收顺序
 
 相机任务档**不使用** `task_scripted.py` 的 `grasp_assist`；物体只能靠真实接触抬起。因此先做：
@@ -434,5 +440,11 @@ E:\python3.11.7\python.exe devtools\task_eval.py `
 摄像头短冒烟报告 `camera_hand_smoke.json` 退出码 0，H1-2 的 12 个原生手关节、geometric
 后端与任务动作向量均已加载。短冒烟时画面无人，所以 `hand_valid_frames=0` 是输入侧事实，
 不是接线失败。
+
+2026-11-18 现场复测（`pickcube_camera_h1_live_v4.json`）：摄像头 992 帧里右臂有效
+822 帧、右手最终有效并写入 12 个原装关节，`joint_travel_rad=1.5274`，末端
+`robot_object_contacts={}`（没有机器人 link 与桌/方块接触）。方块从
+`(0.303, 0, 0.520)` 被轻微推到 `(0.346, -0.022, 0.520)`，但没有抬起，因此失败点已从
+“卡桌/手臂不动”转到抓取接触与闭合时机。下一轮只调局部抓取，不再改任务布局。
 
 

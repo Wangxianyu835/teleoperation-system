@@ -1517,6 +1517,37 @@ def object_positions(env) -> dict:
             for key, body in env.task.objects.items()}
 
 
+def robot_contact_summary(env) -> dict:
+    """Robot link <-> task-object contacts at the end of a trial.
+
+    The table contact is the diagnostic for "the arm is physically trapped":
+    ``joint_travel_rad`` can be large while the wrist still cannot enter the
+    requested point because a link is inside the table collider.
+    """
+    out = {}
+    for key, body in env.task.objects.items():
+        try:
+            contacts = p.getContactPoints(
+                bodyA=env.robot_id, bodyB=body, physicsClientId=env.client)
+        except Exception:  # noqa: BLE001 - diagnostic only
+            continue
+        if not contacts:
+            continue
+        rows = []
+        for contact in contacts:
+            link = int(contact[3])
+            try:
+                info = p.getJointInfo(env.robot_id, link,
+                                      physicsClientId=env.client)
+                name = info[12].decode() if isinstance(info[12], bytes) else str(info[12])
+            except Exception:  # noqa: BLE001 - base link / disconnected
+                name = "base" if link < 0 else str(link)
+            rows.append({"robot_link": name,
+                         "normal_force": round(float(contact[9]), 3)})
+        out[key] = rows
+    return out
+
+
 def snapshot(env, path, target=None, yaw: float = 55.0, pitch: float = -22.0,
              distance: float = 1.9, width: int = 640, height: int = 480) -> bool:
     """离屏渲染一张 PNG（与 ``verify_three_robot_scene.render`` 同一套取景参数）。
@@ -1579,7 +1610,8 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                          name=task_name,
                                          robot_id=env.robot_id).prepare(
                                              settle_steps,
-                                             ik_workspace=(policy == "scripted"),
+                                             ik_workspace=(policy in (
+                                                 "scripted", "camera")),
                                              side=options.get("side"),
                                              hold_robot=(policy in (
                                                  "camera", "replay", "dummy")))
@@ -1591,6 +1623,8 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
             result = run_trial(env, actions, max_steps, max_wall_s=max_wall_s)
             trial = dict(result, trial=index, **policy_meta,
                          scene=scene_report, final_objects=object_positions(env))
+            if policy == "camera":
+                trial["robot_object_contacts"] = robot_contact_summary(env)
             if scene_report is not None and scene_report.get("criteria_at_reset"):
                 # 场景摆完判据就已经成立 -> 这条 trial 的成功是假的（布局把物体摆得太近），
                 # 如实记成失败并写明原因，绝不让它进成功率。
