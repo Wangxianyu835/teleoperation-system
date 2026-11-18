@@ -2015,13 +2015,26 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                           % disabled,
                           flush=True)
 
+            initial_objects = object_positions(env)
+            if {"cube", "target"} <= set(initial_objects):
+                cube = np.asarray(initial_objects["cube"], dtype=np.float64)
+                target = np.asarray(initial_objects["target"], dtype=np.float64)
+                delta = target - cube
+                print("[task] cube -> target: dx=%+.3f dy=%+.3f dz=%+.3f m"
+                      % (delta[0], delta[1], delta[2]), flush=True)
+            elif initial_objects:
+                print("[task] initial objects: " + ", ".join(
+                    "%s=%s" % (key, [round(float(v), 3) for v in value])
+                    for key, value in sorted(initial_objects.items())
+                    if key != TABLE_KEY), flush=True)
 
             actions, policy_meta = build_actions(policy, env, actions_path, max_steps,
                                                  **options)
             live = actions if callable(actions) else None
             result = run_trial(env, actions, max_steps, max_wall_s=max_wall_s)
             trial = dict(result, trial=index, **policy_meta,
-                         scene=scene_report, final_objects=object_positions(env))
+                         scene=scene_report, initial_objects=initial_objects,
+                         final_objects=object_positions(env))
             if policy == "camera":
                 trial["robot_object_contacts"] = robot_contact_summary(env)
             if scene_report is not None and scene_report.get("criteria_at_reset"):
