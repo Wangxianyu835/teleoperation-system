@@ -741,6 +741,7 @@ class TaskScene:
 
     def _layout_for_arm(self, forward: float = 0.26, drop: float = 0.22,
                         lateral: float = 0.02, spread: float = 0.12,
+                        side_bias: float = 0.0,
                         rebuild_bench: bool = True) -> None:
         """按**这台臂的真实几何**重摆整幕（脚本档专用）。
 
@@ -785,7 +786,9 @@ class TaskScene:
         # 横向按**整组中点**对齐肩（不是质心）：物体各自最多 ±spread，中点对齐后每个物体
         # 离肩的横向就 ≤spread，左右两条臂都够得着（实测可达带在 y≈±0.10）。
         y_mid = 0.5 * (float(points[:, 1].min()) + float(points[:, 1].max()))
-        want_y = float(shoulder[1] + max(-lateral, min(lateral, y_mid - shoulder[1])))
+        want_y = float(
+            shoulder[1]
+            + max(-lateral, min(lateral, y_mid - shoulder[1] + side_bias)))
         delta = np.array([want_x - centre[0], want_y - y_mid, 0.0])
 
         for key in keys:
@@ -931,7 +934,9 @@ class TaskScene:
                 bench: bool = True, ik_workspace: bool = False,
                 side: str = None, hold_robot: bool = False,
                 layout_forward: float = 0.26,
-                layout_drop: float = 0.22) -> dict:
+                layout_drop: float = 0.22,
+                layout_lateral: float = 0.02,
+                layout_side_bias: float = 0.0) -> dict:
 
 
         # SCENE_OPS 用的是**作者写的绝对坐标**（0.555 = 柜面 0.55 + 半厚 0.015），
@@ -951,7 +956,9 @@ class TaskScene:
             # 批次 5：球形模型把物体摆到了真 IK 够不到的地方 -> 先按真实臂几何重摆，
             # 再用 IK 残差做最后校正（两步都写进 scene report）
             self._layout_for_arm(forward=float(layout_forward),
-                                 drop=float(layout_drop))
+                                 drop=float(layout_drop),
+                                 lateral=float(layout_lateral),
+                                 side_bias=float(layout_side_bias))
             self._rest_on_table()
             self._separate()
             self._pull_into_ik_workspace(side=side)
@@ -2168,7 +2175,13 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                              layout_forward=(
                                                  0.36 if policy == "camera" else 0.26),
                                              layout_drop=(
-                                                 0.18 if policy == "camera" else 0.22))
+                                                 0.18 if policy == "camera" else 0.22),
+                                             layout_lateral=(
+                                                 0.14 if policy == "camera" else 0.02),
+                                             layout_side_bias=(
+                                                 (-0.06 if options.get("side") == "right"
+                                                  else 0.06)
+                                                 if policy == "camera" else 0.0))
                 if policy == "camera":
                     disabled = disable_robot_table_collision(
                         env, extra_bodies=task_scene.extra_bodies)

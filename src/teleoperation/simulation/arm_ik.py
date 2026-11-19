@@ -1602,7 +1602,8 @@ class PyBulletArmIK:
             target_orientation = orientation
             if target_orientation is None:
                 target_orientation = tuple(float(v) for v in self._orientation(side))
-            values = self._paper_ik(side).solve(world, target_orientation)
+            values = self._paper_ik(side).solve(
+                world, target_orientation, elbow_world)
             self.last_target_world[side] = world
             self.last_orientation[side] = target_orientation
             self.last_posture[side] = {str(name): float(value)

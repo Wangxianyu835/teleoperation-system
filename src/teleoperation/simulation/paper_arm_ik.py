@@ -43,6 +43,11 @@ import numpy as np
 #: 50:1 让姿态成为次要目标：残差一大就把姿态项完全压住，现场手感是「腕几乎不跟手」。
 #: 调小位置权重（或抬姿态权重）能把腕的响应换回来，代价是位置跟手变松。
 TRANSLATIONAL_WEIGHT = float(os.environ.get("PAPER_IK_TRANS_WEIGHT", "50.0"))
+#: Elbow position is an explicit task, not only a null-space preference. The
+#: operator-side posture recipe produces a reachable elbow target together with
+#: the wrist target; leaving it out lets the 7-DoF arm choose the opposite elbow
+#: branch.
+ELBOW_TRANSLATIONAL_WEIGHT = float(os.environ.get("PAPER_IK_ELBOW_WEIGHT", "80.0"))
 ROTATION_WEIGHT = float(os.environ.get("PAPER_IK_ROT_WEIGHT", "1.0"))
 REGULARIZATION_WEIGHT = 0.02
 SMOOTH_WEIGHT = 0.1
@@ -150,6 +155,7 @@ class PaperArmIK:
         self.joint_indices = [index for index, _name in self.joints]
         self.joint_names = [name for _index, name in self.joints]
         self.ee_link = adapter.ee[side][0]
+        self.elbow_link = adapter.elbow_link[side]
         lower = adapter.limits["lower"]
         upper = adapter.limits["upper"]
         self.lower = np.array([lower[adapter.position_of[i]] for i in self.joint_indices])
@@ -175,6 +181,7 @@ class PaperArmIK:
         #: 上一次被放行的解；失败时原样返回（原文件第 294 行）。
         self.last_command = self.init_data.copy()
         self.last_residual = None
+        self.last_elbow_residual = None
         self.last_rotation_error_deg = None
         self.iterations = 0
         #: 信赖域半径（rad），跨帧保留：自适应放大/缩小，见 ``MAX_STEP_RAD``。
@@ -195,10 +202,23 @@ class PaperArmIK:
                               physicsClientId=self.adapter.cid)
 
     def _ee_pose(self):
-        state = self.adapter.p.getLinkState(
-            self.adapter.body, self.ee_link, computeLinkVelocity=0,
-            computeForwardKinematics=1, physicsClientId=self.adapter.cid)
-        return np.array(state[4], dtype=float), tuple(float(v) for v in state[5])
+        """Return wrist pose and cache the elbow position from the same FK query."""
+        p = self.adapter.p
+        if hasattr(p, "getLinkStates"):
+            states = p.getLinkStates(
+                self.adapter.body, [self.ee_link, self.elbow_link],
+                computeLinkVelocity=0, computeForwardKinematics=1,
+                physicsClientId=self.adapter.cid)
+            wrist, elbow = states
+        else:
+            wrist = p.getLinkState(
+                self.adapter.body, self.ee_link, computeLinkVelocity=0,
+                computeForwardKinematics=1, physicsClientId=self.adapter.cid)
+            elbow = p.getLinkState(
+                self.adapter.body, self.elbow_link, computeLinkVelocity=0,
+                computeForwardKinematics=1, physicsClientId=self.adapter.cid)
+        self._last_elbow_position = np.asarray(elbow[4], dtype=float)
+        return np.asarray(wrist[4], dtype=float), tuple(float(v) for v in wrist[5])
 
     def _base_positions(self):
         """整机 dof 位置读一次（非手臂关节在一次 ``_minimize`` 里不会变）。
@@ -219,15 +239,16 @@ class PaperArmIK:
             positions[self.adapter.position_of[joint]] = float(value)
         return positions
 
-    def _jacobian(self, positions):
+    def _jacobian(self, positions, link_index=None):
         """``calculateJacobian`` -> (3x7 线速度, 3x7 角速度)，世界系。
 
         返回矩阵的列是 **dof 序号**，所以要用 ``adapter.position_of`` 取列。
         """
         p = self.adapter.p
+        link_index = self.ee_link if link_index is None else int(link_index)
         count = len(positions)
         linear, angular = p.calculateJacobian(
-            self.adapter.body, self.ee_link, [0.0, 0.0, 0.0],
+            self.adapter.body, link_index, [0.0, 0.0, 0.0],
             positions, [0.0] * count, [0.0] * count,
             physicsClientId=self.adapter.cid)
         columns = [self.adapter.position_of[joint] for joint in self.joint_indices]
@@ -237,14 +258,18 @@ class PaperArmIK:
 
     # ------------------------------------------------------------------ 求解
 
-    def solve(self, target_position, target_quaternion=None):
+    def solve(self, target_position, target_quaternion=None,
+              target_elbow_position=None):
         """返回 ``{关节名: 角度}``；求解异常时返回上一帧指令（不跳变）。"""
         q = self.init_data.copy()
         try:
-            q, residual, rot_deg, iterations = self._minimize(
-                q, np.asarray(target_position, dtype=float), target_quaternion)
+            q, residual, elbow_residual, rot_deg, iterations = self._minimize(
+                q, np.asarray(target_position, dtype=float), target_quaternion,
+                (None if target_elbow_position is None
+                 else np.asarray(target_elbow_position, dtype=float)))
         except Exception:                      # noqa: BLE001 - 与原文件的 except 同义
             self._write(self.last_command)
+            self.last_elbow_residual = None
             return {name: float(value)
                     for name, value in zip(self.joint_names, self.last_command)}
 
@@ -256,13 +281,16 @@ class PaperArmIK:
         self.init_data = q.copy()
         self.last_command = q.copy()
         self.last_residual = float(residual)
+        self.last_elbow_residual = (None if elbow_residual is None
+                                    else float(elbow_residual))
         self.last_rotation_error_deg = None if rot_deg is None else float(rot_deg)
         self.iterations = int(iterations)
         # 与 ``_teleport`` 同语义：把手臂停在解上，电机从这一帧开始伺服。
         self._write(q)
         return {name: float(value) for name, value in zip(self.joint_names, q)}
 
-    def _cost(self, q, target_position, target_quaternion, q_last):
+    def _cost(self, q, target_position, target_quaternion, q_last,
+              target_elbow_position=None):
         """原文件 ``opti.minimize`` 的四项之和，在 ``q`` 处**真正跑一次 FK** 求值。
 
         必须真算：线搜索比较的是候选点之间的代价，用当前点的误差当常值会让任何一步都
@@ -271,6 +299,9 @@ class PaperArmIK:
         self._write(q)
         position, quaternion = self._ee_pose()
         error_position = np.asarray(target_position, dtype=float) - position
+        error_elbow = (None if target_elbow_position is None
+                       else np.asarray(target_elbow_position, dtype=float)
+                       - self._last_elbow_position)
         error_rotation = None
         if target_quaternion is not None:
             error_rotation = rotation_vector_error(target_quaternion, quaternion)
@@ -284,23 +315,30 @@ class PaperArmIK:
                   f"rot {0.0 if error_rotation is None else ROTATION_WEIGHT * float(error_rotation @ error_rotation):.6f} "
                   f"reg {REGULARIZATION_WEIGHT * float(np.sum((q - self.regularization_reference) ** 2)):.6f} "
                   f"sm {SMOOTH_WEIGHT * float(np.sum((q - q_last) ** 2)):.6f}")
-        return self._terms(q, error_position, error_rotation, q_last)
+        return self._terms(q, error_position, error_rotation, q_last,
+                           error_elbow)
 
-    def _terms(self, q, error_position, error_rotation, q_last):
+    def _terms(self, q, error_position, error_rotation, q_last, error_elbow=None):
         """四个代价项之和，**输入是误差而不是位姿** —— 线搜索用线性化误差调它，
         从而候选点评估完全不碰 PyBullet（这是帧率的关键，见 ``_minimize``）。"""
         position_term = TRANSLATIONAL_WEIGHT * float(error_position @ error_position)
+        elbow_term = (0.0 if error_elbow is None
+                      else ELBOW_TRANSLATIONAL_WEIGHT
+                      * float(error_elbow @ error_elbow))
         rotation_term = (0.0 if error_rotation is None
                          else ROTATION_WEIGHT * float(error_rotation @ error_rotation))
         regularization_term = REGULARIZATION_WEIGHT * float(
             np.sum((q - self.regularization_reference) ** 2))
         smooth_term = SMOOTH_WEIGHT * float(np.sum((q - q_last) ** 2))
-        return position_term + rotation_term + regularization_term + smooth_term
+        return (position_term + elbow_term + rotation_term
+                + regularization_term + smooth_term)
 
-    def _minimize(self, q, target_position, target_quaternion):
+    def _minimize(self, q, target_position, target_quaternion,
+                  target_elbow_position=None):
         q = np.clip(np.asarray(q, dtype=float), self.lower, self.upper)
         q_last = q.copy()
         residual = float("inf")
+        elbow_residual = None
         rot_deg = None
         iterations = 0
         rejected = 0
@@ -316,7 +354,12 @@ class PaperArmIK:
             self._write(q)
             position, quaternion = self._ee_pose()
             error_position = target_position - position
+            error_elbow = (None if target_elbow_position is None
+                           else target_elbow_position - self._last_elbow_position)
             linear, angular = self._jacobian(positions)
+            elbow_linear = (None if error_elbow is None
+                            else self._jacobian(
+                                positions, link_index=self.elbow_link)[0])
             if self.wrist_only_orientation:
                 # ``orientation_scope="wrist"``：姿态误差只准腕关节消化（历史路径的语义）。
                 angular = angular.copy()
@@ -329,13 +372,20 @@ class PaperArmIK:
             else:
                 error_rotation = None
             residual = float(np.linalg.norm(error_position))
+            elbow_residual = (None if error_elbow is None
+                              else float(np.linalg.norm(error_elbow)))
             if (residual <= POSITION_TOLERANCE_M
+                    and (elbow_residual is None
+                         or elbow_residual <= POSITION_TOLERANCE_M)
                     and (rot_deg is None or rot_deg <= ROTATION_TOLERANCE_DEG)):
                 break
 
             # 加权最小二乘：位置 50、姿态 1（原文件 minimize 的前两项）。
             rows = [sqrt(TRANSLATIONAL_WEIGHT) * linear]
             errors = [sqrt(TRANSLATIONAL_WEIGHT) * error_position]
+            if error_elbow is not None:
+                rows.append(sqrt(ELBOW_TRANSLATIONAL_WEIGHT) * elbow_linear)
+                errors.append(sqrt(ELBOW_TRANSLATIONAL_WEIGHT) * error_elbow)
             if error_rotation is not None:
                 rows.append(sqrt(ROTATION_WEIGHT) * angular)
                 errors.append(sqrt(ROTATION_WEIGHT) * error_rotation)
@@ -365,7 +415,8 @@ class PaperArmIK:
             # （= N 次 resetJointState + 1 次 getLinkState），一帧下来单条臂就有上千次
             # GUI 往返；现场三台机器人同场景时单次往返更贵，实测把帧率从 8 打到 3.4。
             # 现在每迭代只剩 1 次写 + 1 次读 + 1 次雅可比，候选点评估是纯 numpy。
-            current = self._terms(q, error_position, error_rotation, q_last)
+            current = self._terms(q, error_position, error_rotation, q_last,
+                                  error_elbow)
             best_q, accepted = q, False
             scale = 1.0
             tried = []
@@ -373,10 +424,12 @@ class PaperArmIK:
                 candidate = np.clip(q + scale * step, self.lower, self.upper)
                 delta = candidate - q          # 取投影后的真实增量
                 predicted_position = error_position - linear @ delta
+                predicted_elbow = (None if error_elbow is None
+                                   else error_elbow - elbow_linear @ delta)
                 predicted_rotation = (None if error_rotation is None
                                       else error_rotation - angular @ delta)
-                cost = self._terms(candidate, predicted_position, predicted_rotation,
-                                   q_last)
+                cost = self._terms(candidate, predicted_position,
+                                   predicted_rotation, q_last, predicted_elbow)
                 tried.append((scale, cost, float(np.linalg.norm(delta))))
                 if cost < current:
                     best_q, accepted = candidate, True
@@ -404,4 +457,4 @@ class PaperArmIK:
             # 信赖域自适应（ipopt 的 trust-region 在本机的等价物）：收敛慢就放大步子，
             # 被拒绝就缩小。固定步长上限是「跟手滞后」的直接原因（实测残差 130 mm）。
             self._trust = min(MAX_TRUST_RAD, self._trust * 1.5)
-        return q, residual, rot_deg, iterations
+        return q, residual, elbow_residual, rot_deg, iterations

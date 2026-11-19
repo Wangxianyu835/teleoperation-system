@@ -430,6 +430,28 @@ class SceneLayerTests(unittest.TestCase):
         finally:
             task._clear_objects()
 
+    def test_camera_side_bias_keeps_pickplace_objects_on_the_table(self):
+        from teleoperation.simulation.environment import SimulationEnv
+
+        env = SimulationEnv(robot_type="h1_2", task_name="pickplacecube",
+                            render=False, record=False,
+                            data_dir=str(EVAL.ROOT / "outputs" / "tmp_task_eval"))
+        try:
+            env.reset(randomize=False)
+            arm = EVAL.measure_arm("h1_2")
+            scene = EVAL.TaskScene(
+                env.client, env.task, robot="h1_2",
+                shoulder=arm["shoulder_m"], reach=arm["reach_m"],
+                name="pickplacecube", robot_id=env.robot_id)
+            scene.prepare(
+                120, ik_workspace=True, side="right", hold_robot=True,
+                layout_forward=0.36, layout_drop=0.18,
+                layout_lateral=0.14, layout_side_bias=-0.06)
+            supported, reason = EVAL.task_objects_supported(env)
+            self.assertTrue(supported, reason)
+        finally:
+            env.close()
+
     def test_trial_runner_scores_idle_as_failure(self):
         report = EVAL.evaluate_task("h1_2", "pushcube", trials=1, policy="idle",
                                     max_steps=240, settle_steps=120,

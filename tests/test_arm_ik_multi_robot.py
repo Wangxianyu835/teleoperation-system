@@ -1700,3 +1700,45 @@ class PaperSolverFrameBudgetTests(unittest.TestCase):
         self.solve_towards((1.0, 0.0, 0.0))
         self.assertLessEqual(int(self.solver.iterations), int(MAX_ITERATIONS))
 
+    def test_paper_solver_uses_the_elbow_position_task(self):
+        adapter = self.adapter
+        side = "right"
+        # Create one exactly reachable bent-arm target from the robot's own FK.
+        for index, name in adapter.arm[side]:
+            if "elbow" in name.lower():
+                value = float(adapter.p.getJointState(
+                    adapter.body, index, physicsClientId=adapter.cid)[0])
+                adapter.p.resetJointState(
+                    adapter.body, index, value + 0.7,
+                    physicsClientId=adapter.cid)
+        target = adapter.arm_points(side)
+        wrist = target["wrist"]
+        elbow = target["elbow"]
+        orientation = adapter._orientation(side)
+
+        for index, _name in adapter.arm[side]:
+            adapter.p.resetJointState(
+                adapter.body, index, 0.0, physicsClientId=adapter.cid)
+        adapter._paper_ik_cache = {}
+        adapter.solve(side, wrist, source="world", orientation=orientation)
+        no_elbow = adapter.arm_points(side)
+        no_elbow_error = float(np.linalg.norm(
+            np.asarray(no_elbow["elbow"]) - elbow))
+
+        for index, _name in adapter.arm[side]:
+            adapter.p.resetJointState(
+                adapter.body, index, 0.0, physicsClientId=adapter.cid)
+        adapter._paper_ik_cache = {}
+        adapter.solve(side, wrist, source="world", orientation=orientation,
+                      elbow=elbow, elbow_pass="last")
+        with_elbow = adapter.arm_points(side)
+        with_elbow_error = float(np.linalg.norm(
+            np.asarray(with_elbow["elbow"]) - elbow))
+        wrist_error = float(np.linalg.norm(
+            np.asarray(with_elbow["wrist"]) - wrist))
+
+        self.assertLess(with_elbow_error, no_elbow_error - 0.05,
+                        (with_elbow_error, no_elbow_error))
+        self.assertLess(with_elbow_error, 0.12, with_elbow_error)
+        self.assertLess(wrist_error, 0.03, wrist_error)
+
