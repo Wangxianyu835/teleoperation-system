@@ -193,6 +193,29 @@
 离线抓取台架，直接比较 H1-2 原生 12 关节目标、指尖位置与实际接触，而不是继续
 调吸附阈值。
 
+随后通过离线接触台架确认：
+
+- 闭合手指可以产生真实接触，接触点数量和法向力不是零。
+- 手部三指自然捏合中心约为 `[0.45, -0.16, 0.93] m`。
+- 通用场景原来把杯子放在约 `[0.232, -0.060] m`，位于手掌后方，手指闭合时
+  无法形成相对夹持面。
+- `uprearcup` 现已把杯子放到右手预抓取中心，并在检测到握拳和至少两个手部
+  接触点前保持静止；接触确认后才恢复杯子动态。
+
+`outputs/task_eval/uprearcup_camera_physicalpregrasp_20261119.json` 中曾出现
+`success=true`，但操作者确认是用鼠标在 PyBullet GUI 中拖正杯子，并非机器人
+完成。该结果**作废，不计成功率**。
+
+评测窗口现在强制关闭 PyBullet 鼠标拾取：
+
+```python
+p.configureDebugVisualizer(
+    p.COV_ENABLE_MOUSE_PICKING, 0, physicsClientId=env.client)
+```
+
+每份 trial 报告增加 `gui_mouse_picking_enabled=false`，防止鼠标拖动污染后续
+结果。
+
 ## 桌面高度
 
 现场反馈桌面高度恰好与上臂和手腕连线重合，人在桌面上方操作时很难从画面中

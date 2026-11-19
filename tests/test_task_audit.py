@@ -670,10 +670,21 @@ class SceneLayerTests(unittest.TestCase):
             cup = env.task.objects["cup"]
             start, start_orientation = EVAL.body_pose(env.client, cup)
             start = start.copy()
+            target = np.asarray(
+                report["camera_cup_pre_grasp"]["target_center_m"])
+            np.testing.assert_allclose(start, target, atol=0.01,
+                                       err_msg="杯子必须停在右手预抓取中心")
             low, _high = EVAL.aabb(env.client, env.task.objects["table"])
             self.assertGreaterEqual(
                 float(start[0]) - 0.05 - float(low[0]), 0.04,
                 "杯体沿 x 的整个近端必须有桌面支撑")
+            # Test rolling separately from the open-hand pre-grasp volume.
+            roll_start = np.array([0.25, -0.06, float(start[2])])
+            EVAL.p.resetBasePositionAndOrientation(
+                cup, roll_start.tolist(), start_orientation,
+                physicsClientId=env.client)
+            start = roll_start
+            start_orientation = EVAL.body_pose(env.client, cup)[1]
             tilted = EVAL.p.getQuaternionFromEuler([0.0, np.pi / 4.0, 0.0])
             EVAL.p.resetBasePositionAndOrientation(
                 cup, [float(start[0]), float(start[1]), 1.22], tilted,
