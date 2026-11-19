@@ -550,6 +550,111 @@ class SceneLayerTests(unittest.TestCase):
                         "idle 不该让手臂动起来")
         self.assertTrue(trial["scene"]["settle"]["stable"])
 
+    def test_camera_uprearcup_has_rolling_resistance(self):
+        from teleoperation.simulation.environment import SimulationEnv
+
+        env = SimulationEnv(robot_type="h1_2", task_name="uprearcup",
+                            render=False, record=False,
+                            data_dir=str(EVAL.ROOT / "outputs" / "tmp_task_eval"))
+        try:
+            env.reset(randomize=False)
+            arm = EVAL.measure_arm("h1_2")
+            workspace = EVAL.camera_workspace_profile("uprearcup")
+            position, orientation = EVAL.p.getBasePositionAndOrientation(
+                env.robot_id, physicsClientId=env.client)
+            EVAL.p.resetBasePositionAndOrientation(
+                env.robot_id,
+                [position[0], position[1],
+                 position[2] - workspace["robot_drop_m"]],
+                orientation, physicsClientId=env.client)
+            shoulder = np.asarray(arm["shoulder_m"], dtype=float).copy()
+            shoulder[2] -= workspace["robot_drop_m"]
+            scene = EVAL.TaskScene(
+                env.client, env.task, robot="h1_2",
+                shoulder=shoulder, reach=arm["reach_m"],
+                name="uprearcup", robot_id=env.robot_id)
+            report = scene.prepare(
+                120, ik_workspace=True, side="right", hold_robot=True,
+                layout_forward=workspace["layout_forward_m"],
+                layout_drop=(shoulder[2] - workspace["table_top_m"]),
+                layout_lateral=0.15, layout_side_bias=-0.06,
+                layout_table_min_x=workspace["layout_table_min_x_m"],
+                camera_cup_stability=True)
+            self.assertTrue(report["ik_reach"]["ok"], report["ik_reach"])
+            _low, high = EVAL.aabb(env.client, env.task.objects["table"])
+            self.assertAlmostEqual(workspace["table_top_m"], float(high[2]),
+                                   delta=0.01)
+            settings = report["camera_cup_stability"]
+            self.assertEqual(0.0, settings["rollingFriction"])
+            self.assertIn("compound_body", settings)
+            self.assertGreaterEqual(settings["mass_kg"], 0.15)
+            disabled = EVAL.disable_robot_object_collision_except_hand(
+                env, "cup", side="right")
+            self.assertGreater(disabled, 0)
+
+            EVAL.p.resetBaseVelocity(
+                env.task.objects["cup"], [1.0, 0.0, 2.0], [0.0, 0.0, 3.0],
+                physicsClientId=env.client)
+            self.assertTrue(EVAL.clamp_horizontal_velocity(
+                env.client, env.task.objects["cup"]))
+            velocity, angular = EVAL.p.getBaseVelocity(
+                env.task.objects["cup"], physicsClientId=env.client)
+            self.assertAlmostEqual(0.30, float(np.linalg.norm(velocity[:2])),
+                                   places=5)
+            self.assertAlmostEqual(1.5, float(np.linalg.norm(angular)),
+                                   places=5)
+            self.assertAlmostEqual(2.0, float(velocity[2]), places=5,
+                                   msg="速度保护不能改变竖直重力方向")
+
+            cup = env.task.objects["cup"]
+            start, start_orientation = EVAL.body_pose(env.client, cup)
+            start = start.copy()
+            low, _high = EVAL.aabb(env.client, env.task.objects["table"])
+            self.assertGreaterEqual(
+                float(start[0]) - 0.05 - float(low[0]), 0.04,
+                "杯体沿 x 的整个近端必须有桌面支撑")
+            tilted = EVAL.p.getQuaternionFromEuler([0.0, np.pi / 4.0, 0.0])
+            EVAL.p.resetBasePositionAndOrientation(
+                cup, [float(start[0]), float(start[1]), 1.22], tilted,
+                physicsClientId=env.client)
+            EVAL.p.resetBaseVelocity(
+                cup, [0.0, 0.0, 0.0], [0.30, 0.0, 0.0],
+                physicsClientId=env.client)
+            EVAL.p.changeDynamics(
+                cup, -1,
+                activationState=(
+                    EVAL.p.ACTIVATION_STATE_DISABLE_SLEEPING),
+                physicsClientId=env.client)
+            for _ in range(480):
+                EVAL.p.stepSimulation(physicsClientId=env.client)
+            _position, end_orientation = EVAL.body_pose(env.client, cup)
+            difference = EVAL.p.getDifferenceQuaternion(
+                tilted, end_orientation, physicsClientId=env.client)
+            angle = 2.0 * np.arccos(min(
+                1.0, abs(float(difference[3]))))
+            self.assertGreater(
+                float(np.degrees(angle)), 15.0,
+                "斜立的杯子必须受重力自然倒下，不能被摩擦锁死")
+
+            EVAL.p.resetBasePositionAndOrientation(
+                cup, [float(start[0]), float(start[1]), float(start[2])],
+                start_orientation, physicsClientId=env.client)
+            EVAL.p.resetBaseVelocity(
+                cup, [0.05, 0.0, 0.0], [0.0, 0.0, 1.0],
+                physicsClientId=env.client)
+            EVAL.p.changeDynamics(
+                cup, -1,
+                activationState=EVAL.p.ACTIVATION_STATE_WAKE_UP,
+                physicsClientId=env.client)
+            scene._hold_motors()
+            for _ in range(480):
+                EVAL.p.stepSimulation(physicsClientId=env.client)
+            end = EVAL.body_pose(env.client, cup)[0]
+            self.assertLess(float(np.linalg.norm((end - start)[:2])), 0.20,
+                            "轻微扰动不应让杯子持续滚出桌面")
+        finally:
+            env.close()
+
 
 
 

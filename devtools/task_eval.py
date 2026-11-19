@@ -134,6 +134,15 @@ SCENE_UNSUPPORTED = {
 #: 0.42 m），这样判据的原意不变。``rotatehearth`` / ``breadtoaster`` 不在这里 ——
 #: 它们要求把旋钮/按钮按到桌面以下（按进台面里），降机器人也救不了。
 SCENE_MODE = {"pickcube": "sink", "potbimanual": "sink"}
+#: Per-task camera workspaces that need a lower table plus a matching robot drop.
+CAMERA_WORKSPACE_PROFILES = {
+    "uprearcup": {
+        "robot_drop_m": 0.03,
+        "table_top_m": 0.89,
+        "layout_forward_m": 0.20,
+        "layout_table_min_x_m": 0.08,
+    },
+}
 #: 这些 verdict 是"已定性、已交回任务作者"的排除项，不算"不可评测"（退出码不受影响）
 EXCLUDED_VERDICTS = ("CRITERIA_INVALID", "CRITERIA_ABSOLUTE", "SCENE_UNSUPPORTED")
 # ---------------------------------------------------------------------------
@@ -174,6 +183,34 @@ def grasp_assist_excluded(task_name: str) -> frozenset:
     if task_name == "pickplacecube":
         return frozenset(("plate",))
     return frozenset()
+
+
+def camera_workspace_profile(task_name: str) -> dict:
+    return dict(CAMERA_WORKSPACE_PROFILES.get(task_name, {}))
+
+
+def clamp_horizontal_velocity(client: int, body: int,
+                              max_linear_m_s: float = 0.30,
+                              max_angular_rad_s: float = 1.5) -> bool:
+    """Limit only explosive horizontal/angular contact velocity of a task object."""
+    linear, angular = p.getBaseVelocity(body, physicsClientId=client)
+    linear = np.asarray(linear, dtype=np.float64)
+    angular = np.asarray(angular, dtype=np.float64)
+    horizontal = float(np.linalg.norm(linear[:2]))
+    spin = float(np.linalg.norm(angular))
+    changed = False
+    if horizontal > max_linear_m_s > 0.0:
+        linear[:2] *= float(max_linear_m_s) / horizontal
+        changed = True
+    if spin > max_angular_rad_s > 0.0:
+        angular *= float(max_angular_rad_s) / spin
+        changed = True
+    if changed:
+        p.resetBaseVelocity(
+            body, [float(value) for value in linear],
+            [float(value) for value in angular],
+            physicsClientId=client)
+    return changed
 
 
 def move_body(client: int, body: int, delta) -> np.ndarray:
@@ -824,7 +861,13 @@ class TaskScene:
             # margin used to pull the table all the way back to x=0.209 m even
             # when the caller explicitly requested x>=0.24 m.
             desired_min_x = min(float(table_min_x), object_min_x - 0.02)
-            if float(low[0]) < desired_min_x:
+            # The side-lying cup is 10 cm long along x.  Let its table move back
+            # independently so it cannot begin only 2 cm from the near edge.
+            if self.name == "uprearcup":
+                desired_min_x = float(table_min_x)
+            if (float(low[0]) < desired_min_x
+                    or (self.name == "uprearcup"
+                        and float(low[0]) > desired_min_x + 1e-4)):
                 move_body(self.client, table,
                           np.array([desired_min_x - float(low[0]), 0.0, 0.0]))
                 low, high = aabb(self.client, table)
@@ -891,6 +934,74 @@ class TaskScene:
               " spacing %.3f m" % spacing, flush=True)
         return {"cube": cube_wanted.tolist(), "plate": plate_wanted.tolist(),
                 "spacing_m": spacing}
+
+    def _stabilize_uprearcup_camera(self) -> dict:
+        """Replace the smooth cylinder with one rigid, subtly lobed cup body."""
+        cup = self.task.objects.get("cup")
+        if cup is None:
+            return {}
+        position, orientation = body_pose(self.client, cup)
+        half = [0.010, 0.008, 0.045]
+        bump_offsets = [[0.0, 0.045, 0.0]]
+        bump_count = len(bump_offsets)
+        shape_types = [p.GEOM_CYLINDER] + [p.GEOM_BOX] * bump_count
+        half_extents = [[0.0, 0.0, 0.0]] + [half] * bump_count
+        frame_orientations = [[0.0, 0.0, 0.0, 1.0]] * (bump_count + 1)
+        collision = p.createCollisionShapeArray(
+            shapeTypes=shape_types,
+            radii=[0.04] + [0.0] * bump_count,
+            lengths=[0.10] + [0.0] * bump_count,
+            halfExtents=half_extents,
+            collisionFramePositions=[[0.0, 0.0, 0.0]] + bump_offsets,
+            collisionFrameOrientations=frame_orientations,
+            physicsClientId=self.client)
+        visual = p.createVisualShapeArray(
+            shapeTypes=shape_types,
+            radii=[0.04] + [0.0] * bump_count,
+            lengths=[0.10] + [0.0] * bump_count,
+            halfExtents=half_extents,
+            rgbaColors=[[0.3, 0.7, 0.3, 1.0]] +
+                       [[0.22, 0.55, 0.28, 1.0]] * bump_count,
+            visualFramePositions=[[0.0, 0.0, 0.0]] + bump_offsets,
+            visualFrameOrientations=frame_orientations,
+            physicsClientId=self.client)
+        p.removeBody(cup, physicsClientId=self.client)
+        cup = p.createMultiBody(
+            baseMass=0.20, baseCollisionShapeIndex=collision,
+            baseVisualShapeIndex=visual,
+            basePosition=[float(value) for value in position],
+            baseOrientation=[float(value) for value in orientation],
+            physicsClientId=self.client)
+        self.task.objects["cup"] = cup
+        p.changeDynamics(
+            cup, -1,
+            lateralFriction=0.9,
+            spinningFriction=0.005,
+            rollingFriction=0.0,
+            restitution=0.0,
+            linearDamping=0.20,
+            angularDamping=0.70,
+            activationState=p.ACTIVATION_STATE_WAKE_UP,
+            physicsClientId=self.client)
+        settings = {
+            "lateralFriction": 0.9,
+            "spinningFriction": 0.005,
+            "rollingFriction": 0.0,
+            "restitution": 0.0,
+            "linearDamping": 0.20,
+            "angularDamping": 0.70,
+            "compound_body": int(cup),
+            "mass_kg": 0.20,
+            "bump_half_extents_m": half,
+            "bump_offsets_local_m": bump_offsets,
+            "bump_count": len(bump_offsets),
+        }
+        self.report["camera_cup_stability"] = dict(settings)
+        self.report["notes"].append(
+            "camera uprearcup: rigid handle-like bump limits rolling")
+        print("[scene] camera uprearcup: rigid anti-roll bump attached",
+              flush=True)
+        return settings
 
 
     def _pull_into_ik_workspace(self, tolerance_mm: float = 15.0,
@@ -1015,6 +1126,7 @@ class TaskScene:
                 layout_side_bias: float = 0.0,
                 layout_table_min_x: float = 0.24,
                 camera_pickplace_spacing: bool = False,
+                camera_cup_stability: bool = False,
                 ik_comfort_fraction: float = 0.80) -> dict:
 
 
@@ -1041,6 +1153,8 @@ class TaskScene:
                                  table_min_x=float(layout_table_min_x))
             if camera_pickplace_spacing:
                 self._separate_pickplace_camera(side=side)
+            if camera_cup_stability:
+                self._stabilize_uprearcup_camera()
             self._rest_on_table()
             self._separate()
             self._pull_into_ik_workspace(
@@ -1371,6 +1485,7 @@ class CameraPolicy:
         self.grasped_object = None
         self.grasp_attach_count = 0
         self.grasp_release_count = 0
+        self.cup_velocity_clamp_count = 0
         self.hand_adapter = None
         self.hand_retargeter = None
         self.hand_backend_name = "off"
@@ -1908,6 +2023,18 @@ class CameraPolicy:
             self._read_frame()
         return self.action
 
+    def post_step(self, env) -> None:
+        """Damp only high-speed table contacts; never constrain a grasped cup."""
+        if (str(getattr(env, "task_name", "")) != "uprearcup"
+                or self.grasp_constraint is not None
+                or not self.tracking_started):
+            return
+        cup = env.task.objects.get("cup")
+        if cup is not None and clamp_horizontal_velocity(
+                env.client, cup, max_linear_m_s=0.30,
+                max_angular_rad_s=1.5):
+            self.cup_velocity_clamp_count += 1
+
     def meta(self) -> dict:
         return {"camera": {"side": self.side, "substeps": self.substeps,
                            "input_npz": self.input_npz,
@@ -1974,6 +2101,7 @@ class CameraPolicy:
                 "grasp_assist_excluded": sorted(self.grasp_assist_excluded),
                 "grasp_attach_count": self.grasp_attach_count,
                 "grasp_release_count": self.grasp_release_count,
+                "cup_velocity_clamp_count": self.cup_velocity_clamp_count,
                 "grasped_object": self.grasped_object,
                 "last_table_guard": self.last_table_guard,
                 "arm_force": self.arm_force,
@@ -2124,6 +2252,8 @@ def run_trial(env, actions, max_steps: int, max_wall_s: float = None,
             else:
                 env.task.apply_action(action, joint_indices=env.action_joint_indices)
         p.stepSimulation(physicsClientId=env.client)
+        if hasattr(actions, "post_step"):
+            actions.post_step(env)
         criterion = bool(env.task.check_success())
         supported, support_reason = task_objects_supported(env)
         if criterion and supported:
@@ -2285,6 +2415,37 @@ def disable_robot_table_collision(env, key: str = TABLE_KEY,
     return disabled
 
 
+def disable_robot_object_collision_except_hand(env, key: str,
+                                               side: str = "right") -> int:
+    """Disable arm/torso contacts with a delicate object while keeping finger contacts."""
+    obj = env.task.objects.get(key)
+    if obj is None:
+        return 0
+    hand_names = set(env.robot_loader.hand_joints.get(side, []))
+    keep_links = set()
+    all_links = []
+    for index in range(p.getNumJoints(env.robot_id, physicsClientId=env.client)):
+        info = p.getJointInfo(env.robot_id, index,
+                              physicsClientId=env.client)
+        joint_name = info[1].decode("utf-8", errors="ignore")
+        link_index = int(info[16])
+        all_links.append(link_index)
+        if joint_name in hand_names:
+            keep_links.add(link_index)
+    disabled = 0
+    for link in [-1] + all_links:
+        if link in keep_links:
+            continue
+        try:
+            p.setCollisionFilterPair(
+                env.robot_id, obj, int(link), -1, 0,
+                physicsClientId=env.client)
+            disabled += 1
+        except p.error:
+            continue
+    return disabled
+
+
 def snapshot(env, path, target=None, yaw: float = 55.0, pitch: float = -22.0,
              distance: float = 1.9, width: int = 640, height: int = 480) -> bool:
     """离屏渲染一张 PNG（与 ``verify_three_robot_scene.render`` 同一套取景参数）。
@@ -2343,8 +2504,22 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
             env.reset(randomize=False)
             scene_report = None
             if scene:
+                workspace = (camera_workspace_profile(task_name)
+                             if policy == "camera" else {})
+                scene_shoulder = arm.get("shoulder_m")
+                if workspace:
+                    position, orientation = p.getBasePositionAndOrientation(
+                        env.robot_id, physicsClientId=env.client)
+                    p.resetBasePositionAndOrientation(
+                        env.robot_id,
+                        [position[0], position[1],
+                         position[2] - float(workspace["robot_drop_m"])],
+                        orientation, physicsClientId=env.client)
+                    scene_shoulder = np.asarray(
+                        arm.get("shoulder_m"), dtype=np.float64).copy()
+                    scene_shoulder[2] -= float(workspace["robot_drop_m"])
                 task_scene = TaskScene(env.client, env.task, robot=robot,
-                                      shoulder=arm.get("shoulder_m"),
+                                      shoulder=scene_shoulder,
                                       reach=arm.get("reach_m"),
                                       name=task_name,
                                       robot_id=env.robot_id)
@@ -2356,9 +2531,16 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                              hold_robot=(policy in (
                                                  "camera", "replay", "dummy")),
                                              layout_forward=(
-                                                 0.38 if policy == "camera" else 0.26),
+                                                 float(workspace.get(
+                                                     "layout_forward_m", 0.38))
+                                                 if policy == "camera" else 0.26),
                                              layout_drop=(
-                                                 0.18 if policy == "camera" else 0.22),
+                                                 max(0.0, float(scene_shoulder[2])
+                                                     - float(workspace[
+                                                         "table_top_m"]))
+                                                 if workspace else
+                                                 (0.18 if policy == "camera"
+                                                  else 0.22)),
                                              layout_lateral=(
                                                  0.15 if policy == "camera" else 0.02),
                                              layout_side_bias=(
@@ -2366,15 +2548,28 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                                   else 0.06)
                                                  if policy == "camera" else 0.0),
                                              layout_table_min_x=(
-                                                 0.29 if policy == "camera" else 0.24),
+                                                 float(workspace.get(
+                                                     "layout_table_min_x_m", 0.29))
+                                                 if policy == "camera" else 0.24),
                                              camera_pickplace_spacing=(
                                                  policy == "camera"
                                                  and task_name == "pickplacecube"),
+                                             camera_cup_stability=(
+                                                 policy == "camera"
+                                                 and task_name == "uprearcup"),
                                              ik_comfort_fraction=(
                                                  0.98 if policy == "camera"
                                                  and task_name == "pickplacecube"
                                                  else 0.80))
+                if workspace:
+                    scene_report["camera_workspace"] = dict(workspace)
                 if policy == "camera":
+                    if task_name == "uprearcup":
+                        cup_contacts_disabled = (
+                            disable_robot_object_collision_except_hand(
+                                env, "cup", side=options.get("side", "right")))
+                        scene_report["robot_cup_collision_links_disabled"] = (
+                            cup_contacts_disabled)
                     disabled = disable_robot_table_collision(
                         env, extra_bodies=task_scene.extra_bodies)
                     scene_report["robot_table_collision_links_disabled"] = disabled
@@ -2424,10 +2619,13 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                     trial["camera" if policy == "camera" else policy + "_report"] = {
                         "error": f"{type(error).__name__}: {error}"}
 
-            if snapshot_dir:
+            if snapshot_dir and p.isConnected(env.client):
                 shot = Path(snapshot_dir) / ("%s_%s_t%d.png" % (task_name, robot, index))
-                if snapshot(env, shot):
-                    trial["snapshot"] = str(shot)
+                try:
+                    if snapshot(env, shot):
+                        trial["snapshot"] = str(shot)
+                except p.error as error:
+                    trial["snapshot_error"] = f"{type(error).__name__}: {error}"
             report["trials"].append(trial)
             if verbose:
                 print("[%s] %s/%s trial %d: %s" % (
