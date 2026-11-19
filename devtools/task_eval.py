@@ -169,6 +169,13 @@ def guard_table_target(point, bounds, clearance_m: float = 0.06,
     return point, False
 
 
+def grasp_assist_excluded(task_name: str) -> frozenset:
+    """Objects that must stay as targets instead of being latched as grasped."""
+    if task_name == "pickplacecube":
+        return frozenset(("plate",))
+    return frozenset()
+
+
 def move_body(client: int, body: int, delta) -> np.ndarray:
     """按 delta 平移 base pose（不推进物理），返回新位置。"""
     pos, orn = body_pose(client, body)
@@ -828,10 +835,57 @@ class TaskScene:
                 self.cleanup()
                 self._bench()
 
+    def _separate_pickplace_camera(self, side: str = None) -> dict:
+        """Put the cube in a deep right-side pick zone and the plate far forward.
+
+        The original task puts the destination plate closer to the robot than the
+        source cube.  Uniform scene compression then made them almost coincide,
+        leaving no room to carry the cube forwards.  These offsets were measured
+        with the H1-2 paper IK: both points stay below 3 mm residual and the
+        source/destination centres are about 14 cm apart.
+        """
+        cube = self.task.objects.get("cube")
+        plate = self.task.objects.get("plate")
+        if cube is None or plate is None or self.shoulder is None:
+            return {}
+        sign = -1.0 if side == "right" else 1.0
+        shoulder = np.asarray(self.shoulder, dtype=np.float64)
+        cube_wanted = np.array([
+            float(shoulder[0] + 0.33),
+            float(shoulder[1] + sign * 0.18),
+            float(body_pose(self.client, cube)[0][2]),
+        ])
+        plate_wanted = np.array([
+            float(shoulder[0] + 0.38),
+            float(shoulder[1] + sign * 0.02),
+            float(body_pose(self.client, plate)[0][2]),
+        ])
+        for body, wanted in ((cube, cube_wanted), (plate, plate_wanted)):
+            current = body_pose(self.client, body)[0]
+            move_body(self.client, body, wanted - current)
+        # The plate is a destination marker, not a manipulation target.  A light
+        # 50 g plate is easy to knock to the table edge before the cube ever reaches
+        # it, which removes the placement target from the reachable workspace.
+        p.changeDynamics(plate, -1, mass=0.0, lateralFriction=1.2,
+                         physicsClientId=self.client)
+        self.report["camera_pickplace_plate_fixed"] = True
+        spacing = float(np.linalg.norm(cube_wanted[:2] - plate_wanted[:2]))
+        self.report["notes"].append(
+            "camera pickplace: cube deep/right %s, plate far/forward %s,"
+            " spacing %.3f m"
+            % ([round(float(value), 3) for value in cube_wanted],
+               [round(float(value), 3) for value in plate_wanted], spacing))
+        self.report["camera_pickplace_spacing_m"] = round(spacing, 4)
+        print("[scene] camera pickplace: cube right/deep, plate forward,"
+              " spacing %.3f m" % spacing, flush=True)
+        return {"cube": cube_wanted.tolist(), "plate": plate_wanted.tolist(),
+                "spacing_m": spacing}
+
 
     def _pull_into_ik_workspace(self, tolerance_mm: float = 15.0,
                                 max_shift_m: float = 0.30, rounds: int = 3,
-                                side: str = None) -> None:
+                                side: str = None,
+                                comfort_fraction: float = 0.80) -> None:
 
         """把够不着的物体组沿「在桌面上就近挪」的方向试，直到**真 IK** 残差合格。
 
@@ -861,7 +915,8 @@ class TaskScene:
             # 「够得着」还不够：贴着可达边界（≈0.9 reach）的点虽然残差合格，但手臂伸直后
             # 没有余量从上方接近物体（实测 pushcube 的 hover 航点因此差 0.19 m）。
             # 所以还要求离肩不超过 0.80 * reach —— 留出肘部弯曲的余量。
-            comfort = (0.80 * float(self.reach)) if self.reach else None
+            comfort = ((float(comfort_fraction) * float(self.reach))
+                       if self.reach else None)
 
             moved = {}
             for group in groups:
@@ -946,7 +1001,9 @@ class TaskScene:
                 layout_drop: float = 0.22,
                 layout_lateral: float = 0.02,
                 layout_side_bias: float = 0.0,
-                layout_table_min_x: float = 0.24) -> dict:
+                layout_table_min_x: float = 0.24,
+                camera_pickplace_spacing: bool = False,
+                ik_comfort_fraction: float = 0.80) -> dict:
 
 
         # SCENE_OPS 用的是**作者写的绝对坐标**（0.555 = 柜面 0.55 + 半厚 0.015），
@@ -970,9 +1027,12 @@ class TaskScene:
                                  lateral=float(layout_lateral),
                                  side_bias=float(layout_side_bias),
                                  table_min_x=float(layout_table_min_x))
+            if camera_pickplace_spacing:
+                self._separate_pickplace_camera(side=side)
             self._rest_on_table()
             self._separate()
-            self._pull_into_ik_workspace(side=side)
+            self._pull_into_ik_workspace(
+                side=side, comfort_fraction=float(ik_comfort_fraction))
 
 
         # Camera/replay actions only address arm + hand joints. Without holding the
@@ -1209,6 +1269,8 @@ class CameraPolicy:
         self.table_clearance_m = max(0.0, float(table_clearance_m))
         self.table_guard_enabled = bool(table_guard)
         self.grasp_assist_enabled = bool(grasp_assist)
+        self.grasp_assist_excluded = grasp_assist_excluded(
+            str(getattr(env, "task_name", "")))
         self.arm_force = max(1.0, float(arm_force))
         self.hand_force = max(1.0, float(hand_force))
         if ik_mode not in ("position", "pose"):
@@ -1782,7 +1844,7 @@ class CameraPolicy:
             return
         candidates = []
         for key, body in env.task.objects.items():
-            if key == TABLE_KEY:
+            if key == TABLE_KEY or key in self.grasp_assist_excluded:
                 continue
             try:
                 if float(p.getDynamicsInfo(
@@ -1844,6 +1906,8 @@ class CameraPolicy:
                            "table_clearance_m": self.table_clearance_m,
                            "table_guard": self.table_guard_enabled,
                            "grasp_assist": self.grasp_assist_enabled,
+                           "grasp_assist_excluded": sorted(
+                               self.grasp_assist_excluded),
                            "arm_force": self.arm_force,
                            "hand_force": self.hand_force,
                            "ik_mode": self.ik_mode,
@@ -1892,6 +1956,7 @@ class CameraPolicy:
                 "table_guard_count": self.table_guard_count,
                 "table_guard_enabled": self.table_guard_enabled,
                 "grasp_assist": self.grasp_assist_enabled,
+                "grasp_assist_excluded": sorted(self.grasp_assist_excluded),
                 "grasp_attach_count": self.grasp_attach_count,
                 "grasp_release_count": self.grasp_release_count,
                 "grasped_object": self.grasped_object,
@@ -2286,7 +2351,14 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                                   else 0.06)
                                                  if policy == "camera" else 0.0),
                                              layout_table_min_x=(
-                                                 0.29 if policy == "camera" else 0.24))
+                                                 0.29 if policy == "camera" else 0.24),
+                                             camera_pickplace_spacing=(
+                                                 policy == "camera"
+                                                 and task_name == "pickplacecube"),
+                                             ik_comfort_fraction=(
+                                                 0.98 if policy == "camera"
+                                                 and task_name == "pickplacecube"
+                                                 else 0.80))
                 if policy == "camera":
                     disabled = disable_robot_table_collision(
                         env, extra_bodies=task_scene.extra_bodies)

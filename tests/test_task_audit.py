@@ -119,6 +119,11 @@ class CameraHandPolicyTests(unittest.TestCase):
         self.assertEqual(args.camera_target_speed_mm_s, 600.0)
         self.assertFalse(args.camera_table_guard)
 
+    def test_pickplace_destination_plate_is_not_a_grasp_assist_candidate(self):
+        self.assertEqual({"plate"}, set(EVAL.grasp_assist_excluded(
+            "pickplacecube")))
+        self.assertEqual(set(), set(EVAL.grasp_assist_excluded("pickcube")))
+
     def test_table_guard_only_lifts_targets_over_the_table_footprint(self):
         bounds = (np.array([0.2, -0.4, 0.0]), np.array([1.2, 0.4, 0.5]))
         guarded, active = EVAL.guard_table_target(
@@ -499,13 +504,39 @@ class SceneLayerTests(unittest.TestCase):
                 120, ik_workspace=True, side="right", hold_robot=True,
                 layout_forward=0.38, layout_drop=0.12,
                 layout_lateral=0.15, layout_side_bias=-0.06,
-                layout_table_min_x=0.29)
+                layout_table_min_x=0.29,
+                camera_pickplace_spacing=True,
+                ik_comfort_fraction=0.98)
             supported, reason = EVAL.task_objects_supported(env)
             self.assertTrue(supported, reason)
             low, _high = EVAL.aabb(env.client, env.task.objects["table"])
             self.assertGreaterEqual(float(low[0]), 0.28)
             self.assertTrue(scene.report["ik_reach"]["ok"],
                             scene.report["ik_reach"])
+            cube = EVAL.body_pose(env.client, env.task.objects["cube"])[0]
+            plate = EVAL.body_pose(env.client, env.task.objects["plate"])[0]
+            self.assertGreaterEqual(
+                scene.report["camera_pickplace_spacing_m"], 0.13,
+                "抓取起点和放置目标必须留出足够的搬运距离")
+            self.assertGreaterEqual(
+                float(cube[0]), float(low[0]) + 0.06,
+                "方块必须深入桌面，不能贴着机器人侧桌沿")
+            self.assertGreaterEqual(
+                float(cube[0]), float(scene.shoulder[0]) + 0.30,
+                "方块不能挡在机器人胸前")
+            self.assertGreaterEqual(
+                float(plate[0]), float(scene.shoulder[0]) + 0.37,
+                "放置区必须明显位于机器人近侧抓取区之外")
+            self.assertGreaterEqual(
+                float(EVAL.p.getDynamicsInfo(
+                    env.task.objects["plate"], -1,
+                    physicsClientId=env.client)[0]), 0.0,
+                "放置盘必须是固定目标，不能被机器人轻碰就滑走")
+            for key, body in (("cube", env.task.objects["cube"]),
+                              ("plate", env.task.objects["plate"])):
+                residual = scene.report["ik_reach"]["objects"][key][
+                    "residual_mm"]
+                self.assertLessEqual(residual, 15.0, (key, residual))
         finally:
             env.close()
 
