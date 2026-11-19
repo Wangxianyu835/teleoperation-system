@@ -567,7 +567,8 @@ class TaskScene:
             groups.setdefault(find(key), []).append(key)
         return list(groups.values())
 
-    def _clamp_to_reach(self, margin: float = 0.02) -> None:
+    def _clamp_to_reach(self, margin: float = 0.02,
+                        exclude_keys=None) -> None:
         """把还落在可达球外的**整套**物体沿水平方向收拢到球面内。
 
         按 AABB 连通的组一起平移：``drawerbook`` 的抽屉被单独拉 0.10 m 会离开柜体
@@ -577,8 +578,12 @@ class TaskScene:
         if self.shoulder is None or self.reach is None:
             return
         limit = float(self.reach) - margin
+        excluded = set(exclude_keys or ())
         clamped = {}
-        for group in self._touch_groups():
+        for raw_group in self._touch_groups():
+            group = [key for key in raw_group if key not in excluded]
+            if not group:
+                continue
             need = 0.0
             positions = {}
             for key in group:
@@ -726,14 +731,20 @@ class TaskScene:
 
     def _ik_residual_mm(self, ik, point, side: str = None) -> tuple:
         """这一点（世界系）用哪只手残差最小、残差多少。``side`` 指定时只量那只手。"""
+        state = self._joint_state()
         best = (float("inf"), "")
-        for name in ik.arm:
-            if side and name != side:
-                continue
-            ik.solve(name, tuple(float(v) for v in point), source="world")
-            value = float(ik.residual_mm(name))
-            if value < best[0]:
-                best = (value, name)
+        try:
+            for name in ik.arm:
+                if side and name != side:
+                    continue
+                ik.solve(name, tuple(float(v) for v in point), source="world")
+                value = float(ik.residual_mm(name))
+                if value < best[0]:
+                    best = (value, name)
+        finally:
+            for index, value in state.items():
+                p.resetJointState(self.robot_id, index, value,
+                                  physicsClientId=self.client)
         return best
 
 
@@ -851,13 +862,13 @@ class TaskScene:
         sign = -1.0 if side == "right" else 1.0
         shoulder = np.asarray(self.shoulder, dtype=np.float64)
         cube_wanted = np.array([
-            float(shoulder[0] + 0.33),
-            float(shoulder[1] + sign * 0.18),
+            float(shoulder[0] + 0.32),
+            float(shoulder[1] + sign * 0.10),
             float(body_pose(self.client, cube)[0][2]),
         ])
         plate_wanted = np.array([
             float(shoulder[0] + 0.38),
-            float(shoulder[1] + sign * 0.02),
+            float(shoulder[1] - sign * 0.04),
             float(body_pose(self.client, plate)[0][2]),
         ])
         for body, wanted in ((cube, cube_wanted), (plate, plate_wanted)):
@@ -885,7 +896,8 @@ class TaskScene:
     def _pull_into_ik_workspace(self, tolerance_mm: float = 15.0,
                                 max_shift_m: float = 0.30, rounds: int = 3,
                                 side: str = None,
-                                comfort_fraction: float = 0.80) -> None:
+                                comfort_fraction: float = 0.80,
+                                group_touch: float = 0.08) -> None:
 
         """把够不着的物体组沿「在桌面上就近挪」的方向试，直到**真 IK** 残差合格。
 
@@ -903,7 +915,7 @@ class TaskScene:
         ik = self._ik_solver()
         state = self._joint_state()
         try:
-            groups = self._touch_groups()
+            groups = self._touch_groups(touch=float(group_touch))
             table = self.task.objects.get(TABLE_KEY)
             if table is not None:
                 low, high = aabb(self.client, table)
@@ -1032,7 +1044,8 @@ class TaskScene:
             self._rest_on_table()
             self._separate()
             self._pull_into_ik_workspace(
-                side=side, comfort_fraction=float(ik_comfort_fraction))
+                side=side, comfort_fraction=float(ik_comfort_fraction),
+                group_touch=(0.0 if camera_pickplace_spacing else 0.08))
 
 
         # Camera/replay actions only address arm + hand joints. Without holding the
@@ -1043,7 +1056,9 @@ class TaskScene:
 
         # 静置后物体可能被挤出去几厘米（锅被两个手柄推），最后再收一次；
         # 只动 x/y、不再跑物理，drift 记的是"收之前"的漂移，不掩饰。
-        self._clamp_to_reach()
+        self._clamp_to_reach(
+            exclude_keys=(("plate",)
+                          if camera_pickplace_spacing else ()))
         self._in_reach()
         self.report["criteria_at_reset"] = bool(self.task.check_success())
         return self.report
@@ -2343,7 +2358,7 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                              layout_forward=(
                                                  0.38 if policy == "camera" else 0.26),
                                              layout_drop=(
-                                                 0.12 if policy == "camera" else 0.22),
+                                                 0.18 if policy == "camera" else 0.22),
                                              layout_lateral=(
                                                  0.15 if policy == "camera" else 0.02),
                                              layout_side_bias=(

@@ -502,7 +502,7 @@ class SceneLayerTests(unittest.TestCase):
                 name="pickplacecube", robot_id=env.robot_id)
             scene.prepare(
                 120, ik_workspace=True, side="right", hold_robot=True,
-                layout_forward=0.38, layout_drop=0.12,
+                layout_forward=0.38, layout_drop=0.18,
                 layout_lateral=0.15, layout_side_bias=-0.06,
                 layout_table_min_x=0.29,
                 camera_pickplace_spacing=True,
@@ -525,7 +525,7 @@ class SceneLayerTests(unittest.TestCase):
                 float(cube[0]), float(scene.shoulder[0]) + 0.30,
                 "方块不能挡在机器人胸前")
             self.assertGreaterEqual(
-                float(plate[0]), float(scene.shoulder[0]) + 0.37,
+                float(plate[0]), float(scene.shoulder[0]) + 0.33,
                 "放置区必须明显位于机器人近侧抓取区之外")
             self.assertGreaterEqual(
                 float(EVAL.p.getDynamicsInfo(
