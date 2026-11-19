@@ -1485,6 +1485,13 @@ class CameraPolicy:
         self.grasped_object = None
         self.grasp_attach_count = 0
         self.grasp_release_count = 0
+        self.grasp_attach_confirm_steps = 12
+        self.grasp_release_confirm_steps = 12
+        self.grasp_max_attach_gap_m = 0.12
+        self.grasp_candidate_steps = 0
+        self.grasp_candidate_key = None
+        self.grasp_open_steps = 0
+        self.grasp_rejected_distance = 0
         self.cup_velocity_clamp_count = 0
         self.hand_adapter = None
         self.hand_retargeter = None
@@ -1963,14 +1970,22 @@ class CameraPolicy:
         strength = float((self.last_pinch or {}).get("strength") or 0.0)
         if self.grasp_constraint is not None:
             if strength < 0.15:
-                p.removeConstraint(self.grasp_constraint,
-                                   physicsClientId=env.client)
-                self.grasp_constraint = None
-                self.grasped_object = None
-                self.grasp_release_count += 1
-                print("[camera] grasp released: open hand detected", flush=True)
+                self.grasp_open_steps += 1
+                if self.grasp_open_steps >= self.grasp_release_confirm_steps:
+                    p.removeConstraint(self.grasp_constraint,
+                                       physicsClientId=env.client)
+                    self.grasp_constraint = None
+                    self.grasped_object = None
+                    self.grasp_open_steps = 0
+                    self.grasp_release_count += 1
+                    print("[camera] grasp released: sustained open hand detected",
+                          flush=True)
+            else:
+                self.grasp_open_steps = 0
             return
         if strength < 0.35:
+            self.grasp_candidate_steps = 0
+            self.grasp_candidate_key = None
             return
         candidates = []
         for key, body in env.task.objects.items():
@@ -1994,10 +2009,22 @@ class CameraPolicy:
                 physicsClientId=env.client)
             distance = float(np.linalg.norm(
                 np.asarray(state[4], dtype=np.float64) - position))
+            if distance > self.grasp_max_attach_gap_m:
+                self.grasp_rejected_distance += 1
+                continue
             candidates.append((distance, key, body, state))
         if not candidates:
+            self.grasp_candidate_steps = 0
+            self.grasp_candidate_key = None
             return
         _distance, key, body, hand_state = min(candidates, key=lambda item: item[0])
+        if key == self.grasp_candidate_key:
+            self.grasp_candidate_steps += 1
+        else:
+            self.grasp_candidate_key = key
+            self.grasp_candidate_steps = 1
+        if self.grasp_candidate_steps < self.grasp_attach_confirm_steps:
+            return
         obj_pos, obj_orn = p.getBasePositionAndOrientation(
             body, physicsClientId=env.client)
         inverse_pos, inverse_orn = p.invertTransform(
@@ -2013,6 +2040,9 @@ class CameraPolicy:
             physicsClientId=env.client)
         self.grasped_object = key
         self.grasp_attach_count += 1
+        self.grasp_candidate_steps = 0
+        self.grasp_candidate_key = None
+        self.grasp_open_steps = 0
         print("[camera] grasp attached: %s (hand gap %.0f mm)"
               % (key, _distance * 1000.0), flush=True)
 
@@ -2101,6 +2131,10 @@ class CameraPolicy:
                 "grasp_assist_excluded": sorted(self.grasp_assist_excluded),
                 "grasp_attach_count": self.grasp_attach_count,
                 "grasp_release_count": self.grasp_release_count,
+                "grasp_attach_confirm_steps": self.grasp_attach_confirm_steps,
+                "grasp_release_confirm_steps": self.grasp_release_confirm_steps,
+                "grasp_max_attach_gap_m": self.grasp_max_attach_gap_m,
+                "grasp_rejected_distance": self.grasp_rejected_distance,
                 "cup_velocity_clamp_count": self.cup_velocity_clamp_count,
                 "grasped_object": self.grasped_object,
                 "last_table_guard": self.last_table_guard,

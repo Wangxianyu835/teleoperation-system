@@ -153,6 +153,46 @@
 - 杯子始终保持在桌面高度 `0.930 m`，没有弹飞或滚下桌。
 - 说明本轮修复的是滚动/支撑链路，不能把未转正的任务算成功。
 
+## TeleOpBench 原仓库抓取方式审计
+
+参考路径：
+
+`F:\26年大创 双臂遥操作平台\TeleOpBench-main (1)源代码\TeleOpBench-main`
+
+关键文件：
+
+- `teleop/robot_control/camera_ik_h1_2_media.py`
+- `teleop/receiver_wrapper/camera_wrapper_h1_2_media.py`
+- `teleop/robot_control/robot_hand_unitree.py`
+- `assets/unitree_hand/unitree_dex3.yml`
+
+原仓库没有 `createConstraint`、`getContactPoints` 或固定抓取逻辑。相机流程只做：
+
+1. SMPL-X/MediaPipe 身体与手部关键点；
+2. 手臂 IK 输出 7 个手臂关节；
+3. Dex Retargeting 输出原装手关节目标；
+4. 把手臂和手指目标写入 38 维动作；
+5. 真实手电机按 `q_target` 执行。
+
+`unitree_dex3.yml` 使用拇指、食指、中指指尖，`target_link_human_indices`
+为 `[[0,0,0], [4,9,14]]`，`scaling_factor=1.0`，低通系数 `0.2`。
+`robot_hand_unitree.py` 直接发送 7 个 Unitree Dex3 关节目标，没有吸附。
+
+结论：论文的抓取是**纯物理接触抓取**。本项目的 `grasp_assist` 属于为仿真
+稳定性增加的辅助，不应成为抓取主路径。后续应先保证 H1-2 原生手关节闭合并
+形成真实接触，再决定是否保留辅助。
+
+为减少辅助误判，当前已加入：
+
+- 连续接触 12 个物理步后才允许辅助吸附；
+- 手到物体中心超过 `12 cm` 时拒绝吸附；
+- 连续张开 12 个物理步后才释放；
+- 报告记录距离拒绝次数、候选帧和释放确认参数。
+
+纯物理抓取现场测试仍未成功，关闭辅助后没有形成可维持的杯体抓取。下一步应做
+离线抓取台架，直接比较 H1-2 原生 12 关节目标、指尖位置与实际接触，而不是继续
+调吸附阈值。
+
 ## 桌面高度
 
 现场反馈桌面高度恰好与上臂和手腕连线重合，人在桌面上方操作时很难从画面中
@@ -187,7 +227,7 @@
 最新全量回归：
 
 ```text
-532 passed, 3 skipped, 470 subtests passed
+533 passed, 3 skipped, 470 subtests passed
 
 `check_gbk_safe.py --strict` 通过。
 ```

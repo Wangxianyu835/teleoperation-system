@@ -193,6 +193,67 @@ class CameraHandPolicyTests(unittest.TestCase):
         self.assertEqual([call.kwargs["force"] for call in motor.call_args_list],
                          [200.0, 120.0])
 
+    def test_grasp_assist_requires_contact_confirmation_and_distance(self):
+        policy = object.__new__(EVAL.CameraPolicy)
+        policy.grasp_assist_enabled = True
+        policy.grasp_link = 2
+        policy.grasp_assist_excluded = set()
+        policy.grasp_constraint = None
+        policy.grasped_object = None
+        policy.grasp_attach_count = 0
+        policy.grasp_release_count = 0
+        policy.grasp_attach_confirm_steps = 12
+        policy.grasp_release_confirm_steps = 12
+        policy.grasp_max_attach_gap_m = 0.12
+        policy.grasp_candidate_steps = 0
+        policy.grasp_candidate_key = None
+        policy.grasp_open_steps = 0
+        policy.grasp_rejected_distance = 0
+        policy.last_pinch = {"strength": 0.5}
+        env = SimpleNamespace(
+            client=3, robot_id=7,
+            task=SimpleNamespace(objects={"cup": 11}))
+        hand_state = (None, None, None, None,
+                      (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), None)
+
+        with patch.object(EVAL.p, "getDynamicsInfo",
+                          return_value=(0.2,)), \
+                patch.object(EVAL.p, "getContactPoints",
+                             return_value=[1, 2]), \
+                patch.object(EVAL.p, "getBasePositionAndOrientation",
+                             return_value=((0.20, 0.0, 0.0),
+                                           (0.0, 0.0, 0.0, 1.0))), \
+                patch.object(EVAL.p, "getLinkState", return_value=hand_state):
+            policy._update_grasp_assist(env)
+        self.assertIsNone(policy.grasp_constraint)
+        self.assertEqual(1, policy.grasp_rejected_distance)
+
+        with patch.object(EVAL.p, "getDynamicsInfo",
+                          return_value=(0.2,)), \
+                patch.object(EVAL.p, "getContactPoints",
+                             return_value=[1, 2]), \
+                patch.object(EVAL.p, "getBasePositionAndOrientation",
+                             return_value=((0.05, 0.0, 0.0),
+                                           (0.0, 0.0, 0.0, 1.0))), \
+                patch.object(EVAL.p, "getLinkState", return_value=hand_state), \
+                patch.object(EVAL.p, "createConstraint", return_value=99), \
+                patch.object(EVAL.p, "removeConstraint") as remove:
+            for _ in range(11):
+                policy._update_grasp_assist(env)
+            self.assertIsNone(policy.grasp_constraint)
+            policy._update_grasp_assist(env)
+            self.assertEqual(99, policy.grasp_constraint)
+            self.assertEqual("cup", policy.grasped_object)
+
+            policy.last_pinch = {"strength": 0.0}
+            for _ in range(11):
+                policy._update_grasp_assist(env)
+            self.assertEqual(99, policy.grasp_constraint)
+            policy._update_grasp_assist(env)
+            self.assertIsNone(policy.grasp_constraint)
+            self.assertEqual(1, policy.grasp_release_count)
+            remove.assert_called_once()
+
     def test_a_mediapipe_pinch_drives_native_thumb_and_finger_closure(self):
         from teleoperation.robots.native_hand import map_dofs, pinch_signal
 
