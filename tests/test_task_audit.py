@@ -23,6 +23,7 @@ import importlib.util
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -90,6 +91,7 @@ class CameraHandPolicyTests(unittest.TestCase):
         policy._pinch_signal = lambda _points: (None, 0.0, None)
         policy.calibrated = True
         policy.tracking_frames = policy.startup_hold_frames = 12
+        policy.tracking_started = True
 
         policy._update_hand(object())
         self.assertAlmostEqual(policy.action[1], 0.7)
@@ -111,6 +113,9 @@ class CameraHandPolicyTests(unittest.TestCase):
         self.assertEqual(args.camera_wrist_pose, "on")
         self.assertEqual(args.camera_grasp_assist, "on")
         self.assertEqual(args.camera_freeze_objects, "on")
+        self.assertEqual(args.camera_startup_motion_mm, 50.0)
+        self.assertEqual(args.camera_startup_confirm_frames, 3)
+        self.assertEqual(args.camera_target_deadband_mm, 2.0)
         self.assertEqual(args.camera_target_speed_mm_s, 600.0)
         self.assertFalse(args.camera_table_guard)
 
@@ -135,6 +140,53 @@ class CameraHandPolicyTests(unittest.TestCase):
             (0.40, 0.20, 1.10), start_position=(0.20, 0.00, 1.00))
         np.testing.assert_allclose(commanded, (0.20, 0.00, 1.00))
         self.assertFalse(limited)
+
+    def test_startup_gate_requires_confirmed_motion_from_calibrated_target(self):
+        policy = object.__new__(EVAL.CameraPolicy)
+        policy.startup_target_position = None
+        policy.tracking_started = False
+        policy.startup_hold_frames = 2
+        policy.startup_motion_m = 0.05
+        policy.startup_confirm_frames = 3
+        policy.startup_motion_frames = 0
+        policy.startup_target_motion_max_m = 0.0
+        policy.tracking_frames = 1
+
+        opened, _distance = policy._update_startup_gate((0.2, 0.0, 1.0))
+        self.assertFalse(opened)
+        np.testing.assert_allclose(
+            policy.startup_target_position, (0.2, 0.0, 1.0))
+
+        policy.tracking_frames = 3
+        for _ in range(2):
+            opened, distance = policy._update_startup_gate((0.26, 0.0, 1.0))
+            self.assertFalse(opened)
+            self.assertAlmostEqual(distance, 0.06)
+        opened, _distance = policy._update_startup_gate((0.26, 0.0, 1.0))
+        self.assertTrue(opened)
+
+    def test_startup_hold_uses_a_strong_motor_budget(self):
+        policy = object.__new__(EVAL.CameraPolicy)
+        policy.tracking_started = False
+        policy.action = np.array([0.1, 0.2], dtype=np.float64)
+        policy.arm_names = {"arm"}
+        policy.arm_force = 200.0
+        policy.hand_force = 120.0
+        env = SimpleNamespace(robot_id=7, client=3,
+                              action_joint_names=["arm", "finger"],
+                              action_joint_indices=[4, 5])
+
+        with patch.object(EVAL.p, "setJointMotorControl2") as motor:
+            policy.apply_action(env)
+        self.assertEqual([call.kwargs["force"] for call in motor.call_args_list],
+                         [2000.0, 2000.0])
+
+        policy.tracking_started = True
+        policy._update_grasp_assist = lambda _env: None
+        with patch.object(EVAL.p, "setJointMotorControl2") as motor:
+            policy.apply_action(env)
+        self.assertEqual([call.kwargs["force"] for call in motor.call_args_list],
+                         [200.0, 120.0])
 
     def test_a_mediapipe_pinch_drives_native_thumb_and_finger_closure(self):
         from teleoperation.robots.native_hand import map_dofs, pinch_signal
@@ -445,10 +497,15 @@ class SceneLayerTests(unittest.TestCase):
                 name="pickplacecube", robot_id=env.robot_id)
             scene.prepare(
                 120, ik_workspace=True, side="right", hold_robot=True,
-                layout_forward=0.36, layout_drop=0.18,
-                layout_lateral=0.14, layout_side_bias=-0.06)
+                layout_forward=0.38, layout_drop=0.12,
+                layout_lateral=0.15, layout_side_bias=-0.06,
+                layout_table_min_x=0.29)
             supported, reason = EVAL.task_objects_supported(env)
             self.assertTrue(supported, reason)
+            low, _high = EVAL.aabb(env.client, env.task.objects["table"])
+            self.assertGreaterEqual(float(low[0]), 0.28)
+            self.assertTrue(scene.report["ik_reach"]["ok"],
+                            scene.report["ik_reach"])
         finally:
             env.close()
 

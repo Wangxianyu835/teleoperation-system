@@ -742,6 +742,7 @@ class TaskScene:
     def _layout_for_arm(self, forward: float = 0.26, drop: float = 0.22,
                         lateral: float = 0.02, spread: float = 0.12,
                         side_bias: float = 0.0,
+                        table_min_x: float = 0.24,
                         rebuild_bench: bool = True) -> None:
         """按**这台臂的真实几何**重摆整幕（脚本档专用）。
 
@@ -798,8 +799,16 @@ class TaskScene:
             # 桌子整体跟着物体平移；平移后若近沿还伸进机器人身前 0.24 m 以内，再单独往前推
             move_body(self.client, table, np.array([delta[0], delta[1], 0.0]))
             low, high = aabb(self.client, table)
-            if float(low[0]) < 0.24:
-                move_body(self.client, table, np.array([0.24 - float(low[0]), 0.0, 0.0]))
+            object_min_x = min(
+                (body_pose(self.client, self.task.objects[key])[0][0]
+                 for key in keys), default=float(low[0]) + 0.10)
+            # Keep a small support margin behind the frontmost object.  A 5 cm
+            # margin used to pull the table all the way back to x=0.209 m even
+            # when the caller explicitly requested x>=0.24 m.
+            desired_min_x = min(float(table_min_x), object_min_x - 0.02)
+            if float(low[0]) < desired_min_x:
+                move_body(self.client, table,
+                          np.array([desired_min_x - float(low[0]), 0.0, 0.0]))
                 low, high = aabb(self.client, table)
 
             want_top = float(shoulder[2] - drop)
@@ -936,7 +945,8 @@ class TaskScene:
                 layout_forward: float = 0.26,
                 layout_drop: float = 0.22,
                 layout_lateral: float = 0.02,
-                layout_side_bias: float = 0.0) -> dict:
+                layout_side_bias: float = 0.0,
+                layout_table_min_x: float = 0.24) -> dict:
 
 
         # SCENE_OPS 用的是**作者写的绝对坐标**（0.555 = 柜面 0.55 + 半厚 0.015），
@@ -958,7 +968,8 @@ class TaskScene:
             self._layout_for_arm(forward=float(layout_forward),
                                  drop=float(layout_drop),
                                  lateral=float(layout_lateral),
-                                 side_bias=float(layout_side_bias))
+                                 side_bias=float(layout_side_bias),
+                                 table_min_x=float(layout_table_min_x))
             self._rest_on_table()
             self._separate()
             self._pull_into_ik_workspace(side=side)
@@ -1169,6 +1180,9 @@ class CameraPolicy:
                  ik_solver: str = "paper",
                  target_speed_m_s: float = 0.60,
                  startup_hold_frames: int = 12,
+                 startup_motion_m: float = 0.05,
+                 startup_confirm_frames: int = 3,
+                 target_deadband_m: float = 0.002,
                  freeze_objects: bool = True):
         from teleoperation.simulation.arm_ik import PyBulletArmIK
         from teleoperation.simulation.arm_profiles import profile_for
@@ -1204,7 +1218,16 @@ class CameraPolicy:
         self.ik_solver = str(ik_solver)
         self.target_speed_m_s = max(0.0, float(target_speed_m_s))
         self.startup_hold_frames = max(0, int(startup_hold_frames))
+        self.startup_motion_m = max(0.0, float(startup_motion_m))
+        self.startup_confirm_frames = max(1, int(startup_confirm_frames))
+        self.target_deadband_m = max(0.0, float(target_deadband_m))
         self.tracking_frames = 0
+        self.tracking_started = False
+        self.startup_target_position = None
+        self.startup_motion_frames = 0
+        self.startup_target_motion_max_m = 0.0
+        self.startup_arm_drift_max_m = 0.0
+        self.startup_arm_drift_samples = 0
         self.freeze_objects = bool(freeze_objects)
         self.frozen_objects = {}
         self.last_frame_dt = 1.0 / float(CAMERA_NOMINAL_FPS)
@@ -1234,6 +1257,8 @@ class CameraPolicy:
                                      ik_solver=self.ik_solver)
         # 方向口径要的「机器人自己的量」：连杆长 + 加载时的肩/肘/腕（基座系）
         points = self.adapter.arm_points(self.side)
+        self.startup_position = np.asarray(
+            self.adapter.to_base(points["wrist"]), dtype=np.float64)
         shoulder = np.asarray(points["upper"], dtype=np.float64)
         elbow = np.asarray(points["elbow"], dtype=np.float64)
         wrist = np.asarray(points["wrist"], dtype=np.float64)
@@ -1401,7 +1426,7 @@ class CameraPolicy:
         if not self.hand_enabled or self.hand_adapter is None:
             return
         if (not getattr(self, "calibrated", False)
-                or self.tracking_frames < self.startup_hold_frames):
+                or not self.tracking_started):
             # Keep both the arm and fingers still until the post-calibration hold
             # expires. Otherwise an early noisy hand frame can hit a nearby task
             # object before tracking has actually started.
@@ -1520,6 +1545,8 @@ class CameraPolicy:
         previous = np.asarray(self.last_commanded_target, dtype=np.float64)
         offset = wanted - previous
         distance = float(np.linalg.norm(offset))
+        if distance <= self.target_deadband_m:
+            return tuple(float(value) for value in previous), False
         limit = min(0.04, self.target_speed_m_s * self.last_frame_dt)
         changed = distance > limit and limit > 0.0
         if changed:
@@ -1527,6 +1554,32 @@ class CameraPolicy:
             self.target_slew_limited += 1
         self.last_commanded_target = wanted.copy()
         return tuple(float(value) for value in wanted), changed
+
+    def _update_startup_gate(self, target_position):
+        """Return whether intentional post-calibration motion has been confirmed."""
+        target_position = np.asarray(target_position, dtype=np.float64)
+        if self.startup_target_position is None:
+            # The robot's load-time wrist and the bridge's calibrated neutral
+            # are not guaranteed to coincide.  Use the first post-calibration
+            # target as the zero the operator must intentionally leave.
+            self.startup_target_position = target_position.copy()
+        displacement = float(np.linalg.norm(
+            target_position - self.startup_target_position))
+        if not self.tracking_started:
+            self.startup_target_motion_max_m = max(
+                self.startup_target_motion_max_m, displacement)
+        if self.tracking_started:
+            return True, displacement
+        if self.tracking_frames <= self.startup_hold_frames:
+            self.startup_motion_frames = 0
+        elif displacement >= self.startup_motion_m:
+            self.startup_motion_frames += 1
+        else:
+            self.startup_motion_frames = 0
+        if (self.tracking_frames > self.startup_hold_frames
+                and self.startup_motion_frames >= self.startup_confirm_frames):
+            self.tracking_started = True
+        return self.tracking_started, displacement
 
     def _read_frame(self) -> None:
         """读一帧摄像头 -> 重定向 -> IK -> 写进 ``self.action``。"""
@@ -1562,16 +1615,36 @@ class CameraPolicy:
             return
         if self.calibrated:
             self.tracking_frames += 1
-            if self.tracking_frames <= self.startup_hold_frames:
+            was_tracking = self.tracking_started
+            gate_open, displacement = self._update_startup_gate(target.position)
+            if not gate_open:
+                if actual_before is not None:
+                    actual_base = np.asarray(
+                        self.adapter.to_base(actual_before), dtype=np.float64)
+                    self.startup_arm_drift_max_m = max(
+                        self.startup_arm_drift_max_m,
+                        float(np.linalg.norm(actual_base - self.startup_position)))
+                    self.startup_arm_drift_samples += 1
                 self.last_info = {
                     "valid": True,
                     "held": True,
                     "reason": "post-calibration startup hold",
-                    "startup_hold_remaining": (
-                        self.startup_hold_frames - self.tracking_frames),
+                    "startup_motion_mm": round(displacement * 1000.0, 2),
+                    "startup_motion_threshold_mm": round(
+                        self.startup_motion_m * 1000.0, 2),
+                    "startup_motion_confirm_frames": self.startup_motion_frames,
+                    "startup_motion_confirm_required": self.startup_confirm_frames,
+                    "startup_target_motion_max_mm": round(
+                        self.startup_target_motion_max_m * 1000.0, 2),
+                    "startup_arm_drift_max_mm": round(
+                        self.startup_arm_drift_max_m * 1000.0, 2),
+                    "startup_target_position": [
+                        round(float(value), 4)
+                        for value in self.startup_target_position],
+                    "startup_pose": "strong motor hold",
                 }
                 return
-            if self.tracking_frames == self.startup_hold_frames + 1:
+            if not was_tracking:
                 self._unfreeze_task_objects(self.env)
         start_base = (None if actual_before is None
                       else self.adapter.to_base(actual_before))
@@ -1677,12 +1750,19 @@ class CameraPolicy:
                                                  env.action_joint_indices)):
             if slot >= len(self.action):
                 break
-            force = self.arm_force if name in self.arm_names else self.hand_force
+            # Position servos at the normal 200 N budget sag under gravity and
+            # contact before the operator has intentionally started.  Lock the
+            # unchanged startup pose firmly until the action gate opens.
+            if not self.tracking_started:
+                force = 2000.0
+            else:
+                force = self.arm_force if name in self.arm_names else self.hand_force
             p.setJointMotorControl2(
                 env.robot_id, int(joint), p.POSITION_CONTROL,
                 targetPosition=float(self.action[slot]), force=force,
                 physicsClientId=env.client)
-        self._update_grasp_assist(env)
+        if self.tracking_started:
+            self._update_grasp_assist(env)
 
     def _update_grasp_assist(self, env) -> None:
         """Latch a physically contacted object only while the operator is closing."""
@@ -1771,11 +1851,15 @@ class CameraPolicy:
                            "wrist_pose": self.wrist_pose,
                            "target_speed_m_s": self.target_speed_m_s,
                            "startup_hold_frames": self.startup_hold_frames,
+                           "startup_motion_m": self.startup_motion_m,
+                           "startup_confirm_frames": self.startup_confirm_frames,
+                           "target_deadband_m": self.target_deadband_m,
                            "freeze_objects": self.freeze_objects,
                            "unmapped_joints": list(self.unmapped)}}
 
     def report(self) -> dict:
         """trial 结束时落盘的摄像头侧证据（判据之外，用来解释失败）。"""
+        connected = bool(p.isConnected(self.env.client))
         actual_hand = {}
         for name in self.hand_names:
             index = self.names.get(name)
@@ -1787,6 +1871,11 @@ class CameraPolicy:
                     physicsClientId=self.env.client)[0]), 5)
             except Exception:
                 break
+        try:
+            arm_posture = (self.adapter.posture_summary(self.side)
+                           if connected else None)
+        except p.error:
+            arm_posture = None
         return {"frames": self.frames, "steps": self.steps,
                 "hand_frames": dict(self.hand_frames),
                 "hand_valid_frames": self.hand_valid_frames,
@@ -1814,7 +1903,21 @@ class CameraPolicy:
                 "wrist_pose": self.wrist_pose,
                 "target_speed_m_s": self.target_speed_m_s,
                 "startup_hold_frames": self.startup_hold_frames,
+                "startup_motion_m": self.startup_motion_m,
+                "startup_confirm_frames": self.startup_confirm_frames,
+                "target_deadband_m": self.target_deadband_m,
                 "tracking_frames": self.tracking_frames,
+                "tracking_started": self.tracking_started,
+                "startup_motion_frames": self.startup_motion_frames,
+                "startup_target_motion_max_mm": round(
+                    self.startup_target_motion_max_m * 1000.0, 2),
+                "startup_arm_drift_max_mm": round(
+                    self.startup_arm_drift_max_m * 1000.0, 2),
+                "startup_arm_drift_samples": self.startup_arm_drift_samples,
+                "startup_target_position": (
+                    None if self.startup_target_position is None else
+                    [round(float(value), 4)
+                     for value in self.startup_target_position]),
                 "freeze_objects": self.freeze_objects,
                 "frozen_objects_remaining": sorted(self.frozen_objects),
                 "target_slew_limited_frames": self.target_slew_limited,
@@ -1831,7 +1934,7 @@ class CameraPolicy:
                     "solution_residual_mm"),
                 "solution_cost": dict(self.adapter.last_solution_cost.get(
                     self.side) or {}),
-                "arm_posture": self.adapter.posture_summary(self.side),
+                "arm_posture": arm_posture,
                 "held_frames": self.bad_sides,
                 "left_ratio": round(self.hand_frames["left"] / max(self.frames, 1), 3),
                 "right_ratio": round(self.hand_frames["right"] / max(self.frames, 1), 3),
@@ -2173,15 +2276,17 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                              hold_robot=(policy in (
                                                  "camera", "replay", "dummy")),
                                              layout_forward=(
-                                                 0.36 if policy == "camera" else 0.26),
+                                                 0.38 if policy == "camera" else 0.26),
                                              layout_drop=(
-                                                 0.18 if policy == "camera" else 0.22),
+                                                 0.12 if policy == "camera" else 0.22),
                                              layout_lateral=(
-                                                 0.14 if policy == "camera" else 0.02),
+                                                 0.15 if policy == "camera" else 0.02),
                                              layout_side_bias=(
                                                  (-0.06 if options.get("side") == "right"
                                                   else 0.06)
-                                                 if policy == "camera" else 0.0))
+                                                 if policy == "camera" else 0.0),
+                                             layout_table_min_x=(
+                                                 0.29 if policy == "camera" else 0.24))
                 if policy == "camera":
                     disabled = disable_robot_table_collision(
                         env, extra_bodies=task_scene.extra_bodies)
@@ -2226,7 +2331,11 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                               "note": "场景摆完后判据即为真（layout 把物体拉得太近）-> 不计成功"})
 
             if live is not None:
-                trial["camera" if policy == "camera" else policy + "_report"] = live.report()
+                try:
+                    trial["camera" if policy == "camera" else policy + "_report"] = live.report()
+                except Exception as error:  # report failure must not erase the trial
+                    trial["camera" if policy == "camera" else policy + "_report"] = {
+                        "error": f"{type(error).__name__}: {error}"}
 
             if snapshot_dir:
                 shot = Path(snapshot_dir) / ("%s_%s_t%d.png" % (task_name, robot, index))
@@ -2447,6 +2556,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-startup-hold-frames", type=int, default=12,
                         help="标定完成后手臂保持当前姿势多少摄像头帧再开始跟随"
                              "（default 12，约 0.5-0.8 s）")
+    parser.add_argument("--camera-startup-motion-mm", type=float, default=50.0,
+                        help="标定后腕目标至少移动多少毫米才认定开始操作"
+                             "（default 50 mm）")
+    parser.add_argument("--camera-startup-confirm-frames", type=int, default=3,
+                        help="超过启动位移后还需连续多少帧才开门"
+                             "（default 3，约 0.15 s）")
+    parser.add_argument("--camera-target-deadband-mm", type=float, default=2.0,
+                        help="腕目标小于该变化时保持不动（default 2 mm）")
     parser.add_argument("--camera-freeze-objects", choices=("on", "off"),
                         default="on",
                         help="标定和启动保持期间冻结可动物体，开始跟随后再恢复物理"
@@ -2560,6 +2677,12 @@ def main(argv=None) -> int:
                        0.0, float(args.camera_target_speed_mm_s)) / 1000.0,
                    "startup_hold_frames": max(
                        0, int(args.camera_startup_hold_frames)),
+                   "startup_motion_m": max(
+                       0.0, float(args.camera_startup_motion_mm)) / 1000.0,
+                   "startup_confirm_frames": max(
+                       1, int(args.camera_startup_confirm_frames)),
+                   "target_deadband_m": max(
+                       0.0, float(args.camera_target_deadband_mm)) / 1000.0,
                    "freeze_objects": args.camera_freeze_objects == "on"}
 
     reports = []
