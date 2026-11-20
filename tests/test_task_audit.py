@@ -579,9 +579,10 @@ class SceneLayerTests(unittest.TestCase):
             supported, reason = EVAL.task_objects_supported(env)
             self.assertTrue(supported, reason)
             low, _high = EVAL.aabb(env.client, env.task.objects["table"])
-            self.assertGreaterEqual(float(low[0]), 0.28)
+            self.assertGreaterEqual(float(low[0]), 0.20)
             self.assertTrue(scene.report["ik_reach"]["ok"],
                             scene.report["ik_reach"])
+            self.assertIn("camera_cube_pre_grasp", scene.report)
             cube = EVAL.body_pose(env.client, env.task.objects["cube"])[0]
             plate = EVAL.body_pose(env.client, env.task.objects["plate"])[0]
             self.assertGreaterEqual(
@@ -591,8 +592,8 @@ class SceneLayerTests(unittest.TestCase):
                 float(cube[0]), float(low[0]) + 0.06,
                 "方块必须深入桌面，不能贴着机器人侧桌沿")
             self.assertGreaterEqual(
-                float(cube[0]), float(scene.shoulder[0]) + 0.30,
-                "方块不能挡在机器人胸前")
+                float(cube[0]), float(scene.shoulder[0]) + 0.20,
+                "预抓取方块不能退到机器人躯干内部")
             self.assertGreaterEqual(
                 float(plate[0]), float(scene.shoulder[0]) + 0.33,
                 "放置区必须明显位于机器人近侧抓取区之外")

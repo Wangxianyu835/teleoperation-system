@@ -1054,6 +1054,65 @@ class TaskScene:
               % [round(float(value), 3) for value in target], flush=True)
         return details
 
+    def _place_pickplace_cube_camera_grasp(self, side: str = "right") -> dict:
+        """Put the source cube into the same native-hand pinch region."""
+        cube = self.task.objects.get("cube")
+        if cube is None or self.robot_id is None:
+            return {}
+        prefix = "R_" if side == "right" else "L_"
+        wanted = {
+            prefix + "hand_base_link",
+            prefix + "thumb_distal",
+            prefix + "index_intermediate",
+            prefix + "middle_intermediate",
+        }
+        positions = {}
+        for index in range(p.getNumJoints(self.robot_id, physicsClientId=self.client)):
+            info = p.getJointInfo(self.robot_id, index,
+                                  physicsClientId=self.client)
+            link_name = info[12].decode("utf-8", errors="ignore")
+            link = int(info[16])
+            if link < 0 or link_name not in wanted:
+                continue
+            positions[link_name] = np.asarray(
+                p.getLinkState(
+                    self.robot_id, link, computeForwardKinematics=True,
+                    physicsClientId=self.client)[4],
+                dtype=np.float64)
+        if len(positions) != len(wanted):
+            return {}
+        palm = positions[prefix + "hand_base_link"]
+        fingertip_center = (
+            positions[prefix + "thumb_distal"]
+            + positions[prefix + "index_intermediate"]
+            + positions[prefix + "middle_intermediate"]) / 3.0
+        target = np.array([
+            palm[0] + 0.90 * (fingertip_center[0] - palm[0]),
+            0.5 * (palm[1] + fingertip_center[1]),
+            self._table_top() + 0.03,
+        ])
+        table = self.task.objects.get(TABLE_KEY)
+        if table is not None:
+            low, _high = aabb(self.client, table)
+            support_edge = float(target[0] - 0.06)
+            if float(low[0]) > support_edge:
+                move_body(self.client, table,
+                          np.array([support_edge - float(low[0]), 0.0, 0.0]))
+                self.report["camera_pickplace_table_edge_m"] = round(
+                    support_edge, 4)
+        current, orientation = body_pose(self.client, cube)
+        move_body(self.client, cube, target - current)
+        details = {
+            "side": side,
+            "palm_m": palm.tolist(),
+            "fingertip_center_m": fingertip_center.tolist(),
+            "target_center_m": target.tolist(),
+        }
+        self.report["camera_cube_pre_grasp"] = details
+        print("[scene] camera pickplace: cube pre-grasp center %s"
+              % [round(float(value), 3) for value in target], flush=True)
+        return details
+
 
     def _pull_into_ik_workspace(self, tolerance_mm: float = 15.0,
                                 max_shift_m: float = 0.30, rounds: int = 3,
@@ -1223,12 +1282,14 @@ class TaskScene:
         # 只动 x/y、不再跑物理，drift 记的是"收之前"的漂移，不掩饰。
         clamp_exclusions = []
         if camera_pickplace_spacing:
-            clamp_exclusions.append("plate")
+            clamp_exclusions.extend(("plate", "cube"))
         if camera_cup_stability:
             clamp_exclusions.append("cup")
         self._clamp_to_reach(exclude_keys=tuple(clamp_exclusions))
         if camera_cup_stability:
             self._place_uprearcup_camera_grasp(side=side or "right")
+        if camera_pickplace_spacing:
+            self._place_pickplace_cube_camera_grasp(side=side or "right")
         self._in_reach()
         self.report["criteria_at_reset"] = bool(self.task.check_success())
         return self.report
@@ -1456,6 +1517,11 @@ class CameraPolicy:
         self.grasp_assist_enabled = bool(grasp_assist)
         self.grasp_assist_excluded = grasp_assist_excluded(
             str(getattr(env, "task_name", "")))
+        task_name = str(getattr(env, "task_name", ""))
+        self.delayed_physics_object = (
+            "cup" if task_name == "uprearcup"
+            else "cube" if task_name == "pickplacecube"
+            else None)
         self.arm_force = max(1.0, float(arm_force))
         self.hand_force = max(1.0, float(hand_force))
         if ik_mode not in ("position", "pose"):
@@ -1923,9 +1989,8 @@ class CameraPolicy:
                 return
             if not was_tracking:
                 self._unfreeze_task_objects(
-                    self.env, only=(("cup",)
-                                    if str(getattr(self.env, "task_name", ""))
-                                    == "uprearcup" else None))
+                    self.env, only=((self.delayed_physics_object,)
+                                    if self.delayed_physics_object else None))
         start_base = (None if actual_before is None
                       else self.adapter.to_base(actual_before))
         wanted, target_slew_limited = self._slew_target(
@@ -2181,21 +2246,26 @@ class CameraPolicy:
 
     def post_step(self, env) -> None:
         """Damp only high-speed table contacts; never constrain a grasped cup."""
-        if (str(getattr(env, "task_name", "")) != "uprearcup"
-                or not self.tracking_started):
+        if not self.tracking_started:
+            return
+        key = self.delayed_physics_object
+        if key and key in self.frozen_objects:
+            body = env.task.objects.get(key)
+            if body is None:
+                return
+            strength = float((self.last_pinch or {}).get("strength") or 0.0)
+            contacts = p.getContactPoints(
+                bodyA=env.robot_id, bodyB=body,
+                physicsClientId=env.client)
+            if strength >= 0.35 and len(contacts) >= 2:
+                self._unfreeze_task_objects(env, only=(key,))
+                print("[camera] %s released to physics after confirmed hand contact"
+                      % key, flush=True)
+            return
+        if str(getattr(env, "task_name", "")) != "uprearcup":
             return
         cup = env.task.objects.get("cup")
         if cup is None:
-            return
-        if "cup" in self.frozen_objects:
-            strength = float((self.last_pinch or {}).get("strength") or 0.0)
-            contacts = p.getContactPoints(
-                bodyA=env.robot_id, bodyB=cup,
-                physicsClientId=env.client)
-            if strength >= 0.35 and len(contacts) >= 2:
-                self._unfreeze_task_objects(env, only=("cup",))
-                print("[camera] cup released to physics after confirmed hand contact",
-                      flush=True)
             return
         if (self.grasp_constraint is None and clamp_horizontal_velocity(
                 env.client, cup, max_linear_m_s=0.30,
@@ -2301,7 +2371,8 @@ class CameraPolicy:
                 "freeze_objects": self.freeze_objects,
                 "frozen_objects_remaining": sorted(self.frozen_objects),
                 "cup_waits_for_contact": (
-                    str(getattr(self.env, "task_name", "")) == "uprearcup"),
+                    self.delayed_physics_object is not None),
+                "delayed_physics_object": self.delayed_physics_object,
                 "target_slew_limited_frames": self.target_slew_limited,
                 "last_arm_target_world": (None if self.last_arm_target_world is None else
                                           [round(float(v), 4)
