@@ -265,6 +265,10 @@ p.configureDebugVisualizer(
 
 ## 最新现场补充
 
+- `--demo-keep-open` 演示模式已加入：任务成功后不再结束 trial，而是继续运行
+  到手动关闭窗口。2026-11-20 使用 `pickplacecube + camera + preview` 打开
+  持续抓取演示，方便队友现场观看。
+
 - `pickplacecube`（`outputs/task_eval/pickplacecube_camera_elbowfix_v2_20261119.json`）：
   未成功；肘方向指标已经正常，但手部有效帧不足，未发生抓取。
 - `pickplacecube` 启动门与 `0.29 m` 桌边现场验证

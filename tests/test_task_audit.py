@@ -825,6 +825,18 @@ class TrialRunnerTests(unittest.TestCase):
         self.assertTrue(result["success"], result)
         self.assertEqual(result["steps"], 14, result)
 
+    def test_demo_mode_keeps_running_after_success(self):
+        env = self._env()
+        try:
+            env.task.check_success = lambda: True
+            result = EVAL.run_trial(
+                env, np.zeros((30, env.action_dim), dtype=np.float64), 30,
+                success_hold_steps=5, stop_on_success=False)
+        finally:
+            env.close()
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["steps"], 30, result)
+
     def test_snapshot_writes_a_real_png(self):
         env = self._env()
         try:
