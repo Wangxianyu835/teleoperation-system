@@ -227,6 +227,13 @@ p.configureDebugVisualizer(
 
 报告：`outputs/task_eval/pickplacecube_demo_v2_20261120.json`。
 
+针对现场“抓起来但没感觉”的体验，摄像头预览新增实时抓取反馈：
+
+- 第二行显示 `grasp=none/contact/attached`；
+- 同时显示物体名、手部接触点数量和接触法向力；
+- 接触开始/结束、辅助吸附和释放都会打印到终端；
+- 报告新增 `camera.grasp_feedback`，可复查最后一帧的物理接触状态。
+
 ## 桌面高度
 
 现场反馈桌面高度恰好与上臂和手腕连线重合，人在桌面上方操作时很难从画面中

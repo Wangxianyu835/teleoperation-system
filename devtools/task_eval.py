@@ -1550,6 +1550,10 @@ class CameraPolicy:
         self.grasp_candidate_key = None
         self.grasp_open_steps = 0
         self.grasp_rejected_distance = 0
+        self.grasp_feedback = {
+            "state": "none", "object": None, "contacts": 0,
+            "normal_force_n": 0.0}
+        self._last_grasp_feedback_state = None
         self.cup_velocity_clamp_count = 0
         self.hand_adapter = None
         self.hand_retargeter = None
@@ -1673,9 +1677,22 @@ class CameraPolicy:
             "ok" if self.last_hand.get("valid") else self.last_hand.get("reason", "-"),
             "ok" if (target is not None and target.position is not None)
             else (target.reason if target is not None else "none"))
-        cv2.rectangle(image, (0, 0), (width, 26), (0, 0, 0), -1)
-        cv2.putText(image, text, (6, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+        feedback = self.grasp_feedback
+        grasp_text = "grasp=%s %s contacts=%d force=%.1fN" % (
+            feedback.get("state", "none"),
+            feedback.get("object") or "-",
+            int(feedback.get("contacts", 0)),
+            float(feedback.get("normal_force_n", 0.0)))
+        cv2.rectangle(image, (0, 0), (width, 52), (0, 0, 0), -1)
+        cv2.putText(image, text, (6, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.50,
                     (0, 255, 0) if (hits["left"] or hits["right"]) else (0, 0, 255), 1)
+        grasp_color = ((0, 255, 255)
+                       if feedback.get("state") == "attached"
+                       else (0, 255, 0)
+                       if feedback.get("state") == "contact"
+                       else (180, 180, 180))
+        cv2.putText(image, grasp_text, (6, 44), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.52, grasp_color, 1)
         cv2.putText(image, "stand ~1 m, palm to camera | q/Esc quits",
                     (6, height - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
         cv2.imshow(self._window, image)
@@ -2029,6 +2046,7 @@ class CameraPolicy:
 
     def _update_grasp_assist(self, env) -> None:
         """Latch a physically contacted object only while the operator is closing."""
+        self._update_contact_feedback(env)
         if not self.grasp_assist_enabled or self.grasp_link is None:
             return
         strength = float((self.last_pinch or {}).get("strength") or 0.0)
@@ -2112,6 +2130,47 @@ class CameraPolicy:
         self.grasp_open_steps = 0
         print("[camera] grasp attached: %s (hand gap %.0f mm)"
               % (key, _distance * 1000.0), flush=True)
+
+    def _update_contact_feedback(self, env) -> None:
+        """Expose real hand-object contacts in both the preview and the terminal."""
+        if not getattr(self, "tracking_started", False) or not p.isConnected(env.client):
+            return
+        best = None
+        for key, body in env.task.objects.items():
+            if key == TABLE_KEY:
+                continue
+            try:
+                contacts = p.getContactPoints(
+                    bodyA=env.robot_id, bodyB=body,
+                    physicsClientId=env.client)
+            except p.error:
+                continue
+            if not contacts:
+                continue
+            force = sum(float(contact[9]) for contact in contacts)
+            score = (len(contacts), force)
+            if best is None or score > best[0]:
+                best = (score, key, len(contacts), force)
+        state = "attached" if self.grasp_constraint is not None else (
+            "contact" if best is not None else "none")
+        if best is None and self.grasped_object is not None:
+            key, count, force = self.grasped_object, 0, 0.0
+        elif best is None:
+            key, count, force = None, 0, 0.0
+        else:
+            _score, key, count, force = best
+        feedback = {
+            "state": state,
+            "object": key,
+            "contacts": int(count),
+            "normal_force_n": round(float(force), 2),
+        }
+        self.grasp_feedback = feedback
+        transition = (state, key)
+        if transition != self._last_grasp_feedback_state:
+            self._last_grasp_feedback_state = transition
+            print("[camera] grasp feedback: %s object=%s contacts=%d force=%.1f N"
+                  % (state, key, int(count), float(force)), flush=True)
 
     def __call__(self, step: int):
         """``run_trial`` 每步调一次；每 ``substeps`` 步读一帧摄像头。"""
@@ -2213,6 +2272,7 @@ class CameraPolicy:
                 "grasp_release_confirm_steps": self.grasp_release_confirm_steps,
                 "grasp_max_attach_gap_m": self.grasp_max_attach_gap_m,
                 "grasp_rejected_distance": self.grasp_rejected_distance,
+                "grasp_feedback": dict(self.grasp_feedback),
                 "cup_velocity_clamp_count": self.cup_velocity_clamp_count,
                 "grasped_object": self.grasped_object,
                 "last_table_guard": self.last_table_guard,
