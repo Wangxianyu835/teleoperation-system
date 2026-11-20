@@ -210,6 +210,7 @@ class CameraHandPolicyTests(unittest.TestCase):
         policy.grasp_open_steps = 0
         policy.grasp_rejected_distance = 0
         policy.last_pinch = {"strength": 0.5}
+        policy.last_hand = {"valid": True}
         env = SimpleNamespace(
             client=3, robot_id=7,
             task=SimpleNamespace(objects={"cup": 11}))
@@ -249,7 +250,14 @@ class CameraHandPolicyTests(unittest.TestCase):
             for _ in range(11):
                 policy._update_grasp_assist(env)
             self.assertEqual(99, policy.grasp_constraint)
-            policy._update_grasp_assist(env)
+            policy.last_hand = {"valid": False}
+            for _ in range(30):
+                policy._update_grasp_assist(env)
+            self.assertEqual(99, policy.grasp_constraint,
+                             "a temporary hand-tracking loss must not release")
+            policy.last_hand = {"valid": True}
+            for _ in range(12):
+                policy._update_grasp_assist(env)
             self.assertIsNone(policy.grasp_constraint)
             self.assertEqual(1, policy.grasp_release_count)
             remove.assert_called_once()

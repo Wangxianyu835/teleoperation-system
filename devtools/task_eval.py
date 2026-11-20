@@ -1541,8 +1541,10 @@ class CameraPolicy:
         self.grasped_object = None
         self.grasp_attach_count = 0
         self.grasp_release_count = 0
-        self.grasp_attach_confirm_steps = 12
-        self.grasp_release_confirm_steps = 12
+        # Confirm on camera-frame time, not one 240 Hz physics frame.  Hand
+        # classification commonly flickers for a frame while the fist stays closed.
+        self.grasp_attach_confirm_steps = max(12, self.substeps * 2)
+        self.grasp_release_confirm_steps = max(12, self.substeps * 8)
         self.grasp_max_attach_gap_m = 0.12
         self.grasp_candidate_steps = 0
         self.grasp_candidate_key = None
@@ -2031,7 +2033,10 @@ class CameraPolicy:
             return
         strength = float((self.last_pinch or {}).get("strength") or 0.0)
         if self.grasp_constraint is not None:
-            if strength < 0.15:
+            hand_valid = bool((self.last_hand or {}).get("valid"))
+            finger = (self.last_pinch or {}).get("finger")
+            open_hand = (hand_valid and finger is None and strength < 0.10)
+            if open_hand:
                 self.grasp_open_steps += 1
                 if self.grasp_open_steps >= self.grasp_release_confirm_steps:
                     p.removeConstraint(self.grasp_constraint,
