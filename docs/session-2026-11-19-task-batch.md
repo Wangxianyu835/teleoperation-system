@@ -217,6 +217,16 @@ p.configureDebugVisualizer(
 每份 trial 报告增加 `gui_mouse_picking_enabled=false`，防止鼠标拖动污染后续
 结果。
 
+2026-11-20 的持续演示进一步验证了纯物理抓取：
+
+- `pickplacecube` 在 `232.05 s` 达到成功；
+- `grasp_attach_count=0`、`grasp_release_count=0`，整个成功过程没有使用吸附约束；
+- `gui_mouse_picking_enabled=false`，没有鼠标拖动物体；
+- 成功连续保持 `1447` 个物理步，超过要求的 `120` 步；
+- 窗口按 `--demo-keep-open` 继续运行，直到操作者手动关闭。
+
+报告：`outputs/task_eval/pickplacecube_demo_v2_20261120.json`。
+
 ## 桌面高度
 
 现场反馈桌面高度恰好与上臂和手腕连线重合，人在桌面上方操作时很难从画面中
