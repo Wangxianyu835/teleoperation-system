@@ -3572,3 +3572,138 @@ IK 最终求解的是这个 `R_ee_world`，所以约束对象是**实际手掌**
 - 单帧 40° 掌面跳变：输出仍为单位姿态；连续三帧 40°：输出超过 30°；
 - 90° 拧腕旧回放开启滤波后：腕位置残差 1.5 mm、手掌轴误差约 4.8°。
 
+---
+
+## 9. G1 / GR1-T2 测试交接（2026-11-20）
+
+当前统一分支是 `restore/arm-1aaabb2`，交接起点提交为 `25d0bbd`。以下命令均在
+仓库根目录 `F:\simulation_platform` 执行。
+
+### 9.1 更新与环境
+
+```powershell
+git fetch origin
+git switch restore/arm-1aaabb2
+git pull --ff-only
+
+cd F:\simulation_platform
+$env:PYTHONPATH = "F:\simulation_platform\src;F:\simulation_platform"
+```
+
+不要用系统默认 `python`。统一解释器：
+
+```powershell
+E:\python3.11.7\python.exe
+```
+
+先跑两项基础验收：
+
+```powershell
+E:\python3.11.7\python.exe -m pytest tests -q
+E:\python3.11.7\python.exe devtools\check_gbk_safe.py --strict
+```
+
+当前应为 `534 passed, 3 skipped, 470 subtests passed`，GBK 检查为 `[OK]`。
+
+### 9.2 先做静态任务与可达性验证
+
+先不要直接做长时间人工抓取，先确认三台机器人、30 个任务和场景层仍然一致：
+
+```powershell
+E:\python3.11.7\python.exe devtools\task_eval.py --verify --robot all
+```
+
+重点记录每台机器人的：
+
+- `settle.stable`
+- `criteria_at_reset`
+- `in_reach.inside / total`
+- `ik_reach.ok`
+- verdict 是否为 `OK`
+
+H1-2 当前有 24 个正式可评测任务；另外 6 个是原任务判据或实心容器问题。
+这不是 G1/GR1-T2 的通过率，两个机器人必须单独统计。
+
+### 9.3 单机器人实时抓取测试
+
+G1 右手：
+
+```powershell
+E:\python3.11.7\python.exe devtools\task_eval.py `
+  --task pickplacecube --robot g1 --policy camera --side right `
+  --max-wall-s 180 --render --preview `
+  --json outputs\task_eval\g1_pickplacecube.json `
+  --snapshot-dir outputs\task_eval\snapshots_g1
+```
+
+GR1-T2 右手：
+
+```powershell
+E:\python3.11.7\python.exe devtools\task_eval.py `
+  --task pickplacecube --robot gr1_t2 --policy camera --side right `
+  --max-wall-s 180 --render --preview `
+  --json outputs\task_eval\gr1_t2_pickplacecube.json `
+  --snapshot-dir outputs\task_eval\snapshots_gr1_t2
+```
+
+给队友持续演示时加：
+
+```powershell
+--max-sim-s 86400 --max-wall-s 86400 --demo-keep-open
+```
+
+任务成功后窗口会继续开着，显示
+`[DEMO] success reached ... continuing until manual close`，直到手动关闭。
+
+### 9.4 推荐测试顺序
+
+每台机器人按下面顺序做，前一项没有通过先不要跳到复杂任务：
+
+1. `pickcube`
+2. `pushcube`
+3. `pickplacecube`
+4. `uprearcup`
+5. `balltrashcan`
+
+前三个是当前 H1-2 已走通的基准任务。`uprearcup` 的杯体防滚、预抓取中心和
+原生手接触仍属于本轮重点验证项；G1/GR1-T2 不应直接沿用 H1-2 的结论。
+
+每条有效 trial 必须同时检查：
+
+- `success=true`
+- `success_streak_max_steps >= 120`
+- `success_rejected_reason=null`
+- `gui_mouse_picking_enabled=false`
+- 报告中的 `initial_objects` / `final_objects`
+- `camera.arm_posture` 的腕、肘位置误差
+- `camera.grasp_attach_count` / `grasp_release_count`
+
+PyBullet 鼠标拖动已经关闭。任何通过鼠标移动物体得到的成功都无效。
+
+### 9.5 两台机器人的已知重点
+
+G1：
+
+- 原生手只有 7 个可动关节，L21 覆盖率为 7/17。
+- 实时逐轴行程上限较小，尤其右臂横向行程只有约 `4 cm`；“动作幅度小”先检查
+  `travel_limit`，不要先判定 IK 坏了。
+- 右腕姿态在较大掌面滚转时会接近 `±113°` 限位。
+
+GR1-T2：
+
+- 原生手有 11 个可动关节，覆盖率为 11/17。
+- 手装在 `hand_pitch` 后的末端，没有和 H1-2 完全相同的独立腕链；比较日志时按
+  profile 的 metric link 比，不要硬套 H1-2 的关节名。
+- 早期“前臂反向”问题已经由肘关节方向修正处理；若复现，先看报告里的
+  `elbow_pose_fix` 和 `elbow_task_mm`，不要直接翻转映射。
+
+任何“动作看起来不对”的记录都要附：
+
+- 机器人名、左右侧、任务名
+- 摄像头输入是否有效
+- JSON 报告路径
+- 一张 PyBullet 快照
+- 是关节方向错、腕限位、位置残差还是物理解触问题
+
+不要只发“能动/不能动”的现象，否则无法区分映射、IK 和任务场景问题。
+

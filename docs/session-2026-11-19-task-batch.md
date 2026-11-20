@@ -250,7 +250,7 @@ p.configureDebugVisualizer(
 最新全量回归：
 
 ```text
-533 passed, 3 skipped, 470 subtests passed
+534 passed, 3 skipped, 470 subtests passed
 
 `check_gbk_safe.py --strict` 通过。
 ```
