@@ -1160,6 +1160,52 @@ class TaskScene:
                           np.array([support_edge - float(low[0]), 0.0, 0.0]))
         current, orientation = body_pose(self.client, ball)
         move_body(self.client, ball, target - current)
+        p.changeDynamics(
+            ball, -1,
+            rollingFriction=0.12,
+            spinningFriction=0.03,
+            linearDamping=0.30,
+            angularDamping=1.00,
+            restitution=0.0,
+            activationState=p.ACTIVATION_STATE_WAKE_UP,
+            physicsClientId=self.client)
+        can_position, can_orientation = body_pose(self.client, can)
+        wall_half = [0.028, 0.008, 0.0675]
+        bottom_half = [0.049, 0.049, 0.0075]
+        wall_positions = []
+        wall_orientations = []
+        for angle in np.arange(8) * (np.pi / 4.0):
+            wall_positions.append([
+                float(0.049 * np.cos(angle)),
+                float(0.049 * np.sin(angle)),
+                0.0])
+            wall_orientations.append(
+                p.getQuaternionFromEuler([0.0, 0.0, float(angle)]))
+        shape_types = [p.GEOM_BOX] * 9
+        half_extents = [bottom_half] + [wall_half] * 8
+        frame_positions = [[0.0, 0.0, -0.0675]] + wall_positions
+        frame_orientations = [[0.0, 0.0, 0.0, 1.0]] + wall_orientations
+        collision = p.createCollisionShapeArray(
+            shapeTypes=shape_types,
+            halfExtents=half_extents,
+            collisionFramePositions=frame_positions,
+            collisionFrameOrientations=frame_orientations,
+            physicsClientId=self.client)
+        visual = p.createVisualShapeArray(
+            shapeTypes=shape_types,
+            halfExtents=half_extents,
+            rgbaColors=[[0.3, 0.3, 0.3, 1.0]] * 9,
+            visualFramePositions=frame_positions,
+            visualFrameOrientations=frame_orientations,
+            physicsClientId=self.client)
+        p.removeBody(can, physicsClientId=self.client)
+        can = p.createMultiBody(
+            baseMass=0.0, baseCollisionShapeIndex=collision,
+            baseVisualShapeIndex=visual,
+            basePosition=[float(value) for value in can_position],
+            baseOrientation=[float(value) for value in can_orientation],
+            physicsClientId=self.client)
+        self.task.objects["trashcan"] = can
         p.changeDynamics(can, -1, mass=0.0, lateralFriction=1.2,
                          physicsClientId=self.client)
         details = {
@@ -1168,6 +1214,8 @@ class TaskScene:
             "fingertip_center_m": fingertip_center.tolist(),
             "target_center_m": target.tolist(),
             "trashcan_fixed": True,
+            "trashcan_hollow": True,
+            "wall_count": 8,
         }
         self.report["camera_balltrashcan_setup"] = details
         print("[scene] camera balltrashcan: ball pre-grasp %s; trashcan fixed"
@@ -2796,7 +2844,8 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                   policy_options: dict = None, max_wall_s: float = None,
                   snapshot_dir: str = None,
                   success_hold_steps: int = SUCCESS_HOLD_STEPS,
-                  stop_on_success: bool = True) -> dict:
+                  stop_on_success: bool = True,
+                  allow_gui_mouse_picking: bool = False) -> dict:
     """一个任务跑 N 个 trial，返回 report（含每个 trial 的 JSON 段）。"""
     from teleoperation.simulation.environment import SimulationEnv
 
@@ -2824,7 +2873,8 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                 # GUI picking can teleport task objects outside robot control.
                 # Evaluation must accept only robot/contact-driven state changes.
                 p.configureDebugVisualizer(
-                    p.COV_ENABLE_MOUSE_PICKING, 0,
+                    p.COV_ENABLE_MOUSE_PICKING,
+                    1 if allow_gui_mouse_picking else 0,
                     physicsClientId=env.client)
             scene_report = None
             if scene:
@@ -2931,7 +2981,8 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
             trial = dict(result, trial=index, **policy_meta,
                          scene=scene_report, initial_objects=initial_objects,
                          final_objects=object_positions(env),
-                         gui_mouse_picking_enabled=(False if render else None))
+                         gui_mouse_picking_enabled=(
+                             bool(allow_gui_mouse_picking) if render else None))
             if policy == "camera":
                 trial["robot_object_contacts"] = robot_contact_summary(env)
             if scene_report is not None and scene_report.get("criteria_at_reset"):
@@ -3194,6 +3245,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verify", action="store_true",
                         help="跑四项检查（30 个任务过场景层），不跑 trial")
     parser.add_argument("--render", action="store_true", help="GUI 渲染（默认 DIRECT）")
+    parser.add_argument("--allow-gui-mouse-picking", action="store_true",
+                        help="允许使用 PyBullet 鼠标拖动；仅用于演示，不能作为有效评测结果")
     parser.add_argument("--json", default=None, help="报告落盘路径")
     parser.add_argument("--snapshot-dir", default=None,
                         help="每个 trial 结束时离屏渲染一张 PNG 到这个目录（现场取证用）")
@@ -3311,7 +3364,9 @@ def main(argv=None) -> int:
                                max_wall_s=args.max_wall_s,
                                snapshot_dir=args.snapshot_dir,
                                success_hold_steps=success_hold_steps,
-                               stop_on_success=not args.demo_keep_open)
+                               stop_on_success=not args.demo_keep_open,
+                               allow_gui_mouse_picking=(
+                                   args.allow_gui_mouse_picking))
         reports.append(report)
         summary = report["summary"]
         print("[%s] %s/%s: %d/%d success, mean %s s" % (

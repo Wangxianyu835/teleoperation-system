@@ -118,6 +118,7 @@ class CameraHandPolicyTests(unittest.TestCase):
         self.assertEqual(args.camera_target_deadband_mm, 2.0)
         self.assertEqual(args.camera_target_speed_mm_s, 600.0)
         self.assertFalse(args.camera_table_guard)
+        self.assertFalse(args.allow_gui_mouse_picking)
 
     def test_pickplace_destination_plate_is_not_a_grasp_assist_candidate(self):
         self.assertEqual({"plate"}, set(EVAL.grasp_assist_excluded(
@@ -640,8 +641,29 @@ class SceneLayerTests(unittest.TestCase):
                 0.0, float(EVAL.p.getDynamicsInfo(
                     env.task.objects["trashcan"], -1,
                     physicsClientId=env.client)[0]))
+            self.assertGreaterEqual(
+                float(EVAL.p.getDynamicsInfo(
+                    env.task.objects["ball"], -1,
+                    physicsClientId=env.client)[6]), 0.10)
             low, _high = EVAL.aabb(env.client, env.task.objects["table"])
             self.assertGreaterEqual(float(ball[0]) - float(low[0]), 0.05)
+
+            can_position = EVAL.body_pose(
+                env.client, env.task.objects["trashcan"])[0]
+            EVAL.p.resetBasePositionAndOrientation(
+                env.task.objects["ball"],
+                [float(can_position[0]), float(can_position[1]), 1.23],
+                [0.0, 0.0, 0.0, 1.0], physicsClientId=env.client)
+            EVAL.p.resetBaseVelocity(
+                env.task.objects["ball"], [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0], physicsClientId=env.client)
+            for _ in range(480):
+                EVAL.p.stepSimulation(physicsClientId=env.client)
+            self.assertTrue(env.task.check_success())
+            self.assertLess(
+                float(EVAL.body_pose(
+                    env.client, env.task.objects["ball"])[0][2]),
+                float(can_position[2]) + 0.08)
         finally:
             env.close()
 

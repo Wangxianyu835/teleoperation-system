@@ -252,6 +252,20 @@ p.configureDebugVisualizer(
 - 垃圾桶设为固定目标，避免被机器人碰走；
 - 球在形成至少两个真实手部接触点前保持静止；
 - 接触确认后才恢复动态，开始搬运。
+- 球增加 `rollingFriction=0.12`、`spinningFriction=0.03`、
+  `linearDamping=0.30`、`angularDamping=1.00`，轻碰后不会无限滚动。
+- 原任务中的垃圾桶其实是实心圆柱，无法装球。相机场景现在把它替换为
+  真正的空心容器：8 段桶壁 + 底板上下一体的静态复合刚体。
+- 回归测试会从桶口上方释放球，确认球能进入容器并满足成功判据。
+
+PyBullet 鼠标拾取默认仍关闭，避免污染正式成功率。交互演示可显式开启：
+
+```powershell
+--allow-gui-mouse-picking
+```
+
+报告会写 `gui_mouse_picking_enabled=true`；这类结果只能用于演示，不能计入
+正式任务成功率。
 
 持续演示入口：
 
