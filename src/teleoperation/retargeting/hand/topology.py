@@ -164,3 +164,32 @@ def visionpro_fingers_to_points(fingers: list | np.ndarray, side: str = "left") 
         coordinates.append([x, y, z])
 
     return np.asarray(coordinates, dtype=np.float32)
+
+
+def expand_hand21_to25(points: np.ndarray) -> np.ndarray:
+    """Change topology only; preserve input origin, axes and units."""
+    mp_points = np.asarray(points, dtype=np.float32)
+    if mp_points.shape != (MEDIAPIPE_HAND_KEYPOINTS, HAND_COORDS):
+        raise ValueError(
+            f"MediaPipe hand must have shape "
+            f"({MEDIAPIPE_HAND_KEYPOINTS}, {HAND_COORDS}), got {mp_points.shape}"
+        )
+
+    # 初始化输出数组 (25, 3)
+    out = np.zeros((HAND_KEYPOINTS, HAND_COORDS), dtype=np.float32)
+
+    # 索引 0：腕部直接复制
+    out[0] = mp_points[0]
+
+    # 拇指（索引 1-4）保持不变，因为项目拓扑中拇指没有新增掌根点
+    out[1:5] = mp_points[1:5]
+
+    # 对于其他四根手指，每根手指前插入一个掌根点，然后复制该手指的 4 个关节
+    # 手指起始索引：食指 (5)，中指 (9)，无名指 (13)，小指 (17)
+    # 输出起始索引：食指 (5)，中指 (10)，无名指 (15)，小指 (20)
+    _copy_finger_with_palm_root(out, mp_points, out_start=5, mp_start=5)   # 食指
+    _copy_finger_with_palm_root(out, mp_points, out_start=10, mp_start=9)  # 中指
+    _copy_finger_with_palm_root(out, mp_points, out_start=15, mp_start=13) # 无名指
+    _copy_finger_with_palm_root(out, mp_points, out_start=20, mp_start=17) # 小指
+
+    return out

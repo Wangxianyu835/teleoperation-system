@@ -1,0 +1,85 @@
+"""Causal palm-length normalization; no calibration, devices or robot geometry."""
+import numpy as np
+
+from teleoperation.contracts.hand import CanonicalHandFrame, HandWindow
+from teleoperation.contracts.native_coordinates import WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, PALM_LENGTH_PROFILE, PALM_LENGTH_ALIGNMENT, validate_landmark_contract, palm_length_metadata, UNIFIED_METRIC_ALIGNMENT, UNIFIED_HAND_PROFILE
+from .native_coordinates import build_palm_basis
+
+MIN_PALM_LENGTH_M = 1e-6
+
+
+def _palm_frame_length(values):
+    points = np.asarray(values,dtype=np.float64)
+    if points.shape != (25,3) or not np.isfinite(points).all():
+        raise ValueError('palm frame must contain finite hand25 points')
+    points = points-points[0]
+    length = float(np.linalg.norm(points[11]))
+    if length <= MIN_PALM_LENGTH_M:
+        raise ValueError('palm length does not exceed 1e-6 metres')
+    build_palm_basis(points,(0,6,11))
+    return length
+
+
+def validate_metric_hand_frame(frame: CanonicalHandFrame) -> CanonicalHandFrame:
+    """Reject invalid sides before buffering, including during initial warmup.
+
+    This only validates metric geometry; normalization still occurs once at the
+    complete window boundary. Later valid frames are never discarded for an
+    older bad frame that should not have entered history.
+    """
+    if not isinstance(frame,CanonicalHandFrame):
+        raise TypeError('Palm frame validation requires CanonicalHandFrame')
+    alignment = frame.metadata.get('coordinate_alignment')
+    if alignment not in (WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, UNIFIED_METRIC_ALIGNMENT) or frame.units != 'm':
+        raise ValueError('Palm frame validation requires canonical world metres')
+    validate_landmark_contract(alignment,frame.metadata,'Palm frame validation')
+    hands, reasons = dict(frame.hands), dict(frame.invalid_reasons)
+    for side, points in hands.items():
+        if points is not None:
+            try:
+                _palm_frame_length(points)
+            except ValueError as error:
+                hands[side], reasons[side] = None, str(error)
+    return CanonicalHandFrame(hands,frame.timestamp,frame.source,{**frame.metadata,'invalid_reasons':reasons})
+
+
+def normalize_hand_window(window: HandWindow) -> HandWindow:
+    """三帧米制手坐标 → 同形状的无量纲窗口；返回新对象。
+
+    每帧先减去腕点，再用该侧三帧掌长的中位数统一缩放。
+    metadata 中保留 palm_length_m；不能仅凭 HandWindow 类型判断单位。
+    """
+    if not isinstance(window, HandWindow):
+        raise TypeError("Palm normalization requires HandWindow")
+    alignment = window.metadata.get("coordinate_alignment")
+    if alignment not in (WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT, UNIFIED_METRIC_ALIGNMENT) or window.units != "m":
+        raise ValueError("Palm normalization requires canonical world metres, exactly once")
+    validate_landmark_contract(alignment, window.metadata, "Palm normalization input")
+    hands, lengths, reasons = {}, {}, dict(window.metadata.get("invalid_reasons", {}))
+    for side in ("left", "right"):
+        hands[side], lengths[side] = None, None
+        values = window.hands[side]
+        if values is None:
+            reasons.setdefault(side, "missing or window not ready")
+            continue
+        if np.shape(values) != (3, 25, 3):
+            raise ValueError("Palm normalization requires exactly three hand25 frames")
+        points = np.asarray(values, dtype=np.float64)
+        points = points - points[:, 0:1]
+        try:
+            frame_lengths = [_palm_frame_length(frame) for frame in points]
+        except ValueError as error:
+            reasons[side] = str(error)
+            continue
+        denominator = float(np.median(frame_lengths))
+        # 同一个分母用于三帧，保留窗口内相对尺度；不是每帧分别除掌长。
+        hands[side] = (points / denominator).astype(np.float32)
+        lengths[side], reasons[side] = denominator, None
+    metadata = dict(window.metadata)
+    metadata.pop("source_scale", None)
+    metadata.update({
+        **palm_length_metadata(UNIFIED_HAND_PROFILE if alignment == UNIFIED_METRIC_ALIGNMENT else PALM_LENGTH_PROFILE),
+        "source_length_unit": "m",
+        "palm_length_m": lengths, "invalid_reasons": reasons,
+    })
+    return HandWindow(hands, window.timestamp, window.source, metadata)

@@ -197,3 +197,6 @@ class NpyReplayWorkflow:
 
     def close(self):
         self.input.close(); self.pipeline.reset()
+
+
+from .native_hand_processing import UnifiedHandPipeline

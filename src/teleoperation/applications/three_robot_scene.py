@@ -69,7 +69,7 @@ class ThreeRobotHandScene:
 
     def __init__(self, sides=("left", "right"), gui=True,
                  steps_per_frame=DEFAULT_STEPS_PER_FRAME, limit_mode="clamp",
-                 label_every=15, gravity=-9.81, ground_clearance=0.03):
+                 label_every=15, gravity=-9.81, ground_clearance=0.03, robot_types=None):
         import pybullet as p
         import pybullet_data
 
@@ -99,9 +99,13 @@ class ThreeRobotHandScene:
         p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=self.cid)
         p.loadURDF("plane.urdf", physicsClientId=self.cid)
 
+        selected = tuple(ROBOT_ORDER if robot_types is None else robot_types)
+        if not selected or len(set(selected)) != len(selected) or any(name not in ROBOT_ORDER for name in selected):
+            p.disconnect(self.cid)
+            raise ValueError("Select distinct supported robots")
         loader = RobotLoader(self.cid)
         self.robots = []
-        for robot_type in ROBOT_ORDER:
+        for robot_type in selected:
             try:
                 body = loader.load_robot(robot_type)["robot"]
             except Exception as error:  # noqa: BLE001 - 缺一台机器人也要能继续演示
@@ -275,6 +279,40 @@ class ThreeRobotHandScene:
                     physicsClientId=cid)
             self.clipped[side] += int(clipped)
         self.applied[side] += 1
+
+    def apply_native(self, result) -> None:
+        """Write one robot/side's named native command, without the L21 adapter."""
+        from teleoperation.contracts.hand_control import HandJointCommand
+        if not isinstance(result, HandJointCommand):
+            raise ValueError("Scene requires a valid native command")
+        if result.side not in self.sides or not self.alive():
+            raise ValueError("Native command side is not active")
+        robot = next((r for r in self.robots if r["type"] == result.hand_model), None)
+        if robot is None:
+            raise ValueError("Native command robot is not loaded")
+        from teleoperation.robots.hand_spec import load_hand_spec
+        spec = load_hand_spec(result.hand_model, result.side)
+        _, names = robot["plans"][result.side]
+        if result.spec_hash != spec.spec_hash or result.joint_names != spec.joint_names:
+            raise ValueError("Command target specification differs from the loaded hand")
+        values = result.named_positions()
+        independent = np.array([values[n] for n in spec.independent_joint_names])
+        expanded = spec.expand(independent)
+        if any(abs(values[n]-expanded[n]) > 1e-6 for n in spec.joint_names):
+            raise ValueError("Command violates native hand coupling")
+        for name, (low, high) in zip(spec.joint_names, spec.joint_limits):
+            if not low - 1e-6 <= values[name] <= high + 1e-6:
+                raise ValueError(f"Native scene limit exceeded: {name}")
+        for name, value in values.items():
+            self.p.setJointMotorControl2(robot["body"], names[name], self.p.POSITION_CONTROL,
+                targetPosition=float(value), force=HAND_FORCE, physicsClientId=self.cid)
+        if not hasattr(self, "native_commands"):
+            self.native_commands = {}
+            self.native_applied = {}
+        self.native_commands[result.key] = dict(values)
+        key = result.hand_model + "/" + result.side
+        self.native_applied[key] = self.native_applied.get(key, 0) + 1
+        self.applied[result.side] += 1
 
     def step(self) -> None:
         """锁住非手部关节，然后推进 ``steps_per_frame`` 步物理。"""

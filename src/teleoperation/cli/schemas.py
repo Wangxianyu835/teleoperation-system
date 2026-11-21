@@ -10,6 +10,9 @@ PALM_LOCAL_V2_CHECKPOINT = DEFAULT_REALTIME_CHECKPOINT
 ROOT = str(PROJECT_ROOT)
 
 def hand_record(parser: argparse.ArgumentParser) -> None:
+    from teleoperation.contracts.native_coordinates import PALM_LENGTH_PROFILE
+    parser.add_argument('--input-profile', choices=(PALM_LENGTH_PROFILE,),
+                        help='write the canonical-right input used by native NN/dex')
     parser.add_argument("--landmark-space", choices=("world", "normalized"), default="world")
     destination = parser.add_mutually_exclusive_group()
     destination.add_argument("--output", type=Path,
@@ -32,6 +35,9 @@ def hand_record(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(_handler="teleoperation.applications.offline_h5_record:run")
 
 def hand_align(parser: argparse.ArgumentParser) -> None:
+    from teleoperation.contracts.native_coordinates import PALM_LENGTH_PROFILE
+    parser.add_argument('--input-profile', choices=(PALM_LENGTH_PROFILE,),
+                        help='write the canonical-right input used by native NN/dex')
     parser.add_argument("--landmark-space", choices=("world", "normalized"),
                         help="default: recording declaration, or normalized for old files")
     parser.add_argument("--input", type=Path, required=True)
@@ -40,6 +46,11 @@ def hand_align(parser: argparse.ArgumentParser) -> None:
 
 
 def hand_train(parser: argparse.ArgumentParser) -> None:
+    from teleoperation.contracts.constants import HAND_MODELS
+    from teleoperation.contracts.native_coordinates import PALM_LENGTH_PROFILE
+    parser.add_argument('--hand-model', choices=HAND_MODELS, nargs='+')
+    parser.add_argument('--input-profile', choices=(PALM_LENGTH_PROFILE,), default=PALM_LENGTH_PROFILE)
+    parser.add_argument('--resume', type=Path)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--hand-side", choices=("left", "right", "shared"), default="shared",
@@ -57,6 +68,14 @@ def hand_train(parser: argparse.ArgumentParser) -> None:
 
 
 def hand_export(parser: argparse.ArgumentParser) -> None:
+    from teleoperation.contracts.constants import HAND_MODELS
+    from teleoperation.contracts.native_coordinates import PALM_LENGTH_PROFILE
+    from .hand_command_options import add_hand_command_arguments
+    parser.add_argument('--hand-model', choices=HAND_MODELS)
+    parser.add_argument('--backend', choices=('nn','dex'))
+    parser.add_argument('--hand', choices=('left','right','both'), default='both')
+    parser.add_argument('--input-profile', choices=(PALM_LENGTH_PROFILE,), default=PALM_LENGTH_PROFILE)
+    add_hand_command_arguments(parser)
     parser.add_argument(
         "--input",
         type=Path,
@@ -536,3 +555,63 @@ def tools_visualize_l21_fk(parser):
         help="Label each point with its joint name instead of its index.",
     )
     parser.set_defaults(_handler="teleoperation.applications.diagnostics.visualize_l21_fk:main")
+
+
+def hand_control(parser):
+    from .hand_joint_options import add_target_arguments
+    from .hand_command_options import add_hand_command_arguments
+    add_target_arguments(parser)
+    add_hand_command_arguments(parser)
+    from teleoperation.contracts.native_coordinates import UNIFIED_HAND_PROFILE
+    parser.set_defaults(input_profile=UNIFIED_HAND_PROFILE)
+    parser.add_argument('--source',choices=('camera','visionpro'),default='camera')
+    vr = parser.add_mutually_exclusive_group()
+    vr.add_argument('--input-h5',type=Path,help='raw Vision Pro transform recording')
+    vr.add_argument('--ip',help='Vision Pro streamer address')
+    parser.add_argument('--fps',type=float,default=0.,help='loop upper bound; 0 is unthrottled')
+    parser.add_argument('--report',type=Path)
+    parser.add_argument('--scene',choices=('auto','hands','robots'),default='auto')
+    parser.add_argument('--model-asset-path',type=Path)
+    parser.add_argument('--camera-index',type=int,default=0)
+    parser.add_argument('--frames',type=int,default=0,help='0 runs until interruption/window close')
+    parser.add_argument('--headless',action='store_true')
+    parser.add_argument('--record-results',type=Path)
+    parser.set_defaults(_handler='teleoperation.applications.hand_control:run')
+
+
+def hand_list_models(parser):
+    parser.set_defaults(_handler='teleoperation.applications.hand_control:list_models')
+
+
+def replay_hand_joints(parser):
+    from teleoperation.contracts.constants import HAND_MODELS
+    parser.add_argument('--input',type=Path,required=True)
+    parser.add_argument('--hand-model',choices=HAND_MODELS,required=True)
+    parser.add_argument('--hand',choices=('left','right','both'),default='right')
+    parser.add_argument('--headless',action='store_true')
+    parser.set_defaults(_handler='teleoperation.applications.hand_control:replay')
+
+
+def hand_vr(parser):
+    from .visionpro_options import configure
+    configure(parser)
+    parser.set_defaults(_handler='teleoperation.applications.visionpro_hand:main')
+
+
+def hand_dex_calibrate(parser):
+    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--source", choices=("visionpro",), default="visionpro")
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--start", type=float, default=0., help="seconds after first recorded frame")
+    parser.add_argument("--duration", type=float, default=2.)
+    parser.set_defaults(_handler="teleoperation.applications.dex_native:calibrate")
+
+
+def robot_control(parser):
+    from .robot_options import configure
+    configure(parser)
+
+
+def robot_replay(parser):
+    from .robot_options import configure
+    configure(parser,replay=True)

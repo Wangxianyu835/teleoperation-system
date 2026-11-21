@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 import numpy as np
+from .wrist import WristObservation
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class RawHandFrame:
     metadata: Mapping[str, Any] = field(default_factory=dict)
     geometry_encoding: Mapping[str, str] = field(default_factory=dict)
     world_hands: dict[str, np.ndarray | None] | None = None
+    wrists: Mapping[str, WristObservation | None] | None = None
 
     def __post_init__(self):
         for side in ("left", "right"):

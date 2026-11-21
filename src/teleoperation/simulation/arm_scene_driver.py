@@ -275,7 +275,7 @@ class ArmSceneDriver:
         current = adapter.to_base(adapter.arm_points(side)[self.shoulder_anchor_key])
         return tuple(float(current[axis]) - float(anchor[axis]) for axis in range(3))
 
-    def apply_each(self, side: str, targets, source: str = "base",
+    def solve_each(self, side: str, targets, source: str = "base",
                    orientation=None, orientation_frame: str = "absolute",
                    elbows=None, elbow_bend_deg=None,
                    hand_frame=None) -> dict:
@@ -333,7 +333,7 @@ class ArmSceneDriver:
                     1000.0 * float(np.linalg.norm(np.asarray(shift, dtype=np.float64))), 2)
             posture = (None if elbow_bend_deg is None
                        else adapter.posture_from_bend(side, elbow_bend_deg))
-            target_orientation = orientation
+            target_orientation = orientation.get(robot_type) if isinstance(orientation, dict) else orientation
             target_frame = orientation_frame
             orientation_source = "neutral_relative"
             if hand_frame is not None and adapter.ik_mode == "pose":
@@ -350,7 +350,6 @@ class ArmSceneDriver:
                                    elbow=elbow,
                                    elbow_pass=self.elbow_pass,
                                    posture=posture)
-            adapter.apply(side, values)
             reports[robot_type] = {"ee": adapter.ee[side][1],
                                    "ik_mode": adapter.ik_mode,
                                    "target_orientation_source": orientation_source,
@@ -360,8 +359,21 @@ class ArmSceneDriver:
                                    "posture": {str(name): round(float(value), 5)
                                                for name, value in (posture or {}).items()},
                                    "joints": values}
-        self.applied[side] += 1
         return reports
+
+    def apply_each(self, side, targets, source="base", orientation=None,
+                   orientation_frame="absolute", elbows=None, elbow_bend_deg=None,
+                   hand_frame=None):
+        reports = self.solve_each(side, targets, source=source, orientation=orientation,
+                                  orientation_frame=orientation_frame, elbows=elbows,
+                                  elbow_bend_deg=elbow_bend_deg, hand_frame=hand_frame)
+        self.apply_solutions(side, reports)
+        return reports
+
+    def apply_solutions(self, side, reports):
+        for name, report in reports.items():
+            self.ik[name].apply(side, report['joints'])
+        self.applied[side] += 1
 
     # ------------------------------------------------------------------ #
     def update_slew(self, frame_dt: float) -> float:

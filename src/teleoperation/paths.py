@@ -25,3 +25,15 @@ def realtime_checkpoint(landmark_space):
     if landmark_space == "normalized":
         return DEFAULT_REALTIME_CHECKPOINT
     raise ValueError(f"Unsupported landmark space: {landmark_space!r}")
+
+DEFAULT_HAND_MODEL_ROOT = PROJECT_ROOT / "outputs" / "hand_retargeting" / "models"
+
+def training_run_directory(root, hand_model, side, input_profile, run_name):
+    """An explicit target/profile run; never search for an implicit latest model."""
+    import re
+    for value in (hand_model, side, input_profile, run_name):
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
+            raise ValueError(f"Invalid model path component: {value!r}")
+    if side not in ("left", "right", "shared"):
+        raise ValueError(f"Invalid target side: {side!r}")
+    return Path(root) / hand_model / side / "nn" / input_profile / run_name

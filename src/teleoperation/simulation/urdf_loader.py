@@ -1,10 +1,10 @@
 """PyBullet URDF loading helpers that work under non-ASCII project paths."""
 
 from __future__ import annotations
-
 import os
 from pathlib import Path
 from typing import Any
+import time
 
 
 def load_urdf(urdf_path: str | Path, **kwargs: Any) -> int:
@@ -49,3 +49,19 @@ def create_ground(pybullet: Any, physicsClientId: int = 0) -> int:
         basePosition=[0.0, 0.0, -5.0],
         physicsClientId=physicsClientId,
     )
+
+
+def prepare_physics(call, positional, *, client_id, timeout=15.0):
+    """Wait for the selected GUI server to answer a setup call."""
+    deadline = time.perf_counter() + timeout
+    while True:
+        try:
+            call(*positional, physicsClientId=client_id)
+            return
+        except Exception as error:
+            if time.perf_counter() >= deadline:
+                raise RuntimeError(
+                    f"PyBullet did not answer within {timeout:.0f} s "
+                    f"({type(error).__name__}: {error}); rerun with --headless."
+                ) from error
+            time.sleep(0.1)

@@ -1,5 +1,7 @@
 # 遥操作与重定向
 
+本分支已接入原生手型 NN/dex、三帧掌长归一化、目标手型训练、双手 Vision Pro 与统一 `robot control` / `robot replay`。相机手臂使用本分支的 MediaPipe + paper IK。启动、训练和迁移边界见 [原生手部与统一控制指南](docs/native-hand-control.md)。下文保留历史 L21 工作流的使用说明。
+
 摄像头采集人手关键点，经 L21 重定向输出关节角，在 PyBullet 中回放或实时驱动手部。支持独立 L21 手和 H1-2、GR1-T2、G1 原装手；TRON2A 可用同帧 MediaPipe Pose/Hands world 经真人中性标定实时驱动双臂双手，见第 4.1.2、4.1.3 节。
 
 **离线：采集 → 对齐 → 训练 → 推理导出 → 仿真回放。

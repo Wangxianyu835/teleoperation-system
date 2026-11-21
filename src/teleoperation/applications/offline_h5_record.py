@@ -37,6 +37,9 @@ def _output_paths(args, started_at):
 
 
 def run(args):
+    if getattr(args, 'input_profile', None) is not None:
+        from .native_offline_h5_record import run as record_native
+        return record_native(args)
     if args.frames < 0:
         raise ValueError("--frames must be nonnegative; 0 records until Ctrl+C")
     if min(args.width, args.height, args.fps) <= 0:

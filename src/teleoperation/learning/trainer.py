@@ -247,3 +247,6 @@ def _split_frame_ranges(frame_count: int, val_ratio: float, receptive_field: int
     if val_start >= frame_count:
         raise ValueError("Validation split is empty after boundary gap")
     return train_end, val_start
+
+
+from .joint_trainer import train_joint_models

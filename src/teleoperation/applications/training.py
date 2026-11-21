@@ -76,6 +76,14 @@ LOSS_NAMES = (
 
 
 def run(args: argparse.Namespace) -> int:
+    if getattr(args, 'hand_model', None):
+        from .joint_training import run as train_native
+        from teleoperation.paths import DEFAULT_CHECKPOINT_ROOT, DEFAULT_HAND_MODEL_ROOT
+        if args.checkpoint_root == DEFAULT_CHECKPOINT_ROOT:
+            args.checkpoint_root = DEFAULT_HAND_MODEL_ROOT
+        if args.hand_side != 'shared':
+            raise ValueError('Native hand training uses one shared canonical-right model per hand type')
+        return train_native(args)
     try:
         return _train(args)
     finally:

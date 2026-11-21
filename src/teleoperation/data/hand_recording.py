@@ -127,3 +127,48 @@ class RawHandH5Writer:
                 self.finish("interrupted" if exc_type is KeyboardInterrupt else "error")
         finally:
             self.close()
+
+
+def iter_dex_observations(path, source):
+    """Read declared raw Vision Pro transforms; normalize declared time units only."""
+    from teleoperation.contracts.observations import RawHandFrame
+    if source != "visionpro":
+        raise ValueError("Unknown dex recording source")
+    with h5py.File(path, "r") as stream:
+        expected = "visionpro"
+        if stream.attrs.get("source") != expected:
+            raise ValueError("Recording source does not match requested dex adapter")
+        unit = stream.attrs.get("timestamp_unit")
+        factors = {"unix_seconds": 1., "relative_seconds": 1., "seconds": 1., "unix_ms": .001}
+        if unit not in factors:
+            raise ValueError("Recording must explicitly declare timestamp units")
+        timestamps = np.asarray(stream["timestamps"], dtype=float) * factors[unit]
+        if not np.isfinite(timestamps).all() or np.any(np.diff(timestamps) <= 0):
+            raise ValueError("Recording timestamps must be finite and strictly increasing")
+        sides = ("left", "right")
+        if stream.attrs.get("wrist_reference_frame", "visionpro_sdk_zup") != "visionpro_sdk_zup":
+            raise ValueError("VR wrist recording must use the SDK Z-up reference")
+        if stream.attrs.get("length_unit", stream.attrs.get("units")) != "m":
+            raise ValueError("Dex VR replay requires metre transforms")
+        datasets = {s: stream[s + "_hand_transforms"] for s in sides}
+        shape = (len(timestamps), 25, 4, 4)
+        metadata = {"timestamp_unit": "seconds"}
+        if any(dataset.shape != shape for dataset in datasets.values()):
+            raise ValueError("Raw dex recording topology or frame count mismatch")
+        for index, timestamp in enumerate(timestamps):
+            from teleoperation.inputs.wrist import vr_wrist
+            hands = {}
+            for side in sides:
+                value = np.asarray(datasets[side][index])
+                valid = stream.get(side + "_valid")
+                hands[side] = value if (valid is None or bool(valid[index])) and np.any(value) else None
+            wrists = ({
+                s: vr_wrist(stream[s + "_wrist_transform"][index]
+                            if s + "_wrist_transform" in stream else None, timestamp,
+                            tracked=bool(stream[s + "_wrist_valid"][index])
+                            if s + "_wrist_valid" in stream else
+                            (bool(stream[s + "_valid"][index]) if s + "_valid" in stream else True)) for s in sides})
+            yield RawHandFrame(hands,
+                timestamp, expected, {**metadata, "frame_id": index},
+                {s: "transforms25" for s in sides},
+                wrists=wrists)

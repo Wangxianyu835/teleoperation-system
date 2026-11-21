@@ -278,6 +278,21 @@ class RealtimeL21Scene:
             self.p.resetJointState(body, index[name], float(value), physicsClientId=self.cid)
         self.applied[side] += 1
 
+    def apply_native(self, command):
+        """Apply expanded named L21 commands without a historical angle layout."""
+        from teleoperation.simulation.hand_executor import HandExecutor
+        from teleoperation.robots.hand_spec import load_hand_spec
+        if not hasattr(self, '_native_executor'):
+            specs = {('l21',side):load_hand_spec('l21',side) for side in self.sides}
+            def write(value):
+                if not self.alive():
+                    raise RuntimeError('L21 simulator connection closed')
+                for name, angle in value.named_positions().items():
+                    self.p.resetJointState(self.bodies[value.side],self.joint_index[value.side][name],angle,physicsClientId=self.cid)
+                self.applied[value.side] += 1
+            self._native_executor = HandExecutor(specs,{key:write for key in specs})
+        self._native_executor.apply(command)
+
     def step(self) -> None:
         """Step physics; a lost connection is reported once and then ignored.
 

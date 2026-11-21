@@ -1,0 +1,301 @@
+{
+  "source_commit": "fe04415be19fcf1d0100bffc91bbe8cf01d8605c",
+  "files": [
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\contracts\\hand_control.py",
+      "sha256": "a4042ed52cebdf88c3c2d154a0121a04a0e8db288b25212f749ccec30b151f28"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\contracts\\robot_control.py",
+      "sha256": "99884570a49effae75a10c2638ea2163dae34159a377000bdb099367200bf0a6"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\contracts\\wrist.py",
+      "sha256": "0d764f5d124eecf6bf9893801ca4846f7b73e840bff639d3de01bec8bc77ba7d"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\normalization.py",
+      "sha256": "358fcefe467cf41b29ae6a98cccc9ff558f166bc0ecdb90a65eaa09330fc5939"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\dex_native.py",
+      "sha256": "c1e0c0a06c1e8122f31393b94488dc1a630dbfdb6384c35d245104b0d9762b5e"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\hand_model.py",
+      "sha256": "0749275ad7ea1abd2d636a99af9a6831a632e6192d7bfa8fe6d17a27526d7968"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\joint_commands.py",
+      "sha256": "cfb7a6a0e5b96f41e92fad319f794088439acf181d56c993fb6e6a1dfc8ce014"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\transhandr_vr.py",
+      "sha256": "85c8d815e28203e0553d6309fc5d8b979700760b1a7f8581a8d2a9eef1e2a163"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\grasp_intent.py",
+      "sha256": "f6c80b9cf60a4dc3ed3c4796f0c77d7dab079fafad62300f3541a3e332d59092"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\arm\\wrist_orientation.py",
+      "sha256": "6b4ea720d6fa5ebdd004f58f9803b897e92823cf2aa95c4e2a83d632db70e89e"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\inputs\\hand_adapters.py",
+      "sha256": "61b44d2fe51efa2dbfe79edeea00fe014b9e499bd15621758cf39b5083b37ee1"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\inputs\\visionpro.py",
+      "sha256": "19cb84c6d83d3e262e817818505dd2cea794e70cfe898a832ae199967cad6776"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\inputs\\wrist.py",
+      "sha256": "f8c6a39218ec9f3d064b766810ec809ddca7320d789e274aaf1170e5cd374b65"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\robots\\hand_spec.py",
+      "sha256": "3a08d5dd5577d5bb1d4acc759ff281b6272999cfdd0ca703f6d8a66efacc5179"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\robots\\hand_kinematics.py",
+      "sha256": "cd196cc7d65d933b65afc1d997b61a805d11c2d8f5fd57e481b6ae4509339d23"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\robots\\control_spec.py",
+      "sha256": "1bacc18dd154391dcb0349c33f9c3c4fd79450bb0d5a8ba9c173c9878ce54104"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\hand_backend.py",
+      "sha256": "8870b80ce0824e8d009d69518bef1bd2ffc619e922aee7b3135a6b1952bb5caf"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\hand_control.py",
+      "sha256": "d8550cf21843da91a681c0b82e9ae7d992c70c3ae8abd621b6033af0ba7aefd7"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\hand_input.py",
+      "sha256": "99f4a0b614395bfa21d409e4f481a1544a17f8424ae0a429eb5b72c331c3b740"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\visionpro_hand.py",
+      "sha256": "60d8df02709c0abc22fc0d15b5a51ebb023a3a6c0981ce55b1c9e2a7c91601d9"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\visionpro_processing.py",
+      "sha256": "a90c1a57e4375e8ac22eebb134f263c83267097d063c0f60b90b5c9270744e84"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\visionpro_results.py",
+      "sha256": "aee223ec590587770ab6aa6840414e40b7efeb0b24d222b2034744308a9e0ed1"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\dex_native.py",
+      "sha256": "ee407ebf2a75227db47e0b4c51008da054f1e96ca62ec7382a0a0f9f6a3059ec"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\robot_commands.py",
+      "sha256": "6d665479e9f40ee8c6eeacb76682b7b6396d8ed47eeb1741fd59bdb331f3f37d"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\robot_session.py",
+      "sha256": "394f143b29becfb2f8167f41633de7114502e9c867a158c02a72a7b5bf75dae4"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\robot_control.py",
+      "sha256": "de5cc7d56f3944da063331077996d68eb504269bbee05439f3c6dee6f3f24d29"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\accepted_robot_output.py",
+      "sha256": "06729e1528202837d17401416897057dbf16b1ae76e79873f59d3de1898c4058"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\camera_preview.py",
+      "sha256": "98f0a4390d05259874e1d24a55618e0a8e99a6e19049c038f9b66a23dcd11f27"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\realtime_support.py",
+      "sha256": "dd3df559b79337a6d3bd8a1285aae313c5cfb8072ec4277114fbb35f94a526ad"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\simulation\\hand_executor.py",
+      "sha256": "b47e0b98804881b59abaaef8215e48d080a40465aef5eacdfeb07d906410f126"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\simulation\\hand_commands.py",
+      "sha256": "66d7994e9b7492f4a063a97419bfd5658b9335a4f3ac036b070d8cfcf9732969"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\simulation\\robot_output.py",
+      "sha256": "fcc0487680754831c83e9d80c8ab668fe91ea31811e81e95f76ef5c90b15ed74"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\simulation\\robot_backends.py",
+      "sha256": "4f84b79e56773bc85a97119a626c7578e23a963b6192a3ef79d70e22f05095db"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\simulation\\robot_part_scene.py",
+      "sha256": "bbfbc286b90914cd2be386ab1b74dcd90ffcf320ebae0063eb18ea7a0daa9fe2"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\simulation\\wrist_control.py",
+      "sha256": "55df9e2ee7ed99248a3ea56f422fd51c320944a634f5a619790270c390a14503"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\data\\hand_joint_recording.py",
+      "sha256": "6b82b938ee472dcbca62954f7337fd9b09a4d0f93efce03c07bf477973da9ef1"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\data\\robot_command_recording.py",
+      "sha256": "c6d36ad691affd26714470d302e9eb04401c8f52a06129771a5d9aad56e34380"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\cli\\hand_command_options.py",
+      "sha256": "3e3f94c7d1f9c72db2a1734fd4aff0e1918d9d27718121c9d43691d0f97b19bc"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\cli\\hand_joint_options.py",
+      "sha256": "140e83e25b2914df884323818cf3623dfa536fd5c66ebbcbb664a3eab61a0989"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\cli\\visionpro_options.py",
+      "sha256": "132bcff29d28f62a3bb900e276f8ae91b25fb19ece4caa37e4030ad0a99af881"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\runtime_environment.py",
+      "sha256": "5e7894c8ca17c6a00e231e96af4a568ba74e1c0e0c6eed1b1e1764ce91d0703b"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\runtime_metadata.py",
+      "sha256": "ad5c2f318429f4df3bf9425a6f79609ace376ff724d8babb8f6b5c8a29bbc0f2"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\contracts\\coordinates.py",
+      "sha256": "d711b5bad0c937dd7772a7a85b43d7dc23be8a03cb02557b981414b2c21e4507"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\coordinates.py",
+      "sha256": "0ae10118373f06f71e11b222835451d3f003a34c4f926db6eed25d99a0b907f3"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\processing.py",
+      "sha256": "298429d0ec60c95f6261597f2569c97b187981685a364d5cc42babd4b452024e"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\alignment.py",
+      "sha256": "843f768fe7fc4d2943272dbfd8bc2d0e4c16bcaf7959b6e4073db6d5f467d688"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\hand_processing.py",
+      "sha256": "5a4ef4869708b8a479cab722f17ed3640ebd77cf17351eae0f46e8febc56c771"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\hand_realtime.py",
+      "sha256": "483ac89bb5019b29295ce5fa9c8071d499d698f6c2f9e7174cd2e76929128938"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\hand_align.py",
+      "sha256": "8df559983c78bef27185f7dc7741c5f02f9dea988f2f62e05bfe463b35fdef9e"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\offline_h5_record.py",
+      "sha256": "c8d0155f9b64a6522d5fcd0a8fc068466a2251197318d01305edf189f578077e"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\data\\hand_h5.py",
+      "sha256": "0a3288d86ac6432df60efeba802dc067940fbdf95bed48fc26a670313be0a574"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\learning\\dataset.py",
+      "sha256": "a3cbda7f69780f5d007e774c9aec2600038fd3b1486bd07c2084644ebc9507b1"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\learning\\trainer.py",
+      "sha256": "22071accfab3783150d3959ea6ece9cf6b7f0225ac4729322fa3edd42829fc2e"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\learning\\losses.py",
+      "sha256": "288a4e45c334718f06db4444936a168f61f68348fed7ca937f1c80c3f368f815"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\training.py",
+      "sha256": "872709864a9b46bb7313aea1a0c6833d9b9c65c3772729ea523858612a8846e4"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\checkpoint.py",
+      "sha256": "f68407ab3c59e9e28dcbc6d936ac426fd3a40018b3762e08e9579b76f741d711"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\predictor.py",
+      "sha256": "399e4e1a057b68ce00c157dfa6ab24be156d4bed31903afbbb26e8fb549e9a63"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\interface.py",
+      "sha256": "54001e736815eb73f6a8f2e1f303caea61f897d6a303743f7c8ade15823cb61d"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\angles.py",
+      "sha256": "0cd88de8f224a86aa3420d48ecfd6f8ff6e508d28bfbb40d42628c7b2a47696d"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\robots\\native_hand.py",
+      "sha256": "f1a4ddc872c44957e68030576d186bddbb571314851b3ce5d05e32f45ff1f64f"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\robots\\specification.py",
+      "sha256": "1823f0f8015dbcd2a47a33eaac8d515c80035bb465d4ab7cc154db3a8683ae94"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\simulation\\urdf_loader.py",
+      "sha256": "fd20cf945d393cc6b7922c55bf9b715306ba4d88a68ec4328494f1011ac461d3"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\paths.py",
+      "sha256": "df8edbf4da3408b489937dea675d2846ea6e2e587b48eae67bba1963d9de6348"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\contracts\\constants.py",
+      "sha256": "ebc7fcba274392c3d1dbf8cecef056e069e0a81268675132b3eaf8a253de22d0"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\hand_inspect.py",
+      "sha256": "4994b8b21b664de8987894de72632a14cd0683282de8c5d087c90ceaee364a1c"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\applications\\dual.py",
+      "sha256": "885d2d8b8e66c987961c402f0f27b268eb23729482d6a7c5ebf1a98c382e8ff3"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\retargeting\\hand\\topology.py",
+      "sha256": "7a7f4d3c49fae1962768eb018d59ae691871ad29c1049bab40f6549fa9b522b4"
+    },
+    {
+      "source": "D:\\2026\\code\\teleoperation-system-retargeting\\src\\teleoperation\\data\\hand_recording.py",
+      "sha256": "adcfbe432dcbf8e197862a76c3502b7ab5edfb467734eb1818a9b39045435859"
+    }
+  ],
+  "transhandr_upstream": [
+    {
+      "source": "D:\\2026\\code\\TransHandR\\TransHandR\\main_visionpro_realtime.py",
+      "sha256": "f6141c0aa57b88e98a641912edaa3791c81116dd49a61119b8c4b811c200ff8f"
+    },
+    {
+      "source": "D:\\2026\\code\\TransHandR\\TransHandR\\model\\model_poseformer.py",
+      "sha256": "9c80ba61d4465e63c7444347dbb4bb7f94e86fb976b884dc2b24c3155d94e8a3"
+    }
+  ],
+  "source_parity": {
+    "left_right_windows_max_abs_error": 0.0,
+    "dex_native_joint_max_abs_error": {
+      "l21/left": 0.0,
+      "l21/right": 0.0,
+      "h1_2/left": 0.0,
+      "h1_2/right": 0.0,
+      "gr1_t2/left": 0.0,
+      "gr1_t2/right": 0.0,
+      "g1/left": 0.0,
+      "g1/right": 0.0
+    },
+    "transhandr_same_weights_model_max_abs_error": 0.0
+  }
+}
