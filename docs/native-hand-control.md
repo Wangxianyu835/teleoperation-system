@@ -19,7 +19,25 @@ $runtime = '.\src\teleoperation\runtime_environment.py'
 & $python -B -E -s $runtime -m teleoperation robot control --help
 ```
 
-这里复用已有解释器。代码从 `teleoperation-preprint/src` 加载。移机时将 `$python` 改为已安装 PyTorch、MediaPipe、dex-retargeting、NLopt 及其 Pinocchio 依赖的 Python 路径。原来的 `teleoperation-repro` 环境可继续运行旧流程，该环境尚未安装 dex-retargeting。
+这里复用已有解释器。代码从 `teleoperation-preprint/src` 加载。仓库现已携带 `src/dex_retargeting/`，版本为 0.4.6，包含官方优化器、运动学封装、配置和 MIT 许可。`pip install -e .` 或项目 wheel 也包含该后端。
+
+## 在其他电脑使用仓库内后端
+
+克隆或更新本分支后，使用自己的 Python 环境。先安装该工作流需要的基础依赖及 `requirements-dex-runtime.txt`。Windows 的 Pinocchio 原生模块通过 conda-forge 安装，并与所选 Python/NumPy 版本匹配。项目自带 Dex 源码会使用这些原生模块。
+
+```powershell
+Set-Location '<你的 teleoperation-preprint 目录>'
+python -m pip install -r requirements.txt -r requirements-retargeting-camera.txt -r requirements-dex-runtime.txt
+python -m pip install -e . --no-deps --no-build-isolation
+$runtime = '.\src\teleoperation\runtime_environment.py'
+python -B -E -s $runtime -c "import dex_retargeting; print(dex_retargeting.__file__); print(dex_retargeting.__version__)"
+```
+
+从源码运行时，输出路径应位于当前克隆的 `src/dex_retargeting/__init__.py`，版本为 `0.4.6`。随后使用 `python -B -E -s $runtime -m teleoperation robot control --robot g1 --source camera --parts hands --side both --backend dex --frames 0 --preview`。
+
+`src/dex_retargeting/UPSTREAM.json` 记录官方 wheel URL、SHA-256 和逐文件哈希。复制的执行代码、配置与许可保持上游原始字节。PyTorch、NLopt、Pinocchio、MediaPipe 和 PyBullet 等运行依赖由使用者的环境提供。安装后的 wheel 包含后端和配置，机器人模型与检测资产仍按仓库工作流准备。
+
+下面各示例中的 `$python` 可以替换为该电脑自己的 Python 路径。
 
 ## 摄像头双手和双臂
 
@@ -114,3 +132,7 @@ Dex 导出使用同一条 `hand export` 命令，选择 `--backend dex` 并省�
 软件验证覆盖原生手规格、NN/dex、归一化、断点恢复、Vision Pro 离线输入、实际 CLI、接受命令录制回放，以及旧相机、手臂和任务回归。同输入四种手型的左右手 dex 关节结果与来源代码数值一致。真实摄像头动态效果、在线 Vision Pro 和桌面 GUI 仍需现场验收。
 
 本轮完整测试运行 639 项，636 项通过、3 项因缺少本地历史权重跳过，耗时 139.988 秒。39 个注册 handler 与帮助入口全部验证。额外的三机器人 Vision Pro 原始记录验证运行 22 帧，12 个臂/手部位均产生跟踪命令，接受命令文件回放通过。来源与目标的左右手预处理、八个 Dex 目标输出最大绝对差均为 0。
+
+2026-11-21 后端随仓库分发补充验证覆盖实际导入来源、四手型 Dex 求解、源码与配置打包和上游文件哈希。运行记录中的 `dex_backend_source` 保存实际加载的源码路径。
+
+后端源码随仓库分发后的完整回归运行 641 项，638 项通过，3 项因本地历史权重缺失跳过，耗时 149.892 秒。构建 wheel 后检查了优化器、配置、许可证和来源清单。旧相机环境在未安装 NLopt/Pinocchio 时运行 16 项针对性测试，13 项通过，3 项 Dex 求解测试按实际原生依赖缺失跳过。

@@ -63,3 +63,12 @@ https://github.com/limxdynamics/tron2-robot-description
 本仓库 `third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf`
 来自该项目的 URDF 描述，用于测试双臂关节链读取和 IK。
 完整网格资产未包含在本仓库中，需从上游项目获取。
+
+------------------------------------------------------------
+4. dex-retargeting 0.4.6
+------------------------------------------------------------
+Source: https://github.com/dexsuite/dex-retargeting
+Bundled runtime source and configurations: src/dex_retargeting/
+MIT license and original copyright: src/dex_retargeting/LICENSE
+Source archive SHA-256 and file hashes: src/dex_retargeting/UPSTREAM.json
+The runtime files are copied byte-for-byte from the official 0.4.6 wheel.

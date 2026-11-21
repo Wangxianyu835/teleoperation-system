@@ -62,7 +62,7 @@ class HandBackendFactoryTests(unittest.TestCase):
             load.assert_not_called()
             with self.assertRaises(ValueError):build_hand_retargeter_from_specs({},'nn',checkpoints=self.weights)
 
-    @unittest.skipUnless(importlib.util.find_spec('dex_retargeting'),'requires dex environment')
+    @unittest.skipUnless(all(importlib.util.find_spec(name) for name in ('dex_retargeting', 'nlopt', 'pinocchio')),'requires Dex, NLopt and Pinocchio runtime')
     def test_dex_keeps_only_selected_model_side_pairs(self):
         from teleoperation.applications.hand_backend import build_hand_retargeter_from_specs
         from teleoperation.retargeting.hand.dex_native import NormalizedDexRetargeter

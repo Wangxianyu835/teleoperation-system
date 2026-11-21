@@ -21,6 +21,8 @@ def runtime_metadata(repository_root=None):
             packages[name] = metadata.version(name)
         except metadata.PackageNotFoundError:
             packages[name] = None
+    import dex_retargeting
+    packages['dex-retargeting'] = dex_retargeting.__version__
     def git(*arguments):
         try:
             result = subprocess.run(['git','-c','safe.directory='+root.as_posix(),'-C',str(root),*arguments],
@@ -33,4 +35,5 @@ def runtime_metadata(repository_root=None):
     return {'python':sys.executable,'python_version':platform.python_version(),
             'prefix':sys.prefix,'base_prefix':sys.base_prefix,'packages':packages,
             'lock_sha256':hashes,'code_commit':commit,'code_dirty':None if state is None else bool(state),
-            'git_error':error or state_error}
+            'git_error':error or state_error,
+            'dex_backend_source':str(Path(dex_retargeting.__file__).resolve())}

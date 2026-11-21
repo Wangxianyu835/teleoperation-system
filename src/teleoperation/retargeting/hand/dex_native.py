@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from importlib.metadata import PackageNotFoundError, version
+from dex_retargeting import __version__ as _DEX_VERSION
 import time
 from pathlib import Path
 
@@ -23,10 +23,6 @@ from teleoperation.robots.hand_spec import load_hand_spec
 
 SIDES = ("left", "right")
 PROFILES = {"visionpro": "dex_visionpro_palm_v2"}
-try:
-    _DEX_VERSION = version('dex-retargeting')
-except PackageNotFoundError:
-    _DEX_VERSION = None  # NN-only imports do not require the optional dex backend.
 VECTOR_PARAMETERS = {"upstream_version": None if _DEX_VERSION is None else _DEX_VERSION.split('+')[0],
     "installed_version": _DEX_VERSION, "type": "vector", "scaling": 1.,
     "norm_delta": 0., "huber_delta": .02, "ftol_abs": 1e-6, "xtol_abs": 1e-6,
@@ -153,7 +149,7 @@ class NativeVectorSolver:
             from dex_retargeting.seq_retarget import SeqRetargeting
             from dex_retargeting.kinematics_adaptor import MimicJointKinematicAdaptor
         except ImportError as error:
-            raise ImportError("Install the unified environment from docs/unified-environment.md") from error
+            raise ImportError("Install the Dex runtime dependencies from docs/native-hand-control.md") from error
         self.model = model
         robot = model.kinematics
         for name, bounds in zip(model.independent_names, model.bounds):

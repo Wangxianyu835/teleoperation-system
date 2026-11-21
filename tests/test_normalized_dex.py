@@ -11,7 +11,7 @@ from teleoperation.robots.hand_spec import load_hand_spec
 from teleoperation.retargeting.hand.hand_model import DifferentiableHandModel, build_hand_targets
 
 
-@unittest.skipUnless(importlib.util.find_spec('dex_retargeting'),'requires dex environment')
+@unittest.skipUnless(all(importlib.util.find_spec(name) for name in ('dex_retargeting', 'nlopt', 'pinocchio')),'requires Dex, NLopt and Pinocchio runtime')
 class NormalizedDexTests(unittest.TestCase):
     def test_reachable_l21_target_and_nn_share_native_result_identity(self):
         from teleoperation.retargeting.hand.dex_native import NormalizedDexRetargeter

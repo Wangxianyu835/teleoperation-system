@@ -13,3 +13,6 @@ teleoperation = "teleoperation.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+dex_retargeting = ["configs/offline/*.yml", "configs/teleop/*.yml", "LICENSE", "UPSTREAM.json"]

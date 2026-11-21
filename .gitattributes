@@ -39,3 +39,6 @@ assets/robots/**/*.zip    binary
 
 # 注意：.urdf / .xml / .yml / .md 是【纯文本】，保持默认处理，
 #       这样它们的 diff 和版本对比才有意义。
+
+# Preserve the verified upstream Dex source and configuration bytes.
+src/dex_retargeting/** -text -whitespace

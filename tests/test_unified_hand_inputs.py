@@ -157,7 +157,7 @@ class UnifiedHandInputTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             pipeline.process_window(raw)
 
-    @unittest.skipUnless(importlib.util.find_spec('dex_retargeting'), 'requires dex environment')
+    @unittest.skipUnless(all(importlib.util.find_spec(name) for name in ('dex_retargeting', 'nlopt', 'pinocchio')), 'requires Dex, NLopt and Pinocchio runtime')
     def test_same_dex_solver_for_both_devices_all_targets(self):
         from teleoperation.retargeting.hand.dex_native import NormalizedDexRetargeter
         from teleoperation.retargeting.hand.joint_commands import JointCommandPipeline
