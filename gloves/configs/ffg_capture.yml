@@ -1,0 +1,58 @@
+device:
+  model: linker_ffg
+  side: auto
+  port: auto
+  baudrates: [2000000, 460800]
+  serial_query_interval_ms: 6
+  serial_debug: false
+  skip_bluetooth_ports: true
+
+diagnostics:
+  sample_frames: 80
+  timeout_s: 12.0
+  motion_check: true
+
+recording:
+  output_dir: outputs/sessions
+  default_duration_s: 0
+  save_summary: true
+  save_final_plot: true
+
+calibration:
+  output_dir: outputs/calibration
+  show_fist: true
+  hold_seconds: 5.0
+  settle_seconds: 1.0
+  stability_window_seconds: 1.0
+  max_mean_variance: 0.03
+  channel_std_warning_rad: 0.20
+  max_wait_seconds: 20.0
+  calibration_file: auto
+
+visualization:
+  detailed: false
+  max_points: 3000
+  dpi: 140
+
+replay:
+  default_file: auto
+
+realtime:
+  display_enabled: true
+  display_refresh_hz: 12
+  status_interval_s: 2.0
+  duration_s: 0
+  debug_recording: false
+
+quality:
+  expected_channels: 21
+  neutral_seconds: 5.0
+  expected_min_rate_hz: 20.0
+  max_invalid_fraction: 0.01
+  max_saturation_fraction: 0.20
+  min_motion_range_rad: 0.05
+  max_static_jitter_rad: 0.05
+
+logging:
+  level: INFO
+
