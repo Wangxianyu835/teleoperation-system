@@ -245,6 +245,23 @@ p.configureDebugVisualizer(
 
 该布局的回归测试检查桌面支撑、预抓取位置、IK 可达和相机抓取辅助确认。
 
+`balltrashcan` 已按同样方法接入预抓取：
+
+- 球放在右手掌、拇指和食指/中指的实际捏合中心；
+- 桌沿延伸以完整支撑球体；
+- 垃圾桶设为固定目标，避免被机器人碰走；
+- 球在形成至少两个真实手部接触点前保持静止；
+- 接触确认后才恢复动态，开始搬运。
+
+持续演示入口：
+
+```powershell
+E:\python3.11.7\python.exe devtools\task_eval.py `
+  --task balltrashcan --policy camera --side right `
+  --camera-hand-force 600 --max-sim-s 86400 --max-wall-s 86400 `
+  --demo-keep-open --render --preview
+```
+
 ## 桌面高度
 
 现场反馈桌面高度恰好与上臂和手腕连线重合，人在桌面上方操作时很难从画面中

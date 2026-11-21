@@ -1113,6 +1113,67 @@ class TaskScene:
               % [round(float(value), 3) for value in target], flush=True)
         return details
 
+    def _place_balltrashcan_camera(self, side: str = "right") -> dict:
+        """Place the grasp ball in the native pinch center and fix the target can."""
+        ball = self.task.objects.get("ball")
+        can = self.task.objects.get("trashcan")
+        if ball is None or can is None or self.robot_id is None:
+            return {}
+        prefix = "R_" if side == "right" else "L_"
+        wanted = {
+            prefix + "hand_base_link",
+            prefix + "thumb_distal",
+            prefix + "index_intermediate",
+            prefix + "middle_intermediate",
+        }
+        positions = {}
+        for index in range(p.getNumJoints(self.robot_id, physicsClientId=self.client)):
+            info = p.getJointInfo(self.robot_id, index,
+                                  physicsClientId=self.client)
+            link_name = info[12].decode("utf-8", errors="ignore")
+            link = int(info[16])
+            if link < 0 or link_name not in wanted:
+                continue
+            positions[link_name] = np.asarray(
+                p.getLinkState(
+                    self.robot_id, link, computeForwardKinematics=True,
+                    physicsClientId=self.client)[4],
+                dtype=np.float64)
+        if len(positions) != len(wanted):
+            return {}
+        palm = positions[prefix + "hand_base_link"]
+        fingertip_center = (
+            positions[prefix + "thumb_distal"]
+            + positions[prefix + "index_intermediate"]
+            + positions[prefix + "middle_intermediate"]) / 3.0
+        target = np.array([
+            palm[0] + 0.90 * (fingertip_center[0] - palm[0]),
+            0.5 * (palm[1] + fingertip_center[1]),
+            self._table_top() + 0.03,
+        ])
+        table = self.task.objects.get(TABLE_KEY)
+        if table is not None:
+            low, _high = aabb(self.client, table)
+            support_edge = float(target[0] - 0.06)
+            if float(low[0]) > support_edge:
+                move_body(self.client, table,
+                          np.array([support_edge - float(low[0]), 0.0, 0.0]))
+        current, orientation = body_pose(self.client, ball)
+        move_body(self.client, ball, target - current)
+        p.changeDynamics(can, -1, mass=0.0, lateralFriction=1.2,
+                         physicsClientId=self.client)
+        details = {
+            "side": side,
+            "palm_m": palm.tolist(),
+            "fingertip_center_m": fingertip_center.tolist(),
+            "target_center_m": target.tolist(),
+            "trashcan_fixed": True,
+        }
+        self.report["camera_balltrashcan_setup"] = details
+        print("[scene] camera balltrashcan: ball pre-grasp %s; trashcan fixed"
+              % [round(float(value), 3) for value in target], flush=True)
+        return details
+
 
     def _pull_into_ik_workspace(self, tolerance_mm: float = 15.0,
                                 max_shift_m: float = 0.30, rounds: int = 3,
@@ -1237,6 +1298,7 @@ class TaskScene:
                 layout_table_min_x: float = 0.24,
                 camera_pickplace_spacing: bool = False,
                 camera_cup_stability: bool = False,
+                camera_balltrashcan_setup: bool = False,
                 ik_comfort_fraction: float = 0.80) -> dict:
 
 
@@ -1285,11 +1347,15 @@ class TaskScene:
             clamp_exclusions.extend(("plate", "cube"))
         if camera_cup_stability:
             clamp_exclusions.append("cup")
+        if camera_balltrashcan_setup:
+            clamp_exclusions.extend(("ball", "trashcan"))
         self._clamp_to_reach(exclude_keys=tuple(clamp_exclusions))
         if camera_cup_stability:
             self._place_uprearcup_camera_grasp(side=side or "right")
         if camera_pickplace_spacing:
             self._place_pickplace_cube_camera_grasp(side=side or "right")
+        if camera_balltrashcan_setup:
+            self._place_balltrashcan_camera(side=side or "right")
         self._in_reach()
         self.report["criteria_at_reset"] = bool(self.task.check_success())
         return self.report
@@ -1521,6 +1587,7 @@ class CameraPolicy:
         self.delayed_physics_object = (
             "cup" if task_name == "uprearcup"
             else "cube" if task_name == "pickplacecube"
+            else "ball" if task_name == "balltrashcan"
             else None)
         self.arm_force = max(1.0, float(arm_force))
         self.hand_force = max(1.0, float(hand_force))
@@ -2814,6 +2881,9 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                              camera_cup_stability=(
                                                  policy == "camera"
                                                  and task_name == "uprearcup"),
+                                             camera_balltrashcan_setup=(
+                                                 policy == "camera"
+                                                 and task_name == "balltrashcan"),
                                              ik_comfort_fraction=(
                                                  0.98 if policy == "camera"
                                                  and task_name == "pickplacecube"

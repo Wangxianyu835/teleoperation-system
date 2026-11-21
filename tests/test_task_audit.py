@@ -610,6 +610,41 @@ class SceneLayerTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_camera_balltrashcan_uses_a_real_pre_grasp_start(self):
+        from teleoperation.simulation.environment import SimulationEnv
+
+        env = SimulationEnv(robot_type="h1_2", task_name="balltrashcan",
+                            render=False, record=False,
+                            data_dir=str(EVAL.ROOT / "outputs" / "tmp_task_eval"))
+        try:
+            env.reset(randomize=False)
+            arm = EVAL.measure_arm("h1_2")
+            scene = EVAL.TaskScene(
+                env.client, env.task, robot="h1_2",
+                shoulder=arm["shoulder_m"], reach=arm["reach_m"],
+                name="balltrashcan", robot_id=env.robot_id)
+            report = scene.prepare(
+                120, ik_workspace=True, side="right", hold_robot=True,
+                layout_forward=0.38, layout_drop=0.18,
+                layout_lateral=0.15, layout_side_bias=-0.06,
+                layout_table_min_x=0.29,
+                camera_balltrashcan_setup=True)
+            supported, reason = EVAL.task_objects_supported(env)
+            self.assertTrue(supported, reason)
+            self.assertFalse(report["criteria_at_reset"])
+            ball = EVAL.body_pose(env.client, env.task.objects["ball"])[0]
+            target = np.asarray(
+                report["camera_balltrashcan_setup"]["target_center_m"])
+            np.testing.assert_allclose(ball, target, atol=0.01)
+            self.assertEqual(
+                0.0, float(EVAL.p.getDynamicsInfo(
+                    env.task.objects["trashcan"], -1,
+                    physicsClientId=env.client)[0]))
+            low, _high = EVAL.aabb(env.client, env.task.objects["table"])
+            self.assertGreaterEqual(float(ball[0]) - float(low[0]), 0.05)
+        finally:
+            env.close()
+
     def test_trial_runner_scores_idle_as_failure(self):
         report = EVAL.evaluate_task("h1_2", "pushcube", trials=1, policy="idle",
                                     max_steps=240, settle_steps=120,
