@@ -38,7 +38,14 @@ class PickCube(BaseTask):
 
     def check_success(self) -> bool:
         pos = self.get_object_position('cube')
-        return pos[2] > 0.66  # 桌高0.4 + 方块半高0.03 + 提升0.15 ~= 0.58+
+        table = self.objects.get('table')
+        if table is None:
+            return False
+        _table_low, table_high = p.getAABB(table, physicsClientId=self.client)
+        # Original criterion was absolute z>0.66.  Express the same roughly
+        # 15 cm lift relative to the support surface so raising the bench does
+        # not require sinking the whole robot into the table.
+        return pos[2] > float(table_high[2]) + 0.24
 
 
 @register_task('pickplacecube')

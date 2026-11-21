@@ -113,8 +113,7 @@ SCENE_OPS = {
     "opendrawer": [("resize", "drawer", (0.015, 0.18, 0.1)),
                    ("place", "drawer", (0.565, 0.3, None))],
 }
-#: 判据里写死了**世界坐标 z**、且**改场景也救不回来**的任务。场景层抬台面后这些判据要么恒真
-#: （pickcube 一开始就"成功" ---- 已用 ``SCENE_MODE="sink"`` 救回），
+#: 判据里写死了**世界坐标 z**、且**改场景也救不回来**的任务。场景层抬台面后这些判据要么恒真，
 #: 要么永远不成立（breadtoaster / rotatehearth 要求按到 0.43 以下 = 按进台面里）。
 #: **不是场景层能修的** —— 判据得改成"相对初始位姿"，这是交给任务作者的问题清单
 #: （docs/task-evaluation.md §4.5）。
@@ -129,7 +128,7 @@ SCENE_CONTAINERS = {
 #: 判据里写死绝对 z、但任务本身还能救的：改用"把机器人降到作业高度"（桌面保持作者写的
 #: 0.42 m），这样判据的原意不变。``rotatehearth`` / ``breadtoaster`` 不在这里 ——
 #: 它们要求把旋钮/按钮按到桌面以下（按进台面里），降机器人也救不了。
-SCENE_MODE = {"pickcube": "sink"}
+SCENE_MODE = {}
 #: Per-task camera workspaces that need a lower table plus a matching robot drop.
 CAMERA_WORKSPACE_PROFILES = {
     "uprearcup": {
