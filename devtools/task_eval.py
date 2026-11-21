@@ -1098,12 +1098,15 @@ class TaskScene:
         target = np.array([
             palm[0] + 0.90 * (fingertip_center[0] - palm[0]),
             0.5 * (palm[1] + fingertip_center[1]),
-            self._table_top() + 0.03,
+            self._table_top() + 0.02,
         ])
+        # A 1 cm inward correction keeps the smaller cube inside the verified
+        # IK tolerance while remaining inside the native pinch envelope.
+        target[0] -= 0.01
         table = self.task.objects.get(TABLE_KEY)
         if table is not None:
             low, _high = aabb(self.client, table)
-            support_edge = float(target[0] - 0.06)
+            support_edge = float(target[0] - 0.055)
             if float(low[0]) > support_edge:
                 move_body(self.client, table,
                           np.array([support_edge - float(low[0]), 0.0, 0.0]))
@@ -1118,8 +1121,9 @@ class TaskScene:
             "target_center_m": target.tolist(),
         }
         self.report["camera_cube_pre_grasp"] = details
-        print("[scene] camera pickplace: cube pre-grasp center %s"
-              % [round(float(value), 3) for value in target], flush=True)
+        label = "pickplace" if self.name == "pickplacecube" else self.name
+        print("[scene] camera %s: cube pre-grasp center %s"
+              % (label, [round(float(value), 3) for value in target]), flush=True)
         return details
 
     def _place_balltrashcan_camera(self, side: str = "right") -> dict:
@@ -1158,7 +1162,7 @@ class TaskScene:
         target = np.array([
             palm[0] + 0.90 * (fingertip_center[0] - palm[0]),
             0.5 * (palm[1] + fingertip_center[1]),
-            self._table_top() + 0.03,
+            self._table_top() + 0.02,
         ])
         table = self.task.objects.get(TABLE_KEY)
         if table is not None:
@@ -1354,6 +1358,7 @@ class TaskScene:
                 layout_side_bias: float = 0.0,
                 layout_table_min_x: float = 0.24,
                 camera_pickplace_spacing: bool = False,
+                camera_cube_pre_grasp: bool = False,
                 camera_cup_stability: bool = False,
                 camera_balltrashcan_setup: bool = False,
                 ik_comfort_fraction: float = 0.80) -> dict:
@@ -1388,7 +1393,8 @@ class TaskScene:
             self._separate()
             self._pull_into_ik_workspace(
                 side=side, comfort_fraction=float(ik_comfort_fraction),
-                group_touch=(0.0 if camera_pickplace_spacing else 0.08))
+                group_touch=(0.0 if (camera_pickplace_spacing
+                                     or camera_cube_pre_grasp) else 0.08))
 
 
         # Camera/replay actions only address arm + hand joints. Without holding the
@@ -1402,6 +1408,8 @@ class TaskScene:
         clamp_exclusions = []
         if camera_pickplace_spacing:
             clamp_exclusions.extend(("plate", "cube"))
+        elif camera_cube_pre_grasp:
+            clamp_exclusions.append("cube")
         if camera_cup_stability:
             clamp_exclusions.append("cup")
         if camera_balltrashcan_setup:
@@ -1410,6 +1418,8 @@ class TaskScene:
         if camera_cup_stability:
             self._place_uprearcup_camera_grasp(side=side or "right")
         if camera_pickplace_spacing:
+            self._place_pickplace_cube_camera_grasp(side=side or "right")
+        elif camera_cube_pre_grasp:
             self._place_pickplace_cube_camera_grasp(side=side or "right")
         if camera_balltrashcan_setup:
             self._place_balltrashcan_camera(side=side or "right")
@@ -1647,7 +1657,7 @@ class CameraPolicy:
         task_name = str(getattr(env, "task_name", ""))
         self.delayed_physics_object = (
             "cup" if task_name == "uprearcup"
-            else "cube" if task_name == "pickplacecube"
+            else "cube" if task_name in ("pickcube", "pickplacecube")
             else "ball" if task_name == "balltrashcan"
             else None)
         self.arm_force = max(1.0, float(arm_force))
@@ -2968,6 +2978,9 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                                              camera_pickplace_spacing=(
                                                  policy == "camera"
                                                  and task_name == "pickplacecube"),
+                                             camera_cube_pre_grasp=(
+                                                 policy == "camera"
+                                                 and task_name == "pickcube"),
                                              camera_cup_stability=(
                                                  policy == "camera"
                                                  and task_name == "uprearcup"),
