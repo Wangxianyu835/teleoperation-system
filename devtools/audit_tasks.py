@@ -105,7 +105,7 @@ ORACLE = {
     "balltrashcan": [("above", "ball", "trashcan", 0.02)],
     # ---- Level 2 工具操作 ----
     "rotatefaucet": [("rotate", "handle", (0.0, 0.0, 1.6))],
-    "rotatehearth": [("set_z", "knob", 0.40), ("rotate", "knob", (0.0, 0.0, 1.0))],
+    "rotatehearth": [("rotate", "knob", (0.0, 0.0, 1.0))],
     "openmicrowave": [("move_by", "door", (0.20, 0.0, 0.0))],
     "closemicrowave": [("align", "door", "microwave_body")],
     "opendrawer": [("move_by", "drawer", (0.10, 0.0, 0.0))],
@@ -115,7 +115,7 @@ ORACLE = {
     "ballmug": [("above", "ball", "mug", 0.06)],
     "pourwater": [("set_z", "kettle", 0.55), ("rotate", "kettle", (1.2, 0.0, 0.0))],
     "breadtoaster": [("above", "bread", "toaster", 0.06),
-                     ("set_z", "button", 0.44)],
+                     ("move_by", "button", (0.0, -0.04, 0.0))],
     # ---- Level 3 双手协作 ----
     "ballbimanual": [("set_pos", "ball", (0.5, 0.0, 0.65))],
     "potbimanual": [("set_z", "pot", 0.62)],

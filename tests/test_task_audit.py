@@ -450,12 +450,34 @@ class TaskChecksTests(unittest.TestCase):
         self.assertFalse(row["succ_at_reset"])
         self.assertTrue(row["succ_oracle"])
 
-    def test_false_positive_is_detected_not_masked(self):
+    def test_liftmug_no_longer_succeeds_with_the_lid_seated(self):
         row = AUDIT.check_task(self.client, "liftmug", 120)
-        self.assertTrue(row["succ_at_reset"],
-                        "liftmug is known to satisfy its criterion at reset")
-        self.assertIn("FALSE_POSITIVE", row["flags"])
-        self.assertEqual("FALSE_POSITIVE", row["verdict"])
+        self.assertFalse(row["succ_at_reset"])
+        self.assertTrue(row["succ_oracle"], row)
+        self.assertEqual([], row["flags"], row)
+
+    def test_corrected_tool_task_criteria_are_evaluable(self):
+        for name in ("opendrawer", "openmicrowave", "breadtoaster",
+                     "rotatehearth", "pottomatoout"):
+            with self.subTest(task=name):
+                row = AUDIT.check_task(self.client, name, 120)
+                self.assertFalse(row["succ_at_reset"], row)
+                self.assertTrue(row["succ_oracle"], row)
+                self.assertEqual([], row["flags"], row)
+
+    def test_pottomatoout_starts_with_tomato_inside_a_hollow_pot(self):
+        from teleoperation.simulation.tasks import get_task
+
+        task = get_task("pottomatoout")(self.client)
+        try:
+            task.reset()
+            tomato = task.get_object_position("tomato")
+            pot = task.get_object_position("pot")
+            self.assertLess(float(np.linalg.norm(tomato[:2] - pot[:2])), 0.06)
+            self.assertFalse(task.check_success())
+            self.assertGreater(tomato[2], pot[2] - 0.04)
+        finally:
+            task._clear_objects()
 
 class SceneShiftTests(unittest.TestCase):
     """``solve_shift`` 是纯 numpy：拉了之后必须进圈，已经进圈的不许乱动。"""

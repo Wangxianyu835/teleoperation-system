@@ -95,12 +95,10 @@ SUCCESS_TABLE_MARGIN_M = 0.08
 DEFAULT_TASKS = ("pushcube", "pickcube", "pickplacecube", "uprearcup", "balltrashcan",
                  "ballmug", "ballbimanual", "potbimanual", "pottomatoplate",
                  "penbrushpot")
-#: 判据在 reset 时就成立（阈值 <= 物体半宽），成功率只能是 100%，不能计入
-CRITERIA_INVALID = {
-    "liftmug": "reset 时 |lid z - mug z| = 0.055 > 0.05；杯子半高 0.05，盖子在杯顶就已经超阈值",
-    "opendrawer": "reset 时 |drawer x - cabinet x| = 0.14 > 0.12；柜体 x 半宽 0.15，抽屉贴着柜面即算拉开",
-    "openmicrowave": "reset 时门心离本体心 0.15 > 0.12；本体 x 半宽 0.15，门贴着本体即算拉开",
-}
+#: 判据在 reset 时就成立（阈值 <= 物体半宽），成功率只能是 100%，不能计入。
+#: The originally listed liftmug / opendrawer / openmicrowave cases were fixed
+#: by using seated-pose thresholds and non-overlapping closed geometry.
+CRITERIA_INVALID = {}
 #: 场景层里对**单个任务**的额外摆法（op 语义见 apply_scene_ops）。
 #: 只在"通用阶梯救不了"的地方写，写一条就要在 docs/task-evaluation.md 里留一句为什么。
 SCENE_OPS = {
@@ -111,29 +109,27 @@ SCENE_OPS = {
                     ("place", "drawer", (0.62, 0.3, None))],
     "drawerbook": [("resize", "drawer", (0.015, 0.18, 0.1)),
                    ("place", "drawer", (0.555, 0.3, None))],
-    # opendrawer 的判据 |dx| > 0.12 比柜体 x 半宽 0.15 还小 -> 修不了，标 CRITERIA_INVALID；
-    # 但场景仍然换成薄抽屉面板，免得抽屉被弹飞 1.2 m（测出来至少是"判据无效"，不是"物理爆炸"）。
+    # The task itself now uses the same thin panel and a 0.19 m open threshold.
     "opendrawer": [("resize", "drawer", (0.015, 0.18, 0.1)),
-                   ("place", "drawer", (0.555, 0.3, None))],
+                   ("place", "drawer", (0.565, 0.3, None))],
 }
 #: 判据里写死了**世界坐标 z**、且**改场景也救不回来**的任务。场景层抬台面后这些判据要么恒真
-#: （pickcube / potbimanual 一开始就"成功" ---- 这两个已用 ``SCENE_MODE="sink"`` 救回），
+#: （pickcube 一开始就"成功" ---- 已用 ``SCENE_MODE="sink"`` 救回），
 #: 要么永远不成立（breadtoaster / rotatehearth 要求按到 0.43 以下 = 按进台面里）。
 #: **不是场景层能修的** —— 判据得改成"相对初始位姿"，这是交给任务作者的问题清单
 #: （docs/task-evaluation.md §4.5）。
-CRITERIA_ABSOLUTE_Z = {
-    "breadtoaster": "`button_pos[2] < 0.47`：按钮初始 z=0.48、半高 0.01 = 正好躺在烤面包机上 -> 永不成立",
-    "rotatehearth": "`pos[2] < 0.43`：旋钮躺在台面上 z=0.44，要求按到 0.43 = 按进台面里 -> 永不成立",
-}
+CRITERIA_ABSOLUTE_Z = {}
 #: 判据本身要求"物体在容器里"，而容器是**实心** primitive —— 场景层摆不出来。
-SCENE_UNSUPPORTED = {
-    "pottomatoout": "判据要求番茄离开锅（xy>0.06）；初始必须在锅里（z=0.44 < 锅顶 0.48），"
-                    "实心 cylinder 装不住球，只能摆锅边 -> reset 即判成功。需要空心锅或相对位移判据。",
+SCENE_UNSUPPORTED = {}
+#: Pairs whose AABB overlap is intentional because one object is inside a
+#: hollow container.  The generic separation pass must not eject the content.
+SCENE_CONTAINERS = {
+    "pottomatoout": {("pot", "tomato")},
 }
 #: 判据里写死绝对 z、但任务本身还能救的：改用"把机器人降到作业高度"（桌面保持作者写的
 #: 0.42 m），这样判据的原意不变。``rotatehearth`` / ``breadtoaster`` 不在这里 ——
 #: 它们要求把旋钮/按钮按到桌面以下（按进台面里），降机器人也救不了。
-SCENE_MODE = {"pickcube": "sink", "potbimanual": "sink"}
+SCENE_MODE = {"pickcube": "sink"}
 #: Per-task camera workspaces that need a lower table plus a matching robot drop.
 CAMERA_WORKSPACE_PROFILES = {
     "uprearcup": {
@@ -577,6 +573,10 @@ class TaskScene:
                 hi = np.minimum(boxes[key_a][1], boxes[key_b][1])
                 pen = hi - lo
                 if float(pen.min()) > 1e-4:
+                    pairs = SCENE_CONTAINERS.get(self.name, set())
+                    if ((key_a, key_b) in pairs
+                            or (key_b, key_a) in pairs):
+                        continue
                     out.append((key_a, key_b, pen))
         return out
 
@@ -627,7 +627,17 @@ class TaskScene:
                 pos, _orn = body_pose(self.client, self.task.objects[key])
                 positions[key] = pos
                 vertical = float(pos[2] - self.shoulder[2])
-                allowed = float(np.sqrt(max(1e-6, limit * limit - vertical * vertical)))
+                if abs(vertical) >= limit:
+                    # No horizontal point can enter the sphere at this height.
+                    # Return rather than turning the numerical guard into a
+                    # multi-metre object displacement.
+                    self.report["notes"].append(
+                        "clamp skipped for %s: vertical %.3f m outside reach %.3f m"
+                        % (key, vertical, limit))
+                    need = 0.0
+                    break
+                allowed = float(np.sqrt(max(0.0, limit * limit
+                                            - vertical * vertical)))
                 horizontal = float(np.hypot(pos[0] - self.shoulder[0],
                                             pos[1] - self.shoulder[1]))
                 need = max(need, horizontal - allowed)

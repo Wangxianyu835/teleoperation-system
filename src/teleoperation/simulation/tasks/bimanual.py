@@ -40,16 +40,22 @@ class PotBimanual(BaseTask):
             self.objects['pot'], [0.5, 0, 0.42], [0, 0, 0, 1],
             physicsClientId=self.client)
         p.resetBasePositionAndOrientation(
-            self.objects['handle_l'], [0.42, 0, 0.44], [0, 0, 0, 1],
+            self.objects['handle_l'], [0.40, 0, 0.44], [0, 0, 0, 1],
             physicsClientId=self.client)
         p.resetBasePositionAndOrientation(
-            self.objects['handle_r'], [0.58, 0, 0.44], [0, 0, 0, 1],
+            self.objects['handle_r'], [0.60, 0, 0.44], [0, 0, 0, 1],
             physicsClientId=self.client)
 
     def check_success(self) -> bool:
         p_pot = self.get_object_position('pot')
-        # 锅提升超过15cm
-        return p_pot[2] > 0.58
+        # Relative to the support surface: 15 cm above the table top.  An
+        # absolute z threshold broke whenever the scene layer changed the bench
+        # height and forced G1's whole base downwards into the objects.
+        table = self.objects.get('table')
+        if table is None:
+            return False
+        _table_low, table_high = p.getAABB(table, physicsClientId=self.client)
+        return p_pot[2] > float(table_high[2]) + 0.15
 
 
 @register_task('pottomato')
@@ -189,8 +195,12 @@ class PotTomatoOut(BaseTask):
     """打开锅盖取出番茄放到桌面"""
     def _load_objects(self):
         self.load_fixed_table()
-        self.load_cylinder('pot', 0.08, 0.06, [0, 0, 0],
-                           color=[0.4, 0.4, 0.4, 1.0], mass=0.3, friction=0.6)
+        # The tomato must physically start inside the pot.  A solid cylinder
+        # made the old scene impossible by construction.
+        self.load_hollow_cylinder(
+            'pot', 0.08, 0.08, [0, 0, 0],
+            color=[0.4, 0.4, 0.4, 1.0], mass=0.0, friction=0.6,
+            wall_thickness=0.008, bottom_thickness=0.008)
         self.load_cylinder('lid', 0.082, 0.01, [0, 0, 0],
                            color=[0.5, 0.5, 0.5, 1.0], mass=0.03, friction=0.5)
         self.load_sphere('tomato', 0.02, [0, 0, 0],
@@ -198,13 +208,13 @@ class PotTomatoOut(BaseTask):
 
     def _set_initial_positions(self):
         p.resetBasePositionAndOrientation(
-            self.objects['pot'], [0.5, 0, 0.42], [0, 0, 0, 1],
+            self.objects['pot'], [0.5, 0, 0.46], [0, 0, 0, 1],
             physicsClientId=self.client)
         p.resetBasePositionAndOrientation(
-            self.objects['lid'], [0.5, 0, 0.455], [0, 0, 0, 1],
+            self.objects['lid'], [0.5, 0, 0.505], [0, 0, 0, 1],
             physicsClientId=self.client)
         p.resetBasePositionAndOrientation(
-            self.objects['tomato'], [0.5, 0, 0.44], [0, 0, 0, 1],
+            self.objects['tomato'], [0.5, 0, 0.448], [0, 0, 0, 1],
             physicsClientId=self.client)
 
     def check_success(self) -> bool:
@@ -212,7 +222,7 @@ class PotTomatoOut(BaseTask):
         # tomato离开锅的区域（不在锅上方）
         p_pot = self.get_object_position('pot')
         xy_dist = np.linalg.norm(p_tomato[:2] - p_pot[:2])
-        return xy_dist > 0.06 and p_tomato[2] > 0.42
+        return xy_dist > 0.06 and p_tomato[2] > p_pot[2] - 0.06
 
 
 @register_task('plateoven')

@@ -395,3 +395,49 @@ E:\python3.11.7\python.exe devtools\run_arm_quickcheck.py --frames 0
 
 窗口每侧数据行的 `pinch=` 是保持后的闭合信号，`raw=` 是当前帧原始信号，
 末尾 `@image`、`@image-open`、`@world` 或 `@world-open` 表示裁决来源。
+
+## 2026-11-21 30 任务可评测性收口
+
+重新执行：
+
+```powershell
+E:\python3.11.7\python.exe devtools\task_eval.py --verify --robot all `
+  --json outputs\task_eval\verify_all_20261121_ready.json
+```
+
+最终结果：
+
+```text
+[OK] 90/90 tasks evaluable, 0 excluded
+```
+
+这里的 `90` 是 `30 个任务 x 3 台机器人`。它表示每个组合都满足：
+场景稳定、reset 不假成功、判据可触发、物体在可达范围内。它**还不是**机器人
+实际完成任务的成功率。
+
+本轮修复内容：
+
+- `liftmug`：杯盖静置时本来就比杯心高 `0.055 m`，旧阈值 `0.05 m` 导致开局即成功。
+  改为必须额外抬起 `2 cm`。
+- `openmicrowave`：关门状态离本体中心就有 `0.16 m`，旧阈值 `0.12 m` 开局即成功。
+  门改成不与本体互穿，并要求拉离 `0.20 m`。
+- `opendrawer`：旧抽屉厚 `0.28 m`，比柜体还深，初始必然互穿。改成柜面薄抽屉，
+  关闭位置距柜心 `0.165 m`，拉出到 `0.19 m` 以上才算成功。
+- `breadtoaster`：按钮改为烤面包机前面的可推动按钮；旧的“按到世界坐标 z 以下”
+  会要求把按钮按进桌面。现在要求向机身内推动至少约 `3 cm`。
+- `rotatehearth`：旧判据要求旋钮向下进入桌面 `1 cm`。现在实际遥操作要求
+  “旋转超过 30 度且机器人仍与旋钮接触”；无机器人的判据审计只验证旋转。
+- `pottomatoout`：实心圆柱锅改为八段桶壁加桶底的真正空心锅。番茄现在可以
+  放在锅内，场景层明确识别容器与内容物，不会把番茄自动弹出去。
+- `potbimanual`：锅从“世界坐标高于 0.58 m”改为“高于桌面 15 cm”；同时把两个
+  手柄移到锅体外侧，避免 G1 下沉底座后与锅体互相穿插。G1 不再需要
+  `sink` 场景模式。
+- 场景层对高于/低于可达球的物体不再执行 `sqrt(max(1e-6, ...))` 的伪夹取，
+  避免数值保护退化成几十米的物体飞移。
+
+截止本轮，30 个任务已没有 `CRITERIA_INVALID`、`CRITERIA_ABSOLUTE` 或
+`SCENE_UNSUPPORTED` 排除项。必须继续区分：
+
+- **可评测**：本轮完成；
+- **纯物理成功率**：下一阶段采集；
+- **assisted / manual-demo**：只能作为辅助结果，不能混入论文成功率。

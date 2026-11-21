@@ -2,6 +2,7 @@
 
 import numpy as np
 import pybullet as p
+import math
 from abc import ABC, abstractmethod
 from typing import Dict, List, Tuple, Optional
 
@@ -166,6 +167,58 @@ class BaseTask(ABC):
             physicsClientId=self.client
         )
         p.changeDynamics(body_id, -1, lateralFriction=friction,
+                         physicsClientId=self.client)
+        self.objects[name] = body_id
+        return body_id
+
+    def load_hollow_cylinder(self, name: str, radius: float, height: float,
+                             position: List[float], color: List[float] = None,
+                             mass: float = 0.0, friction: float = 0.6,
+                             wall_thickness: float = 0.008,
+                             bottom_thickness: float = 0.008,
+                             segments: int = 8) -> int:
+        """Load an upright open-top container as one multi-body collision shape."""
+        if color is None:
+            color = [0.5, 0.5, 0.5, 1.0]
+        segments = max(4, int(segments))
+        wall_height = max(1e-4, float(height) - float(bottom_thickness))
+        wall_radius = max(0.0, float(radius) - float(wall_thickness) / 2.0)
+        tangential_half = (float(radius) * math.tan(math.pi / segments)
+                           + float(wall_thickness))
+        radial_half = float(wall_thickness) / 2.0
+        wall_half = [tangential_half, radial_half, wall_height / 2.0]
+        bottom_half = [float(radius), float(radius),
+                       float(bottom_thickness) / 2.0]
+        wall_z = -float(height) / 2.0 + float(bottom_thickness) + wall_height / 2.0
+        positions = [[0.0, 0.0,
+                      -float(height) / 2.0 + float(bottom_thickness) / 2.0]]
+        orientations = [[0.0, 0.0, 0.0, 1.0]]
+        for angle in np.arange(segments) * (2.0 * math.pi / segments):
+            positions.append([
+                float(wall_radius * math.cos(angle)),
+                float(wall_radius * math.sin(angle)),
+                float(wall_z),
+            ])
+            orientations.append(
+                p.getQuaternionFromEuler([0.0, 0.0, float(angle)]))
+        shape_types = [p.GEOM_BOX] * (segments + 1)
+        half_extents = [bottom_half] + [wall_half] * segments
+        collision = p.createCollisionShapeArray(
+            shapeTypes=shape_types, halfExtents=half_extents,
+            collisionFramePositions=positions,
+            collisionFrameOrientations=orientations,
+            physicsClientId=self.client)
+        visual = p.createVisualShapeArray(
+            shapeTypes=shape_types, halfExtents=half_extents,
+            rgbaColors=[list(color)] * (segments + 1),
+            visualFramePositions=positions,
+            visualFrameOrientations=orientations,
+            physicsClientId=self.client)
+        body_id = p.createMultiBody(
+            baseMass=float(mass), baseCollisionShapeIndex=collision,
+            baseVisualShapeIndex=visual, basePosition=position,
+            physicsClientId=self.client)
+        p.changeDynamics(body_id, -1, lateralFriction=float(friction),
                          physicsClientId=self.client)
         self.objects[name] = body_id
         return body_id
