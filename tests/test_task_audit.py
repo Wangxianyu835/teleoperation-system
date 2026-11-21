@@ -88,7 +88,12 @@ class CameraHandPolicyTests(unittest.TestCase):
         policy.hand_invalid_frames = 0
         policy.hand_clipped = 0
         policy.last_hand = {}
-        policy._pinch_signal = lambda _points: (None, 0.0, None)
+        policy._pinch_signal = lambda *_points: {
+            "selected": (None, 0.0, None),
+            "source": "none", "world": None, "image": None,
+        }
+        from teleoperation.robots.native_hand import PinchSignalStabilizer
+        policy._pinch_stabilizer = PinchSignalStabilizer(hold_frames=8)
         policy.calibrated = True
         policy.tracking_frames = policy.startup_hold_frames = 12
         policy.tracking_started = True

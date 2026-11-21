@@ -43,6 +43,7 @@ linkerhand_sdk/
 /data/
 outputs/
 logs/
+tmp/
 
 # 脚本调试时重定向的临时日志（可能被运行中的进程占用，删不掉）
 _*.log

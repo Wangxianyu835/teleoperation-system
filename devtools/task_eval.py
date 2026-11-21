@@ -1614,7 +1614,11 @@ class CameraPolicy:
         )
         from teleoperation.applications.realtime_hand_sim import build_retargeter
         from teleoperation.paths import realtime_checkpoint
-        from teleoperation.robots.native_hand import NativeHandAdapter, pinch_signal
+        from teleoperation.robots.native_hand import (
+            NativeHandAdapter,
+            PinchSignalStabilizer,
+            pinch_signal_details,
+        )
         from teleoperation.simulation.robot_loader import read_joint_ranges
 
         self.env = env
@@ -1740,13 +1744,15 @@ class CameraPolicy:
         self.hand_retargeter = None
         self.hand_backend_name = "off"
         self.hand_backend_note = "hand mapping disabled"
-        self._pinch_signal = pinch_signal
+        self._pinch_signal = pinch_signal_details
+        self._pinch_stabilizer = PinchSignalStabilizer(hold_frames=8)
         self.hand_valid_frames = 0
         self.hand_invalid_frames = 0
         self.hand_clipped = 0
         self.last_valid_hand = {}
         self.pinch_finger_frames = {}
         self.last_pinch = None
+        self.last_raw_pinch = None
         self.max_pinch_strength = 0.0
         self.max_fist_strength = 0.0
         self.hand_calibration_status = {}
@@ -1853,27 +1859,39 @@ class CameraPolicy:
                          (int(xy[index + 1, 0] * width), int(xy[index + 1, 1] * height)),
                          (0, 255, 255), 2)
         hits = {side: int((raw or {}).get(side) is not None) for side in ("left", "right")}
+        pinch = self.last_pinch or {}
+        pinch_text = "-"
+        if pinch.get("finger") is not None:
+            pinch_text = "%s/%.2f" % (
+                pinch["finger"], float(pinch.get("strength", 0.0)))
         text = "L=%d R=%d hand=%s target=%s" % (
             hits["left"], hits["right"],
             "ok" if self.last_hand.get("valid") else self.last_hand.get("reason", "-"),
             "ok" if (target is not None and target.position is not None)
             else (target.reason if target is not None else "none"))
+        pinch_line = "pinch=%s (raw %s)" % (
+            pinch_text,
+            "-" if not self.last_raw_pinch
+            else "%s/%s" % (self.last_raw_pinch.get("finger"),
+                            self.last_raw_pinch.get("strength")))
         feedback = self.grasp_feedback
         grasp_text = "grasp=%s %s contacts=%d force=%.1fN" % (
             feedback.get("state", "none"),
             feedback.get("object") or "-",
             int(feedback.get("contacts", 0)),
             float(feedback.get("normal_force_n", 0.0)))
-        cv2.rectangle(image, (0, 0), (width, 52), (0, 0, 0), -1)
+        cv2.rectangle(image, (0, 0), (width, 72), (0, 0, 0), -1)
         cv2.putText(image, text, (6, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.50,
                     (0, 255, 0) if (hits["left"] or hits["right"]) else (0, 0, 255), 1)
+        cv2.putText(image, pinch_line, (6, 42), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.48, (255, 255, 0), 1)
         grasp_color = ((0, 255, 255)
                        if feedback.get("state") == "attached"
                        else (0, 255, 0)
                        if feedback.get("state") == "contact"
                        else (180, 180, 180))
-        cv2.putText(image, grasp_text, (6, 44), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.52, grasp_color, 1)
+        cv2.putText(image, grasp_text, (6, 65), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, grasp_color, 1)
         cv2.putText(image, "stand ~1 m, palm to camera | q/Esc quits",
                     (6, height - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
         cv2.imshow(self._window, image)
@@ -1908,7 +1926,19 @@ class CameraPolicy:
         raw_frame = (getattr(getattr(self, "source", None), "last_raw_frame", None)
                      or {})
         raw_hand = raw_frame.get(f"world_{self.side}")
-        pinch = self._pinch_signal(raw_hand)
+        image_hand = raw_frame.get(self.side)
+        raw_details = self._pinch_signal(raw_hand, image_hand)
+        raw_pinch = raw_details["selected"]
+        pinch = self._pinch_stabilizer.update(raw_pinch)
+        self.last_raw_pinch = {
+            "finger": raw_pinch[0],
+            "strength": round(float(raw_pinch[1]), 3),
+            "ratio": (None if raw_pinch[2] is None
+                      else round(float(raw_pinch[2]), 3)),
+            "source": raw_details["source"],
+            "world": raw_details["world"],
+            "image": raw_details["image"],
+        }
         targets, clipped = self.hand_adapter.map(
             angles.native_mapping_dofs(), pinch=pinch)
         action = np.array(self.action, dtype=np.float64, copy=True)
@@ -2444,6 +2474,7 @@ class CameraPolicy:
                 "last_valid_hand": self.last_valid_hand,
                 "pinch_finger_frames": dict(self.pinch_finger_frames),
                 "last_pinch": self.last_pinch,
+                "last_raw_pinch": self.last_raw_pinch,
                 "max_pinch_strength": round(self.max_pinch_strength, 3),
                 "max_fist_strength": round(self.max_fist_strength, 3),
                 "actual_hand_joints": actual_hand,

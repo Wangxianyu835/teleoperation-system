@@ -121,7 +121,10 @@ from teleoperation.applications.realtime_hand_sim import (
 )
 from teleoperation.inputs.mediapipe import MediaPipeCameraInput
 from teleoperation.paths import DEFAULT_POSE_ASSET, realtime_checkpoint
-from teleoperation.robots.native_hand import pinch_signal
+from teleoperation.robots.native_hand import (
+    PinchSignalStabilizer,
+    pinch_signal_details,
+)
 from teleoperation.retargeting.hand.config import HAND_ANGLE_DIM, RUNTIME
 from teleoperation.simulation.arm_preview import (
     ARM_PREVIEW_WINDOW,
@@ -1139,7 +1142,7 @@ def arm_hud(bridge, driver, targets) -> str:
     return f"{bridge.status()} arm {sources}{residuals}{tail}"
 
 
-def arm_lines(bridge, sides) -> dict:
+def arm_lines(bridge, sides, pinch_summary=None) -> dict:
     """采集窗口里每侧一行手臂数字：来源字母 + 相对中性姿势的三轴位移（厘米）+ 臂长 + 肘角。
 
     数据就是 ``bridge.trace()``（``--arm-trace`` 打的同一份）；窗口只显示，不参与计算。
@@ -1147,6 +1150,7 @@ def arm_lines(bridge, sides) -> dict:
     """
     if bridge is None:
         return {}
+    pinch_summary = pinch_summary or {}
     lines = {}
     for side, entry in sorted(bridge.trace().items()):
         if side not in sides:
@@ -1158,9 +1162,18 @@ def arm_lines(bridge, sides) -> dict:
         reach = entry.get("operator_reach_m")
         elbow = entry.get("elbow_bend_deg")
         reason = str(entry.get("reason") or "")
+        pinch = pinch_summary.get(side) or {}
+        last = pinch.get("last") or {}
+        raw = pinch.get("raw_last") or {}
+        pinch_text = "-" if last.get("finger") is None else (
+            f"{last.get('finger')}/{float(last.get('strength', 0.0)):.2f}")
+        raw_text = "-" if raw.get("finger") is None else (
+            f"{raw.get('finger')}/{float(raw.get('strength', 0.0)):.2f}")
+        raw_source = str(raw.get("source") or "-")
         lines[side] = (f"{side} {letter} d(cm){moved} "
                        f"reach={'--' if reach is None else f'{float(reach):.3f}'}m "
                        f"elbow={'--' if elbow is None else f'{float(elbow):.0f}'}deg"
+                       f" pinch={pinch_text} raw={raw_text}@{raw_source}"
                        f"{'' if not reason else ' ' + reason[:44]}")
     return lines
 
@@ -1489,8 +1502,10 @@ def run(args) -> int:
     invalid = {side: 0 for side in sides}
     raw_seen = {side: 0 for side in sides}
     pinch_summary = {
-        side: {"frames": 0, "finger_frames": {}, "last": None}
+        side: {"frames": 0, "finger_frames": {}, "last": None, "raw_last": None}
         for side in sides}
+    pinch_trackers = {
+        side: PinchSignalStabilizer(hold_frames=8) for side in sides}
     #: 这一侧连续多少帧没有角度（「手卡住不动」的时长，见 ``_warn_stalled_hand``）。
     stalled = {side: 0 for side in sides}
     #: 「这只手卡住」每侧只喊一次。
@@ -1755,7 +1770,10 @@ def run(args) -> int:
                     values = np.asarray(angles.values, dtype=np.float64)
                     if values.shape != (HAND_ANGLE_DIM,) or not np.isfinite(values).all():
                         raise ValueError(f"invalid {side} angles: shape={values.shape}")
-                    pinch = pinch_signal(raw_frame.get(f"world_{side}"))
+                    raw_details = pinch_signal_details(
+                        raw_frame.get(f"world_{side}"), raw_frame.get(side))
+                    raw_pinch = raw_details["selected"]
+                    pinch = pinch_trackers[side].update(raw_pinch)
                     scene.apply(side, values, pinch=pinch)
                     samples[side].append(values)
                     latest[side] = values
@@ -1769,6 +1787,15 @@ def run(args) -> int:
                         "finger": finger,
                         "strength": round(float(strength), 3),
                         "ratio": None if ratio is None else round(float(ratio), 3),
+                    }
+                    raw_finger, raw_strength, raw_ratio = raw_pinch
+                    entry["raw_last"] = {
+                        "finger": raw_finger,
+                        "strength": round(float(raw_strength), 3),
+                        "ratio": None if raw_ratio is None else round(float(raw_ratio), 3),
+                        "source": raw_details["source"],
+                        "world": raw_details["world"],
+                        "image": raw_details["image"],
                     }
             # 「手卡住不动」要能自己解释：``angles is None`` 时这一侧保持上一帧（故意的，
             # 绝不让关节跳），现场只看到状态行的 ``invalid=`` 在涨。窗口整个是 None（两只手
@@ -1879,7 +1906,7 @@ def run(args) -> int:
                 # 当作"没有"（与桥的丢帧保持同口径），这里只负责把 None 原样传下去。
                 preview.update(raw_frame, latest, arm_hud(bridge, driver, targets),
                                arms=None if body is None else body.arms,
-                               lines=arm_lines(bridge, sides))
+                               lines=arm_lines(bridge, sides, pinch_summary))
                 if preview.quit_requested:
                     print("camera window closed; stopping.", flush=True)
                     break

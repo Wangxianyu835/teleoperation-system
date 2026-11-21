@@ -11,6 +11,80 @@ import unittest
 import numpy as np
 
 
+class NativeHandPinchSignalTests(unittest.TestCase):
+    @staticmethod
+    def _hand(thumb, index, *, curled=False):
+        points = np.zeros((21, 3), dtype=np.float64)
+        points[0] = [0.00, 0.50, 0.0]
+        points[5] = [0.00, 0.40, 0.0]
+        points[9] = [0.02, 0.38, 0.0]
+        points[17] = [0.10, 0.50, 0.0]
+        points[4] = thumb
+        points[8] = index
+        points[12] = [0.12, 0.40, 0.0]
+        for mcp, tip in ((5, 8), (9, 12), (13, 16), (17, 20)):
+            if curled:
+                points[tip] = np.asarray(points[mcp]) + [0.01, 0.01, 0.0]
+            elif tip not in (8, 12):
+                points[tip] = np.asarray(points[mcp]) + [0.0, 0.10, 0.0]
+            elif tip == 12:
+                points[tip] = [0.12, 0.40, 0.0]
+        return points
+
+    def test_image_space_contact_recovers_a_bad_world_tip_distance(self):
+        from teleoperation.robots.native_hand import pinch_signal_details
+
+        world = self._hand([0.00, 0.55, 0.05], [0.15, 0.30, 0.00])
+        image = self._hand([0.00, 0.50, 0.0], [0.00, 0.50, 0.0])
+        details = pinch_signal_details(world, image)
+        finger, strength, ratio = details["selected"]
+        self.assertEqual(details["source"], "image")
+        self.assertEqual(finger, "index")
+        self.assertEqual(strength, 1.0)
+        self.assertLess(ratio, 0.10)
+
+    def test_open_image_overrides_a_false_world_fist(self):
+        from teleoperation.robots.native_hand import pinch_signal_details
+
+        world = self._hand([0.00, 0.50, 0.0], [0.00, 0.49, 0.0],
+                           curled=True)
+        image = self._hand([-0.08, 0.52, 0.0], [0.08, 0.42, 0.0])
+        details = pinch_signal_details(world, image)
+        self.assertEqual(details["world"]["finger"], "fist")
+        self.assertEqual(details["source"], "image-open")
+        self.assertEqual(details["selected"][:2], (None, 0.0))
+
+    def test_contact_hold_bridges_occlusion_then_releases(self):
+        from teleoperation.robots.native_hand import PinchSignalStabilizer
+
+        tracker = PinchSignalStabilizer(hold_frames=3, decay=0.9)
+        self.assertEqual(tracker.update(("index", 1.0, 0.0))[:2],
+                         ("index", 1.0))
+        for _ in range(3):
+            self.assertEqual(tracker.update((None, 0.0, 0.8))[:2],
+                             ("index", 1.0))
+        self.assertEqual(tracker.update((None, 0.0, 0.8)),
+                         (None, 0.0, 0.8))
+
+    def test_image_space_cannot_turn_a_forward_pointing_hand_into_a_fist(self):
+        from teleoperation.robots.native_hand import pinch_signal
+
+        image = self._hand([-0.05, 0.50, 0.0], [0.03, 0.38, 0.0],
+                           curled=True)
+        finger, strength, _ratio = pinch_signal(None, image)
+        self.assertNotEqual(finger, "fist")
+        self.assertEqual(finger, None)
+        self.assertEqual(strength, 0.0)
+
+    def test_open_hand_approach_is_not_commanded_as_a_partial_pinch(self):
+        from teleoperation.robots.native_hand import pinch_signal
+
+        image = self._hand([0.02, 0.52, 0.0], [0.04, 0.42, 0.0])
+        finger, strength, _ratio = pinch_signal(None, image)
+        self.assertIsNone(finger)
+        self.assertEqual(strength, 0.0)
+
+
 class NativeHandPinchSimulationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -109,24 +109,36 @@ L21_LIMITS = {
 }
 
 
-def pinch_signal(world_hand):
-    """MediaPipe world 21 points -> ``(finger, strength, ratio)`` for hand closure.
+def _landmark_array(points, dimensions: int):
+    """Return a finite MediaPipe 21-point array, or ``None``."""
+    try:
+        array = np.asarray(points, dtype=np.float64)
+    except (TypeError, ValueError):
+        return None
+    if array.shape != (21, 3) or not np.isfinite(array).all():
+        return None
+    return array[:, :dimensions]
 
-    The native hands have different palm sizes and joint axes from L21. Copying the
-    joint angles alone therefore does not guarantee that thumb and finger tips meet.
-    This measures the operator's thumb-to-tip distance relative to palm width and
-    drives the selected native finger/thumb pair toward its closure end. A fist does
-    not necessarily bring the thumb to the index tip, so finger curl is measured
-    separately and returns ``finger="fist"`` when several fingers are closed.
-    """
-    points = np.asarray(world_hand, dtype=np.float64) if world_hand is not None else None
-    if points is None or points.shape != (21, 3) or not np.isfinite(points).all():
-        return None, 0.0, None
-    palm_width = float(np.linalg.norm(points[5] - points[17]))
-    if palm_width < 1e-6:
-        palm_width = float(np.linalg.norm(points[9] - points[0]))
-    if palm_width < 1e-6:
-        return None, 0.0, None
+
+def _hand_scale(points) -> float:
+    """A stable hand-size denominator without trusting one projected palm edge."""
+    spans = (
+        np.linalg.norm(points[5] - points[17]),
+        np.linalg.norm(points[0] - points[9]),
+        np.linalg.norm(points[5] - points[9]),
+        np.linalg.norm(points[9] - points[17]),
+    )
+    return float(max(spans))
+
+
+def _pinch_measurement(points, *, allow_fist: bool):
+    """Measure thumb/index/middle closure from one landmark coordinate space."""
+    if points is None:
+        return None
+    scale = _hand_scale(points)
+    if scale < 1e-6:
+        return None
+
     # H1-2 and GR1-T2 cannot physically bring the thumb to the ring/pinky tips
     # inside the URDF limits. A ring/pinky pinch therefore falls back to the
     # nearer supported index/middle opposition instead of commanding an
@@ -137,30 +149,117 @@ def pinch_signal(world_hand):
         for name, slot in tips.items()
     }
     finger = min(distances, key=distances.get)
-    # When index and middle are nearly tied, keep the pinch on the index. MediaPipe
-    # switches between those two tips by a few millimetres during a real pinch;
-    # letting that flip the target every frame moves the thumb between two robot
-    # poses and looks like a twitch.
-    if distances["index"] <= distances[finger] + 0.10 * palm_width:
+    # MediaPipe alternates index/middle by a few millimetres during a real
+    # pinch. Keep the target on the index unless the middle is clearly nearer.
+    if distances["index"] <= distances[finger] + 0.10 * scale:
         finger = "index"
-    ratio = distances[finger] / palm_width
-    # ratio 0.20 = firm pinch, 1.00 = open. Using the full range matters: a real
-    # pinch often measures around 0.25-0.35 in MediaPipe world coordinates.
-    strength = float(np.clip((1.0 - ratio) / 0.80, 0.0, 1.0))
-    # A fist closes the four fingers even when the thumb rests across their middle
-    # phalanges instead of touching the index tip. Use the median per-finger curl
-    # so a single index pinch does not trigger a whole-hand grasp.
-    spans = np.array([
-        np.linalg.norm(points[tip] - points[mcp]) / palm_width
-        for mcp, tip in ((5, 8), (9, 12), (13, 16), (17, 20))
-    ], dtype=np.float64)
-    curl = np.clip((1.0 - spans) / 0.55, 0.0, 1.0)
-    grasp_strength = float(np.median(curl))
-    if grasp_strength >= 0.10 and grasp_strength >= strength:
-        return "fist", grasp_strength, ratio
-    if strength < 0.10:
+    ratio = distances[finger] / scale
+    # An open MediaPipe hand commonly reports a thumb/index centre distance of
+    # 0.6-0.8 palm scales. Linear closure from every non-zero distance made the
+    # native hand sit half-closed all the time. Require a genuine approach, and
+    # reach the exact native pinch endpoint at 0.30 scale or closer.
+    pinch_trigger_ratio = 0.58
+    strength = float(np.clip(
+        (pinch_trigger_ratio - ratio) / 0.28, 0.0, 1.0))
+
+    if allow_fist:
+        # A fist closes four fingers even when the thumb rests across their
+        # middle phalanges instead of touching the index tip.
+        spans = np.array([
+            np.linalg.norm(points[tip] - points[mcp]) / scale
+            for mcp, tip in ((5, 8), (9, 12), (13, 16), (17, 20))
+        ], dtype=np.float64)
+        curl = np.clip((1.0 - spans) / 0.55, 0.0, 1.0)
+        grasp_strength = float(np.median(curl))
+        if grasp_strength >= 0.10 and grasp_strength >= strength:
+            return "fist", grasp_strength, ratio
+    if strength <= 0.0:
         return None, 0.0, ratio
     return finger, strength, ratio
+
+
+def pinch_signal_details(world_hand, image_hand=None):
+    """Return the selected pinch signal and both coordinate-space measurements.
+
+    World landmarks give the geometrically correct answer while the hand is
+    visible. When the thumb and finger touch, however, MediaPipe often occludes
+    one tip and its world-space estimate can jump to a distance of half a palm
+    width. The image-space normalized landmarks retain the visible contact much
+    more reliably. Once valid image landmarks exist, they therefore arbitrate
+    index/middle pinch (including "not pinching"); world data is retained as the
+    fallback and its measurement is still reported for diagnosis.
+    """
+    world_points = _landmark_array(world_hand, 3)
+    world = _pinch_measurement(world_points, allow_fist=True)
+    image_points = _landmark_array(image_hand, 2)
+    image = _pinch_measurement(image_points, allow_fist=False)
+    if image is not None:
+        selected = image
+        source = "image" if image[0] is not None else "image-open"
+    elif world is not None:
+        selected = world
+        source = "world" if world[0] is not None else "world-open"
+    else:
+        selected = (None, 0.0, None)
+        source = "none"
+
+    def describe(measurement):
+        if measurement is None:
+            return None
+        return {
+            "finger": measurement[0],
+            "strength": round(float(measurement[1]), 3),
+            "ratio": None if measurement[2] is None
+            else round(float(measurement[2]), 3),
+        }
+
+    return {
+        "selected": selected,
+        "source": source,
+        "world": describe(world),
+        "image": describe(image),
+    }
+
+
+def pinch_signal(world_hand, image_hand=None):
+    """MediaPipe landmarks -> ``(finger, strength, ratio)`` for hand closure."""
+    return pinch_signal_details(world_hand, image_hand)["selected"]
+
+
+class PinchSignalStabilizer:
+    """Hold a confirmed closure for a few camera frames while landmarks flicker.
+
+    At the 20 fps task-camera cadence, eight frames are roughly 0.4 seconds.
+    The peak strength decays during a continuing weaker signal, so this smooths
+    occlusion without permanently latching the hand closed.
+    """
+
+    def __init__(self, hold_frames: int = 8, decay: float = 0.90):
+        self.hold_frames = max(0, int(hold_frames))
+        self.decay = min(max(float(decay), 0.0), 1.0)
+        self._held = None
+        self._remaining = 0
+
+    def update(self, signal):
+        """Return a stabilized ``(finger, strength, ratio)`` signal."""
+        finger, strength, ratio = signal
+        strength = float(strength)
+        if finger is not None and strength > 0.0:
+            if self._held is not None and self._held[0] == finger:
+                strength = max(strength, float(self._held[1]) * self.decay)
+            safe_ratio = None if ratio is None else float(ratio)
+            self._held = (str(finger), strength, safe_ratio)
+            self._remaining = self.hold_frames
+            return self._held
+        if self._held is not None and self._remaining > 0:
+            result = self._held
+            self._remaining -= 1
+            if self._remaining == 0:
+                self._held = None
+            return result
+        self._held = None
+        self._remaining = 0
+        return None, 0.0, ratio
 
 
 def _pinch_endpoint(robot_type, side: str, selected_finger: str, name: str,
