@@ -499,7 +499,7 @@ class DexPilotOptimizer(Optimizer):
                 grad_qpos = np.matmul(grad_pos, np.array(jacobians))
                 grad_qpos = grad_qpos.mean(1).sum(0)
 
-                # In the original DexPilot, γ = 2.5 × 10−3 is a weight on regularizing the Allegro angles to zero
+                # In the original DexPilot, γ = 2.5 × 10-3 is a weight on regularizing the Allegro angles to zero
                 # which is equivalent to fully opened the hand
                 # In our implementation, we regularize the joint angles to the previous joint angles
                 grad_qpos += 2 * self.norm_delta * (x - last_qpos)

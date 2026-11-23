@@ -484,3 +484,57 @@ GBK strict check: OK
 
 FFG 手套分支本轮只完成代码评审和独立离线验证，没有接入 MediaPipe 主链路。
 其位置是后续第三种输入：MediaPipe -> VR -> FFG；当前继续以 MediaPipe 做任务。
+
+## 2026-11-23 队友 Dex/原生手后端合并
+
+队友提交 `e0eb35ff41e287782bef19512cda7c469d45e44c` 是一个真实 merge commit，
+第一父为本方主线 `49d54b4`，第二父为队友分支 `8c7dab4`。已快进合并。
+
+本轮主要新增：
+
+- 原生手规格层：从实际 H1-2 / GR1-T2 / G1 URDF 提取关节、限度、mimic 关系、
+  指尖 frame 和手掌几何；
+- `NativeHandModel` 与原生手独立坐标展开，避免继续把 L21 17 维角度当作
+  原装手真值；
+- `dex_retargeting 0.4.6` 源码内置，并增加 `NormalizedDexRetargeter`；
+- Dex 使用真实手部目标点做向量优化，不再依赖旧的手工 pinch endpoint 作为唯一闭合来源；
+- 统一的 `HandJointResult` / `HandJointCommand`、规范哈希、限位检查和执行器；
+- MediaPipe、Vision Pro、VR、训练、HDF5 录制和 Robot Part 场景的统一入口；
+- 新的 `teleoperation robot control` / `hand control` CLI 路径。
+
+Windows 依赖不能直接使用普通 pip 安装 Pinocchio。已建立独立环境：
+
+```text
+F:\conda-envs\teleop-dex
+```
+
+其中固定：
+
+```text
+numpy==1.26.4
+nlopt==2.7.1
+pinocchio==3.2.0
+torch==2.15.0+cpu
+```
+
+micromamba 位于：
+
+```text
+F:\tools\micromamba\Library\bin\micromamba.exe
+```
+
+该环境避免破坏 E 盘现有的 MediaPipe/PyBullet 解释器。依赖安装后验证：
+
+```text
+Dex / native hand / unified input / VR subset:
+41 passed, 2 skipped
+
+Full merged tree:
+640 passed, 5 skipped, 554 subtests passed
+```
+
+需要注意的边界：现有 `devtools/task_eval.py` 的 `CameraPolicy` 仍使用旧的
+`MediaPipe -> L21 18D -> NativeHandAdapter` 路径；Dex 当前主要接在新的
+`robot control/hand control` 入口。因此这次合并已经让三方代码共存并可测试，
+但 30 任务评测窗口还没有自动切到 Dex。下一步应把 `HandJointResult` 直接接入
+`CameraPolicy`，再对比 geometric、checkpoint、Dex 三种手部后端。
