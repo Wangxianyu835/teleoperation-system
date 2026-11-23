@@ -1617,6 +1617,7 @@ class CameraPolicy:
                  preview: bool = False, hand_enabled: bool = True,
                  hand_backend: str = "auto", hand_checkpoint=None,
                  hand_smoothing: float = 0.25, hand_limit_mode: str = "clamp",
+                 pinch_correction: bool = True,
                  hand_device: str = "cpu", table_clearance_m: float = 0.06,
                  table_guard: bool = False,
                  grasp_assist: bool = True,
@@ -1659,6 +1660,7 @@ class CameraPolicy:
         self.hand_enabled = bool(hand_enabled)
         self.hand_backend = str(hand_backend)
         self.hand_limit_mode = str(hand_limit_mode)
+        self.pinch_correction_enabled = bool(pinch_correction)
         self.table_clearance_m = max(0.0, float(table_clearance_m))
         self.table_guard_enabled = bool(table_guard)
         self.grasp_assist_enabled = bool(grasp_assist)
@@ -1786,6 +1788,9 @@ class CameraPolicy:
         self.hand_adapter = None
         self.hand_retargeter = None
         self.native_hand_spec = None
+        self.pinch_contact_poses = {}
+        self.pinch_correction_alpha = 0.0
+        self.pinch_correction_frames = 0
         self.hand_backend_name = "off"
         self.hand_backend_note = "hand mapping disabled"
         self._pinch_signal = pinch_signal_details
@@ -1811,6 +1816,24 @@ class CameraPolicy:
                 self.hand_backend_name = "dex"
                 self.hand_backend_note = (
                     "normalized vector retargeting; palm-length normalized targets")
+                if self.pinch_correction_enabled:
+                    from teleoperation.retargeting.hand.pinch_contact import (
+                        independent_pinch_pose,
+                    )
+
+                    # Dex optimizes every fingertip jointly.  These cached
+                    # poses make the selected robot fingertip actually meet
+                    # the thumb only while the operator's pinch is detected.
+                    for finger in ("index", "middle"):
+                        try:
+                            self.pinch_contact_poses[finger] = (
+                                independent_pinch_pose(
+                                    self.native_hand_spec, finger))
+                        except RuntimeError:
+                            # Index opposition is the required pick gesture.
+                            # A nonconverged auxiliary pose must not prevent
+                            # the arm and index hand from starting.
+                            continue
             else:
                 from teleoperation.applications.realtime_hand_sim import build_retargeter
                 self.hand_retargeter, self.hand_backend_name, self.hand_backend_note = \
@@ -1843,6 +1866,9 @@ class CameraPolicy:
             if self.hand_backend_name == "dex":
                 print("[camera] Dex uses palm-length normalized 25-point windows; "
                       "no checkpoint or operator joint calibration", flush=True)
+                if self.pinch_contact_poses:
+                    print("[camera] Dex pinch contact poses ready: %s"
+                          % ", ".join(sorted(self.pinch_contact_poses)), flush=True)
             else:
                 print("[camera] hold this side's hand OPEN and fully visible during the first "
                       "%d frames: that is the hand-retargeter zero pose" % calibrate_frames,
@@ -2005,7 +2031,28 @@ class CameraPolicy:
             "image": raw_details["image"],
         }
         if self.hand_backend_name == "dex":
-            targets = self.native_hand_spec.expand(native_result.positions)
+            positions = np.asarray(native_result.positions, dtype=np.float64)
+            correction_pose = getattr(
+                self, "pinch_contact_poses", {}).get(pinch[0])
+            previous_alpha = float(getattr(
+                self, "pinch_correction_alpha", 0.0))
+            if (correction_pose is not None and float(pinch[1]) > 0.0):
+                wanted_alpha = min(1.0, max(0.0, float(pinch[1])))
+                step = min(0.35, max(-0.35, wanted_alpha
+                                    - previous_alpha))
+                self.pinch_correction_alpha = previous_alpha + step
+                self.pinch_correction_frames = (
+                    getattr(self, "pinch_correction_frames", 0) + 1)
+                positions = (
+                    positions + self.pinch_correction_alpha
+                    * (correction_pose - positions))
+            else:
+                self.pinch_correction_alpha = max(
+                    0.0, previous_alpha - 0.35)
+            bounds = getattr(self.native_hand_spec, "bounds", None)
+            if bounds is not None:
+                positions = np.clip(positions, *bounds.T)
+            targets = self.native_hand_spec.expand(positions)
             clipped = 0
         else:
             targets, clipped = self.hand_adapter.map(
@@ -2044,6 +2091,8 @@ class CameraPolicy:
                             for value in np.asarray(angles.values, dtype=np.float64)]),
             "native_positions": {name: round(float(value), 6)
                                  for name, value in sorted(written.items())},
+            "pinch_correction_alpha": round(
+                float(getattr(self, "pinch_correction_alpha", 0.0)), 3),
             "solve_ms": (None if native_result is None
                          else round(float(native_result.solve_ms), 3)),
         }
@@ -2591,6 +2640,7 @@ class CameraPolicy:
                            "hand_backend": self.hand_backend_name,
                            "hand_backend_note": self.hand_backend_note,
                            "hand_limit_mode": self.hand_limit_mode,
+                           "pinch_correction": self.pinch_correction_enabled,
                            "hand_joints": self.hand_names,
                            "table_clearance_m": self.table_clearance_m,
                            "table_guard": self.table_guard_enabled,
@@ -2634,6 +2684,16 @@ class CameraPolicy:
                 "hand_valid_frames": self.hand_valid_frames,
                 "hand_invalid_frames": self.hand_invalid_frames,
                 "hand_clipped_joints": self.hand_clipped,
+                "pinch_contact_correction": {
+                    "enabled": getattr(
+                        self, "pinch_correction_enabled", False),
+                    "poses_ready": sorted(getattr(
+                        self, "pinch_contact_poses", {})),
+                    "frames": getattr(self, "pinch_correction_frames", 0),
+                    "last_alpha": round(
+                        float(getattr(
+                            self, "pinch_correction_alpha", 0.0)), 3),
+                },
                 "hand_calibration_status": dict(self.hand_calibration_status),
                 "last_hand": self.last_hand,
                 "last_valid_hand": self.last_valid_hand,
@@ -3397,6 +3457,10 @@ def build_parser() -> argparse.ArgumentParser:
                         default="clamp",
                         help="L21 -> 原装手限位处理：clamp 忠实截断（default），"
                              "rescale 按 L21 比例压到原生行程（视觉辅助，需在报告中声明）")
+    parser.add_argument("--camera-pinch-correction", choices=("on", "off"),
+                        default="on",
+                        help="Dex 检测到食指/中指捏合时，把该指与拇指的目标平滑过渡到"
+                             "真实接触位形（default on；不创建物体约束，不影响张开手）")
     parser.add_argument("--camera-table-clearance-mm", type=float, default=60.0,
                         help="启用 --camera-table-guard 时，腕目标在桌面投影内"
                              "至少离桌面这么高（default 60 mm）")
@@ -3546,6 +3610,7 @@ def main(argv=None) -> int:
                    "hand_checkpoint": args.hand_checkpoint,
                    "hand_smoothing": args.hand_smoothing,
                    "hand_limit_mode": args.hand_limit_mode,
+                   "pinch_correction": args.camera_pinch_correction == "on",
                    "table_clearance_m": max(
                        0.0, float(args.camera_table_clearance_mm)) / 1000.0,
                    "table_guard": bool(args.camera_table_guard),

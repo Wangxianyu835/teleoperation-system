@@ -110,6 +110,66 @@ class CameraHandPolicyTests(unittest.TestCase):
         self.assertIsNone(policy.last_hand["l21_angles"])
         self.assertEqual(1.2, policy.last_hand["solve_ms"])
 
+    def test_dex_pinch_correction_moves_index_target_to_contact_pose(self):
+        from teleoperation.contracts.hand_control import HandJointResult
+        from teleoperation.robots.hand_spec import load_hand_spec
+
+        spec = load_hand_spec("h1_2", "right")
+        result = HandJointResult(
+            "h1_2", "right", spec.spec_hash, spec.independent_joint_names,
+            np.zeros(spec.dof), 0.0, solve_ms=1.2)
+        endpoint = np.zeros(spec.dof)
+        endpoint[spec.independent_joint_names.index(
+            "R_index_proximal_joint")] = 1.7
+
+        class _Retargeter:
+            def retarget(self, _window):
+                return {("h1_2", "right"): result}
+
+        policy = object.__new__(EVAL.CameraPolicy)
+        policy.side = "right"
+        policy.hand_enabled = True
+        policy.hand_backend_name = "dex"
+        policy.hand_backend_note = "dex test"
+        policy.hand_limit_mode = "native"
+        policy.hand_retargeter = _Retargeter()
+        policy.native_hand_spec = spec
+        policy.pinch_contact_poses = {"index": endpoint}
+        policy.pinch_correction_alpha = 0.0
+        policy.pinch_correction_frames = 0
+        policy.hand_names = list(spec.joint_names)
+        policy.names = {name: index for index,
+                        name in enumerate(spec.independent_joint_names)}
+        policy.action = np.zeros(spec.dof, dtype=np.float64)
+        policy.env = SimpleNamespace(robot_type="h1_2")
+        policy.source = SimpleNamespace(last_raw_frame={})
+        policy._pinch_signal = lambda *_points: {
+            "selected": ("index", 1.0, 0.0),
+            "source": "test", "world": None, "image": None,
+        }
+        from teleoperation.robots.native_hand import PinchSignalStabilizer
+        policy._pinch_stabilizer = PinchSignalStabilizer(hold_frames=2)
+        policy.calibrated = True
+        policy.tracking_started = True
+        policy.hand_valid_frames = 0
+        policy.hand_invalid_frames = 0
+        policy.hand_clipped = 0
+        policy.hand_calibration_status = {}
+        policy.last_hand = {}
+        policy.last_valid_hand = {}
+        policy.pinch_finger_frames = {}
+        policy.max_pinch_strength = 0.0
+        policy.max_fist_strength = 0.0
+        policy.last_pinch = None
+        policy.last_raw_pinch = None
+
+        for _ in range(3):
+            policy._update_hand(object())
+        index = policy.names["R_index_proximal_joint"]
+        self.assertAlmostEqual(1.7, policy.action[index])
+        self.assertEqual(1.0, policy.last_hand["pinch_correction_alpha"])
+        self.assertGreater(policy.pinch_correction_frames, 0)
+
     def test_contact_grip_stops_fingers_without_attaching_the_object(self):
         policy = object.__new__(EVAL.CameraPolicy)
         policy.last_pinch = {"finger": "index", "strength": 1.0}
@@ -238,6 +298,7 @@ class CameraHandPolicyTests(unittest.TestCase):
         self.assertEqual(args.camera_hand, "on")
         self.assertEqual(args.hand_backend, "auto")
         self.assertEqual(args.hand_limit_mode, "clamp")
+        self.assertEqual(args.camera_pinch_correction, "on")
         self.assertEqual(args.camera_table_clearance_mm, 60.0)
         self.assertEqual(args.camera_arm_force, 200.0)
         self.assertEqual(args.camera_hand_force, 200.0)

@@ -582,3 +582,48 @@ Full test suite:
 90/90 evaluable, 0 excluded
 GBK strict check: OK
 ```
+
+### 食指/拇指接触与鼠标演示
+
+现场反馈有两件事同时失败：
+
+- 真人拇指和食指已经相碰，机器人两指仍相距很远；
+- 新链路打开后，鼠标拖不动任务物体。
+
+两件事不是同一个根因。`pinch_signal_details()` 能测到真人捏合，但 Dex
+同时优化五个指尖；在 H1-2/GR1-T2 上，满足其余指尖目标的局部解仍可能让
+拇指与食指相差 40 mm 以上。现在 Dex 在检测到食指或中指捏合时，会从机器人
+URDF 的关节限位内求一个“两指尖真实接触”的独立关节位形，并按捏合强度分帧
+平滑过渡到该位形。它只在捏合期间生效，张手立即退回 Dex 原始输出；不创建
+手-物体约束，也不改变物体质量。该修正可用
+`--camera-pinch-correction off` 关闭做 A/B。
+
+鼠标拖动必须同时满足两个条件：GUI 中允许 picking，且任务物体没有被启动
+冻结门改成 `mass=0`。演示命令使用：
+
+```powershell
+--allow-gui-mouse-picking --demo-keep-open
+```
+
+前者会关闭摄像头启动阶段的物体冻结，后者保证任务判据已经满足后窗口仍保持
+打开。此类运行只能用于演示和排查，报告会写
+`gui_mouse_picking_enabled=true`，不能算论文成功率。
+
+本轮针对性回归：
+
+```text
+tests/test_normalized_dex.py
+tests/test_task_audit.py
+tests/test_arm_realtime_bridge.py::EntryAndReplayTests
+53 passed, 5 subtests passed
+
+Full test suite:
+644 passed, 5 skipped, 554 subtests passed
+GBK strict check: OK
+```
+
+同一次 180 秒手动演示报告中，`gui_mouse_picking_enabled=true`、
+`camera.freeze_objects=false`，鼠标拖动链路有效；Dex 捏合接触修正运行
+530 帧，右手有效 2015 帧，并两次触发“多连杆接触后停指”。这次 trial 也
+返回了成功，但鼠标 picking 允许人为移动物体，所以只能作为演示证据，
+不计入论文正式成功率。
