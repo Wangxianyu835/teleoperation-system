@@ -6,6 +6,23 @@
 本说明依据当前源码；截图、旧文档和模块顶部注释中的历史结论不自动代表当前实现。
 逐项操作与精确阈值见 [30 项任务判据](experiment-task-criteria.md)。此次只新增说明文档，不改变控制和计分行为。
 
+**入口范围澄清（2026-11-23）**：当前仓库的统一手部和机器人控制已经支持原生 `nn/dex`，
+不要求经过 L21 18 维中间表示。本文后面的任务运行、抓取辅助、单侧控制和计分说明，
+专门针对 `devtools/task_eval.py`；它仍调用旧的 `auto/geometric/checkpoint` 手部实现，
+尚未接入统一的原生后端工厂。不能将这个任务工具的限制推广到统一控制入口。
+
+| 入口 | 手部后端选择 | 手部输出路径 |
+|---|---|---|
+| `python -m teleoperation robot control` | `--backend dex` 或 `--backend nn`，默认 `dex` | 目标手型原生关节结果，再经过命令处理与执行；支持 `--side both` |
+| `python -m teleoperation hand control` | 显式 `--backend dex` 或 `--backend nn` | 所选手型的原生关节结果；支持 `--hand both` |
+| `python devtools/task_eval.py --policy camera` | `--hand-backend auto/geometric/checkpoint` | 旧 L21 18 维表示，再映射到机器人原装手；当前每次驱动一侧 |
+
+定义见 [robot 参数](../src/teleoperation/cli/robot_options.py#L22)、
+[hand 参数](../src/teleoperation/cli/hand_joint_options.py#L11)、
+[原生后端工厂](../src/teleoperation/applications/hand_backend.py#L28)、
+[任务工具参数](../devtools/task_eval.py#L3345)。
+统一控制工作流见 [原生手部与统一控制指南](native-hand-control.md)。
+
 ## 1. 实验实际测什么
 
 实验将人的手臂与手指动作转换成机器人关节目标，在 PyBullet 中与任务物体交互，
@@ -89,7 +106,19 @@ q_lower <= q <= q_upper
 
 ### 2.2 手指控制
 
-手部 world 点经掌心局部坐标处理形成三帧窗口，再进入 `auto/geometric/checkpoint` 后端。
+当前统一控制采用掌长归一化的手部窗口，并选择以下原生后端：
+
+- `dex`：使用目标手型的运动学模型、关节约束和向量优化求解关节；不使用 NN 权重。
+- `nn`：加载目标手型的 shared checkpoint，预测该手型的独立关节；每种所选手型需提供一份对应权重。
+
+两者都输出带目标手型、侧别、关节名及规格身份的 `HandJointResult`，随后进入命令滤波、限速和执行链路。
+对于 H1-2 / GR1-T2 / G1，目标就是相应的原装手，**不要求先生成 L21 18 维角度再降维**。
+来源：[工厂选择](../src/teleoperation/applications/hand_backend.py#L28)、
+[NN 结果](../src/teleoperation/retargeting/hand/interface.py#L136)、
+[Dex 结果](../src/teleoperation/retargeting/hand/dex_native.py#L332)。
+
+下文的 `task_eval.py` 实验入口仍使用旧路径：手部 world 点经掌心局部坐标处理形成三帧窗口，
+再进入 `auto/geometric/checkpoint` 后端。
 `auto` 先寻找 world 权重，文件不存在时改用几何方法。输出为含固定占位的 L21 18 维角度，
 再通过 `NativeHandAdapter` 转成各机器人原装手的关节名与限位。捏合/握拳信号还会参与原装手闭合控制。
 默认 `--hand-limit-mode clamp`；`rescale` 会改变行程映射，比较时应单独说明。
@@ -99,7 +128,7 @@ q_lower <= q <= q_upper
 
 原生动作顺序为左臂、右臂、左手、右手。H1-2 / GR1-T2 / G1 分别为 38 / 36 / 28 维；
 实施时以 `env.action_dim`、`env.action_joint_names` 和 `env.action_joint_indices` 为准。
-18 维是中间手部表示，不是整机动作维度。
+这里的 18 维只描述旧任务入口的中间手部表示，不是整机动作维度，也不是原生 NN/Dex 的统一输出规格。
 来源：[机器人动作空间](../src/teleoperation/simulation/robot_loader.py#L93)。
 
 ### 2.3 控制频率与辅助
@@ -116,7 +145,8 @@ q_lower <= q <= q_upper
 [抓取辅助](../devtools/task_eval.py#L2379)。
 
 当前 `CameraPolicy` 与 `ScriptedPolicy` 一次都只控制 `left` 或 `right` 一侧。
-任务名字含 `bimanual` 不表示该入口执行了双手操作；其成功条件也没有验证双手接触或交接。
+统一 `robot control` 已支持 `--side both`。任务名字含 `bimanual` 不表示旧任务入口执行了双手操作；
+其成功条件也没有验证双手接触或交接。
 
 ## 3. 一次 trial 的完整过程
 
@@ -285,7 +315,7 @@ env.task.apply_action(action, joint_indices=env.action_joint_indices)
   并包含预抓取布局、冻结/解冻和杯子速度限制。即使关闭固定约束辅助，也应披露这些场景设置。
 - 相机 IK 的 `solve/refine_orientation` 会直接写入关节状态，调用方没有像 ScriptedPolicy 那样
   保存并恢复求解前状态。它不是完全由电机力矩积分得到的手臂轨迹；关闭抓取辅助不能消除这一差异。
-- 当前入口每次只控制一侧，双手任务要评价真实协同，仍需要双侧控制接入与双手判据。
+- 当前任务评估入口每次只控制一侧，双手任务要评价真实协同，仍需要将已有统一双侧控制接入任务评估并补充双手判据。
 - JSON 没有自动记录操作者身份、全部命令行、Git SHA、权重摘要或随机试验设计。
   应在实验清单中保存这些信息及机器人、任务、后端、辅助、限位、初始布局、时间上限和保持窗口。
 - 正常 trial 分支即使全部失败也可能退出 0；自动汇总应读取 `reports[].summary`，
