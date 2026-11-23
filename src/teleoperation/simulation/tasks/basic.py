@@ -28,8 +28,13 @@ class PickCube(BaseTask):
     """拿起方块并放下（提升>15cm）"""
     def _load_objects(self):
         self.load_fixed_table()
-        self.load_box('cube', [0.03, 0.03, 0.03], [0, 0, 0],
-                      color=[0.9, 0.5, 0.1, 1.0], mass=0.08, friction=0.5)
+        # 4 cm matches the native pinch envelope.  The previous 6 cm cube was
+        # almost as wide as the fully open thumb-index span.
+        cube = self.load_box('cube', [0.02, 0.02, 0.02], [0, 0, 0],
+                             color=[0.9, 0.5, 0.1, 1.0], mass=0.04,
+                             friction=1.2)
+        p.changeDynamics(cube, -1, linearDamping=0.2, angularDamping=0.5,
+                         physicsClientId=self.client)
 
     def _set_initial_positions(self):
         p.resetBasePositionAndOrientation(
@@ -38,7 +43,12 @@ class PickCube(BaseTask):
 
     def check_success(self) -> bool:
         pos = self.get_object_position('cube')
-        return pos[2] > 0.66  # 桌高0.4 + 方块半高0.03 + 提升0.15 ~= 0.58+
+        table = self.objects.get('table')
+        if table is None:
+            return False
+        _table_low, table_high = p.getAABB(table, physicsClientId=self.client)
+        # Keep the intended roughly 15 cm lift relative to the support surface.
+        return pos[2] > float(table_high[2]) + 0.18
 
 
 @register_task('pickplacecube')
@@ -46,8 +56,11 @@ class PickPlaceCube(BaseTask):
     """拿起方块放到盘子上"""
     def _load_objects(self):
         self.load_fixed_table()
-        self.load_box('cube', [0.03, 0.03, 0.03], [0, 0, 0],
-                      color=[0.9, 0.5, 0.1, 1.0], mass=0.08, friction=0.5)
+        cube = self.load_box('cube', [0.02, 0.02, 0.02], [0, 0, 0],
+                             color=[0.9, 0.5, 0.1, 1.0], mass=0.04,
+                             friction=1.2)
+        p.changeDynamics(cube, -1, linearDamping=0.2, angularDamping=0.5,
+                         physicsClientId=self.client)
         # 盘子
         self.load_cylinder('plate', 0.08, 0.01, [0, 0, 0],
                            color=[0.9, 0.9, 0.9, 1.0], mass=0.05, friction=0.6)
