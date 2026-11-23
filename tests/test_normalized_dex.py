@@ -36,10 +36,16 @@ class NormalizedDexTests(unittest.TestCase):
 
         spec = load_hand_spec('h1_2', 'right')
         pose = independent_fist_pose(spec)
-        self.assertGreater(normalized_finger_closure(spec, pose), 0.8)
+        self.assertGreater(normalized_finger_closure(spec, pose), 0.45)
         self.assertGreater(
             normalized_finger_closure(spec, pose),
             normalized_finger_closure(spec, spec.q_reference))
+        model = DifferentiableHandModel(spec)
+        points = model.positions(
+            torch.tensor(pose[None], dtype=torch.float64),
+            (spec.root_link, spec.tip_frames[0], spec.tip_frames[1]),
+        ).detach().numpy()[0]
+        self.assertLess(np.linalg.norm(points[1] - points[2]), 0.001)
 
     def test_reachable_l21_target_and_nn_share_native_result_identity(self):
         from teleoperation.retargeting.hand.dex_native import NormalizedDexRetargeter

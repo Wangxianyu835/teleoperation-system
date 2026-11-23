@@ -163,7 +163,7 @@ class CameraHandPolicyTests(unittest.TestCase):
         policy.last_pinch = None
         policy.last_raw_pinch = None
 
-        for _ in range(3):
+        for _ in range(4):
             policy._update_hand(object())
         index = policy.names["R_index_proximal_joint"]
         self.assertAlmostEqual(1.7, policy.action[index])

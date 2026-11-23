@@ -1802,7 +1802,7 @@ class CameraPolicy:
         self.hand_backend_note = "hand mapping disabled"
         self._pinch_signal = pinch_signal_details
         self._pinch_stabilizer = PinchSignalStabilizer(
-            hold_frames=15, confirm_frames=3)
+            hold_frames=3, decay=0.75, confirm_frames=4)
         self.hand_valid_frames = 0
         self.hand_invalid_frames = 0
         self.hand_clipped = 0
@@ -2068,8 +2068,8 @@ class CameraPolicy:
                     and float(pinch[2]) <= 0.45)
                 strong_fist = (
                     pinch[0] == "fist" and float(pinch[1]) >= 0.65)
-                if strong_fist or (strong_index_pinch
-                                   and raw_closure >= 0.85):
+                if (strong_fist and raw_closure >= 0.55) or (
+                        strong_index_pinch and raw_closure >= 0.85):
                     correction_gesture = "fist"
                 elif strong_index_pinch:
                     correction_gesture = pinch[0]
@@ -2084,8 +2084,9 @@ class CameraPolicy:
                 guard_target = 0.0 if correction_pose is not None else 1.0
                 previous_guard = float(getattr(
                     self, "open_guard_alpha", 0.0))
-                guard_step = min(0.35, max(
-                    -0.35, guard_target - previous_guard))
+                guard_limit = 0.7 if guard_target > previous_guard else 0.35
+                guard_step = min(guard_limit, max(
+                    -guard_limit, guard_target - previous_guard))
                 self.open_guard_alpha = min(
                     1.0, max(0.0, previous_guard + guard_step))
                 if self.open_guard_alpha > 0.0:
@@ -2096,7 +2097,7 @@ class CameraPolicy:
                         * (np.asarray(reference, dtype=np.float64) - positions))
             if (correction_pose is not None and wanted_strength > 0.0):
                 wanted_alpha = min(1.0, max(0.0, wanted_strength))
-                step = min(0.35, max(-0.35, wanted_alpha
+                step = min(0.25, max(-0.70, wanted_alpha
                                     - previous_alpha))
                 self.pinch_correction_alpha = previous_alpha + step
                 self.pinch_correction_frames = (
@@ -2106,7 +2107,7 @@ class CameraPolicy:
                     * (correction_pose - positions))
             else:
                 self.pinch_correction_alpha = max(
-                    0.0, previous_alpha - 0.35)
+                    0.0, previous_alpha - 0.70)
             if bounds is not None:
                 positions = np.clip(positions, *bounds.T)
                 corrected_closure = normalized_finger_closure(

@@ -100,51 +100,26 @@ def independent_pinch_pose(spec, finger="index", *, steps=350):
     return result.copy()
 
 
-def independent_fist_pose(spec, *, steps=350):
-    """Return a bounded four-finger curl with the thumb brought inward."""
-    if not np.isfinite(float(steps)) or int(steps) < 1:
-        raise ValueError("Fist optimization steps must be positive")
+def independent_fist_pose(spec):
+    """Return a power-grip pose with thumb/index contact and curled fingers."""
     key = (spec.hand_model, spec.side, spec.spec_hash, "fist")
     cached = _CACHE.get(key)
     if cached is not None:
         return cached.copy()
 
-    import torch
-    from teleoperation.retargeting.hand.hand_model import (
-        DifferentiableHandModel,
-    )
-
-    model = DifferentiableHandModel(spec)
+    result = independent_pinch_pose(spec, "index").copy()
+    reference = spec.q_reference
     bounds = spec.bounds
-    low = torch.as_tensor(bounds[:, 0], dtype=torch.float64)
-    high = torch.as_tensor(bounds[:, 1], dtype=torch.float64)
-    middle = (low + high) / 2.0
-    reference = torch.as_tensor(spec.q_reference, dtype=torch.float64)
-    seeds = torch.stack((reference, middle, low, high))
-    unit = ((seeds - low) / (high - low) * 2.0 - 1.0).clamp(-0.999, 0.999)
-    raw = torch.nn.Parameter(torch.atanh(unit))
-    optimizer = torch.optim.Adam((raw,), lr=0.05)
-    frames = (spec.root_link, *spec.tip_frames, spec.palm_frames[1])
-
-    def objective(positions):
-        points = model.positions(positions, frames)
-        relative = points - points[:, :1]
-        tips = relative[:, 1:1 + len(spec.tip_frames)]
-        index_mcp = relative[:, -1]
-        finger_curl = (tips[:, 1:] ** 2).sum(dim=-1).mean(dim=-1)
-        thumb = ((tips[:, 0] - index_mcp) ** 2).sum(dim=-1)
-        return finger_curl + thumb
-
-    for _ in range(int(steps)):
-        optimizer.zero_grad()
-        positions = low + (torch.tanh(raw) + 1.0) / 2.0 * (high - low)
-        objective(positions).sum().backward()
-        optimizer.step()
-
-    with torch.no_grad():
-        positions = low + (torch.tanh(raw) + 1.0) / 2.0 * (high - low)
-        scores = objective(positions)
-        result = positions[int(torch.argmin(scores))].cpu().numpy()
+    for index, name in enumerate(spec.independent_joint_names):
+        lower = name.lower()
+        if ("thumb" in lower or "index" in lower
+                or not any(finger in lower for finger in
+                           ("middle", "ring", "pinky"))):
+            continue
+        # Preserve the verified thumb/index contact and close the remaining
+        # fingers in the direction selected by the pinch solution.
+        result[index] = (bounds[index, 1] if result[index] >= reference[index]
+                         else bounds[index, 0])
     result.setflags(write=False)
     _CACHE[key] = result
     return result.copy()
