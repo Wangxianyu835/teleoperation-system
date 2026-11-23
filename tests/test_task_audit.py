@@ -770,6 +770,11 @@ class SceneLayerTests(unittest.TestCase):
             target = np.asarray(
                 report["camera_balltrashcan_setup"]["target_center_m"])
             np.testing.assert_allclose(ball, target, atol=0.01)
+            ball_low, _ = EVAL.aabb(env.client, env.task.objects["ball"])
+            _, table_high = EVAL.aabb(env.client, env.task.objects["table"])
+            self.assertGreaterEqual(
+                float(ball_low[2]), float(table_high[2]) - 1e-6,
+                "pre-grasp ball must not penetrate the tabletop")
             self.assertEqual(
                 0.0, float(EVAL.p.getDynamicsInfo(
                     env.task.objects["trashcan"], -1,

@@ -258,6 +258,14 @@ p.configureDebugVisualizer(
   真正的空心容器：8 段桶壁 + 底板上下一体的静态复合刚体。
 - 回归测试会从桶口上方释放球，确认球能进入容器并满足成功判据。
 
+2026-11-23 修正球体预抓取高度：球半径仍为 `0.03 m`，球心应位于桌面上方
+`0.03 m`；恢复被方块尺寸调整误改的 `0.02 m`，消除 `10 mm` 的初始穿桌。
+现有球体场景测试增加球底与桌面的实际 AABB 检查，防止再次出现穿透。
+使用 `D:\Anaconda\envs\teleoperation\python.exe`：新增断言在修复前失败
+（退出码 `1`，穿透 `10 mm`）；修复后 `-B -m unittest discover -s tests
+-p test_task_audit.py -v` 为 `44` 项通过，`-B -m unittest discover -s tests`
+为 `645` 项、`OK (skipped=3)`，两条命令退出码均为 `0`。
+
 PyBullet 鼠标拾取默认仍关闭，避免污染正式成功率。交互演示可显式开启：
 
 ```powershell

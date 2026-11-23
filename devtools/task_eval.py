@@ -1168,7 +1168,7 @@ class TaskScene:
         target = np.array([
             palm[0] + 0.90 * (fingertip_center[0] - palm[0]),
             0.5 * (palm[1] + fingertip_center[1]),
-            self._table_top() + 0.02,
+            self._table_top() + 0.03,  # Ball radius; keep its bottom on the table.
         ])
         table = self.task.objects.get(TABLE_KEY)
         if table is not None:
