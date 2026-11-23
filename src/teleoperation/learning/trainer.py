@@ -1,75 +1,20 @@
-"""Train one shared left/right retargeting model from an H5 recording."""
+"""Run training epochs and split recording frames into train/validation ranges."""
 
 from __future__ import annotations
 
-import argparse
-
-import logging
-import random
-import csv
-from datetime import datetime
-from pathlib import Path
-from time import perf_counter
-
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 
-try:
-    from tensorboardX import SummaryWriter
-except ModuleNotFoundError:
-    try:
-        from torch.utils.tensorboard import SummaryWriter
-    except ModuleNotFoundError:
-        class SummaryWriter:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def add_scalar(self, *args, **kwargs):
-                pass
-
-            def close(self):
-                pass
-
-from teleoperation.retargeting.hand.device import resolve_device as _resolve_device
-from teleoperation.retargeting.hand.config import ANGLE_LIMITS, RUNTIME, EXCLUDED_COLLISION_PAIRS, L21, ROBOT_JOINTS, SOURCE_JOINTS
-from teleoperation.paths import DEFAULT_WARMSTART_CHECKPOINT, DEFAULT_CHECKPOINT_ROOT
-from teleoperation.contracts.coordinates import COORDINATE_FRAME, validate_coordinate_alignment
-from teleoperation.retargeting.hand.predictor import _require_coordinate_alignment
-from teleoperation.learning.dataset import HAND_SIDES, TwoHandH5ChunkedGenerator, TwoHandH5Dataset
-from teleoperation.data.hand_h5 import load_twohand_h5
-from teleoperation.retargeting.hand.kinematics import create_hand_kinematics
-from teleoperation.learning.losses import CollisionLoss, RegLoss, hand_loss
-from teleoperation.retargeting.hand.transformer import PoseTransformer
+from teleoperation.retargeting.hand.config import L21, ROBOT_JOINTS, SOURCE_JOINTS
+from teleoperation.learning.dataset import HAND_SIDES
+from teleoperation.learning.losses import hand_loss
+from teleoperation.learning.reporting import LOSS_NAMES
 
 
-receptive_field = L21.model.receptive_field
-scaling_factor = L21.training.source_scale
-scaling_factor_rb = L21.training.robot_scale
-hand_brand = "linker"
-hand_cfg = L21.hand_kinematics_config()
-left_urdf_file = L21.left_urdf
-right_urdf_file = L21.right_urdf
 source_dic = SOURCE_JOINTS
 rb_dic = ROBOT_JOINTS
-excluded_pairs = EXCLUDED_COLLISION_PAIRS
-angle_limit_rob = ANGLE_LIMITS
 loss_weight = L21.training.loss_weights
-col_threshold = L21.training.collision_threshold
-correction_matrix = None
-
-
-LOSS_NAMES = (
-    "total",
-    "vec",
-    "pos",
-    "collision",
-    "thumb",
-    "tip_distance",
-    "thumb2",
-)
 
 
 def _run_epoch(
@@ -247,6 +192,3 @@ def _split_frame_ranges(frame_count: int, val_ratio: float, receptive_field: int
     if val_start >= frame_count:
         raise ValueError("Validation split is empty after boundary gap")
     return train_end, val_start
-
-
-from .joint_trainer import train_joint_models

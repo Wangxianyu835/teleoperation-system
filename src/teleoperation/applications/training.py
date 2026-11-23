@@ -14,7 +14,6 @@ from time import perf_counter
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 
 try:
@@ -34,8 +33,8 @@ except ModuleNotFoundError:
                 pass
 
 from teleoperation.retargeting.hand.device import resolve_device as _resolve_device
-from teleoperation.retargeting.hand.config import ANGLE_LIMITS, RUNTIME, EXCLUDED_COLLISION_PAIRS, L21, ROBOT_JOINTS, SOURCE_JOINTS
-from teleoperation.paths import DEFAULT_WARMSTART_CHECKPOINT, DEFAULT_CHECKPOINT_ROOT
+from teleoperation.retargeting.hand.config import EXCLUDED_COLLISION_PAIRS, L21, ROBOT_JOINTS
+from teleoperation.paths import DEFAULT_CHECKPOINT_ROOT
 from teleoperation.contracts.coordinates import (
     COORDINATE_FRAME, validate_coordinate_alignment, WORLD_PALM_LOCAL_COORDINATE_ALIGNMENT,
     validate_world_contract,
@@ -44,7 +43,7 @@ from teleoperation.retargeting.hand.predictor import _require_coordinate_alignme
 from teleoperation.learning.dataset import HAND_SIDES, TwoHandH5ChunkedGenerator, TwoHandH5Dataset
 from teleoperation.data.hand_h5 import load_twohand_h5, read_coordinate_alignment
 from teleoperation.retargeting.hand.kinematics import create_hand_kinematics
-from teleoperation.learning.losses import CollisionLoss, RegLoss, hand_loss
+from teleoperation.learning.losses import CollisionLoss, RegLoss
 from teleoperation.retargeting.hand.transformer import PoseTransformer
 
 
@@ -55,24 +54,10 @@ hand_brand = "linker"
 hand_cfg = L21.hand_kinematics_config()
 left_urdf_file = L21.left_urdf
 right_urdf_file = L21.right_urdf
-source_dic = SOURCE_JOINTS
 rb_dic = ROBOT_JOINTS
 excluded_pairs = EXCLUDED_COLLISION_PAIRS
-angle_limit_rob = ANGLE_LIMITS
-loss_weight = L21.training.loss_weights
 col_threshold = L21.training.collision_threshold
 correction_matrix = None
-
-
-LOSS_NAMES = (
-    "total",
-    "vec",
-    "pos",
-    "collision",
-    "thumb",
-    "tip_distance",
-    "thumb2",
-)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -488,13 +473,6 @@ def _require_urdf(urdf_file: str | Path, side: str) -> str:
     return str(path)
 
 
-def _resolve_hand_urdf_paths(left_urdf, right_urdf):
-    return {
-        "left": _require_urdf(left_urdf, "left"),
-        "right": _require_urdf(right_urdf, "right"),
-    }
-
-
 def _set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -525,6 +503,6 @@ def _setup_logging(path: Path) -> logging.Logger:
     return logger
 
 
-from teleoperation.learning.trainer import _run_epoch, _masked_hand_loss, _tensor, _split_frame_ranges
+from teleoperation.learning.trainer import _run_epoch, _split_frame_ranges
 from teleoperation.learning.reporting import _metrics_fieldnames, _epoch_metrics_row, _write_epoch_stats
 from teleoperation.data.checkpoint import read_checkpoint, write_checkpoint

@@ -14,7 +14,6 @@ from pathlib import Path
 import numpy as np
 
 from teleoperation.contracts.hand import CanonicalHandFrame
-from teleoperation.contracts.hand import HandWindow
 from teleoperation.contracts.hand_control import HandJointResult
 from teleoperation.contracts.observations import RawHandFrame
 from teleoperation.retargeting.hand.native_coordinates import build_palm_basis, OPERATOR_TO_CANONICAL
@@ -120,9 +119,6 @@ class DexCalibration:
                 raise ValueError(f"Need two seconds and at least ten open-hand samples: {side}")
             lengths[side] = float(np.median([np.linalg.norm(f.hands[side][11]) for f in valid]))
         return cls(profile, lengths, (float(start), float(start + duration)), source_sha256)
-
-    def scale_for(self, model):
-        return model.palm_reference()[1] / self.palm_lengths[model.side]
 
     def save(self, path):
         payload = {"schema": "dex_native_calibration_v1", "units": "m", "profile": self.profile,
@@ -254,52 +250,6 @@ class NativeVectorSolver:
                                self.spec.independent_joint_names, None if values is None else independent,
                                float(timestamp), values is not None, error,
                                (time.perf_counter() - started) * 1000)
-
-
-class DexNativeRetargeter(HandRetargeter):
-    def __init__(self, calibration, robots=("h1_2", "gr1_t2", "g1"), sides=SIDES):
-        from teleoperation.robots.native_hand import NativeHandModel
-        if not isinstance(calibration, DexCalibration):
-            raise TypeError("Dex native retargeting requires a fixed DexCalibration")
-        self.calibration = calibration
-        self.models = {(r, s): NativeHandModel(r, s) for r in robots for s in sides}
-        self.solvers = {key: NativeVectorSolver(model) for key, model in self.models.items()}
-        self.specs = {key: solver.spec for key, solver in self.solvers.items()}
-        self.transforms, self.scales = {}, {}
-        for key, model in self.models.items():
-            basis, _ = model.palm_reference()
-            self.transforms[key] = OPERATOR_TO_CANONICAL[model.side].T @ basis.T
-            self.scales[key] = calibration.scale_for(model)
-
-    def reset(self):
-        for solver in self.solvers.values():
-            solver.reset()
-
-    def targets(self, frame, key):
-        points = frame.hands[key[1]]
-        if points is None:
-            return None
-        if points.ndim == 3:
-            points = points[-1]
-        return points[self.models[key].human_tip_indices] @ self.transforms[key] * self.scales[key]
-
-    def retarget(self, frame):
-        if not isinstance(frame, HandWindow):
-            raise TypeError("Native dex retargeting requires a declared HandWindow")
-        if frame.metadata.get("dex_input_profile") != self.calibration.profile or frame.units != "m":
-            raise ValueError("Input and calibration profiles or units differ")
-        result = {}
-        for key, solver in self.solvers.items():
-            targets = self.targets(frame, key)
-            if targets is None:
-                solver.reset()
-                model = solver.model
-                spec = self.specs[key]
-                result[key] = HandJointResult(*key, spec.spec_hash, spec.independent_joint_names, None,
-                                              frame.timestamp, False, "missing/invalid input")
-            else:
-                result[key] = solver.solve(targets, frame.timestamp)
-        return result
 
 
 class _SpecVectorModel:

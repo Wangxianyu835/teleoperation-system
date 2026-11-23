@@ -289,35 +289,6 @@ class PaperArmIK:
         self._write(q)
         return {name: float(value) for name, value in zip(self.joint_names, q)}
 
-    def _cost(self, q, target_position, target_quaternion, q_last,
-              target_elbow_position=None):
-        """原文件 ``opti.minimize`` 的四项之和，在 ``q`` 处**真正跑一次 FK** 求值。
-
-        必须真算：线搜索比较的是候选点之间的代价，用当前点的误差当常值会让任何一步都
-        "变差"（平滑项只增不减），求解器干脆不动（实测：24 帧零位移，残差 240 mm）。
-        """
-        self._write(q)
-        position, quaternion = self._ee_pose()
-        error_position = np.asarray(target_position, dtype=float) - position
-        error_elbow = (None if target_elbow_position is None
-                       else np.asarray(target_elbow_position, dtype=float)
-                       - self._last_elbow_position)
-        error_rotation = None
-        if target_quaternion is not None:
-            error_rotation = rotation_vector_error(target_quaternion, quaternion)
-        if _DEBUG and getattr(self, "_dbg_left", 0) > 0:
-            self._dbg_left -= 1
-            rotation_deg = 0.0 if error_rotation is None else float(
-                np.degrees(np.linalg.norm(error_rotation)))
-            print(f"[cost] e_p {np.linalg.norm(error_position) * 1000:7.2f}mm "
-                  f"e_r {rotation_deg:6.2f}deg  "
-                  f"pos {TRANSLATIONAL_WEIGHT * float(error_position @ error_position):.6f} "
-                  f"rot {0.0 if error_rotation is None else ROTATION_WEIGHT * float(error_rotation @ error_rotation):.6f} "
-                  f"reg {REGULARIZATION_WEIGHT * float(np.sum((q - self.regularization_reference) ** 2)):.6f} "
-                  f"sm {SMOOTH_WEIGHT * float(np.sum((q - q_last) ** 2)):.6f}")
-        return self._terms(q, error_position, error_rotation, q_last,
-                           error_elbow)
-
     def _terms(self, q, error_position, error_rotation, q_last, error_elbow=None):
         """四个代价项之和，**输入是误差而不是位姿** —— 线搜索用线性化误差调它，
         从而候选点评估完全不碰 PyBullet（这是帧率的关键，见 ``_minimize``）。"""
@@ -342,8 +313,6 @@ class PaperArmIK:
         rot_deg = None
         iterations = 0
         rejected = 0
-        if _DEBUG:
-            self._dbg_left = 6
         # 非手臂关节在一次求解里是常量：读一次，之后每次迭代都是纯 numpy 拼装。
         base_positions = self._base_positions()
         for iterations in range(1, MAX_ITERATIONS + 1):

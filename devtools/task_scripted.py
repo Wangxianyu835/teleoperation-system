@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 
 import numpy as np
 import pybullet as p
@@ -75,12 +75,6 @@ class Segment:
     hold: int = 0
 
 
-def _unit(values) -> np.ndarray:
-    vec = np.asarray(values, dtype=np.float64)
-    norm = float(np.linalg.norm(vec))
-    return vec / norm if norm > 1e-9 else vec
-
-
 def object_position(env, key: str) -> np.ndarray:
     body = env.task.objects.get(key)
     if body is None:
@@ -88,12 +82,6 @@ def object_position(env, key: str) -> np.ndarray:
     return np.asarray(p.getBasePositionAndOrientation(body,
                                                       physicsClientId=env.client)[0],
                       dtype=np.float64)
-
-
-def object_aabb(env, key: str):
-    body = env.task.objects[key]
-    low, high = p.getAABB(body, physicsClientId=env.client)
-    return np.asarray(low, dtype=np.float64), np.asarray(high, dtype=np.float64)
 
 
 def table_top(env) -> float:
@@ -207,13 +195,6 @@ class ScriptedPolicy:
                                             "index", "middle", "ring", "pinky")):
                 out.append(index)
         return out or [self.hand_link]
-
-    def palm_position(self) -> np.ndarray:
-        points = [p.getLinkState(self.env.robot_id, int(index),
-                                 computeForwardKinematics=True,
-                                 physicsClientId=self.env.client)[4]
-                  for index in self.palm_links]
-        return np.asarray(points, dtype=np.float64).mean(axis=0)
 
     def hand_distance(self, key: str) -> float:
         """手（掌 + 五指）到物体中心的**最小**距离：抓取判据就用它。"""
@@ -502,38 +483,6 @@ def place(dest, clearance: float = 0.25, release: bool = True, retreat: float = 
 def carry_to(dest, label: str = "carry") -> list:
     return [Segment(np.asarray(dest, dtype=np.float64), label="carry %s" % label),
             Segment(None, steps=SETTLE_STEPS, label="settle %s" % label)]
-
-
-def wrist_joint(policy: "ScriptedPolicy", keyword: str = "yaw") -> str:
-    """该侧腕链里名字含 ``keyword`` 的关节（拧腕用）。"""
-    for name in policy.ik.joint_values(policy.side):
-        if "wrist" in name.lower() and keyword in name.lower():
-            return name
-    return ""
-
-
-def rotate_in_place(policy: "ScriptedPolicy", degrees: float, keyword: str = "yaw",
-                    steps: int = 160, label: str = "twist") -> list:
-    """原地拧手腕（物体已挂在手上时，物体跟着转）。"""
-    name = wrist_joint(policy, keyword)
-    if not name:
-        return []
-    return [Segment(None, steps=int(steps), rotate={name: float(degrees)},
-                    label="%s %s %+.0fdeg" % (label, keyword, degrees)),
-            Segment(None, steps=SETTLE_STEPS, label="settle %s" % label)]
-
-
-def push_through(env, key: str, direction, distance: float, height: float = 0.0,
-                 label: str = None) -> list:
-    """贴着物体沿 ``direction`` 推 ``distance`` 米（纯接触，不用抓取约束）。"""
-    name = label or key
-    unit = _unit([direction[0], direction[1], 0.0])
-    pos = object_position(env, key)
-    start = pos - unit * 0.11 + np.array([0.0, 0.0, height])
-    end = pos + unit * float(distance) + np.array([0.0, 0.0, height])
-    return [Segment(start, label="pre-push %s" % name),
-            Segment(end, steps=max(48, int(distance / 0.12 * 240)), label="push %s" % name),
-            Segment(None, steps=SETTLE_STEPS, label="settle push %s" % name)]
 
 
 # --------------------------------------------------------------------------- #

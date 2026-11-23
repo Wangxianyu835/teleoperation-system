@@ -9,13 +9,6 @@ from teleoperation.data.hand_recording import iter_dex_observations
 from teleoperation.retargeting.hand.dex_native import DexInputAdapter, DexCalibration
 
 
-def canonical_window(frame):
-    """Declare the explicit single-frame VR profile as a hand window."""
-    from teleoperation.contracts.hand import HandWindow
-    return HandWindow({side: None if points is None else points[None]
-                       for side, points in frame.hands.items()}, frame.timestamp, frame.source, frame.metadata)
-
-
 def file_hash(path):
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:

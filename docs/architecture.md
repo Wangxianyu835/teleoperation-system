@@ -126,8 +126,38 @@ checkpoint 的文件序列化位于 `data/checkpoint`，state_dict 选择、严�
 
 不保留旧路径 Python wrapper。静态架构测试检查直接导入、重导出后的传递依赖、受控动态导入和 partial 的生产调用位置。
 
-## 目录迁移时的验证范围（历史）
+## 废弃实现清理（2026-11-23）
 
-按用户最新要求不使用冻结基线进行验收。仅执行语法、导入、CLI 帮助、包构建与架构规则检查；没有执行迁移后的数值或物理回归。现有行为测试保留并迁移导入、mock 目标和命令，容差不放宽。后续由用户运行完整 unittest 和真实工作流。摄像头、CUDA 与外部 TRON2A URDF/mesh 的运行情况仍需实际验证。
+当前入口以 CLI 注册表及实际应用组装为准。移除了未被当前入口、生产代码或测试引用的早期
+TRON2/xArm7 演示流水线及其专用模拟 VR、手部接口，以及旧 VisionProWorkflow 和
+realtime_support 模块。sim demo-joints 使用的 H1DemoJointCommand 继续保留；输入图像使用
+contracts.observations.CameraFrame，episode 记录使用现行 data 与 applications/simulation 链路。
 
-后续 current-state 数值回归、物理 smoke 与实时坐标契约修复的实际结果见 [2026-10-09 验收报告](current-state-validation-2026-10-09.md)。
+同步清除了未引用的旧窗口转换与选择函数、单帧 dex 包装、固定标定版 DexNativeRetargeter、
+旧拇指平面角探针、训练/数据集辅助函数、脚本策略辅助函数，以及不再被线搜索调用的
+paper IK 精确代价函数。现行线性化代价、数值求解、任务注册和正常控制入口继续使用原有实现。
+
+learning/reporting 只保留指标格式化；learning/trainer 保留实际 epoch 计算与数据划分。
+清除了两者复制残留的 TensorBoard 初始化、模型导入及无用配置，LOSS_NAMES 由 reporting
+统一定义，trainer 保留同名导入供现有调用使用。
+
+已完成的原生手对齐计划和 2026-10-11 旧集成记录由现行
+[原生手说明](native-hand-control.md)、[米制采集](world-landmark-capture.md) 与
+[README](../README.md) 覆盖，已从工作树删除；来源哈希与实际实验记录继续保留。
+清理前检查点为 checkpoint-20261123-1236-remove-unused（提交 1dfc3ff0fabfbab5872643dc391420bf231a43f4）。
+
+验证使用 D:/Anaconda/envs/teleoperation/python.exe、当前仓库 src 路径与 PYTHONUTF8=1，
+临时目录和缓存均指向本仓库 outputs/tmp_unused_cleanup。
+
+- 修改前后均执行 -B -m unittest discover -s tests：645 项，642 通过、3 跳过，退出码均为 0。
+- 训练/坐标、手模型、NormalizedDex 与 CLI 针对性测试：23 项通过，退出码 0。
+- 39 个注册 handler 导入、39 个命令帮助解析全部通过；283 个 Python 文件语法检查通过。
+- 已删除模块的生产/测试导入为 0；已删除文档的剩余 Markdown 引用为 0；修改过的 Python 文件均可用 GBK 编码。
+- 30 个内置任务显式注册成功；H1-2 原生动作回放使用 --dummy --steps 120 --no-render，退出码 0。
+- 保留函数的 AST 均与检查点一致，唯一差异是移除了已删除 IK 诊断方法专用的 _dbg_left 初始化。
+- git diff --check 通过。
+
+快速 preflight 修改前后均退出 1，失败项相同：两份 GBK 扫描命中第三方源码/下载缓存、
+C 盘既有 pip/HuggingFace 缓存，以及 runtime_environment.py 中 5 处现有 sys.path.insert。
+检查前后的比较基线均为上述检查点，清理后的检查以 -Allow 显式列出本次用户授权修改的文件。
+完整测试、针对性测试和自检日志保存在 outputs/tmp_unused_cleanup，本次清理未新增测试失败。

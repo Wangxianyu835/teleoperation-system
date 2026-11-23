@@ -178,15 +178,6 @@ def bend_angle(parent: np.ndarray, child: np.ndarray, axis: np.ndarray, sign: fl
     return float(sign * np.arctan2(sine, circle))
 
 
-def _in_plane_angle(direction: np.ndarray, lateral: np.ndarray, longitudinal: np.ndarray) -> float:
-    """Angle of ``direction`` inside the palm plane, measured from +Y toward +X.
-
-    Kept for probing the palm-plane reading of the thumb metacarpal (the coarse
-    "in-plane yaw" the chain inversion replaced); no longer used by the pipeline.
-    """
-    return float(np.arctan2(float(np.dot(direction, lateral)), float(np.dot(direction, longitudinal))))
-
-
 def _rodrigues(axis: np.ndarray, angle: float) -> np.ndarray:
     """Rotation matrix about a unit ``axis`` by ``angle`` radians."""
     x, y, z = (float(value) for value in axis)

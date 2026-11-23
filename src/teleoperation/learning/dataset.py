@@ -248,13 +248,6 @@ class TwoHandH5ChunkedGenerator:
             }
 
 
-def _is_valid_hand_frame(points: np.ndarray | None) -> bool:
-    if points is None:
-        return False
-    points = np.asarray(points)
-    return bool(np.isfinite(points).all() and not np.all(points == 0))
-
-
 def _scalar_or_none(value):
     if value is None:
         return None

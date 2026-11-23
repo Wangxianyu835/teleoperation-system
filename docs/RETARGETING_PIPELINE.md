@@ -1,23 +1,8 @@
 # 手部重定向链路怎么跑、怎么复核（current-state 布局）
 
-> 2026-10-11：本文保留原分支的运行与验收历史。合并后的入口、坐标数据差异及测试结果见 [main 集成记录](integration-2026-10-11.md)，本文的历史机器路径与测试数量不代表当前 main。
-
-> **适用版本**：`origin/current-state`（包 `src/teleoperation`，CLI `python -m teleoperation`）
-> **最后更新**：2026-10-15（基线仍是 `10ebd9f`：上游 `apps/` -> `applications/` 改名 + 删除 `tests/`；本轮四件事 —— ① "摄像头窗口那句话的判据修正"实测记录：`summarise_camera_window` 改按报告的 `window_rect` 判断，不再把按 q 正常退出误报成窗口没开；② **加手臂的实时入口 `devtools/run_realtime_arm_windows.py`**：默认口径由 `chain` 改为 `posture`（现场「大臂抬不起来 / 张不开怀抱」的直接修复，见 `multi-robot-arm.md` §8.15）；③ 当晚复查：`realtime_teleop` 多了 `--arm-rest-poses {current,zero,live}`（默认 `current` = 行为不变），「肘 / 小臂不跟手」定位到 PyBullet `restPoses` 这个零空间代价项，见 `multi-robot-arm.md` §8.16）；④ **「肘 / 小臂不跟手」接上线**：`realtime_teleop` 多了 `--arm-elbow-follow {off,operator}`（**默认 `off`**，实测把 4 个源文件退回 `2170cfb` 逐字同路），`operator` 把操作者这一帧的肘弯（绝对角）交给每台机器人**自己实测的**肘关节当零空间参考（论文 `PostureTask` 的等价物）；同一份回放 200 帧的确定性 A/B 是肘任务中位 5/6 侧改善、腕任务 6/6 侧不恶化，见 `multi-robot-arm.md` §8.17；同节 §8.17.10 另给了一个**固化档入口** `devtools/run_realtime_arm_elbow_follow_windows.py`（= 上面那个入口 + 钉住 `operator`，加 `--off` 就是历史档，现场一键还原这一版；**2026-11-09 该文件已并回主入口并删除**：现场档 = `devtools/run_realtime_arm_windows.py --elbow-follow operator`）。**做 A/B 请注意**：现场口径的「关键点跳变护栏 / 速率斜坡」按**墙钟时间**换算，同一条命令两次跑可能差一帧判定、整场分叉（§8.17.4 实测），确定性做法是加 `--arm-direction-rate-deg-s 0 --arm-slew-mm 40`）· **相关**：[`CONVENTIONS.md`](CONVENTIONS.md)（规则与解释器）·
-> **2026-11-09 追加**：GR1-T2 的肘在加载时被 `ARM_NEUTRAL`（按关节名给 +1.2 rad）弯到了**反面**
-> —— 这个关节的正方向是伸直方向（实测斜率 -0.999），前臂因此朝后（基座系 x=-0.79，另两台 +0.56）。
-> `arm_ik._level_elbow_pose` 现在把这类关节对 0（= 伸直位）取反：同一个弯角、换到另一侧；启动行
-> 会打印 `elbow pose: gr1_t2:l +1.20->-1.20 rad, ...`，报告里看
-> `/arm/robots/<robot>/elbow_pose_fix`，细节见 `multi-robot-arm.md` §8.17.11。
-> **2026-11-09 追加（任务评估开工）**：论文「仿真任务的测试与评估」拆成四个批次，批次 1（30 任务可评测性
-> 审计）已落地 —— `devtools/audit_tasks.py` 实测 **19/30 通过**（3 个任务判据在 reset 就成立、1 个判据
-> 不可触发、10 个场景物体自己乱飞、三台机器人 **0/57** 个可搬物体在手臂可达半径内）。口径、30 行结果表
-> 与批次 2 的输入见 [`task-evaluation.md`](task-evaluation.md)。
-> [`contracts.md`](contracts.md)（H5 / 命令契约，字段以它为准）· [`architecture.md`](architecture.md)（模块层次）·
-> 注意：`docs/archive/`（旧布局手册，只读参考）已随上游 `10ebd9f` 被整体删除，
-> 旧布局的对照表保留在 §5（本文档内，自足）。
->
-> 本文只讲**怎么用现有代码跑通并复核**；算法/契约本身由队友维护，**不要为跑通而改 `src/teleoperation`**（CONVENTIONS 约定 3）。
+> 本文保留早期分支的运行与验收历史，历史机器路径、默认值与测试数量不能作为当前版本的运行依据。
+> 当前工作流以 [README](../README.md)、[原生手与统一控制](native-hand-control.md)、[数据契约](contracts.md) 和 [米制采集](world-landmark-capture.md) 为准。
+> **最后维护**：2026-11-23。已清除被现行文档覆盖的旧集成记录链接；手臂历次实验见 [multi-robot-arm.md](multi-robot-arm.md)，任务现状见 [task-evaluation.md](task-evaluation.md)。
 
 ---
 

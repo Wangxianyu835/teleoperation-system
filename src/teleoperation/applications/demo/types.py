@@ -2,40 +2,17 @@
 数据接口定义 — 三人协作的数据格式
 
 完整流程:
-  1. 王健杰: 摄像头采集 -> CameraFrame (RGB数组)
-  2. 肖奕阳: 重定向算法 -> H1DemoJointCommand (关节角度)
-  3. 王宪雨: 仿真环境接收 H1DemoJointCommand -> 驱动 H1-2
+  1. 输入观测由 contracts.observations 定义。
+  2. H1DemoJointCommand 提供 sim demo-joints 使用的演示关节指令。
 
 每个模块独立开发, 通过标准 Numpy 数组传递数据
 """
 
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict
 
-
-# ============================================================
-# 接口1: 摄像头 -> 重定向
-# 王健杰采集的 RGB 帧, 传给肖奕阳
-# ============================================================
-@dataclass
-class CameraFrame:
-    """摄像头采集的一帧数据"""
-    rgb: np.ndarray          # (480, 640, 3) RGB图像, uint8
-    timestamp: float         # 时间戳 (秒)
-    frame_id: int            # 帧序号
-
-    def save(self, filepath: str):
-        """保存为 .npy 文件供后续读取"""
-        write_arrays(filepath, rgb=self.rgb, timestamp=self.timestamp,
-                 frame_id=self.frame_id)
-
-    @classmethod
-    def load(cls, filepath: str) -> 'CameraFrame':
-        """从 .npy 文件加载"""
-        data = read_arrays(filepath)
-        return cls(rgb=data['rgb'], timestamp=float(data['timestamp']),
-                   frame_id=int(data['frame_id']))
+from teleoperation.data.npz import read_arrays, write_arrays
 
 
 # ============================================================
@@ -121,25 +98,3 @@ class H1DemoJointCommand:
             0.0,           # wrist_yaw
         ])
         return cls(left_arm=left_arm, right_arm=right_arm, timestamp=t)
-
-
-# ============================================================
-# 接口3: 仿真 -> 数据记录
-# 王宪雨记录每次遥操作 episode 的完整数据
-# ============================================================
-@dataclass
-class TeleopEpisode:
-    """
-    一次完整遥操作的数据记录
-
-    等价于论文 Table 2 中的一行测试数据
-    """
-    task_name: str
-    robot_type: str
-    success: bool
-    completion_time: float
-    num_steps: int
-    camera_frames: List[CameraFrame] = field(default_factory=list)
-    joint_commands: List[H1DemoJointCommand] = field(default_factory=list)
-
-from teleoperation.data.npz import read_arrays, write_arrays
