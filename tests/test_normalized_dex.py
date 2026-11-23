@@ -28,6 +28,19 @@ class NormalizedDexTests(unittest.TestCase):
         gap_m = np.linalg.norm(points[1] - points[2])
         self.assertLess(gap_m, 0.001)
 
+    def test_fist_contact_pose_closes_all_four_fingers(self):
+        from teleoperation.retargeting.hand.pinch_contact import (
+            independent_fist_pose,
+            normalized_finger_closure,
+        )
+
+        spec = load_hand_spec('h1_2', 'right')
+        pose = independent_fist_pose(spec)
+        self.assertGreater(normalized_finger_closure(spec, pose), 0.8)
+        self.assertGreater(
+            normalized_finger_closure(spec, pose),
+            normalized_finger_closure(spec, spec.q_reference))
+
     def test_reachable_l21_target_and_nn_share_native_result_identity(self):
         from teleoperation.retargeting.hand.dex_native import NormalizedDexRetargeter
         from teleoperation.retargeting.hand.interface import SharedJointNNRetargeter

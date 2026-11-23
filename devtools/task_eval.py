@@ -1624,6 +1624,7 @@ class CameraPolicy:
                  arm_force: float = 200.0, hand_force: float = 200.0,
                  ik_mode: str = "pose", wrist_pose: bool = True,
                  ik_solver: str = "paper",
+                 mouse_setup: bool = False,
                  target_speed_m_s: float = 0.60,
                  startup_hold_frames: int = 12,
                  startup_motion_m: float = 0.05,
@@ -1679,6 +1680,8 @@ class CameraPolicy:
         self.ik_mode = str(ik_mode)
         self.wrist_pose = bool(wrist_pose)
         self.ik_solver = str(ik_solver)
+        self.mouse_setup = bool(mouse_setup)
+        self.mouse_picking_closed = False
         self.target_speed_m_s = max(0.0, float(target_speed_m_s))
         self.startup_hold_frames = max(0, int(startup_hold_frames))
         self.startup_motion_m = max(0.0, float(startup_motion_m))
@@ -1791,10 +1794,15 @@ class CameraPolicy:
         self.pinch_contact_poses = {}
         self.pinch_correction_alpha = 0.0
         self.pinch_correction_frames = 0
+        self.open_guard_alpha = 0.0
+        self._last_correction_gesture = None
+        self.max_dex_raw_closure = 0.0
+        self.max_dex_corrected_closure = 0.0
         self.hand_backend_name = "off"
         self.hand_backend_note = "hand mapping disabled"
         self._pinch_signal = pinch_signal_details
-        self._pinch_stabilizer = PinchSignalStabilizer(hold_frames=8)
+        self._pinch_stabilizer = PinchSignalStabilizer(
+            hold_frames=15, confirm_frames=3)
         self.hand_valid_frames = 0
         self.hand_invalid_frames = 0
         self.hand_clipped = 0
@@ -1818,6 +1826,7 @@ class CameraPolicy:
                     "normalized vector retargeting; palm-length normalized targets")
                 if self.pinch_correction_enabled:
                     from teleoperation.retargeting.hand.pinch_contact import (
+                        independent_fist_pose,
                         independent_pinch_pose,
                     )
 
@@ -1834,6 +1843,8 @@ class CameraPolicy:
                             # A nonconverged auxiliary pose must not prevent
                             # the arm and index hand from starting.
                             continue
+                    self.pinch_contact_poses["fist"] = (
+                        independent_fist_pose(self.native_hand_spec))
             else:
                 from teleoperation.applications.realtime_hand_sim import build_retargeter
                 self.hand_retargeter, self.hand_backend_name, self.hand_backend_note = \
@@ -1959,6 +1970,10 @@ class CameraPolicy:
             "-" if not self.last_raw_pinch
             else "%s/%s" % (self.last_raw_pinch.get("finger"),
                             self.last_raw_pinch.get("strength")))
+        if self.last_hand.get("dex_raw_finger_closure") is not None:
+            pinch_line += "  dex=%.2f/%.2f" % (
+                float(self.last_hand["dex_raw_finger_closure"]),
+                float(self.last_hand["dex_corrected_finger_closure"]))
         feedback = self.grasp_feedback
         grasp_text = "grasp=%s %s contacts=%d force=%.1fN" % (
             feedback.get("state", "none"),
@@ -2030,14 +2045,57 @@ class CameraPolicy:
             "world": raw_details["world"],
             "image": raw_details["image"],
         }
+        correction_gesture = None
+        raw_closure = None
+        corrected_closure = None
         if self.hand_backend_name == "dex":
+            from teleoperation.retargeting.hand.pinch_contact import (
+                normalized_finger_closure,
+            )
+
             positions = np.asarray(native_result.positions, dtype=np.float64)
+            if (hasattr(self.native_hand_spec, "bounds")
+                    and hasattr(self.native_hand_spec, "q_reference")):
+                raw_closure = normalized_finger_closure(
+                    self.native_hand_spec, positions)
+                self.max_dex_raw_closure = max(
+                    float(getattr(self, "max_dex_raw_closure", 0.0)),
+                    raw_closure)
+                strong_index_pinch = (
+                    pinch[0] in ("index", "middle")
+                    and float(pinch[1]) >= 0.45
+                    and pinch[2] is not None
+                    and float(pinch[2]) <= 0.45)
+                strong_fist = (
+                    pinch[0] == "fist" and float(pinch[1]) >= 0.65)
+                if strong_fist or (strong_index_pinch
+                                   and raw_closure >= 0.85):
+                    correction_gesture = "fist"
+                elif strong_index_pinch:
+                    correction_gesture = pinch[0]
             correction_pose = getattr(
-                self, "pinch_contact_poses", {}).get(pinch[0])
+                self, "pinch_contact_poses", {}).get(correction_gesture)
             previous_alpha = float(getattr(
                 self, "pinch_correction_alpha", 0.0))
-            if (correction_pose is not None and float(pinch[1]) > 0.0):
-                wanted_alpha = min(1.0, max(0.0, float(pinch[1])))
+            wanted_strength = (max(float(pinch[1]), raw_closure or 0.0)
+                               if correction_gesture else 0.0)
+            bounds = getattr(self.native_hand_spec, "bounds", None)
+            if bounds is not None and self.pinch_contact_poses:
+                guard_target = 0.0 if correction_pose is not None else 1.0
+                previous_guard = float(getattr(
+                    self, "open_guard_alpha", 0.0))
+                guard_step = min(0.35, max(
+                    -0.35, guard_target - previous_guard))
+                self.open_guard_alpha = min(
+                    1.0, max(0.0, previous_guard + guard_step))
+                if self.open_guard_alpha > 0.0:
+                    reference = getattr(
+                        self.native_hand_spec, "q_reference", positions)
+                    positions = (
+                        positions + self.open_guard_alpha
+                        * (np.asarray(reference, dtype=np.float64) - positions))
+            if (correction_pose is not None and wanted_strength > 0.0):
+                wanted_alpha = min(1.0, max(0.0, wanted_strength))
                 step = min(0.35, max(-0.35, wanted_alpha
                                     - previous_alpha))
                 self.pinch_correction_alpha = previous_alpha + step
@@ -2049,11 +2107,24 @@ class CameraPolicy:
             else:
                 self.pinch_correction_alpha = max(
                     0.0, previous_alpha - 0.35)
-            bounds = getattr(self.native_hand_spec, "bounds", None)
             if bounds is not None:
                 positions = np.clip(positions, *bounds.T)
+                corrected_closure = normalized_finger_closure(
+                    self.native_hand_spec, positions)
+                self.max_dex_corrected_closure = max(
+                    float(getattr(
+                        self, "max_dex_corrected_closure", 0.0)),
+                    corrected_closure)
             targets = self.native_hand_spec.expand(positions)
             clipped = 0
+            if (getattr(self, "_last_correction_gesture", None)
+                    != correction_gesture):
+                print("[camera] dex grip -> %s  raw=%.2f corrected=%.2f"
+                      % ("open" if correction_gesture is None
+                         else correction_gesture,
+                         float(raw_closure or 0.0),
+                         float(corrected_closure or 0.0)), flush=True)
+                self._last_correction_gesture = correction_gesture
         else:
             targets, clipped = self.hand_adapter.map(
                 angles.native_mapping_dofs(), pinch=pinch)
@@ -2093,6 +2164,14 @@ class CameraPolicy:
                                  for name, value in sorted(written.items())},
             "pinch_correction_alpha": round(
                 float(getattr(self, "pinch_correction_alpha", 0.0)), 3),
+            "pinch_correction_gesture": correction_gesture,
+            "open_guard_alpha": round(
+                float(getattr(self, "open_guard_alpha", 0.0)), 3),
+            "dex_raw_finger_closure": (
+                None if raw_closure is None else round(raw_closure, 3)),
+            "dex_corrected_finger_closure": (
+                None if corrected_closure is None
+                else round(corrected_closure, 3)),
             "solve_ms": (None if native_result is None
                          else round(float(native_result.solve_ms), 3)),
         }
@@ -2256,6 +2335,13 @@ class CameraPolicy:
                 }
                 return
             if not was_tracking:
+                if self.mouse_setup and not self.mouse_picking_closed:
+                    p.configureDebugVisualizer(
+                        p.COV_ENABLE_MOUSE_PICKING, 0,
+                        physicsClientId=self.env.client)
+                    self.mouse_picking_closed = True
+                    print("[camera] setup mouse picking OFF; the robot must now "
+                          "complete the task by contact", flush=True)
                 self._unfreeze_task_objects(
                     self.env, only=((self.delayed_physics_object,)
                                     if self.delayed_physics_object else None))
@@ -2641,6 +2727,7 @@ class CameraPolicy:
                            "hand_backend_note": self.hand_backend_note,
                            "hand_limit_mode": self.hand_limit_mode,
                            "pinch_correction": self.pinch_correction_enabled,
+                           "mouse_setup": self.mouse_setup,
                            "hand_joints": self.hand_names,
                            "table_clearance_m": self.table_clearance_m,
                            "table_guard": self.table_guard_enabled,
@@ -2693,7 +2780,17 @@ class CameraPolicy:
                     "last_alpha": round(
                         float(getattr(
                             self, "pinch_correction_alpha", 0.0)), 3),
+                    "max_raw_finger_closure": round(
+                        float(getattr(
+                            self, "max_dex_raw_closure", 0.0)), 3),
+                    "max_corrected_finger_closure": round(
+                        float(getattr(
+                            self, "max_dex_corrected_closure", 0.0)), 3),
+                    "open_guard_alpha": round(
+                        float(getattr(self, "open_guard_alpha", 0.0)), 3),
                 },
+                "mouse_setup": self.mouse_setup,
+                "mouse_picking_closed": self.mouse_picking_closed,
                 "hand_calibration_status": dict(self.hand_calibration_status),
                 "last_hand": self.last_hand,
                 "last_valid_hand": self.last_valid_hand,
@@ -3107,7 +3204,8 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                   snapshot_dir: str = None,
                   success_hold_steps: int = SUCCESS_HOLD_STEPS,
                   stop_on_success: bool = True,
-                  allow_gui_mouse_picking: bool = False) -> dict:
+                  allow_gui_mouse_picking: bool = False,
+                  setup_gui_mouse_picking: bool = False) -> dict:
     """一个任务跑 N 个 trial，返回 report（含每个 trial 的 JSON 段）。"""
     from teleoperation.simulation.environment import SimulationEnv
 
@@ -3136,7 +3234,8 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                 # Evaluation must accept only robot/contact-driven state changes.
                 p.configureDebugVisualizer(
                     p.COV_ENABLE_MOUSE_PICKING,
-                    1 if allow_gui_mouse_picking else 0,
+                    1 if (allow_gui_mouse_picking
+                          or setup_gui_mouse_picking) else 0,
                     physicsClientId=env.client)
             scene_report = None
             if scene:
@@ -3247,7 +3346,13 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                          scene=scene_report, initial_objects=initial_objects,
                          final_objects=object_positions(env),
                          gui_mouse_picking_enabled=(
-                             bool(allow_gui_mouse_picking) if render else None))
+                             bool(allow_gui_mouse_picking
+                                  or setup_gui_mouse_picking)
+                             if render else None),
+                         gui_mouse_picking_mode=(
+                             "always" if allow_gui_mouse_picking
+                             else "setup" if setup_gui_mouse_picking
+                             else "off" if render else None))
             if policy == "camera":
                 trial["robot_object_contacts"] = robot_contact_summary(env)
             if scene_report is not None and scene_report.get("criteria_at_reset"):
@@ -3518,6 +3623,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--render", action="store_true", help="GUI 渲染（默认 DIRECT）")
     parser.add_argument("--allow-gui-mouse-picking", action="store_true",
                         help="允许使用 PyBullet 鼠标拖动；仅用于演示，不能作为有效评测结果")
+    parser.add_argument("--setup-gui-mouse-picking", action="store_true",
+                        help="只在标定阶段允许鼠标调整初始物体；开始跟手时自动关闭 picking")
     parser.add_argument("--json", default=None, help="报告落盘路径")
     parser.add_argument("--snapshot-dir", default=None,
                         help="每个 trial 结束时离屏渲染一张 PNG 到这个目录（现场取证用）")
@@ -3630,12 +3737,14 @@ def main(argv=None) -> int:
                        1, int(args.camera_startup_confirm_frames)),
                    "target_deadband_m": max(
                        0.0, float(args.camera_target_deadband_mm)) / 1000.0,
+                   "mouse_setup": bool(args.setup_gui_mouse_picking),
                    # A mass=0 object cannot be dragged by PyBullet's GUI
                    # picking tool.  Manual demos must keep the objects dynamic
                    # while formal evaluation keeps the freeze/startup gate.
                    "freeze_objects": camera_objects_frozen(
                        args.camera_freeze_objects,
-                       args.allow_gui_mouse_picking)}
+                       (args.allow_gui_mouse_picking
+                        or args.setup_gui_mouse_picking))}
 
     reports = []
     for name in tasks:
@@ -3649,7 +3758,9 @@ def main(argv=None) -> int:
                                success_hold_steps=success_hold_steps,
                                stop_on_success=not args.demo_keep_open,
                                allow_gui_mouse_picking=(
-                                   args.allow_gui_mouse_picking))
+                                   args.allow_gui_mouse_picking),
+                               setup_gui_mouse_picking=(
+                                   args.setup_gui_mouse_picking))
         reports.append(report)
         summary = report["summary"]
         print("[%s] %s/%s: %d/%d success, mean %s s" % (

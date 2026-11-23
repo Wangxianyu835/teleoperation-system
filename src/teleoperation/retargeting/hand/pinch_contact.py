@@ -6,6 +6,30 @@ import numpy as np
 
 _CACHE = {}
 _FINGER_TIPS = {"thumb": 0, "index": 1, "middle": 2}
+_FOUR_FINGERS = ("index", "middle", "ring", "pinky")
+
+
+def normalized_finger_closure(spec, positions):
+    """Return the weakest four-finger excursion from the open reference.
+
+    A pinch closes one finger and must not be mistaken for a fist.  The lower
+    quartile therefore treats a one-finger pinch as open while a closed four-
+    finger hand raises all four values together.
+    """
+    values = np.asarray(positions, dtype=np.float64)
+    bounds = spec.bounds
+    if values.shape != (spec.dof,):
+        raise ValueError("Finger closure requires one independent position vector")
+    reference = spec.q_reference
+    spans = np.maximum(bounds[:, 1] - bounds[:, 0], 1e-9)
+    selected = [
+        index for index, name in enumerate(spec.independent_joint_names)
+        if any(finger in name.lower() for finger in _FOUR_FINGERS)
+    ]
+    if not selected:
+        return 0.0
+    excursion = np.abs(values[selected] - reference[selected]) / spans[selected]
+    return float(np.clip(np.percentile(excursion, 25), 0.0, 1.0))
 
 
 def independent_pinch_pose(spec, finger="index", *, steps=350):
@@ -71,6 +95,56 @@ def independent_pinch_pose(spec, finger="index", *, steps=350):
             "Could not find a sub-millimetre %s pinch pose for %s/%s "
             "(best %.3f mm)" % (
                 finger, spec.hand_model, spec.side, gap_m * 1000.0))
+    result.setflags(write=False)
+    _CACHE[key] = result
+    return result.copy()
+
+
+def independent_fist_pose(spec, *, steps=350):
+    """Return a bounded four-finger curl with the thumb brought inward."""
+    if not np.isfinite(float(steps)) or int(steps) < 1:
+        raise ValueError("Fist optimization steps must be positive")
+    key = (spec.hand_model, spec.side, spec.spec_hash, "fist")
+    cached = _CACHE.get(key)
+    if cached is not None:
+        return cached.copy()
+
+    import torch
+    from teleoperation.retargeting.hand.hand_model import (
+        DifferentiableHandModel,
+    )
+
+    model = DifferentiableHandModel(spec)
+    bounds = spec.bounds
+    low = torch.as_tensor(bounds[:, 0], dtype=torch.float64)
+    high = torch.as_tensor(bounds[:, 1], dtype=torch.float64)
+    middle = (low + high) / 2.0
+    reference = torch.as_tensor(spec.q_reference, dtype=torch.float64)
+    seeds = torch.stack((reference, middle, low, high))
+    unit = ((seeds - low) / (high - low) * 2.0 - 1.0).clamp(-0.999, 0.999)
+    raw = torch.nn.Parameter(torch.atanh(unit))
+    optimizer = torch.optim.Adam((raw,), lr=0.05)
+    frames = (spec.root_link, *spec.tip_frames, spec.palm_frames[1])
+
+    def objective(positions):
+        points = model.positions(positions, frames)
+        relative = points - points[:, :1]
+        tips = relative[:, 1:1 + len(spec.tip_frames)]
+        index_mcp = relative[:, -1]
+        finger_curl = (tips[:, 1:] ** 2).sum(dim=-1).mean(dim=-1)
+        thumb = ((tips[:, 0] - index_mcp) ** 2).sum(dim=-1)
+        return finger_curl + thumb
+
+    for _ in range(int(steps)):
+        optimizer.zero_grad()
+        positions = low + (torch.tanh(raw) + 1.0) / 2.0 * (high - low)
+        objective(positions).sum().backward()
+        optimizer.step()
+
+    with torch.no_grad():
+        positions = low + (torch.tanh(raw) + 1.0) / 2.0 * (high - low)
+        scores = objective(positions)
+        result = positions[int(torch.argmin(scores))].cpu().numpy()
     result.setflags(write=False)
     _CACHE[key] = result
     return result.copy()
