@@ -1637,7 +1637,6 @@ class CameraPolicy:
             CameraFrameSource,
             ReplayFrameSource,
         )
-        from teleoperation.applications.realtime_hand_sim import build_retargeter
         from teleoperation.paths import realtime_checkpoint
         from teleoperation.robots.native_hand import (
             NativeHandAdapter,
@@ -1773,6 +1772,7 @@ class CameraPolicy:
         self.cup_velocity_clamp_count = 0
         self.hand_adapter = None
         self.hand_retargeter = None
+        self.native_hand_spec = None
         self.hand_backend_name = "off"
         self.hand_backend_note = "hand mapping disabled"
         self._pinch_signal = pinch_signal_details
@@ -1789,12 +1789,23 @@ class CameraPolicy:
         self.hand_calibration_status = {}
         if self.hand_enabled:
             checkpoint = Path(hand_checkpoint) if hand_checkpoint else realtime_checkpoint("world")
-            self.hand_retargeter, self.hand_backend_name, self.hand_backend_note = \
-                build_retargeter(self.hand_backend, checkpoint, str(hand_device),
-                                 int(calibrate_frames), float(hand_smoothing), "world")
-            ranges, _names = read_joint_ranges(env.robot_id, env.client)
-            self.hand_adapter = NativeHandAdapter(
-                env.robot_type, self.side, ranges, limit_mode=self.hand_limit_mode)
+            if self.hand_backend == "dex":
+                from teleoperation.applications.hand_backend import build_camera_retargeter
+                specs, self.hand_retargeter = build_camera_retargeter(
+                    (env.robot_type,), (self.side,), "dex")
+                self.native_hand_spec = specs[(env.robot_type, self.side)]
+                self.hand_names = list(self.native_hand_spec.joint_names)
+                self.hand_backend_name = "dex"
+                self.hand_backend_note = (
+                    "normalized vector retargeting; palm-length normalized targets")
+            else:
+                from teleoperation.applications.realtime_hand_sim import build_retargeter
+                self.hand_retargeter, self.hand_backend_name, self.hand_backend_note = \
+                    build_retargeter(self.hand_backend, checkpoint, str(hand_device),
+                                     int(calibrate_frames), float(hand_smoothing), "world")
+                ranges, _names = read_joint_ranges(env.robot_id, env.client)
+                self.hand_adapter = NativeHandAdapter(
+                    env.robot_type, self.side, ranges, limit_mode=self.hand_limit_mode)
         self.steps = 0
         self.frames = 0
         self.hand_frames = {"left": 0, "right": 0}
@@ -1812,13 +1823,17 @@ class CameraPolicy:
               "手往镜头方向收 = 机器人往前伸。看 PyBullet 窗口跟，别盯着字", flush=True)
         if self.hand_enabled:
             backend = (self.hand_backend_name
-                       if self.hand_adapter is not None else "unavailable")
+                       if self.hand_retargeter is not None else "unavailable")
             print("[camera] hand -> native joints: %s (%s), %d mapped joints, limits=%s"
                   % (backend, self.hand_backend_note, len(self.hand_names),
                      self.hand_limit_mode), flush=True)
-            print("[camera] hold this side's hand OPEN and fully visible during the first "
-                  "%d frames: that is the hand-retargeter zero pose" % calibrate_frames,
-                  flush=True)
+            if self.hand_backend_name == "dex":
+                print("[camera] Dex uses palm-length normalized 25-point windows; "
+                      "no checkpoint or operator joint calibration", flush=True)
+            else:
+                print("[camera] hold this side's hand OPEN and fully visible during the first "
+                      "%d frames: that is the hand-retargeter zero pose" % calibrate_frames,
+                      flush=True)
         else:
             print("[camera] native hand mapping OFF: hand joints keep their reset angles",
                   flush=True)
@@ -1930,7 +1945,7 @@ class CameraPolicy:
 
     def _update_hand(self, window) -> None:
         """Retarget this side's hand and write native joint targets into ``action``."""
-        if not self.hand_enabled or self.hand_adapter is None:
+        if not self.hand_enabled or self.hand_retargeter is None:
             return
         if (not getattr(self, "calibrated", False)
                 or not self.tracking_started):
@@ -1944,13 +1959,19 @@ class CameraPolicy:
             self.last_hand = {"valid": False, "reason": "hand window is not ready"}
             return
         result = self.hand_retargeter.retarget(window)
-        angles = getattr(result, self.side + "_angles")
-        valid = bool(getattr(result, self.side + "_valid"))
+        angles = None
+        native_result = None
+        if self.hand_backend_name == "dex":
+            native_result = (result or {}).get((self.env.robot_type, self.side))
+            valid = bool(native_result is not None and native_result.valid)
+        else:
+            angles = getattr(result, self.side + "_angles")
+            valid = bool(getattr(result, self.side + "_valid"))
         status = getattr(self.hand_retargeter, "calibration_status", None)
         if isinstance(status, dict):
             self.hand_calibration_status = {
                 str(key): bool(value) for key, value in status.items()}
-        if not valid or angles is None:
+        if not valid or (self.hand_backend_name != "dex" and angles is None):
             self.hand_invalid_frames += 1
             self.last_hand = {"valid": False, "reason": "hand landmarks unusable"}
             return
@@ -1970,8 +1991,12 @@ class CameraPolicy:
             "world": raw_details["world"],
             "image": raw_details["image"],
         }
-        targets, clipped = self.hand_adapter.map(
-            angles.native_mapping_dofs(), pinch=pinch)
+        if self.hand_backend_name == "dex":
+            targets = self.native_hand_spec.expand(native_result.positions)
+            clipped = 0
+        else:
+            targets, clipped = self.hand_adapter.map(
+                angles.native_mapping_dofs(), pinch=pinch)
         action = np.array(self.action, dtype=np.float64, copy=True)
         written = {}
         for name, value in targets.items():
@@ -2001,8 +2026,13 @@ class CameraPolicy:
                             else round(float(pinch[2]), 3)),
             "calibrated": bool(getattr(
                 self, "hand_calibration_status", {}).get(self.side, True)),
-            "l21_angles": [round(float(value), 5)
-                           for value in np.asarray(angles.values, dtype=np.float64)],
+            "l21_angles": (None if angles is None else
+                           [round(float(value), 5)
+                            for value in np.asarray(angles.values, dtype=np.float64)]),
+            "native_positions": {name: round(float(value), 6)
+                                 for name, value in sorted(written.items())},
+            "solve_ms": (None if native_result is None
+                         else round(float(native_result.solve_ms), 3)),
         }
         self.last_valid_hand = dict(self.last_hand)
         finger, strength, ratio = pinch
@@ -3342,8 +3372,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-hand", choices=("on", "off"), default="on",
                         help="--policy camera 同时驱动原装手（default on）；off 保留只驱动"
                              "手臂的旧 A/B 行为")
-    parser.add_argument("--hand-backend", choices=("auto", "geometric", "checkpoint"),
-                        default="auto", help="手部重定向后端（default auto）")
+    parser.add_argument("--hand-backend",
+                        choices=("auto", "geometric", "checkpoint", "dex"),
+                        default="auto",
+                        help="手部重定向后端（default auto；dex 使用原生手向量优化）")
     parser.add_argument("--hand-checkpoint", default=None,
                         help="训练好的手部 palm-local checkpoint（auto 缺失时回退 geometric）")
     parser.add_argument("--hand-smoothing", type=float, default=0.25,

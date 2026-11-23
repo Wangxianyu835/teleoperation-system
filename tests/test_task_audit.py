@@ -58,6 +58,58 @@ EVAL = load_eval()
 class CameraHandPolicyTests(unittest.TestCase):
     """摄像头任务策略必须把 18D 手角度落到原生手 joint，而不是只驱动手臂。"""
 
+    def test_dex_backend_writes_native_joint_results_directly(self):
+        from teleoperation.contracts.hand_control import HandJointResult
+
+        result = HandJointResult(
+            "h1_2", "right", "a" * 64, ("R_index_proximal_joint",),
+            np.array([0.42]), 0.0, solve_ms=1.2)
+
+        class _Retargeter:
+            def retarget(self, _window):
+                return {("h1_2", "right"): result}
+
+        policy = object.__new__(EVAL.CameraPolicy)
+        policy.side = "right"
+        policy.hand_enabled = True
+        policy.hand_backend_name = "dex"
+        policy.hand_backend_note = "dex test"
+        policy.hand_limit_mode = "native"
+        policy.hand_retargeter = _Retargeter()
+        policy.native_hand_spec = SimpleNamespace(
+            expand=lambda positions: {
+                "R_index_proximal_joint": float(positions[0])})
+        policy.hand_names = ["R_index_proximal_joint"]
+        policy.names = {"R_index_proximal_joint": 0}
+        policy.action = np.zeros(1, dtype=np.float64)
+        policy.env = SimpleNamespace(robot_type="h1_2")
+        policy.source = SimpleNamespace(last_raw_frame={})
+        policy._pinch_signal = lambda *_points: {
+            "selected": (None, 0.0, None),
+            "source": "none", "world": None, "image": None,
+        }
+        from teleoperation.robots.native_hand import PinchSignalStabilizer
+        policy._pinch_stabilizer = PinchSignalStabilizer(hold_frames=8)
+        policy.calibrated = True
+        policy.tracking_started = True
+        policy.hand_valid_frames = 0
+        policy.hand_invalid_frames = 0
+        policy.hand_clipped = 0
+        policy.hand_calibration_status = {}
+        policy.last_hand = {}
+        policy.last_valid_hand = {}
+        policy.pinch_finger_frames = {}
+        policy.max_pinch_strength = 0.0
+        policy.max_fist_strength = 0.0
+        policy.last_pinch = None
+        policy.last_raw_pinch = None
+
+        policy._update_hand(object())
+        self.assertAlmostEqual(0.42, policy.action[0])
+        self.assertEqual("dex", policy.last_hand["backend"])
+        self.assertIsNone(policy.last_hand["l21_angles"])
+        self.assertEqual(1.2, policy.last_hand["solve_ms"])
+
     def test_contact_grip_stops_fingers_without_attaching_the_object(self):
         policy = object.__new__(EVAL.CameraPolicy)
         policy.last_pinch = {"finger": "index", "strength": 1.0}
