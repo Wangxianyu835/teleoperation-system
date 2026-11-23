@@ -534,9 +534,10 @@ Full merged tree:
 ```
 
 随后已把 Dex 直接接入 30 任务窗口。`task_eval.py` 的 `CameraPolicy` 在
-`--hand-backend dex` 时直接接收 `NormalizedDexRetargeter` 返回的
+`--policy camera` 下默认使用 `--hand-backend dex`，直接接收
+`NormalizedDexRetargeter` 返回的
 `HandJointResult`，按 `NativeHandSpec` 展开后写入
-`env.action_joint_names`；旧 `auto/geometric/checkpoint` 路径保持不变。
+`env.action_joint_names`；旧 `auto/geometric/checkpoint` 仍可显式选择做 A/B。
 Dex 的摄像头输入改走原生手的
 `camera_palm_length_window3_v1` 三帧掌长归一化窗口，旧任务路径仍使用原
 `MediaPipe -> L21 18D -> NativeHandAdapter`。实时抓取仍由物理接触决定，
@@ -646,7 +647,8 @@ GBK strict check: OK
 - 食指/中指捏合仍使用两指尖真实接触位形。
 
 第二个问题由三道门共同防止：握持信号必须连续 4 帧确认；食指/中指捏合
-强度至少 `0.45` 且距离比不超过 `0.45`；全拳分类与 Dex 原始闭合度必须
+强度至少 `0.45`、距离比不超过 `0.45`，并且被选手指自身的 Dex 闭合度
+至少 `0.25`；全拳分类与 Dex 原始闭合度必须
 同时成立（原始闭合度至少 `0.55`，单指捏合误判成全拳时要求至少 `0.85`）。
 没有明确握持意图时，`open_guard` 会把 Dex 的误闭合目标平滑
 拉回原装手张开位形。报告记录
@@ -666,6 +668,27 @@ GBK strict check: OK
 
 当前现场按用户要求使用第一种，鼠标保持常开。
 
+### 手部碰撞与 GUI 相机记忆
+
+现场看到 4 cm 方块偶尔穿过手指。12 个原装手指连杆都有碰撞网格，因此不是
+“手没有碰撞体”，而是小物体在快速闭手时发生了离散步穿透。摄像头任务现在：
+
+- 给每条手指碰撞连杆增加 `1.5 mm` 表面余量、`1.4` 横向摩擦和零接触处理
+  阈值；
+- 给动态任务物体设置 CCD 扫掠球半径（`pickcube` 的 4 cm 方块为 `18 mm`）；
+- 不创建物体约束，真实接触仍由手指—物体碰撞决定；
+- 报告 `scene.hand_contact_reinforcement` 记录参与设置的连杆和物体。
+
+PyBullet 相机视角现在会记住。用户拖动/缩放仿真窗口后，程序每 30 个摄像头
+帧保存一次；正常退出时再保存。文件位于：
+
+```text
+F:\simulation_platform\outputs\task_eval\camera_view_<robot>.json
+```
+
+下一次同机器人启动时自动恢复最后一次视角；没有存档时使用正面 45 度、
+俯角 18 度、距离 2.2 m 的默认值。
+
 相关回归：
 
 ```text
@@ -673,5 +696,5 @@ native hand pinch + Dex contact + task policy:
 60 passed, 11 subtests passed
 
 Full test suite:
-649 passed, 5 skipped, 554 subtests passed
+650 passed, 5 skipped, 554 subtests passed
 ```

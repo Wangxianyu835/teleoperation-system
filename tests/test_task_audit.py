@@ -58,6 +58,35 @@ EVAL = load_eval()
 class CameraHandPolicyTests(unittest.TestCase):
     """摄像头任务策略必须把 18D 手角度落到原生手 joint，而不是只驱动手臂。"""
 
+    def test_gui_camera_view_is_saved_and_restored_relative_to_robot(self):
+        import tempfile
+
+        env = SimpleNamespace(render=True, _render=True, robot_id=7, client=0)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "view.json"
+            with patch.object(
+                    EVAL.p, "getBasePositionAndOrientation",
+                    return_value=([0.0, 0.0, 0.8], [0, 0, 0, 1])), \
+                    patch.object(EVAL.p, "resetDebugVisualizerCamera") as reset:
+                restored = EVAL.apply_camera_view(env, "h1_2", path)
+            self.assertEqual("default", restored["source"])
+            reset.assert_called_once()
+
+            view = [640, 480, None, None, None, None, None, None,
+                    62.0, -21.0, 1.7, [0.4, 0.1, 1.1]]
+            with patch.object(EVAL.p, "isConnected", return_value=True), \
+                    patch.object(EVAL.p, "getBasePositionAndOrientation",
+                                 return_value=([0.0, 0.0, 0.8], [0, 0, 0, 1])), \
+                    patch.object(EVAL.p, "getDebugVisualizerCamera",
+                                 return_value=view):
+                self.assertTrue(EVAL.save_camera_view(env, "h1_2", path))
+            payload = __import__("json").loads(
+                path.read_text(encoding="utf-8"))
+            self.assertEqual("task_eval_gui_camera_v1", payload["schema"])
+            self.assertEqual(62.0, payload["yaw"])
+            self.assertEqual([0.4, 0.1, 0.3],
+                             payload["target_offset_from_robot_base_m"])
+
     def test_dex_backend_writes_native_joint_results_directly(self):
         from teleoperation.contracts.hand_control import HandJointResult
 
@@ -115,9 +144,12 @@ class CameraHandPolicyTests(unittest.TestCase):
         from teleoperation.robots.hand_spec import load_hand_spec
 
         spec = load_hand_spec("h1_2", "right")
+        input_positions = np.zeros(spec.dof)
+        input_positions[spec.independent_joint_names.index(
+            "R_index_proximal_joint")] = 0.6
         result = HandJointResult(
             "h1_2", "right", spec.spec_hash, spec.independent_joint_names,
-            np.zeros(spec.dof), 0.0, solve_ms=1.2)
+            input_positions, 0.0, solve_ms=1.2)
         endpoint = np.zeros(spec.dof)
         endpoint[spec.independent_joint_names.index(
             "R_index_proximal_joint")] = 1.7
@@ -428,7 +460,7 @@ class CameraHandPolicyTests(unittest.TestCase):
     def test_cli_defaults_enable_camera_hands_with_faithful_limits(self):
         args = EVAL.build_parser().parse_args([])
         self.assertEqual(args.camera_hand, "on")
-        self.assertEqual(args.hand_backend, "auto")
+        self.assertEqual(args.hand_backend, "dex")
         self.assertEqual(args.hand_limit_mode, "clamp")
         self.assertEqual(args.camera_pinch_correction, "on")
         self.assertEqual(args.camera_table_clearance_mm, 60.0)

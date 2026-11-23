@@ -32,11 +32,13 @@ class NormalizedDexTests(unittest.TestCase):
         from teleoperation.retargeting.hand.pinch_contact import (
             independent_fist_pose,
             normalized_finger_closure,
+            normalized_joint_closure,
         )
 
         spec = load_hand_spec('h1_2', 'right')
         pose = independent_fist_pose(spec)
         self.assertGreater(normalized_finger_closure(spec, pose), 0.45)
+        self.assertGreater(normalized_joint_closure(spec, pose, 'index'), 0.4)
         self.assertGreater(
             normalized_finger_closure(spec, pose),
             normalized_finger_closure(spec, spec.q_reference))

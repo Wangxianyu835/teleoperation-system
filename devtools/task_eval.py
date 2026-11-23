@@ -91,6 +91,14 @@ SETTLE_STEPS = 600
 DEFAULT_MAX_SIM_S = 60.0
 SUCCESS_HOLD_STEPS = 120
 SUCCESS_TABLE_MARGIN_M = 0.08
+#: GUI 相机记忆：用户拖到合适视角后写回 F 盘，下一次同机器人直接恢复。
+CAMERA_VIEW_SCHEMA = "task_eval_gui_camera_v1"
+DEFAULT_CAMERA = {
+    "yaw": 45.0,
+    "pitch": -18.0,
+    "distance": 2.2,
+    "target_offset_from_robot_base_m": [0.35, 0.0, 0.25],
+}
 #: 论文 Table 1 里被拿去做量化对比的 10 个代表任务
 DEFAULT_TASKS = ("pushcube", "pickcube", "pickplacecube", "uprearcup", "balltrashcan",
                  "ballmug", "ballbimanual", "potbimanual", "pottomatoplate",
@@ -151,6 +159,99 @@ def aabb(client: int, body: int):
 def body_pose(client: int, body: int):
     pos, orn = p.getBasePositionAndOrientation(body, physicsClientId=client)
     return np.asarray(pos, dtype=float), np.asarray(orn, dtype=float)
+
+
+def camera_view_path_for(robot: str) -> Path:
+    return ROOT / "outputs" / "task_eval" / ("camera_view_%s.json" % robot)
+
+
+def _robot_base(env):
+    position, _orientation = p.getBasePositionAndOrientation(
+        env.robot_id, physicsClientId=env.client)
+    return np.asarray(position, dtype=np.float64)
+
+
+def apply_camera_view(env, robot: str, path: Path = None) -> dict:
+    """Restore this robot's last GUI camera, or a sensible first-run view."""
+    if not getattr(env, "_render", False):
+        return {}
+    path = Path(path) if path is not None else camera_view_path_for(robot)
+    payload = None
+    if path.is_file():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if (payload.get("schema") != CAMERA_VIEW_SCHEMA
+                    or payload.get("robot") != robot):
+                payload = None
+        except (OSError, ValueError, TypeError):
+            payload = None
+    if payload is None:
+        payload = dict(DEFAULT_CAMERA)
+        source = "default"
+    else:
+        source = str(path)
+    try:
+        yaw = float(payload["yaw"])
+        pitch = float(np.clip(float(payload["pitch"]), -89.0, 89.0))
+        distance = float(np.clip(float(payload["distance"]), 0.3, 5.0))
+        offset = np.asarray(
+            payload["target_offset_from_robot_base_m"], dtype=np.float64)
+        if offset.shape != (3,) or not np.isfinite(
+                [yaw, pitch, distance, *offset]).all():
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        payload = dict(DEFAULT_CAMERA)
+        source = "default"
+        yaw, pitch, distance = 45.0, -18.0, 2.2
+        offset = np.asarray(
+            payload["target_offset_from_robot_base_m"], dtype=np.float64)
+    target = _robot_base(env) + offset
+    p.resetDebugVisualizerCamera(
+        cameraDistance=distance, cameraYaw=yaw, cameraPitch=pitch,
+        cameraTargetPosition=target.tolist(), physicsClientId=env.client)
+    print("[camera-view] %s: yaw=%.1f pitch=%.1f distance=%.2f target=%s"
+          % (source, yaw, pitch, distance,
+             [round(float(value), 3) for value in target]),
+          flush=True)
+    return {"source": source, "yaw": yaw, "pitch": pitch,
+            "distance": distance,
+            "target_offset_from_robot_base_m": offset.tolist()}
+
+
+def save_camera_view(env, robot: str, path: Path = None) -> bool:
+    """Persist a user-adjusted GUI camera; return whether it changed."""
+    if (not getattr(env, "_render", False)
+            or not p.isConnected(env.client)):
+        return False
+    try:
+        view = p.getDebugVisualizerCamera(physicsClientId=env.client)
+        yaw, pitch, distance = float(view[8]), float(view[9]), float(view[10])
+        target = np.asarray(view[11], dtype=np.float64)
+        base = _robot_base(env)
+    except (IndexError, TypeError, ValueError, p.error):
+        return False
+    if not np.isfinite([yaw, pitch, distance, *target]).all():
+        return False
+    payload = {
+        "schema": CAMERA_VIEW_SCHEMA,
+        "robot": robot,
+        "yaw": round(yaw, 4),
+        "pitch": round(pitch, 4),
+        "distance": round(distance, 4),
+        "target_offset_from_robot_base_m": [
+            round(float(value), 5) for value in target - base],
+    }
+    path = Path(path) if path is not None else camera_view_path_for(robot)
+    try:
+        old = path.read_text(encoding="utf-8") if path.is_file() else None
+    except OSError:
+        old = None
+    encoded = json.dumps(payload, indent=2)
+    if old == encoded:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(encoded, encoding="utf-8")
+    return True
 
 
 def guard_table_target(point, bounds, clearance_m: float = 0.06,
@@ -1615,7 +1716,7 @@ class CameraPolicy:
                  substeps: int = CAMERA_SUBSTEPS, calibrate_frames: int = 30,
                  arm_map: str = "posture", hand_model=None, pose_model=None,
                  preview: bool = False, hand_enabled: bool = True,
-                 hand_backend: str = "auto", hand_checkpoint=None,
+                 hand_backend: str = "dex", hand_checkpoint=None,
                  hand_smoothing: float = 0.25, hand_limit_mode: str = "clamp",
                  pinch_correction: bool = True,
                  hand_device: str = "cpu", table_clearance_m: float = 0.06,
@@ -1625,6 +1726,7 @@ class CameraPolicy:
                  ik_mode: str = "pose", wrist_pose: bool = True,
                  ik_solver: str = "paper",
                  mouse_setup: bool = False,
+                 camera_view_path: str = None,
                  target_speed_m_s: float = 0.60,
                  startup_hold_frames: int = 12,
                  startup_motion_m: float = 0.05,
@@ -1682,6 +1784,9 @@ class CameraPolicy:
         self.ik_solver = str(ik_solver)
         self.mouse_setup = bool(mouse_setup)
         self.mouse_picking_closed = False
+        self.camera_view_path = (
+            None if camera_view_path is None else Path(camera_view_path))
+        self._camera_view_save_count = 0
         self.target_speed_m_s = max(0.0, float(target_speed_m_s))
         self.startup_hold_frames = max(0, int(startup_hold_frames))
         self.startup_motion_m = max(0.0, float(startup_motion_m))
@@ -2051,6 +2156,7 @@ class CameraPolicy:
         if self.hand_backend_name == "dex":
             from teleoperation.retargeting.hand.pinch_contact import (
                 normalized_finger_closure,
+                normalized_joint_closure,
             )
 
             positions = np.asarray(native_result.positions, dtype=np.float64)
@@ -2058,6 +2164,8 @@ class CameraPolicy:
                     and hasattr(self.native_hand_spec, "q_reference")):
                 raw_closure = normalized_finger_closure(
                     self.native_hand_spec, positions)
+                selected_finger_closure = normalized_joint_closure(
+                    self.native_hand_spec, positions, pinch[0])
                 self.max_dex_raw_closure = max(
                     float(getattr(self, "max_dex_raw_closure", 0.0)),
                     raw_closure)
@@ -2065,7 +2173,8 @@ class CameraPolicy:
                     pinch[0] in ("index", "middle")
                     and float(pinch[1]) >= 0.45
                     and pinch[2] is not None
-                    and float(pinch[2]) <= 0.45)
+                    and float(pinch[2]) <= 0.45
+                    and selected_finger_closure >= 0.25)
                 strong_fist = (
                     pinch[0] == "fist" and float(pinch[1]) >= 0.65)
                 if (strong_fist and raw_closure >= 0.55) or (
@@ -2173,6 +2282,9 @@ class CameraPolicy:
             "dex_corrected_finger_closure": (
                 None if corrected_closure is None
                 else round(corrected_closure, 3)),
+            "pinch_selected_finger_closure": (
+                None if raw_closure is None else round(
+                    float(selected_finger_closure), 3)),
             "solve_ms": (None if native_result is None
                          else round(float(native_result.solve_ms), 3)),
         }
@@ -2285,6 +2397,12 @@ class CameraPolicy:
         if getattr(self.source, "exhausted", False):
             self.stopped = True
         self.frames += 1
+        if (self.camera_view_path is not None
+                and (self.frames % 30) == 0
+                and save_camera_view(
+                    self.env, str(self.env.robot_type),
+                    self.camera_view_path)):
+            self._camera_view_save_count += 1
         upper = self.source.arms()
         raw = self.source.last_raw_frame or {}
         self._update_hand(window)
@@ -2768,6 +2886,10 @@ class CameraPolicy:
         except p.error:
             arm_posture = None
         return {"frames": self.frames, "steps": self.steps,
+                "camera_view_path": (
+                    None if self.camera_view_path is None
+                    else str(self.camera_view_path)),
+                "camera_view_saves": self._camera_view_save_count,
                 "hand_frames": dict(self.hand_frames),
                 "hand_valid_frames": self.hand_valid_frames,
                 "hand_invalid_frames": self.hand_invalid_frames,
@@ -3171,6 +3293,71 @@ def disable_robot_object_collision_except_hand(env, key: str,
     return disabled
 
 
+def reinforce_hand_object_contacts(env, side: str = "right") -> dict:
+    """Enable swept-sphere collision and explicit finger contact settings.
+
+    A 4 cm cube can otherwise tunnel through a fast-moving finger link between
+    two 240 Hz steps.  This does not attach the object: it only gives the real
+    finger collision shapes a swept volume and a non-zero surface margin.
+    """
+    hand_joints = set(env.robot_loader.hand_joints.get(side, []))
+    hand_links = []
+    for index in range(p.getNumJoints(
+            env.robot_id, physicsClientId=env.client)):
+        info = p.getJointInfo(
+            env.robot_id, index, physicsClientId=env.client)
+        joint_name = info[1].decode("utf-8", errors="ignore")
+        if joint_name not in hand_joints:
+            continue
+        link = int(info[16])
+        try:
+            p.changeDynamics(
+                env.robot_id, link,
+                collisionMargin=0.0015,
+                lateralFriction=1.4,
+                spinningFriction=0.01,
+                contactProcessingThreshold=0.0,
+                physicsClientId=env.client)
+            hand_links.append(link)
+        except p.error:
+            continue
+
+    objects = []
+    for key, body in env.task.objects.items():
+        if key == TABLE_KEY:
+            continue
+        try:
+            mass = float(p.getDynamicsInfo(
+                body, -1, physicsClientId=env.client)[0])
+            if mass <= 0.0:
+                continue
+            low, high = aabb(env.client, body)
+            radius = max(0.001, 0.45 * float(
+                np.min(np.asarray(high) - np.asarray(low))))
+            p.changeDynamics(
+                body, -1,
+                ccdSweptSphereRadius=radius,
+                collisionMargin=0.001,
+                lateralFriction=1.2,
+                spinningFriction=0.01,
+                rollingFriction=0.0,
+                restitution=0.0,
+                contactProcessingThreshold=0.0,
+                physicsClientId=env.client)
+            objects.append({"name": key, "ccd_radius_m": round(radius, 5)})
+        except p.error:
+            continue
+    details = {"side": side, "hand_links": len(hand_links),
+               "objects": objects}
+    if hand_links or objects:
+        print("[contact] hand collision reinforced: %d finger links, %s"
+              % (len(hand_links), ", ".join(
+                  "%s(ccd %.1f mm)" % (
+                      item["name"], item["ccd_radius_m"] * 1000.0)
+                  for item in objects)), flush=True)
+    return details
+
+
 def snapshot(env, path, target=None, yaw: float = 55.0, pitch: float = -22.0,
              distance: float = 1.9, width: int = 640, height: int = 480) -> bool:
     """离屏渲染一张 PNG（与 ``verify_three_robot_scene.render`` 同一套取景参数）。
@@ -3211,6 +3398,7 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
     from teleoperation.simulation.environment import SimulationEnv
 
     options = dict(policy_options or {})
+    camera_path = camera_view_path_for(robot)
     arm = measure_arm(robot) if scene else {}
     report = {"meta": {"robot": robot, "task": task_name, "trials": int(trials),
                        "policy": policy, "scene": bool(scene),
@@ -3321,7 +3509,14 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                           "robot-link pairs; object and ground collisions remain on"
                           % disabled,
                           flush=True)
+                    scene_report["hand_contact_reinforcement"] = (
+                        reinforce_hand_object_contacts(
+                            env, side=options.get("side", "right")))
 
+            camera_view = (
+                apply_camera_view(env, robot, camera_path) if render else {})
+            options["camera_view_path"] = (
+                str(camera_path) if render and policy == "camera" else None)
             initial_objects = object_positions(env)
             if {"cube", "target"} <= set(initial_objects):
                 cube = np.asarray(initial_objects["cube"], dtype=np.float64)
@@ -3353,7 +3548,8 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                          gui_mouse_picking_mode=(
                              "always" if allow_gui_mouse_picking
                              else "setup" if setup_gui_mouse_picking
-                             else "off" if render else None))
+                             else "off" if render else None),
+                         camera_view=camera_view)
             if policy == "camera":
                 trial["robot_object_contacts"] = robot_contact_summary(env)
             if scene_report is not None and scene_report.get("criteria_at_reset"):
@@ -3385,6 +3581,7 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                     if trial["success"] else
                     "no success in %.1f s" % trial["sim_time_s"]), flush=True)
         finally:
+            save_camera_view(env, robot, camera_path)
             if live is not None:
                 live.close()
             try:
@@ -3553,8 +3750,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "手臂的旧 A/B 行为")
     parser.add_argument("--hand-backend",
                         choices=("auto", "geometric", "checkpoint", "dex"),
-                        default="auto",
-                        help="手部重定向后端（default auto；dex 使用原生手向量优化）")
+                        default="dex",
+                        help="手部重定向后端（default dex = 原生手向量优化；"
+                             "auto/geometric/checkpoint 保留为旧方法 A/B）")
     parser.add_argument("--hand-checkpoint", default=None,
                         help="训练好的手部 palm-local checkpoint（auto 缺失时回退 geometric）")
     parser.add_argument("--hand-smoothing", type=float, default=0.25,

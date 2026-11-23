@@ -32,6 +32,26 @@ def normalized_finger_closure(spec, positions):
     return float(np.clip(np.percentile(excursion, 25), 0.0, 1.0))
 
 
+def normalized_joint_closure(spec, positions, finger):
+    """Return one named finger's largest normalized joint excursion."""
+    if finger not in _FOUR_FINGERS:
+        return 0.0
+    values = np.asarray(positions, dtype=np.float64)
+    bounds = spec.bounds
+    if values.shape != (spec.dof,):
+        raise ValueError("Finger closure requires one independent position vector")
+    reference = spec.q_reference
+    spans = np.maximum(bounds[:, 1] - bounds[:, 0], 1e-9)
+    selected = [
+        index for index, name in enumerate(spec.independent_joint_names)
+        if finger in name.lower()
+    ]
+    if not selected:
+        return 0.0
+    excursion = np.abs(values[selected] - reference[selected]) / spans[selected]
+    return float(np.clip(excursion.max(), 0.0, 1.0))
+
+
 def independent_pinch_pose(spec, finger="index", *, steps=350):
     """Return bounded independent joints minimizing thumb-to-finger distance.
 
