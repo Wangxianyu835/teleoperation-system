@@ -855,6 +855,40 @@ class EntryAndReplayTests(unittest.TestCase):
         self.assertIn("right", metadata["world_invalid_reasons"])
         self.assertNotIn("left", metadata["world_invalid_reasons"])
 
+    def test_world_replay_can_emit_native_palm_length_windows(self):
+        """Dex consumes the same normalized three-frame contract as native hands."""
+        from teleoperation.contracts.native_coordinates import (
+            PALM_LENGTH_ALIGNMENT,
+            PALM_LENGTH_PROFILE,
+        )
+
+        frames = 3
+        hand = open_hand()
+        missing = np.full((21, 3), np.nan)
+        payload = {
+            "timestamps": np.arange(frames) / 30.0,
+            "left_hand": np.stack([hand] * frames),
+            "right_hand": np.stack([missing] * frames),
+            "world_left_hand": np.stack([(hand - hand[0]) * 0.19] * frames),
+            "world_right_hand": np.stack([missing] * frames),
+            "left_arm": np.stack([arm("left")] * frames),
+            "right_arm": np.stack([arm("right")] * frames),
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "frames.npz"
+            np.savez_compressed(path, **payload)
+            source = ReplayFrameSource(
+                path, "world", hand_input_profile=PALM_LENGTH_PROFILE)
+            window = None
+            for _ in range(frames):
+                window = source.next_frame()
+        self.assertIsNotNone(window)
+        self.assertEqual(window.hands["left"].shape, (3, 25, 3))
+        self.assertEqual(window.metadata["coordinate_alignment"],
+                         PALM_LENGTH_ALIGNMENT)
+        self.assertEqual(window.metadata["input_profile"], PALM_LENGTH_PROFILE)
+        self.assertEqual(window.units, "1")
+
 
 class WristOrientationFrameTests(unittest.TestCase):
     """腕坐标系（三点 -> 3x3）：右手系正交，直臂时说「不知道」。

@@ -488,7 +488,7 @@ FFG 手套分支本轮只完成代码评审和独立离线验证，没有接入 
 ## 2026-11-23 队友 Dex/原生手后端合并
 
 队友提交 `e0eb35ff41e287782bef19512cda7c469d45e44c` 是一个真实 merge commit，
-第一父为本方主线 `49d54b4`，第二父为队友分支 `8c7dab4`。已快进合并。
+第一父为队友分支 `8c7dab4`，第二父为本方主线 `49d54b4`。已快进合并。
 
 本轮主要新增：
 
@@ -533,8 +533,52 @@ Full merged tree:
 640 passed, 5 skipped, 554 subtests passed
 ```
 
-需要注意的边界：现有 `devtools/task_eval.py` 的 `CameraPolicy` 仍使用旧的
-`MediaPipe -> L21 18D -> NativeHandAdapter` 路径；Dex 当前主要接在新的
-`robot control/hand control` 入口。因此这次合并已经让三方代码共存并可测试，
-但 30 任务评测窗口还没有自动切到 Dex。下一步应把 `HandJointResult` 直接接入
-`CameraPolicy`，再对比 geometric、checkpoint、Dex 三种手部后端。
+随后已把 Dex 直接接入 30 任务窗口。`task_eval.py` 的 `CameraPolicy` 在
+`--hand-backend dex` 时直接接收 `NormalizedDexRetargeter` 返回的
+`HandJointResult`，按 `NativeHandSpec` 展开后写入
+`env.action_joint_names`；旧 `auto/geometric/checkpoint` 路径保持不变。
+Dex 的摄像头输入改走原生手的
+`camera_palm_length_window3_v1` 三帧掌长归一化窗口，旧任务路径仍使用原
+`MediaPipe -> L21 18D -> NativeHandAdapter`。实时抓取仍由物理接触决定，
+Dex 不读取旧的二维 pinch 分类来修改关节。
+
+实机启动命令：
+
+```powershell
+$env:MAMBA_ROOT_PREFIX='E:\cache\micromamba'
+$env:PYTHONPATH=(Resolve-Path 'src').Path
+& 'F:\tools\micromamba\Library\bin\micromamba.exe' run `
+  -p 'F:\conda-envs\teleop-dex' python devtools\task_eval.py `
+  --task pickcube --robot h1_2 --policy camera --side right `
+  --hand-backend dex --camera-grasp-assist off `
+  --camera-hand-force 600 --preview --render
+```
+
+Windows 上 MediaPipe、PyBullet 与 Torch 的原生动态库存在加载顺序冲突。
+任务入口在创建仿真和摄像头模块之前预载 Torch，普通命令现在可直接启动；
+窗口启动信息应显示：
+
+```text
+hand -> native joints: dex
+```
+
+2026-11-23 第一次真实摄像头运行完成 1200 个摄像头帧。右手检测到 654 帧，
+Dex 有效输出 590 帧，手指求解约 4.3 ms；食指捏合分类出现过 207 帧。
+报告记录的真实物理接触最高达到 4 个手部连杆同时接触，接触法向力最高
+61.7 N，“接触即停”触发 1 次且没有创建吸附约束。60 秒 trial 内方块被推动
+但未达到抬起判据，最终返回前手已经张开，因此本次结果仍是
+`success=false`，不能当作握持或任务成功证据。后续现场复测应分别记录
+Dex/geometric 的峰值关节闭合、接触连杆数和任务成功率。
+
+相关回归：
+
+```text
+tests/test_arm_realtime_bridge.py::EntryAndReplayTests: 5 passed
+tests/test_task_audit.py + tests/test_hand_backend_factory.py:
+49 passed, 5 subtests passed
+Full test suite:
+642 passed, 5 skipped, 554 subtests passed
+30 tasks x 3 robots:
+90/90 evaluable, 0 excluded
+GBK strict check: OK
+```

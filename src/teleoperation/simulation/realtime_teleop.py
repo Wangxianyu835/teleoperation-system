@@ -107,7 +107,9 @@ from pathlib import Path
 
 import numpy as np
 
-from teleoperation.applications.hand_processing import MediaPipePalmLocalPipeline
+from teleoperation.applications.hand_processing import (
+    MediaPipePalmLocalPipeline as LegacyMediaPipePalmLocalPipeline,
+)
 from teleoperation.applications.realtime_hand_sim import (
     PREVIEW_HINT_ROBOTS,
     _describe,
@@ -153,6 +155,19 @@ from teleoperation.simulation.arm_realtime import (
     save_neutral,
 )
 from teleoperation.simulation.arm_scene_driver import SLEW_MAX_STEP_M, ArmSceneDriver
+
+
+def _camera_hand_pipeline(landmark_space, input_profile=None):
+    """Select the legacy or native target-hand camera input contract."""
+    if input_profile is None:
+        return LegacyMediaPipePalmLocalPipeline(landmark_space)
+    from teleoperation.applications.native_hand_processing import (
+        MediaPipePalmLocalPipeline,
+    )
+
+    return MediaPipePalmLocalPipeline(
+        landmark_space, input_profile=input_profile)
+
 
 SIDES = ("left", "right")
 ARM_ENTRY = "realtime_teleop"
@@ -518,10 +533,13 @@ class CameraFrameSource:
 
     def __init__(self, model_asset_path, camera_index: int = 0, width: int = 640,
                  height: int = 480, fps: int = 30, landmark_space: str = "world",
-                 pose_model_asset_path=None, pose_min_visibility=None):
+                 pose_model_asset_path=None, pose_min_visibility=None,
+                 hand_input_profile=None):
         self.model_asset_path = Path(model_asset_path)
         self.landmark_space = landmark_space
-        self.pipeline = MediaPipePalmLocalPipeline(landmark_space)
+        self.hand_input_profile = hand_input_profile
+        self.pipeline = _camera_hand_pipeline(
+            landmark_space, input_profile=hand_input_profile)
         self.processor = self.pipeline.processor
         self.last_raw_frame = None
         self.last_observation = None
@@ -591,14 +609,17 @@ class ReplayFrameSource:
     手部仍然走同一条 ``MediaPipePalmLocalPipeline``，所以三帧窗口语义和实时一致。
     """
 
-    def __init__(self, path, landmark_space: str = "world"):
+    def __init__(self, path, landmark_space: str = "world",
+                 hand_input_profile=None):
         # 一次性读进内存：np.load 的句柄会锁住文件（Windows 上连删临时目录都不行），
         # 而这里的帧本来就只有几十 MB 级，读完之后不被文件句柄牵着走更安全。
         with np.load(str(path)) as handle:
             self.data = {key: np.asarray(handle[key]) for key in handle.files}
         self.frames = int(np.asarray(self.data["timestamps"]).shape[0])
         self.landmark_space = landmark_space
-        self.pipeline = MediaPipePalmLocalPipeline(landmark_space)
+        self.hand_input_profile = hand_input_profile
+        self.pipeline = _camera_hand_pipeline(
+            landmark_space, input_profile=hand_input_profile)
         self.processor = self.pipeline.processor
         self.last_raw_frame = None
         self.last_observation = None

@@ -1629,6 +1629,11 @@ class CameraPolicy:
                  startup_confirm_frames: int = 3,
                  target_deadband_m: float = 0.002,
                  freeze_objects: bool = True):
+        if bool(hand_enabled) and str(hand_backend) == "dex":
+            # MediaPipe and PyTorch both bundle native math/runtime DLLs on
+            # Windows. Load Torch before importing the camera/arm modules so
+            # Dex can use its shared hand-target model later in the session.
+            import torch  # noqa: F401
         from teleoperation.simulation.arm_ik import PyBulletArmIK
         from teleoperation.simulation.arm_profiles import profile_for
         from teleoperation.simulation.arm_realtime import RealtimeArmBridge
@@ -1695,13 +1700,21 @@ class CameraPolicy:
         missing_names = []
         hand_model = Path(hand_model or (ROOT / "datasets" / "hand_landmarker.task"))
         pose_model = Path(pose_model or (ROOT / "datasets" / "pose_landmarker_lite.task"))
+        hand_input_profile = None
+        if self.hand_enabled and self.hand_backend == "dex":
+            from teleoperation.contracts.native_coordinates import PALM_LENGTH_PROFILE
+
+            hand_input_profile = PALM_LENGTH_PROFILE
         if self.input_npz is not None:
-            self.source = ReplayFrameSource(self.input_npz, "world")
+            self.source = ReplayFrameSource(
+                self.input_npz, "world",
+                hand_input_profile=hand_input_profile)
         else:
             self.source = CameraFrameSource(
                 model_asset_path=hand_model, camera_index=int(camera_index),
                 width=640, height=480, fps=30, landmark_space="world",
-                pose_model_asset_path=pose_model if pose_model.is_file() else None)
+                pose_model_asset_path=pose_model if pose_model.is_file() else None,
+                hand_input_profile=hand_input_profile)
         profile = profile_for(env.robot_type)
         self.adapter = PyBulletArmIK(env.robot_id, env.client,
                                      robot_type=env.robot_type, sides=(self.side,),
@@ -3458,6 +3471,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if (args.policy == "camera" and args.camera_hand == "on"
+            and args.hand_backend == "dex"):
+        # The GUI simulation loads native graphics/math DLLs. Torch's Windows
+        # shm dependency must be resolved before those libraries narrow the
+        # process DLL search state.
+        import torch  # noqa: F401
     from teleoperation.simulation.tasks import list_tasks, register_builtin_tasks
 
     register_builtin_tasks()
