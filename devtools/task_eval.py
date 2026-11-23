@@ -184,6 +184,12 @@ def camera_workspace_profile(task_name: str) -> dict:
     return dict(CAMERA_WORKSPACE_PROFILES.get(task_name, {}))
 
 
+def camera_objects_frozen(freeze_mode: str,
+                          allow_gui_mouse_picking: bool) -> bool:
+    """GUI dragging requires dynamic bodies; formal runs may freeze them."""
+    return str(freeze_mode) == "on" and not bool(allow_gui_mouse_picking)
+
+
 def clamp_horizontal_velocity(client: int, body: int,
                               max_linear_m_s: float = 0.30,
                               max_angular_rad_s: float = 1.5) -> bool:
@@ -1758,6 +1764,12 @@ class CameraPolicy:
             "state": "none", "object": None, "contacts": 0,
             "normal_force_n": 0.0}
         self._last_grasp_feedback_state = None
+        self.contact_grip_active = False
+        self.contact_grip_object = None
+        self.contact_grip_targets = {}
+        self.contact_grip_links = []
+        self.contact_grip_count = 0
+        self.contact_grip_open_steps = 0
         self.cup_velocity_clamp_count = 0
         self.hand_adapter = None
         self.hand_retargeter = None
@@ -2255,6 +2267,8 @@ class CameraPolicy:
 
     def apply_action(self, env) -> None:
         """Apply arm and hand targets with separate motor-force budgets."""
+        if self.tracking_started:
+            self._update_contact_grip(env)
         for slot, (name, joint) in enumerate(zip(env.action_joint_names,
                                                  env.action_joint_indices)):
             if slot >= len(self.action):
@@ -2272,6 +2286,95 @@ class CameraPolicy:
                 physicsClientId=env.client)
         if self.tracking_started:
             self._update_grasp_assist(env)
+
+    def _update_contact_grip(self, env) -> None:
+        """Stop finger closure after two distinct hand links touch an object.
+
+        This is deliberately not a hand-object constraint: the object remains
+        governed entirely by contact and friction.  It only emulates a compliant
+        hand that stops closing when the surface is reached instead of driving
+        every finger to its kinematic endpoint.
+        """
+        last_pinch = getattr(self, "last_pinch", None) or {}
+        finger = last_pinch.get("finger")
+        strength = float(last_pinch.get("strength") or 0.0)
+        pinching = finger is not None and strength >= 0.25
+
+        if getattr(self, "contact_grip_active", False):
+            if pinching:
+                self.contact_grip_open_steps = 0
+            else:
+                self.contact_grip_open_steps += 1
+                release_steps = getattr(self, "grasp_release_confirm_steps", 96)
+                if self.contact_grip_open_steps >= release_steps:
+                    self.contact_grip_active = False
+                    self.contact_grip_object = None
+                    self.contact_grip_targets = {}
+                    self.contact_grip_links = []
+                    self.contact_grip_open_steps = 0
+            if self.contact_grip_active:
+                action = np.array(self.action, dtype=np.float64, copy=True)
+                for name, value in self.contact_grip_targets.items():
+                    slot = self.names.get(name)
+                    if slot is not None and slot < action.size:
+                        action[slot] = float(value)
+                self.action = action
+            return
+
+        if not pinching or getattr(self, "grasp_constraint", None) is not None:
+            return
+        key = (getattr(self, "grasp_feedback", None) or {}).get("object")
+        if not key or key == TABLE_KEY:
+            return
+        body = env.task.objects.get(key)
+        if body is None:
+            return
+        try:
+            contacts = p.getContactPoints(
+                bodyA=env.robot_id, bodyB=body,
+                physicsClientId=env.client)
+        except p.error:
+            return
+        links = {int(contact[3]) for contact in contacts}
+        names = []
+        for link in links:
+            info = p.getJointInfo(
+                env.robot_id, link, physicsClientId=env.client)
+            raw = info[12]
+            names.append(raw.decode("utf-8", "ignore")
+                         if isinstance(raw, bytes) else str(raw))
+        lowered = [name.lower() for name in names]
+        has_thumb = any("thumb" in name for name in lowered)
+        has_finger = any(any(part in name for part in
+                             ("index", "middle", "ring", "pinky"))
+                         for name in lowered)
+        if len(links) < 2 or not (has_thumb and has_finger):
+            return
+
+        targets = {}
+        for name in self.hand_names:
+            slot = self.names.get(name)
+            if slot is None or slot >= len(env.action_joint_indices):
+                continue
+            joint = int(env.action_joint_indices[slot])
+            targets[name] = float(p.getJointState(
+                env.robot_id, joint, physicsClientId=env.client)[0])
+        if not targets:
+            return
+        self.contact_grip_active = True
+        self.contact_grip_object = str(key)
+        self.contact_grip_targets = targets
+        self.contact_grip_links = list(names)
+        self.contact_grip_count += 1
+        self.contact_grip_open_steps = 0
+        print("[camera] contact grip stop: %s on %d hand links"
+              % (key, len(links)), flush=True)
+        action = np.array(self.action, dtype=np.float64, copy=True)
+        for name, value in self.contact_grip_targets.items():
+            slot = self.names.get(name)
+            if slot is not None and slot < action.size:
+                action[slot] = float(value)
+        self.action = action
 
     def _update_grasp_assist(self, env) -> None:
         """Latch a physically contacted object only while the operator is closing."""
@@ -2508,6 +2611,12 @@ class CameraPolicy:
                 "grasp_max_attach_gap_m": self.grasp_max_attach_gap_m,
                 "grasp_rejected_distance": self.grasp_rejected_distance,
                 "grasp_feedback": dict(self.grasp_feedback),
+                "contact_grip_active": self.contact_grip_active,
+                "contact_grip_object": self.contact_grip_object,
+                "contact_grip_count": self.contact_grip_count,
+                "contact_grip_targets": dict(self.contact_grip_targets),
+                "contact_grip_links": list(
+                    getattr(self, "contact_grip_links", [])),
                 "cup_velocity_clamp_count": self.cup_velocity_clamp_count,
                 "grasped_object": self.grasped_object,
                 "last_table_guard": self.last_table_guard,
@@ -3405,7 +3514,12 @@ def main(argv=None) -> int:
                        1, int(args.camera_startup_confirm_frames)),
                    "target_deadband_m": max(
                        0.0, float(args.camera_target_deadband_mm)) / 1000.0,
-                   "freeze_objects": args.camera_freeze_objects == "on"}
+                   # A mass=0 object cannot be dragged by PyBullet's GUI
+                   # picking tool.  Manual demos must keep the objects dynamic
+                   # while formal evaluation keeps the freeze/startup gate.
+                   "freeze_objects": camera_objects_frozen(
+                       args.camera_freeze_objects,
+                       args.allow_gui_mouse_picking)}
 
     reports = []
     for name in tasks:
