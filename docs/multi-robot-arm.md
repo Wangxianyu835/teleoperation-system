@@ -17,7 +17,7 @@
 
 仿真侧原来只会驱动 **TRON2A** 一只手臂：手臂关节顺序、URDF、标定都写死在
 `retargeting/arm/ik.py` 与 `robots/specification.py` 里（共 4 处）。论文三台机器人
-（H1-2 / GR1-T2 / G1）的 URDF 在 `assets/robots/from_teleopbench/` 里齐全，但仿真入口
+（H1-2 / GR1-T2 / G1）的 URDF 在 `assets/robot/` 里齐全，但仿真入口
 `applications/three_robot_scene.py` 每帧把**除手指以外**的所有关节（含 7+7 手臂关节）
 锁在加载角度上，所以三台机器人的手臂一直是**静止**的。
 
@@ -2269,7 +2269,7 @@ E:\python3.11.7\python.exe devtools\run_realtime_arm_windows.py --arm-orientatio
 - **「抽搐」**：掌面帧与三点帧**交替**下发两个**不同口径**的目标，等于把腕目标在「拧了 90 度」和
   「没拧」之间来回拨。3 个腕关节吸收不了这个来回，就在**对称解**之间跳。实测（B 场，g1 左）：
   `left_wrist_pitch_joint` 停在 **-1.512 / +1.619 rad** 两颗限位上反复换边，而 URDF 限位是
-  **±1.614429558 rad**（`assets/robots/g1/g1_29dof_with_hand_lock_waist.urdf`）—— 一帧内翻 180 度，
+  **±1.614429558 rad**（`assets/robot/g1/g1_29dof_with_hand_lock_waist.urdf`）—— 一帧内翻 180 度，
   肉眼看就是抽一下。B 场第 237 帧正好是一场 `palm_normal` 中间夹了一帧 `three_point`，
   腕从 -1.512 跳到限位 -1.700，下一帧回到掌面基就落到另一支 +1.619：**换基就是翻转的触发点**。
 - 顺带记一条**不是**本缺陷的：`ori_turn` 到了 113-140 度、腕顶在限位上，`ori_err` 却只有 4-9 度 ——

@@ -42,7 +42,7 @@ powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full    # 再�
 | **4** | ★★★ | `.py` 文件里**禁止非 GBK 字符** | 中文 Windows 控制台会 `UnicodeEncodeError` **崩溃**（不是乱码，是崩溃）|
 | **5** | ★★★ | **改前跑基线、改后跑同一套**；结论必须附**命令 + 退出码 + 不变量** | 会得出错误结论并据此改别人的代码（2026-10-01 真实翻车）|
 | **6** | ★★★ | 已冻结的技术选型：**PyBullet**（不是 Isaac Sim）、**不用 Git LFS**、数据交换走 **HDF5 契约**（`docs/contracts.md`）| 推翻团队已投入的工作；大文件卡在 GitHub 100 MB 硬限 |
-| **7** | ★★★ | **大资产不入库**（`lib/` `.venv/` `outputs/` `logs/` `tmp_*`、模型权重、视频）；`assets/robots/**` 与 `datasets/**` 是**既有例外** | 仓库膨胀、push 失败 |
+| **7** | ★★★ | **大资产不入库**（`lib/` `.venv/` `outputs/` `logs/` `tmp_*`、模型权重、视频）；机器人资产 `assets/**` 仅本地下载；`datasets/**` 是**既有例外** | 仓库膨胀、push 失败 |
 | **8** | ★★★ | **密钥/凭据**：私钥只放 `E:\ssh`，绝不入库、绝不外传、绝不落到 C 盘 | 安全事故 |
 | **9** | ★★ | git 走 **SSH**；**代理只用于看网页 / 开 PR** | `git push` 被 SNI 干扰卡死 |
 | **10** | ★★ | 判断脚本成败**看退出码**，别信被管道截断的输出 | 把成功误判成失败（或反之），并据此改错地方 |
@@ -275,7 +275,7 @@ powershell -ExecutionPolicy Bypass -File devtools\preflight.ps1 -Full -MaxFail 0
 模型权重（`.pt/.pth/.ckpt/.onnx`）、视频（`.mp4/.avi`）、非 datasets 的 `.h5/.hdf5`。
 
 **既有例外（基线里就跟踪着，别自作主张删）**：
-- `assets/robots/**` —— 正式机器人资源（URDF/STL/网格）随仓库管理；
+- `assets/**` —— 按用户 2026-11-24 要求改为本地下载，模型文件不上传，获取步骤见 README；
 - `datasets/**` —— H5 契约样本与录制（`.gitignore` 里用 `!datasets/**/*.h5` 放行）。
 
 **临时产物放哪**：`outputs/` 整目录已被 `.gitignore` 忽略 → 临时/实验文件写
@@ -471,5 +471,7 @@ Python 报 `invalid PYTHONUTF8 value`）—— 这也是约定 10"看退出码�
 | 2026-10-10 | v1.1 | **基线随上游推进到 `10ebd9f`**（`src/teleoperation/apps/` -> `applications/` 整目录改名；上游删除整个 `tests/`、`docs/archive/`、`configs/` 与两个 `datasets/raw/*.h5`）：本支 rebase 到新基线、同步 49 处路径引用，并把所有钉死的数字刷新（基线 `747` 文件 / `Ran 19 tests` / `errors=0`）；`preflight.ps1` 的 `-Base` 默认值由 `42bbe10` 改为 `10ebd9f` | `docs/CONVENTIONS.md`、`.clinerules`、`docs/RETARGETING_PIPELINE.md`、`devtools/*` |
 | 2026-10-14 | v1.2 | **新增约定 14「改动落点：优先在既有文件里增量修改」**（用户 2026-10-14 明确要求：不要动不动新建文件，否则"这一块那一块"、以后容易漏改）；同步 `.clinerules`。配套：`preflight.ps1` 第 4 项把 `.clinerules`、`docs/CONVENTIONS.md`、`docs/RETARGETING_PIPELINE.md` 与 `devtools/**` 加进默认放行名单 —— 它们分别是本支自己维护的**规则文件**（改约定本身是受控动作）、**运行/验收手册**、**工具链**（`.clinerules` 布局说明里就写着 `devtools/**` 与 `docs/**` 是"我加的、可改"，只是被队友线合并进了基线），都不是队友算法代码；其余基线文件（`src/teleoperation/**`、`assets/**`、`datasets/**`、队内共用的 `docs/contracts.md` / `architecture.md` / `TEAM_ONBOARDING.md`、`pyproject.toml`、`README.md`）照旧零改动 | `docs/CONVENTIONS.md`、`.clinerules`、`devtools/preflight.ps1` |
 | 2026-11-09 | v1.3 | **约定 14 加第 7 条「启动器只养一个」**（用户 2026-11-09 明确要求：`devtools` 里入口文件太多太乱，以后代码写在同一个文件里）：新档位用开关表达（`--elbow-follow operator`），不建薄包装文件；同日已把 `devtools/run_realtime_arm_elbow_follow_windows.py` 并回 `devtools/run_realtime_arm_windows.py` 并删除，且现场口径 `--arm-elbow-follow operator` 成为该启动器的默认值（Parameters 留空 = 现场档，`--elbow-follow off` / 旧糖 `--off` = 历史档）。顺手刷新本文件里过期的自检期望值：`unittest discover -s tests` 现为本机实测 `Ran 373 tests / OK (skipped=3)`（不再是 19） | `docs/CONVENTIONS.md`、`.clinerules`、`docs/multi-robot-arm.md`、`docs/RETARGETING_PIPELINE.md`、`devtools/run_realtime_arm_windows.py`、`tests/test_arm_realtime_bridge.py` |
+
+| 2026-11-24 | v1.4 | 按用户迁移后的布局，将机器人资产改为本地 `assets/**` 下载，仓库保留路径配置与下载说明，同步自检排除规则 | `docs/CONVENTIONS.md`、`.clinerules`、`devtools/preflight.ps1` |
 
 > 改约定 = 本表加一行 + `.clinerules` 同步（约定 12）。

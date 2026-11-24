@@ -34,8 +34,9 @@ from teleoperation.simulation.arm_profiles import (
     table,
 )
 
+from teleoperation.paths import ROBOTS_ROOT
+
 ROOT = Path(__file__).resolve().parents[1]
-ROBOTS_ROOT = ROOT / "assets" / "robots" / "from_teleopbench"
 URDF_PATHS = {"h1_2": ROBOTS_ROOT / "h1_2" / "h1_2.urdf",
               "gr1_t2": ROBOTS_ROOT / "gr1" / "urdf" / "robot.urdf",
               "g1": ROBOTS_ROOT / "g1" / "g1_29dof_with_hand_lock_waist.urdf"}
@@ -116,7 +117,7 @@ class ArmProfileTableTests(unittest.TestCase):
 
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robot URDFs are missing")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class ThreeRobotArmIkTests(unittest.TestCase):
     """One shared headless scene: every arm must track, everything else must hold."""
@@ -430,7 +431,7 @@ class TwoSidedForearmGapTests(unittest.TestCase):
         json.dumps(self.driver.summary())      # the report payload stays JSON-able
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robot URDFs are missing")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class ArmTargetSlewTests(unittest.TestCase):
     """The slew cap has to be real, and the working point has to stay reachable apart.
@@ -666,7 +667,7 @@ class FieldArmDefaultsTests(unittest.TestCase):
             ["--arm-ik-mode", "position"]).arm_ik_mode, "position")
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robot URDFs are missing")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class LiveRestPosesTests(unittest.TestCase):
     """``rest_poses="live"``: 零空间项不许把解从「精确可达」的目标上拽走。
@@ -755,7 +756,7 @@ class LiveRestPosesTests(unittest.TestCase):
                           sides=("right",), rest_poses="lively")
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robot URDFs are missing")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class ElbowPostureTests(unittest.TestCase):
     """「肘跟手」（``--arm-elbow-follow operator``）：零空间参考跟着操作者的肘弯走。
@@ -897,7 +898,7 @@ class ElbowPostureTests(unittest.TestCase):
                 self.assertEqual(self.driver.ik[robot].last_posture["right"], {})
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robot URDFs are missing")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class RigidShoulderAnchorTests(unittest.TestCase):
     """The shoulder end of the upper arm must be rigid to the elbow (8.13.2).
@@ -1096,7 +1097,7 @@ class ElbowPoseSideTests(unittest.TestCase):
 
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robot URDFs are missing")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class OrientationScopeTests(unittest.TestCase):
     """``orientation_scope``：转手腕只该转腕，不该抬手、不该摆肘（2026-11-16 现场）。
@@ -1258,9 +1259,9 @@ class OrientationScopeTests(unittest.TestCase):
 
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robot URDFs are missing")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robot URDFs are missing")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class HandBaseOrientationTests(unittest.TestCase):
     """Target the visible native hand frame instead of the wrist-link frame.
@@ -1469,7 +1470,7 @@ class PoseModeOnEveryRobotTests(unittest.TestCase):
         self.assertFalse(adapter.wrist_usage("left")[name]["at_limit"])
 
 
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robot URDFs are missing")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class WristJointStepTests(unittest.TestCase):
     """``max_wrist_joint_step_deg``: the orientation cap held, a single joint still jumped 200 deg.
@@ -1623,7 +1624,7 @@ class WristJointStepTests(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 # 2026-11-17：论文求解器的帧预算 —— 「一次迭代只许一次 FK」
 # --------------------------------------------------------------------------- #
-@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robots/from_teleopbench is missing (not in git)")
+@unittest.skipUnless(ASSETS_AVAILABLE, "assets/robot URDFs are missing")
 @unittest.skipUnless(PYBULLET_AVAILABLE, "pybullet is not installed")
 class PaperSolverFrameBudgetTests(unittest.TestCase):
     """线搜索的候选点**不许**碰 PyBullet —— 现场 3.7 fps 的根因就是这个。

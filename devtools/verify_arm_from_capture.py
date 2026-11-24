@@ -3,9 +3,9 @@
 为什么用 PyBullet 自带 IK
 -------------------------
 队友的手臂栈（``retargeting/arm/ik.py`` + ``apps/dual.py``）是给 **TRON2A** 写的，
-要 ``third_party/tron2-robot-description/.../robot.urdf`` + 一份 TRON2A 标定 JSON +
+要 ``assets/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf`` + 一份 TRON2A 标定 JSON +
 训练出来的手部检查点；本机这三样都没有，所以那条链路跑不起来。论文三台机器人
-（H1-2 / GR1-T2 / G1）的 URDF 在 ``assets/robots/from_teleopbench/`` 里**是齐的**，
+（H1-2 / GR1-T2 / G1）的 URDF 在 ``assets/robot/`` 里**是齐的**，
 PyBullet 自带的 ``calculateInverseKinematics`` 就能对它们的 7 DoF 手臂求解。
 
 因此本脚本证明的是：**"手腕目标位姿 -> 7 DoF 手臂"这一段能跑通，并且有数值证据**；

@@ -86,10 +86,10 @@ $allowPaths += @('.clinerules', 'docs/CONVENTIONS.md', 'docs/RETARGETING_PIPELIN
 $allowPrefix = @('devtools/')
 
 # Things that must never be committed (rule 7).
-$forbiddenPrefix = @('lib/', 'linkerhand_sdk/', '.venv/', 'data/', 'outputs/',
+$forbiddenPrefix = @('assets/', 'lib/', 'linkerhand_sdk/', '.venv/', 'data/', 'outputs/',
                      'logs/', 'tmp_', '.pytest_cache/')
-# Tracked on purpose: robot assets and the H5 sample/recording contracts.
-$keptPrefix = @('assets/robots/', 'datasets/')
+# Tracked on purpose: H5 sample/recording contracts. Robot assets stay local.
+$keptPrefix = @('datasets/')
 $bigExt = @('.pt', '.pth', '.ckpt', '.onnx', '.mp4', '.avi', '.h5', '.hdf5', '.zip')
 $maxNewFileMB = 5
 

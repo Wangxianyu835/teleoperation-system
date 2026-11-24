@@ -54,6 +54,18 @@ class NativeHandPinchSignalTests(unittest.TestCase):
         self.assertEqual(details["source"], "image-open")
         self.assertEqual(details["selected"][:2], (None, 0.0))
 
+    def test_world_and_image_agreeing_on_a_fist_keep_all_finger_grip(self):
+        from teleoperation.robots.native_hand import pinch_signal_details
+
+        world = self._hand([0.00, 0.50, 0.0], [0.00, 0.49, 0.0],
+                           curled=True)
+        image = self._hand([0.00, 0.50, 0.0], [0.00, 0.49, 0.0],
+                           curled=True)
+        details = pinch_signal_details(world, image)
+        self.assertEqual(details["source"], "world+image")
+        self.assertEqual(details["selected"][0], "fist")
+        self.assertGreater(details["selected"][1], 0.5)
+
     def test_contact_hold_bridges_occlusion_then_releases(self):
         from teleoperation.robots.native_hand import PinchSignalStabilizer
 
@@ -65,6 +77,22 @@ class NativeHandPinchSignalTests(unittest.TestCase):
                              ("index", 1.0))
         self.assertEqual(tracker.update((None, 0.0, 0.8)),
                          (None, 0.0, 0.8))
+
+    def test_transient_grip_must_remain_present_before_latching(self):
+        from teleoperation.robots.native_hand import PinchSignalStabilizer
+
+        tracker = PinchSignalStabilizer(
+            hold_frames=2, confirm_frames=3)
+        self.assertEqual(tracker.update(("fist", 1.0, 0.2))[:2],
+                         (None, 0.0))
+        self.assertEqual(tracker.update((None, 0.0, 0.8))[:2],
+                         (None, 0.0))
+        self.assertEqual(tracker.update(("fist", 1.0, 0.2))[:2],
+                         (None, 0.0))
+        self.assertEqual(tracker.update(("fist", 1.0, 0.2))[:2],
+                         (None, 0.0))
+        self.assertEqual(tracker.update(("fist", 1.0, 0.2))[:2],
+                         ("fist", 1.0))
 
     def test_image_space_cannot_turn_a_forward_pointing_hand_into_a_fist(self):
         from teleoperation.robots.native_hand import pinch_signal

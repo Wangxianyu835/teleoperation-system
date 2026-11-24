@@ -10,6 +10,41 @@
 
 ## 1. 环境与路径
 
+机器人资产统一存放在 `assets/`；默认路径由 `src/teleoperation/paths.py` 配置，相对仓库定位，无需填写本机绝对路径。
+
+| 资产 | 当前 URDF 路径 |
+|---|---|
+| H1-2 | `assets/robot/h1_2/h1_2.urdf` |
+| GR1-T2 | `assets/robot/gr1/urdf/robot.urdf` |
+| G1 | `assets/robot/g1/g1_29dof_with_hand_lock_waist.urdf` |
+| TRON2A | `assets/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf` |
+| L21 左右手 | `assets/l21/left/linkerhand_l21_left.urdf`、`assets/l21/right/linkerhand_l21_right.urdf` |
+| 独立手模型 | `assets/inspire_hand/`、`assets/unitree_hand/` |
+
+URDF 与配套的 meshes 等目录应一起保留。按下方步骤下载 TRON2A 网格后，可使用 `--display full`；[TRON2A + L21 演示](docs/tron2a-l21-demo.md)支持无摄像头运行。
+
+资产文件只在本地保存，`assets/` 已加入 Git 忽略规则。TRON2A 可在 PowerShell 中稀疏下载；已存在该仓库时会复用，不重复 clone：
+
+```powershell
+$assetRoot = 'D:\2026\code\teleoperation-preprint\assets'
+$tronRepo = Join-Path $assetRoot 'tron2-robot-description'
+New-Item -ItemType Directory -Force -Path $assetRoot | Out-Null
+if (-not (Test-Path -LiteralPath $tronRepo)) {
+    git clone --filter=blob:none --sparse https://github.com/limxdynamics/tron2-robot-description.git $tronRepo
+    if ($LASTEXITCODE -ne 0) { throw 'TRON2 仓库下载失败' }
+}
+if (-not (Test-Path -LiteralPath (Join-Path $tronRepo '.git'))) {
+    throw '目标目录已存在但不是 Git 仓库，请先检查该目录内容'
+}
+git -C $tronRepo sparse-checkout set tron2a/DACH_TRON2A
+if ($LASTEXITCODE -ne 0) { throw 'TRON2A 稀疏下载失败' }
+explorer (Join-Path $tronRepo 'tron2a\DACH_TRON2A')
+```
+
+下载后的默认 URDF 为 `assets/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf`。之前放在 `assets/Tron2a/` 的模型可继续通过 `--urdf assets/Tron2a/urdf/robot.urdf` 显式使用。
+
+其他整机和独立手模型来源为 [TeleOpBench](https://github.com/cyjdlhy/TeleOpBench)，L21 来源为 [LinkerHand SDK](https://gitee.com/ericbrunt/linkerhand_telop_python)。下载后按上表整理到本地 `assets/`，保留 URDF 引用的网格相对目录。
+
 以下命令使用 **Windows PowerShell**，从仓库根目录执行。反引号用于续行，后面不要加空格；也可将多行合并为一行。需要 Python 3.10 或更新版本。
 
 ### 1.1 安装与检查
@@ -413,7 +448,7 @@ python -m teleoperation dual calibrate-camera `
   --camera-index 0 `
   --model-asset-path datasets/hand_landmarker.task `
   --pose-model-asset-path datasets/pose_landmarker_lite.task `
-  --urdf third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf `
+  --urdf assets/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf `
   --output outputs/calibration/tron2a_camera_neutral.json `
   --safe-q-left 0 0 0 -0.5 0 0 0 --safe-q-right 0 0 0 -0.5 0 0 0 `
   --rotation 1 0 0 0 1 0 0 0 1 --scale 1 1 1 `
@@ -440,7 +475,7 @@ python -m unittest discover -s tests
 
 ### 4.1.2 摄像头实时驱动 TRON2A 仿真双臂（第 2 步）
 
-先用上一节的现场配置采集**真人标定**，然后运行下列命令。`tests/fixtures/tron2a_camera_neutral.synthetic.json` 是自动验收样例，实时入口拒绝它；复制或改名不能将其变为真人标定。`extrinsics_calibrated=false` 表示旋转与尺度仍由参数配置。当前仓库缺少 TRON2A meshes，现场运动学审核须明确选择 `--display simplified`。
+先用上一节的现场配置采集**真人标定**，然后运行下列命令。`tests/fixtures/tron2a_camera_neutral.synthetic.json` 是自动验收样例，实时入口拒绝它；复制或改名不能将其变为真人标定。`extrinsics_calibrated=false` 表示旋转与尺度仍由参数配置。TRON2A 网格下载到 `assets/tron2-robot-description/tron2a/DACH_TRON2A/meshes/`；可用 `--display full` 查看完整模型，`--display simplified` 用于简化运动学预览。
 
 本机可用 Python 为 `D:\Anaconda\envs\teleoperation\python.exe`，包含 MediaPipe、Robotics Toolbox、PyBullet、OpenCV。若使用其他环境，应安装现有依赖文件并执行 `python -m pip install -e . --no-deps --no-build-isolation`。以下命令从仓库根目录运行，所有参数均可先通过 `--help` 查看，不会打开设备。
 
@@ -454,7 +489,7 @@ $env:PYTHONPATH = (Join-Path (Get-Location) 'src')
   --model-asset-path datasets/hand_landmarker.task `
   --pose-model-asset-path datasets/pose_landmarker_lite.task `
   --calibration outputs/calibration/tron2a_camera_neutral.json `
-  --urdf third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf `
+  --urdf assets/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf `
   --orientation-mode fixed --display simplified --gui --preview `
   --no-attach-hands --frames 0 --simulation-steps 8 `
   --report outputs/dual/camera_report.json
@@ -514,7 +549,7 @@ $rightCheckpoint = 'outputs/hand_retargeting/checkpoint/models/twohand_h5/linker
   --model-asset-path datasets/hand_landmarker.task `
   --pose-model-asset-path datasets/pose_landmarker_lite.task `
   --calibration $calibration `
-  --urdf third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf `
+  --urdf assets/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf `
   --left-checkpoint $leftCheckpoint --right-checkpoint $rightCheckpoint --device cpu `
   --orientation-mode fixed --display simplified --gui --preview `
   --attach-hands --frames 0 --simulation-steps 8 `
@@ -574,7 +609,7 @@ $env:PYTHONUTF8 = '1'
 $observations = 'outputs/dual/observations.h5'
 $dualAngles = 'outputs/dual/hand_angles.h5'
 $calibration = 'outputs/calibration/tron2a.json'
-$urdf = 'third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf'
+$urdf = 'assets/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf'
 $commands = 'outputs/dual/commands.h5'
 
 python -m teleoperation dual export `

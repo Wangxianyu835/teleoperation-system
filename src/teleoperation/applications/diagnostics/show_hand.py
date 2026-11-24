@@ -1,23 +1,18 @@
 def main(args=None):
-    """LinkerHand 灵巧手独立展示 - 从 SDK 加载完整 3D 模型"""
+    """LinkerHand 灵巧手独立展示 - 从 assets 加载完整 3D 模型"""
     import pybullet as p
     import pybullet_data
     import time
     import os
-    from teleoperation.paths import PROJECT_ROOT
+    from teleoperation.paths import L21_ROOT
 
-    # SDK 中的灵巧手模型路径（相对本脚本定位，不依赖盘符）
-    HAND_DIR = os.path.normpath(os.path.join(
-        str(PROJECT_ROOT),
-        "linkerhand_sdk", "ros1", "src", "assets", "robots", "hands", "linker_hand",
-    ))
+    HAND_DIR = str(L21_ROOT)
 
     if not os.path.isdir(HAND_DIR):
         raise SystemExit(
             "未找到 LinkerHand 模型目录：\n"
             f"  {HAND_DIR}\n\n"
-            "请先克隆 SDK 后重试：\n"
-            "  git clone https://gitee.com/ericbrunt/linkerhand_telop_python.git linkerhand_sdk\n"
+            "请检查 assets/l21 下的左右手模型。\n"
         )
 
     client = p.connect(p.GUI)
@@ -34,7 +29,7 @@ def main(args=None):
 
     # 右手 - L21
     right_hand = load_urdf(
-        os.path.join(HAND_DIR, "l21_right", "linkerhand_l21_right.urdf"),
+        os.path.join(HAND_DIR, "right", "linkerhand_l21_right.urdf"),
         basePosition=[-0.2, 0, 0.6],
         baseOrientation=p.getQuaternionFromEuler([1.57, 0, 0]),
         useFixedBase=True
@@ -42,7 +37,7 @@ def main(args=None):
 
     # 左手 - L21
     left_hand = load_urdf(
-        os.path.join(HAND_DIR, "l21_left", "linkerhand_l21_left.urdf"),
+        os.path.join(HAND_DIR, "left", "linkerhand_l21_left.urdf"),
         basePosition=[0.2, 0, 0.6],
         baseOrientation=p.getQuaternionFromEuler([1.57, 0, 0]),
         useFixedBase=True

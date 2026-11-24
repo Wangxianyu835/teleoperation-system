@@ -25,8 +25,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-本项目 `assets/robots/from_teleopbench/` 下的 H1-2 / GR1-T2 / G1 模型资产
-来自 TeleOpBench，该目录未包含在本仓库中，需自行从上游获取。
+本项目 `assets/robot/` 下的 H1-2 / GR1-T2 / G1 模型资产，以及
+`assets/inspire_hand/`、`assets/unitree_hand/` 下的手部模型来自 TeleOpBench，由使用者下载到本地，仓库只保留代码和获取说明。
 
 TeleOpBench 建立在以下开源代码库之上，请访问链接查看各自的许可证：
 
@@ -49,7 +49,7 @@ TeleOpBench 建立在以下开源代码库之上，请访问链接查看各自�
 https://gitee.com/ericbrunt/linkerhand_telop_python
 
 本项目的灵巧手模型与关节驱动接口参考该 SDK。
-该 SDK 未包含在本仓库中，需自行从上游克隆，许可证见其原仓库。
+L21 模型下载到本地 `assets/l21/`；完整 SDK 未包含在本仓库中，许可证见其原仓库。
 
 ------------------------------------------------------------
 3. TRON2 Robot Description
@@ -60,9 +60,8 @@ SPDX-License-Identifier: Apache-2.0
 来源：
 https://github.com/limxdynamics/tron2-robot-description
 
-本仓库 `third_party/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf`
-来自该项目的 URDF 描述，用于测试双臂关节链读取和 IK。
-完整网格资产未包含在本仓库中，需从上游项目获取。
+本地 `assets/tron2-robot-description/tron2a/DACH_TRON2A/` 下的 URDF 与配套网格等资产应从该项目下载，
+用于双臂关节链读取、IK 和仿真。默认 URDF 为 `assets/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf`。
 
 ------------------------------------------------------------
 4. dex-retargeting 0.4.6

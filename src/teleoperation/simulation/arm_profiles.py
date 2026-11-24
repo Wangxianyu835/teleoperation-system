@@ -34,7 +34,7 @@ from typing import Mapping, Sequence
 
 SIDES = ("left", "right")
 
-#: Robots whose URDF ships in ``assets/robots/from_teleopbench`` (local, not in git).
+#: Robots whose URDF ships in ``assets/robot``.
 PAPER_ROBOTS = ("h1_2", "gr1_t2", "g1")
 
 #: The teammate's arm as registered in ``retargeting/arm/ik.py``.  Kept visible on
@@ -235,8 +235,7 @@ ARM_PROFILES: dict = {
               "uncalibrated orientation convention.  Sweep measured mean 7.7 / "
               "max 14.9 mm.",
     ),
-    # Registered only: this repo ships neither the TRON2A URDF nor its calibration
-    # JSON nor the hand checkpoint, so the teammate's TRON2A path cannot run here.
+    # Registered only: TRON2A uses its separate calibrated dual-arm controller.
     TRON2A: ArmProfile(
         robot_type=TRON2A,
         side_joints={},          # filled from the teammate's constants on demand
@@ -246,8 +245,8 @@ ARM_PROFILES: dict = {
         metric_offset=(0.0, 0.0, 0.0),
         expected_arm_dof=7,
         loadable=False,
-        notes="teammate's arm; needs third_party/tron2-robot-description/robot.urdf "
-              "+ a calibration JSON + a hand checkpoint (none of them in this repo).",
+        notes="assets/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf; use the separate calibrated "
+              "dual-arm controller rather than this multi-robot driver.",
     ),
 }
 

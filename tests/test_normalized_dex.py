@@ -13,6 +13,42 @@ from teleoperation.retargeting.hand.hand_model import DifferentiableHandModel, b
 
 @unittest.skipUnless(all(importlib.util.find_spec(name) for name in ('dex_retargeting', 'nlopt', 'pinocchio')),'requires Dex, NLopt and Pinocchio runtime')
 class NormalizedDexTests(unittest.TestCase):
+    def test_pinch_contact_pose_actually_joins_thumb_and_index(self):
+        from teleoperation.retargeting.hand.pinch_contact import (
+            independent_pinch_pose,
+        )
+
+        spec = load_hand_spec('h1_2', 'right')
+        pose = independent_pinch_pose(spec, 'index')
+        model = DifferentiableHandModel(spec)
+        points = model.positions(
+            torch.tensor(pose[None], dtype=torch.float64),
+            (spec.root_link, spec.tip_frames[0], spec.tip_frames[1]),
+        ).detach().numpy()[0]
+        gap_m = np.linalg.norm(points[1] - points[2])
+        self.assertLess(gap_m, 0.001)
+
+    def test_fist_contact_pose_closes_all_four_fingers(self):
+        from teleoperation.retargeting.hand.pinch_contact import (
+            independent_fist_pose,
+            normalized_finger_closure,
+            normalized_joint_closure,
+        )
+
+        spec = load_hand_spec('h1_2', 'right')
+        pose = independent_fist_pose(spec)
+        self.assertGreater(normalized_finger_closure(spec, pose), 0.45)
+        self.assertGreater(normalized_joint_closure(spec, pose, 'index'), 0.4)
+        self.assertGreater(
+            normalized_finger_closure(spec, pose),
+            normalized_finger_closure(spec, spec.q_reference))
+        model = DifferentiableHandModel(spec)
+        points = model.positions(
+            torch.tensor(pose[None], dtype=torch.float64),
+            (spec.root_link, spec.tip_frames[0], spec.tip_frames[1]),
+        ).detach().numpy()[0]
+        self.assertLess(np.linalg.norm(points[1] - points[2]), 0.001)
+
     def test_reachable_l21_target_and_nn_share_native_result_identity(self):
         from teleoperation.retargeting.hand.dex_native import NormalizedDexRetargeter
         from teleoperation.retargeting.hand.interface import SharedJointNNRetargeter

@@ -1,6 +1,7 @@
 # 手部重定向链路怎么跑、怎么复核（current-state 布局）
 
 > 本文保留早期分支的运行与验收历史，历史机器路径、默认值与测试数量不能作为当前版本的运行依据。
+> 2026-11-24 起，资产目录以 [README 路径表](../README.md#1-环境与路径)为准：整机在 `assets/robot/`，TRON2A 在 `assets/tron2-robot-description/tron2a/DACH_TRON2A/`，L21 在 `assets/l21/`。
 > 当前工作流以 [README](../README.md)、[原生手与统一控制](native-hand-control.md)、[数据契约](contracts.md) 和 [米制采集](world-landmark-capture.md) 为准。
 > **最后维护**：2026-11-23。已清除被现行文档覆盖的旧集成记录链接；手臂历次实验见 [multi-robot-arm.md](multi-robot-arm.md)，任务现状见 [task-evaluation.md](task-evaluation.md)。
 

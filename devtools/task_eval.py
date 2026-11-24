@@ -91,6 +91,14 @@ SETTLE_STEPS = 600
 DEFAULT_MAX_SIM_S = 60.0
 SUCCESS_HOLD_STEPS = 120
 SUCCESS_TABLE_MARGIN_M = 0.08
+#: GUI 相机记忆：用户拖到合适视角后写回 F 盘，下一次同机器人直接恢复。
+CAMERA_VIEW_SCHEMA = "task_eval_gui_camera_v1"
+DEFAULT_CAMERA = {
+    "yaw": 45.0,
+    "pitch": -18.0,
+    "distance": 2.2,
+    "target_offset_from_robot_base_m": [0.35, 0.0, 0.25],
+}
 #: 论文 Table 1 里被拿去做量化对比的 10 个代表任务
 DEFAULT_TASKS = ("pushcube", "pickcube", "pickplacecube", "uprearcup", "balltrashcan",
                  "ballmug", "ballbimanual", "potbimanual", "pottomatoplate",
@@ -151,6 +159,99 @@ def aabb(client: int, body: int):
 def body_pose(client: int, body: int):
     pos, orn = p.getBasePositionAndOrientation(body, physicsClientId=client)
     return np.asarray(pos, dtype=float), np.asarray(orn, dtype=float)
+
+
+def camera_view_path_for(robot: str) -> Path:
+    return ROOT / "outputs" / "task_eval" / ("camera_view_%s.json" % robot)
+
+
+def _robot_base(env):
+    position, _orientation = p.getBasePositionAndOrientation(
+        env.robot_id, physicsClientId=env.client)
+    return np.asarray(position, dtype=np.float64)
+
+
+def apply_camera_view(env, robot: str, path: Path = None) -> dict:
+    """Restore this robot's last GUI camera, or a sensible first-run view."""
+    if not getattr(env, "_render", False):
+        return {}
+    path = Path(path) if path is not None else camera_view_path_for(robot)
+    payload = None
+    if path.is_file():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if (payload.get("schema") != CAMERA_VIEW_SCHEMA
+                    or payload.get("robot") != robot):
+                payload = None
+        except (OSError, ValueError, TypeError):
+            payload = None
+    if payload is None:
+        payload = dict(DEFAULT_CAMERA)
+        source = "default"
+    else:
+        source = str(path)
+    try:
+        yaw = float(payload["yaw"])
+        pitch = float(np.clip(float(payload["pitch"]), -89.0, 89.0))
+        distance = float(np.clip(float(payload["distance"]), 0.3, 5.0))
+        offset = np.asarray(
+            payload["target_offset_from_robot_base_m"], dtype=np.float64)
+        if offset.shape != (3,) or not np.isfinite(
+                [yaw, pitch, distance, *offset]).all():
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        payload = dict(DEFAULT_CAMERA)
+        source = "default"
+        yaw, pitch, distance = 45.0, -18.0, 2.2
+        offset = np.asarray(
+            payload["target_offset_from_robot_base_m"], dtype=np.float64)
+    target = _robot_base(env) + offset
+    p.resetDebugVisualizerCamera(
+        cameraDistance=distance, cameraYaw=yaw, cameraPitch=pitch,
+        cameraTargetPosition=target.tolist(), physicsClientId=env.client)
+    print("[camera-view] %s: yaw=%.1f pitch=%.1f distance=%.2f target=%s"
+          % (source, yaw, pitch, distance,
+             [round(float(value), 3) for value in target]),
+          flush=True)
+    return {"source": source, "yaw": yaw, "pitch": pitch,
+            "distance": distance,
+            "target_offset_from_robot_base_m": offset.tolist()}
+
+
+def save_camera_view(env, robot: str, path: Path = None) -> bool:
+    """Persist a user-adjusted GUI camera; return whether it changed."""
+    if (not getattr(env, "_render", False)
+            or not p.isConnected(env.client)):
+        return False
+    try:
+        view = p.getDebugVisualizerCamera(physicsClientId=env.client)
+        yaw, pitch, distance = float(view[8]), float(view[9]), float(view[10])
+        target = np.asarray(view[11], dtype=np.float64)
+        base = _robot_base(env)
+    except (IndexError, TypeError, ValueError, p.error):
+        return False
+    if not np.isfinite([yaw, pitch, distance, *target]).all():
+        return False
+    payload = {
+        "schema": CAMERA_VIEW_SCHEMA,
+        "robot": robot,
+        "yaw": round(yaw, 4),
+        "pitch": round(pitch, 4),
+        "distance": round(distance, 4),
+        "target_offset_from_robot_base_m": [
+            round(float(value), 5) for value in target - base],
+    }
+    path = Path(path) if path is not None else camera_view_path_for(robot)
+    try:
+        old = path.read_text(encoding="utf-8") if path.is_file() else None
+    except OSError:
+        old = None
+    encoded = json.dumps(payload, indent=2)
+    if old == encoded:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(encoded, encoding="utf-8")
+    return True
 
 
 def guard_table_target(point, bounds, clearance_m: float = 0.06,
@@ -1615,20 +1716,28 @@ class CameraPolicy:
                  substeps: int = CAMERA_SUBSTEPS, calibrate_frames: int = 30,
                  arm_map: str = "posture", hand_model=None, pose_model=None,
                  preview: bool = False, hand_enabled: bool = True,
-                 hand_backend: str = "auto", hand_checkpoint=None,
+                 hand_backend: str = "dex", hand_checkpoint=None,
                  hand_smoothing: float = 0.25, hand_limit_mode: str = "clamp",
+                 pinch_correction: bool = True,
                  hand_device: str = "cpu", table_clearance_m: float = 0.06,
                  table_guard: bool = False,
                  grasp_assist: bool = True,
                  arm_force: float = 200.0, hand_force: float = 200.0,
                  ik_mode: str = "pose", wrist_pose: bool = True,
                  ik_solver: str = "paper",
+                 mouse_setup: bool = False,
+                 camera_view_path: str = None,
                  target_speed_m_s: float = 0.60,
                  startup_hold_frames: int = 12,
                  startup_motion_m: float = 0.05,
                  startup_confirm_frames: int = 3,
                  target_deadband_m: float = 0.002,
                  freeze_objects: bool = True):
+        if bool(hand_enabled) and str(hand_backend) == "dex":
+            # MediaPipe and PyTorch both bundle native math/runtime DLLs on
+            # Windows. Load Torch before importing the camera/arm modules so
+            # Dex can use its shared hand-target model later in the session.
+            import torch  # noqa: F401
         from teleoperation.simulation.arm_ik import PyBulletArmIK
         from teleoperation.simulation.arm_profiles import profile_for
         from teleoperation.simulation.arm_realtime import RealtimeArmBridge
@@ -1637,7 +1746,6 @@ class CameraPolicy:
             CameraFrameSource,
             ReplayFrameSource,
         )
-        from teleoperation.applications.realtime_hand_sim import build_retargeter
         from teleoperation.paths import realtime_checkpoint
         from teleoperation.robots.native_hand import (
             NativeHandAdapter,
@@ -1655,6 +1763,7 @@ class CameraPolicy:
         self.hand_enabled = bool(hand_enabled)
         self.hand_backend = str(hand_backend)
         self.hand_limit_mode = str(hand_limit_mode)
+        self.pinch_correction_enabled = bool(pinch_correction)
         self.table_clearance_m = max(0.0, float(table_clearance_m))
         self.table_guard_enabled = bool(table_guard)
         self.grasp_assist_enabled = bool(grasp_assist)
@@ -1673,6 +1782,11 @@ class CameraPolicy:
         self.ik_mode = str(ik_mode)
         self.wrist_pose = bool(wrist_pose)
         self.ik_solver = str(ik_solver)
+        self.mouse_setup = bool(mouse_setup)
+        self.mouse_picking_closed = False
+        self.camera_view_path = (
+            None if camera_view_path is None else Path(camera_view_path))
+        self._camera_view_save_count = 0
         self.target_speed_m_s = max(0.0, float(target_speed_m_s))
         self.startup_hold_frames = max(0, int(startup_hold_frames))
         self.startup_motion_m = max(0.0, float(startup_motion_m))
@@ -1696,13 +1810,21 @@ class CameraPolicy:
         missing_names = []
         hand_model = Path(hand_model or (ROOT / "datasets" / "hand_landmarker.task"))
         pose_model = Path(pose_model or (ROOT / "datasets" / "pose_landmarker_lite.task"))
+        hand_input_profile = None
+        if self.hand_enabled and self.hand_backend == "dex":
+            from teleoperation.contracts.native_coordinates import PALM_LENGTH_PROFILE
+
+            hand_input_profile = PALM_LENGTH_PROFILE
         if self.input_npz is not None:
-            self.source = ReplayFrameSource(self.input_npz, "world")
+            self.source = ReplayFrameSource(
+                self.input_npz, "world",
+                hand_input_profile=hand_input_profile)
         else:
             self.source = CameraFrameSource(
                 model_asset_path=hand_model, camera_index=int(camera_index),
                 width=640, height=480, fps=30, landmark_space="world",
-                pose_model_asset_path=pose_model if pose_model.is_file() else None)
+                pose_model_asset_path=pose_model if pose_model.is_file() else None,
+                hand_input_profile=hand_input_profile)
         profile = profile_for(env.robot_type)
         self.adapter = PyBulletArmIK(env.robot_id, env.client,
                                      robot_type=env.robot_type, sides=(self.side,),
@@ -1773,10 +1895,19 @@ class CameraPolicy:
         self.cup_velocity_clamp_count = 0
         self.hand_adapter = None
         self.hand_retargeter = None
+        self.native_hand_spec = None
+        self.pinch_contact_poses = {}
+        self.pinch_correction_alpha = 0.0
+        self.pinch_correction_frames = 0
+        self.open_guard_alpha = 0.0
+        self._last_correction_gesture = None
+        self.max_dex_raw_closure = 0.0
+        self.max_dex_corrected_closure = 0.0
         self.hand_backend_name = "off"
         self.hand_backend_note = "hand mapping disabled"
         self._pinch_signal = pinch_signal_details
-        self._pinch_stabilizer = PinchSignalStabilizer(hold_frames=8)
+        self._pinch_stabilizer = PinchSignalStabilizer(
+            hold_frames=3, decay=0.75, confirm_frames=4)
         self.hand_valid_frames = 0
         self.hand_invalid_frames = 0
         self.hand_clipped = 0
@@ -1789,12 +1920,44 @@ class CameraPolicy:
         self.hand_calibration_status = {}
         if self.hand_enabled:
             checkpoint = Path(hand_checkpoint) if hand_checkpoint else realtime_checkpoint("world")
-            self.hand_retargeter, self.hand_backend_name, self.hand_backend_note = \
-                build_retargeter(self.hand_backend, checkpoint, str(hand_device),
-                                 int(calibrate_frames), float(hand_smoothing), "world")
-            ranges, _names = read_joint_ranges(env.robot_id, env.client)
-            self.hand_adapter = NativeHandAdapter(
-                env.robot_type, self.side, ranges, limit_mode=self.hand_limit_mode)
+            if self.hand_backend == "dex":
+                from teleoperation.applications.hand_backend import build_camera_retargeter
+                specs, self.hand_retargeter = build_camera_retargeter(
+                    (env.robot_type,), (self.side,), "dex")
+                self.native_hand_spec = specs[(env.robot_type, self.side)]
+                self.hand_names = list(self.native_hand_spec.joint_names)
+                self.hand_backend_name = "dex"
+                self.hand_backend_note = (
+                    "normalized vector retargeting; palm-length normalized targets")
+                if self.pinch_correction_enabled:
+                    from teleoperation.retargeting.hand.pinch_contact import (
+                        independent_fist_pose,
+                        independent_pinch_pose,
+                    )
+
+                    # Dex optimizes every fingertip jointly.  These cached
+                    # poses make the selected robot fingertip actually meet
+                    # the thumb only while the operator's pinch is detected.
+                    for finger in ("index", "middle"):
+                        try:
+                            self.pinch_contact_poses[finger] = (
+                                independent_pinch_pose(
+                                    self.native_hand_spec, finger))
+                        except RuntimeError:
+                            # Index opposition is the required pick gesture.
+                            # A nonconverged auxiliary pose must not prevent
+                            # the arm and index hand from starting.
+                            continue
+                    self.pinch_contact_poses["fist"] = (
+                        independent_fist_pose(self.native_hand_spec))
+            else:
+                from teleoperation.applications.realtime_hand_sim import build_retargeter
+                self.hand_retargeter, self.hand_backend_name, self.hand_backend_note = \
+                    build_retargeter(self.hand_backend, checkpoint, str(hand_device),
+                                     int(calibrate_frames), float(hand_smoothing), "world")
+                ranges, _names = read_joint_ranges(env.robot_id, env.client)
+                self.hand_adapter = NativeHandAdapter(
+                    env.robot_type, self.side, ranges, limit_mode=self.hand_limit_mode)
         self.steps = 0
         self.frames = 0
         self.hand_frames = {"left": 0, "right": 0}
@@ -1812,13 +1975,20 @@ class CameraPolicy:
               "手往镜头方向收 = 机器人往前伸。看 PyBullet 窗口跟，别盯着字", flush=True)
         if self.hand_enabled:
             backend = (self.hand_backend_name
-                       if self.hand_adapter is not None else "unavailable")
+                       if self.hand_retargeter is not None else "unavailable")
             print("[camera] hand -> native joints: %s (%s), %d mapped joints, limits=%s"
                   % (backend, self.hand_backend_note, len(self.hand_names),
                      self.hand_limit_mode), flush=True)
-            print("[camera] hold this side's hand OPEN and fully visible during the first "
-                  "%d frames: that is the hand-retargeter zero pose" % calibrate_frames,
-                  flush=True)
+            if self.hand_backend_name == "dex":
+                print("[camera] Dex uses palm-length normalized 25-point windows; "
+                      "no checkpoint or operator joint calibration", flush=True)
+                if self.pinch_contact_poses:
+                    print("[camera] Dex pinch contact poses ready: %s"
+                          % ", ".join(sorted(self.pinch_contact_poses)), flush=True)
+            else:
+                print("[camera] hold this side's hand OPEN and fully visible during the first "
+                      "%d frames: that is the hand-retargeter zero pose" % calibrate_frames,
+                      flush=True)
         else:
             print("[camera] native hand mapping OFF: hand joints keep their reset angles",
                   flush=True)
@@ -1905,6 +2075,10 @@ class CameraPolicy:
             "-" if not self.last_raw_pinch
             else "%s/%s" % (self.last_raw_pinch.get("finger"),
                             self.last_raw_pinch.get("strength")))
+        if self.last_hand.get("dex_raw_finger_closure") is not None:
+            pinch_line += "  dex=%.2f/%.2f" % (
+                float(self.last_hand["dex_raw_finger_closure"]),
+                float(self.last_hand["dex_corrected_finger_closure"]))
         feedback = self.grasp_feedback
         grasp_text = "grasp=%s %s contacts=%d force=%.1fN" % (
             feedback.get("state", "none"),
@@ -1930,7 +2104,7 @@ class CameraPolicy:
 
     def _update_hand(self, window) -> None:
         """Retarget this side's hand and write native joint targets into ``action``."""
-        if not self.hand_enabled or self.hand_adapter is None:
+        if not self.hand_enabled or self.hand_retargeter is None:
             return
         if (not getattr(self, "calibrated", False)
                 or not self.tracking_started):
@@ -1944,13 +2118,19 @@ class CameraPolicy:
             self.last_hand = {"valid": False, "reason": "hand window is not ready"}
             return
         result = self.hand_retargeter.retarget(window)
-        angles = getattr(result, self.side + "_angles")
-        valid = bool(getattr(result, self.side + "_valid"))
+        angles = None
+        native_result = None
+        if self.hand_backend_name == "dex":
+            native_result = (result or {}).get((self.env.robot_type, self.side))
+            valid = bool(native_result is not None and native_result.valid)
+        else:
+            angles = getattr(result, self.side + "_angles")
+            valid = bool(getattr(result, self.side + "_valid"))
         status = getattr(self.hand_retargeter, "calibration_status", None)
         if isinstance(status, dict):
             self.hand_calibration_status = {
                 str(key): bool(value) for key, value in status.items()}
-        if not valid or angles is None:
+        if not valid or (self.hand_backend_name != "dex" and angles is None):
             self.hand_invalid_frames += 1
             self.last_hand = {"valid": False, "reason": "hand landmarks unusable"}
             return
@@ -1970,8 +2150,94 @@ class CameraPolicy:
             "world": raw_details["world"],
             "image": raw_details["image"],
         }
-        targets, clipped = self.hand_adapter.map(
-            angles.native_mapping_dofs(), pinch=pinch)
+        correction_gesture = None
+        raw_closure = None
+        corrected_closure = None
+        if self.hand_backend_name == "dex":
+            from teleoperation.retargeting.hand.pinch_contact import (
+                normalized_finger_closure,
+                normalized_joint_closure,
+            )
+
+            positions = np.asarray(native_result.positions, dtype=np.float64)
+            if (hasattr(self.native_hand_spec, "bounds")
+                    and hasattr(self.native_hand_spec, "q_reference")):
+                raw_closure = normalized_finger_closure(
+                    self.native_hand_spec, positions)
+                selected_finger_closure = normalized_joint_closure(
+                    self.native_hand_spec, positions, pinch[0])
+                self.max_dex_raw_closure = max(
+                    float(getattr(self, "max_dex_raw_closure", 0.0)),
+                    raw_closure)
+                strong_index_pinch = (
+                    pinch[0] in ("index", "middle")
+                    and float(pinch[1]) >= 0.45
+                    and pinch[2] is not None
+                    and float(pinch[2]) <= 0.45
+                    and selected_finger_closure >= 0.25)
+                strong_fist = (
+                    pinch[0] == "fist" and float(pinch[1]) >= 0.65)
+                if (strong_fist and raw_closure >= 0.55) or (
+                        strong_index_pinch and raw_closure >= 0.85):
+                    correction_gesture = "fist"
+                elif strong_index_pinch:
+                    correction_gesture = pinch[0]
+            correction_pose = getattr(
+                self, "pinch_contact_poses", {}).get(correction_gesture)
+            previous_alpha = float(getattr(
+                self, "pinch_correction_alpha", 0.0))
+            wanted_strength = (max(float(pinch[1]), raw_closure or 0.0)
+                               if correction_gesture else 0.0)
+            bounds = getattr(self.native_hand_spec, "bounds", None)
+            if bounds is not None and self.pinch_contact_poses:
+                guard_target = 0.0 if correction_pose is not None else 1.0
+                previous_guard = float(getattr(
+                    self, "open_guard_alpha", 0.0))
+                guard_limit = 0.7 if guard_target > previous_guard else 0.35
+                guard_step = min(guard_limit, max(
+                    -guard_limit, guard_target - previous_guard))
+                self.open_guard_alpha = min(
+                    1.0, max(0.0, previous_guard + guard_step))
+                if self.open_guard_alpha > 0.0:
+                    reference = getattr(
+                        self.native_hand_spec, "q_reference", positions)
+                    positions = (
+                        positions + self.open_guard_alpha
+                        * (np.asarray(reference, dtype=np.float64) - positions))
+            if (correction_pose is not None and wanted_strength > 0.0):
+                wanted_alpha = min(1.0, max(0.0, wanted_strength))
+                step = min(0.25, max(-0.70, wanted_alpha
+                                    - previous_alpha))
+                self.pinch_correction_alpha = previous_alpha + step
+                self.pinch_correction_frames = (
+                    getattr(self, "pinch_correction_frames", 0) + 1)
+                positions = (
+                    positions + self.pinch_correction_alpha
+                    * (correction_pose - positions))
+            else:
+                self.pinch_correction_alpha = max(
+                    0.0, previous_alpha - 0.70)
+            if bounds is not None:
+                positions = np.clip(positions, *bounds.T)
+                corrected_closure = normalized_finger_closure(
+                    self.native_hand_spec, positions)
+                self.max_dex_corrected_closure = max(
+                    float(getattr(
+                        self, "max_dex_corrected_closure", 0.0)),
+                    corrected_closure)
+            targets = self.native_hand_spec.expand(positions)
+            clipped = 0
+            if (getattr(self, "_last_correction_gesture", None)
+                    != correction_gesture):
+                print("[camera] dex grip -> %s  raw=%.2f corrected=%.2f"
+                      % ("open" if correction_gesture is None
+                         else correction_gesture,
+                         float(raw_closure or 0.0),
+                         float(corrected_closure or 0.0)), flush=True)
+                self._last_correction_gesture = correction_gesture
+        else:
+            targets, clipped = self.hand_adapter.map(
+                angles.native_mapping_dofs(), pinch=pinch)
         action = np.array(self.action, dtype=np.float64, copy=True)
         written = {}
         for name, value in targets.items():
@@ -2001,8 +2267,26 @@ class CameraPolicy:
                             else round(float(pinch[2]), 3)),
             "calibrated": bool(getattr(
                 self, "hand_calibration_status", {}).get(self.side, True)),
-            "l21_angles": [round(float(value), 5)
-                           for value in np.asarray(angles.values, dtype=np.float64)],
+            "l21_angles": (None if angles is None else
+                           [round(float(value), 5)
+                            for value in np.asarray(angles.values, dtype=np.float64)]),
+            "native_positions": {name: round(float(value), 6)
+                                 for name, value in sorted(written.items())},
+            "pinch_correction_alpha": round(
+                float(getattr(self, "pinch_correction_alpha", 0.0)), 3),
+            "pinch_correction_gesture": correction_gesture,
+            "open_guard_alpha": round(
+                float(getattr(self, "open_guard_alpha", 0.0)), 3),
+            "dex_raw_finger_closure": (
+                None if raw_closure is None else round(raw_closure, 3)),
+            "dex_corrected_finger_closure": (
+                None if corrected_closure is None
+                else round(corrected_closure, 3)),
+            "pinch_selected_finger_closure": (
+                None if raw_closure is None else round(
+                    float(selected_finger_closure), 3)),
+            "solve_ms": (None if native_result is None
+                         else round(float(native_result.solve_ms), 3)),
         }
         self.last_valid_hand = dict(self.last_hand)
         finger, strength, ratio = pinch
@@ -2113,6 +2397,12 @@ class CameraPolicy:
         if getattr(self.source, "exhausted", False):
             self.stopped = True
         self.frames += 1
+        if (self.camera_view_path is not None
+                and (self.frames % 30) == 0
+                and save_camera_view(
+                    self.env, str(self.env.robot_type),
+                    self.camera_view_path)):
+            self._camera_view_save_count += 1
         upper = self.source.arms()
         raw = self.source.last_raw_frame or {}
         self._update_hand(window)
@@ -2164,6 +2454,13 @@ class CameraPolicy:
                 }
                 return
             if not was_tracking:
+                if self.mouse_setup and not self.mouse_picking_closed:
+                    p.configureDebugVisualizer(
+                        p.COV_ENABLE_MOUSE_PICKING, 0,
+                        physicsClientId=self.env.client)
+                    self.mouse_picking_closed = True
+                    print("[camera] setup mouse picking OFF; the robot must now "
+                          "complete the task by contact", flush=True)
                 self._unfreeze_task_objects(
                     self.env, only=((self.delayed_physics_object,)
                                     if self.delayed_physics_object else None))
@@ -2548,6 +2845,8 @@ class CameraPolicy:
                            "hand_backend": self.hand_backend_name,
                            "hand_backend_note": self.hand_backend_note,
                            "hand_limit_mode": self.hand_limit_mode,
+                           "pinch_correction": self.pinch_correction_enabled,
+                           "mouse_setup": self.mouse_setup,
                            "hand_joints": self.hand_names,
                            "table_clearance_m": self.table_clearance_m,
                            "table_guard": self.table_guard_enabled,
@@ -2587,10 +2886,34 @@ class CameraPolicy:
         except p.error:
             arm_posture = None
         return {"frames": self.frames, "steps": self.steps,
+                "camera_view_path": (
+                    None if self.camera_view_path is None
+                    else str(self.camera_view_path)),
+                "camera_view_saves": self._camera_view_save_count,
                 "hand_frames": dict(self.hand_frames),
                 "hand_valid_frames": self.hand_valid_frames,
                 "hand_invalid_frames": self.hand_invalid_frames,
                 "hand_clipped_joints": self.hand_clipped,
+                "pinch_contact_correction": {
+                    "enabled": getattr(
+                        self, "pinch_correction_enabled", False),
+                    "poses_ready": sorted(getattr(
+                        self, "pinch_contact_poses", {})),
+                    "frames": getattr(self, "pinch_correction_frames", 0),
+                    "last_alpha": round(
+                        float(getattr(
+                            self, "pinch_correction_alpha", 0.0)), 3),
+                    "max_raw_finger_closure": round(
+                        float(getattr(
+                            self, "max_dex_raw_closure", 0.0)), 3),
+                    "max_corrected_finger_closure": round(
+                        float(getattr(
+                            self, "max_dex_corrected_closure", 0.0)), 3),
+                    "open_guard_alpha": round(
+                        float(getattr(self, "open_guard_alpha", 0.0)), 3),
+                },
+                "mouse_setup": self.mouse_setup,
+                "mouse_picking_closed": self.mouse_picking_closed,
                 "hand_calibration_status": dict(self.hand_calibration_status),
                 "last_hand": self.last_hand,
                 "last_valid_hand": self.last_valid_hand,
@@ -2970,6 +3293,71 @@ def disable_robot_object_collision_except_hand(env, key: str,
     return disabled
 
 
+def reinforce_hand_object_contacts(env, side: str = "right") -> dict:
+    """Enable swept-sphere collision and explicit finger contact settings.
+
+    A 4 cm cube can otherwise tunnel through a fast-moving finger link between
+    two 240 Hz steps.  This does not attach the object: it only gives the real
+    finger collision shapes a swept volume and a non-zero surface margin.
+    """
+    hand_joints = set(env.robot_loader.hand_joints.get(side, []))
+    hand_links = []
+    for index in range(p.getNumJoints(
+            env.robot_id, physicsClientId=env.client)):
+        info = p.getJointInfo(
+            env.robot_id, index, physicsClientId=env.client)
+        joint_name = info[1].decode("utf-8", errors="ignore")
+        if joint_name not in hand_joints:
+            continue
+        link = int(info[16])
+        try:
+            p.changeDynamics(
+                env.robot_id, link,
+                collisionMargin=0.0015,
+                lateralFriction=1.4,
+                spinningFriction=0.01,
+                contactProcessingThreshold=0.0,
+                physicsClientId=env.client)
+            hand_links.append(link)
+        except p.error:
+            continue
+
+    objects = []
+    for key, body in env.task.objects.items():
+        if key == TABLE_KEY:
+            continue
+        try:
+            mass = float(p.getDynamicsInfo(
+                body, -1, physicsClientId=env.client)[0])
+            if mass <= 0.0:
+                continue
+            low, high = aabb(env.client, body)
+            radius = max(0.001, 0.45 * float(
+                np.min(np.asarray(high) - np.asarray(low))))
+            p.changeDynamics(
+                body, -1,
+                ccdSweptSphereRadius=radius,
+                collisionMargin=0.001,
+                lateralFriction=1.2,
+                spinningFriction=0.01,
+                rollingFriction=0.0,
+                restitution=0.0,
+                contactProcessingThreshold=0.0,
+                physicsClientId=env.client)
+            objects.append({"name": key, "ccd_radius_m": round(radius, 5)})
+        except p.error:
+            continue
+    details = {"side": side, "hand_links": len(hand_links),
+               "objects": objects}
+    if hand_links or objects:
+        print("[contact] hand collision reinforced: %d finger links, %s"
+              % (len(hand_links), ", ".join(
+                  "%s(ccd %.1f mm)" % (
+                      item["name"], item["ccd_radius_m"] * 1000.0)
+                  for item in objects)), flush=True)
+    return details
+
+
 def snapshot(env, path, target=None, yaw: float = 55.0, pitch: float = -22.0,
              distance: float = 1.9, width: int = 640, height: int = 480) -> bool:
     """离屏渲染一张 PNG（与 ``verify_three_robot_scene.render`` 同一套取景参数）。
@@ -3004,11 +3392,13 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                   snapshot_dir: str = None,
                   success_hold_steps: int = SUCCESS_HOLD_STEPS,
                   stop_on_success: bool = True,
-                  allow_gui_mouse_picking: bool = False) -> dict:
+                  allow_gui_mouse_picking: bool = False,
+                  setup_gui_mouse_picking: bool = False) -> dict:
     """一个任务跑 N 个 trial，返回 report（含每个 trial 的 JSON 段）。"""
     from teleoperation.simulation.environment import SimulationEnv
 
     options = dict(policy_options or {})
+    camera_path = camera_view_path_for(robot)
     arm = measure_arm(robot) if scene else {}
     report = {"meta": {"robot": robot, "task": task_name, "trials": int(trials),
                        "policy": policy, "scene": bool(scene),
@@ -3033,7 +3423,8 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                 # Evaluation must accept only robot/contact-driven state changes.
                 p.configureDebugVisualizer(
                     p.COV_ENABLE_MOUSE_PICKING,
-                    1 if allow_gui_mouse_picking else 0,
+                    1 if (allow_gui_mouse_picking
+                          or setup_gui_mouse_picking) else 0,
                     physicsClientId=env.client)
             scene_report = None
             if scene:
@@ -3118,7 +3509,14 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                           "robot-link pairs; object and ground collisions remain on"
                           % disabled,
                           flush=True)
+                    scene_report["hand_contact_reinforcement"] = (
+                        reinforce_hand_object_contacts(
+                            env, side=options.get("side", "right")))
 
+            camera_view = (
+                apply_camera_view(env, robot, camera_path) if render else {})
+            options["camera_view_path"] = (
+                str(camera_path) if render and policy == "camera" else None)
             initial_objects = object_positions(env)
             if {"cube", "target"} <= set(initial_objects):
                 cube = np.asarray(initial_objects["cube"], dtype=np.float64)
@@ -3144,7 +3542,14 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                          scene=scene_report, initial_objects=initial_objects,
                          final_objects=object_positions(env),
                          gui_mouse_picking_enabled=(
-                             bool(allow_gui_mouse_picking) if render else None))
+                             bool(allow_gui_mouse_picking
+                                  or setup_gui_mouse_picking)
+                             if render else None),
+                         gui_mouse_picking_mode=(
+                             "always" if allow_gui_mouse_picking
+                             else "setup" if setup_gui_mouse_picking
+                             else "off" if render else None),
+                         camera_view=camera_view)
             if policy == "camera":
                 trial["robot_object_contacts"] = robot_contact_summary(env)
             if scene_report is not None and scene_report.get("criteria_at_reset"):
@@ -3176,6 +3581,7 @@ def evaluate_task(robot: str, task_name: str, trials: int, policy: str,
                     if trial["success"] else
                     "no success in %.1f s" % trial["sim_time_s"]), flush=True)
         finally:
+            save_camera_view(env, robot, camera_path)
             if live is not None:
                 live.close()
             try:
@@ -3342,8 +3748,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--camera-hand", choices=("on", "off"), default="on",
                         help="--policy camera 同时驱动原装手（default on）；off 保留只驱动"
                              "手臂的旧 A/B 行为")
-    parser.add_argument("--hand-backend", choices=("auto", "geometric", "checkpoint"),
-                        default="auto", help="手部重定向后端（default auto）")
+    parser.add_argument("--hand-backend",
+                        choices=("auto", "geometric", "checkpoint", "dex"),
+                        default="dex",
+                        help="手部重定向后端（default dex = 原生手向量优化；"
+                             "auto/geometric/checkpoint 保留为旧方法 A/B）")
     parser.add_argument("--hand-checkpoint", default=None,
                         help="训练好的手部 palm-local checkpoint（auto 缺失时回退 geometric）")
     parser.add_argument("--hand-smoothing", type=float, default=0.25,
@@ -3352,6 +3761,10 @@ def build_parser() -> argparse.ArgumentParser:
                         default="clamp",
                         help="L21 -> 原装手限位处理：clamp 忠实截断（default），"
                              "rescale 按 L21 比例压到原生行程（视觉辅助，需在报告中声明）")
+    parser.add_argument("--camera-pinch-correction", choices=("on", "off"),
+                        default="on",
+                        help="Dex 检测到食指/中指捏合时，把该指与拇指的目标平滑过渡到"
+                             "真实接触位形（default on；不创建物体约束，不影响张开手）")
     parser.add_argument("--camera-table-clearance-mm", type=float, default=60.0,
                         help="启用 --camera-table-guard 时，腕目标在桌面投影内"
                              "至少离桌面这么高（default 60 mm）")
@@ -3409,6 +3822,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--render", action="store_true", help="GUI 渲染（默认 DIRECT）")
     parser.add_argument("--allow-gui-mouse-picking", action="store_true",
                         help="允许使用 PyBullet 鼠标拖动；仅用于演示，不能作为有效评测结果")
+    parser.add_argument("--setup-gui-mouse-picking", action="store_true",
+                        help="只在标定阶段允许鼠标调整初始物体；开始跟手时自动关闭 picking")
     parser.add_argument("--json", default=None, help="报告落盘路径")
     parser.add_argument("--snapshot-dir", default=None,
                         help="每个 trial 结束时离屏渲染一张 PNG 到这个目录（现场取证用）")
@@ -3426,6 +3841,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if (args.policy == "camera" and args.camera_hand == "on"
+            and args.hand_backend == "dex"):
+        # The GUI simulation loads native graphics/math DLLs. Torch's Windows
+        # shm dependency must be resolved before those libraries narrow the
+        # process DLL search state.
+        import torch  # noqa: F401
     from teleoperation.simulation.tasks import list_tasks, register_builtin_tasks
 
     register_builtin_tasks()
@@ -3495,6 +3916,7 @@ def main(argv=None) -> int:
                    "hand_checkpoint": args.hand_checkpoint,
                    "hand_smoothing": args.hand_smoothing,
                    "hand_limit_mode": args.hand_limit_mode,
+                   "pinch_correction": args.camera_pinch_correction == "on",
                    "table_clearance_m": max(
                        0.0, float(args.camera_table_clearance_mm)) / 1000.0,
                    "table_guard": bool(args.camera_table_guard),
@@ -3514,12 +3936,14 @@ def main(argv=None) -> int:
                        1, int(args.camera_startup_confirm_frames)),
                    "target_deadband_m": max(
                        0.0, float(args.camera_target_deadband_mm)) / 1000.0,
+                   "mouse_setup": bool(args.setup_gui_mouse_picking),
                    # A mass=0 object cannot be dragged by PyBullet's GUI
                    # picking tool.  Manual demos must keep the objects dynamic
                    # while formal evaluation keeps the freeze/startup gate.
                    "freeze_objects": camera_objects_frozen(
                        args.camera_freeze_objects,
-                       args.allow_gui_mouse_picking)}
+                       (args.allow_gui_mouse_picking
+                        or args.setup_gui_mouse_picking))}
 
     reports = []
     for name in tasks:
@@ -3533,7 +3957,9 @@ def main(argv=None) -> int:
                                success_hold_steps=success_hold_steps,
                                stop_on_success=not args.demo_keep_open,
                                allow_gui_mouse_picking=(
-                                   args.allow_gui_mouse_picking))
+                                   args.allow_gui_mouse_picking),
+                               setup_gui_mouse_picking=(
+                                   args.setup_gui_mouse_picking))
         reports.append(report)
         summary = report["summary"]
         print("[%s] %s/%s: %d/%d success, mean %s s" % (

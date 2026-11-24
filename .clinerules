@@ -7,7 +7,7 @@
 #   src/teleoperation/     生产包（= 队友已入库代码，禁止改）
 #   tests/                 本支新增的 unittest 套件（上游 10ebd9f 已删掉原有 32 个测试文件）
 #   configs/               上游 10ebd9f 已删除该目录（示例配置随之消失）
-#   assets/robots/         随仓库管理的 URDF/STL（例外：允许入库）
+#   assets/                本地下载的机器人与手部资产（不入库，获取方式见 README）
 #   datasets/**/*.h5       H5 契约样本/录制（例外：允许入库）
 #   docs/                  文档（上游 10ebd9f 已删 docs/archive/ 旧手册归档）
 #   devtools/              本分支新增的自检工具（我加的，可改）
@@ -58,7 +58,7 @@
      判据是**不劣化**：`preflight.ps1 -Full`（默认 `-MaxFail 0 -MaxErr 17`），不是"必须全绿"。
    给用户的结论必须附 **命令 + 退出码 + 关键不变量**，禁止只写"已通过"。
 5. **大资产不入库**：`lib/`、`linkerhand_sdk/`、`.venv/`、`outputs/`、`logs/`、`tmp_*`、模型权重、视频；
-   只有 `assets/robots/**` 与 `datasets/**` 例外。临时产物一律丢 `outputs/tmp_*/`。
+   `assets/**` 仅保留在本地，上传下载说明；只有 `datasets/**` 是数据例外。临时产物一律丢 `outputs/tmp_*/`。
 6. **破坏性/不可逆操作先说明再执行**（删目录、`robocopy /MOVE`、`git reset --hard`、
    `git push --force`、改**用户级**环境变量）：说清删/移什么、多少、能否恢复，能搬不删。
 7. 技术选型已冻结：**PyBullet**（不是 Isaac Sim）、**普通 Git + SSH 不用 LFS**、数据走 **HDF5 契约**（`docs/contracts.md`）。

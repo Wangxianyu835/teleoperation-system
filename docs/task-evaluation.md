@@ -411,7 +411,8 @@ E:\python3.11.7\python.exe devtools\task_eval.py `
 默认参数：
 
 - `--camera-hand on`
-- `--hand-backend auto`（有 checkpoint 用 checkpoint，没有回退 geometric）
+- `--hand-backend dex`（实验默认走新的原生手向量优化；显式传
+  `geometric` / `checkpoint` / `auto` 可复现旧方法 A/B）
 - `--hand-limit-mode clamp`（忠实语义；`rescale` 只作视觉辅助）
 - 手部和手臂共用前 30 帧站立标定；手臂要求中性姿势，手部要求**该侧手掌张开**
 

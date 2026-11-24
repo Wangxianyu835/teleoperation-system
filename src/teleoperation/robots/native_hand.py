@@ -196,7 +196,20 @@ def pinch_signal_details(world_hand, image_hand=None):
     world = _pinch_measurement(world_points, allow_fist=True)
     image_points = _landmark_array(image_hand, 2)
     image = _pinch_measurement(image_points, allow_fist=False)
-    if image is not None:
+    image_fist = _pinch_measurement(image_points, allow_fist=True)
+    if (world is not None and world[0] == "fist"
+            and image_fist is not None and image_fist[0] == "fist"
+            and float(image_fist[1]) >= 0.75):
+        # A full fist needs agreement from both views.  Image-only curl can be
+        # caused by a foreshortened pointing hand; world-only fist was the
+        # historical false positive that silently prevented all-finger grip.
+        selected = (
+            "fist",
+            max(float(world[1]), float(image_fist[1])),
+            world[2],
+        )
+        source = "world+image"
+    elif image is not None:
         selected = image
         source = "image" if image[0] is not None else "image-open"
     elif world is not None:
@@ -237,31 +250,54 @@ class PinchSignalStabilizer:
     occlusion without permanently latching the hand closed.
     """
 
-    def __init__(self, hold_frames: int = 8, decay: float = 0.90):
+    def __init__(self, hold_frames: int = 8, decay: float = 0.90,
+                 confirm_frames: int = 1):
         self.hold_frames = max(0, int(hold_frames))
         self.decay = min(max(float(decay), 0.0), 1.0)
+        self.confirm_frames = max(1, int(confirm_frames))
         self._held = None
         self._remaining = 0
+        self._candidate = None
+        self._candidate_frames = 0
 
     def update(self, signal):
         """Return a stabilized ``(finger, strength, ratio)`` signal."""
         finger, strength, ratio = signal
         strength = float(strength)
         if finger is not None and strength > 0.0:
+            if self._candidate is not None and self._candidate[0] == finger:
+                self._candidate_frames += 1
+                self._candidate = (
+                    finger,
+                    max(strength, float(self._candidate[1])),
+                    ratio,
+                )
+            else:
+                self._candidate = (finger, strength, ratio)
+                self._candidate_frames = 1
+            if (self._held is None
+                    and self._candidate_frames < self.confirm_frames):
+                return None, 0.0, ratio
             if self._held is not None and self._held[0] == finger:
                 strength = max(strength, float(self._held[1]) * self.decay)
             safe_ratio = None if ratio is None else float(ratio)
             self._held = (str(finger), strength, safe_ratio)
             self._remaining = self.hold_frames
+            self._candidate = None
+            self._candidate_frames = 0
             return self._held
         if self._held is not None and self._remaining > 0:
             result = self._held
             self._remaining -= 1
             if self._remaining == 0:
                 self._held = None
+            self._candidate = None
+            self._candidate_frames = 0
             return result
         self._held = None
         self._remaining = 0
+        self._candidate = None
+        self._candidate_frames = 0
         return None, 0.0, ratio
 
 
@@ -561,7 +597,7 @@ class NativeHandModel:
         import hashlib
         from pathlib import Path
         import xml.etree.ElementTree as ET
-        from teleoperation.paths import PROJECT_ROOT, ROBOTS_ROOT
+        from teleoperation.paths import ASSETS_ROOT, PROJECT_ROOT, ROBOTS_ROOT
         from teleoperation.robots.specification import ROBOT_SPECS
 
         if robot_type not in ROBOT_SPECS or side not in ("left", "right"):
@@ -630,7 +666,7 @@ class NativeHandModel:
         self.tip_frames, self.tip_offsets = [], []
         donor_bytes = b""
         if robot_type != "gr1_t2":
-            donor = Path(ROBOTS_ROOT) / (f"inspire_hand/inspire_hand_{side}.urdf" if robot_type == "h1_2"
+            donor = ASSETS_ROOT / (f"inspire_hand/inspire_hand_{side}.urdf" if robot_type == "h1_2"
                                            else f"unitree_hand/unitree_dex3_{side}.urdf")
             donor_bytes = donor.read_bytes()
             donor_tree = ET.fromstring(donor_bytes)

@@ -492,3 +492,217 @@ GBK strict check: OK
 
 FFG 手套分支本轮只完成代码评审和独立离线验证，没有接入 MediaPipe 主链路。
 其位置是后续第三种输入：MediaPipe -> VR -> FFG；当前继续以 MediaPipe 做任务。
+
+## 2026-11-23 队友 Dex/原生手后端合并
+
+队友提交 `e0eb35ff41e287782bef19512cda7c469d45e44c` 是一个真实 merge commit，
+第一父为队友分支 `8c7dab4`，第二父为本方主线 `49d54b4`。已快进合并。
+
+本轮主要新增：
+
+- 原生手规格层：从实际 H1-2 / GR1-T2 / G1 URDF 提取关节、限度、mimic 关系、
+  指尖 frame 和手掌几何；
+- `NativeHandModel` 与原生手独立坐标展开，避免继续把 L21 17 维角度当作
+  原装手真值；
+- `dex_retargeting 0.4.6` 源码内置，并增加 `NormalizedDexRetargeter`；
+- Dex 使用真实手部目标点做向量优化，不再依赖旧的手工 pinch endpoint 作为唯一闭合来源；
+- 统一的 `HandJointResult` / `HandJointCommand`、规范哈希、限位检查和执行器；
+- MediaPipe、Vision Pro、VR、训练、HDF5 录制和 Robot Part 场景的统一入口；
+- 新的 `teleoperation robot control` / `hand control` CLI 路径。
+
+Windows 依赖不能直接使用普通 pip 安装 Pinocchio。已建立独立环境：
+
+```text
+F:\conda-envs\teleop-dex
+```
+
+其中固定：
+
+```text
+numpy==1.26.4
+nlopt==2.7.1
+pinocchio==3.2.0
+torch==2.15.0+cpu
+```
+
+micromamba 位于：
+
+```text
+F:\tools\micromamba\Library\bin\micromamba.exe
+```
+
+该环境避免破坏 E 盘现有的 MediaPipe/PyBullet 解释器。依赖安装后验证：
+
+```text
+Dex / native hand / unified input / VR subset:
+41 passed, 2 skipped
+
+Full merged tree:
+640 passed, 5 skipped, 554 subtests passed
+```
+
+随后已把 Dex 直接接入 30 任务窗口。`task_eval.py` 的 `CameraPolicy` 在
+`--policy camera` 下默认使用 `--hand-backend dex`，直接接收
+`NormalizedDexRetargeter` 返回的
+`HandJointResult`，按 `NativeHandSpec` 展开后写入
+`env.action_joint_names`；旧 `auto/geometric/checkpoint` 仍可显式选择做 A/B。
+Dex 的摄像头输入改走原生手的
+`camera_palm_length_window3_v1` 三帧掌长归一化窗口，旧任务路径仍使用原
+`MediaPipe -> L21 18D -> NativeHandAdapter`。实时抓取仍由物理接触决定，
+Dex 不读取旧的二维 pinch 分类来修改关节。
+
+实机启动命令：
+
+```powershell
+$env:MAMBA_ROOT_PREFIX='E:\cache\micromamba'
+$env:PYTHONPATH=(Resolve-Path 'src').Path
+& 'F:\tools\micromamba\Library\bin\micromamba.exe' run `
+  -p 'F:\conda-envs\teleop-dex' python devtools\task_eval.py `
+  --task pickcube --robot h1_2 --policy camera --side right `
+  --hand-backend dex --camera-grasp-assist off `
+  --camera-hand-force 600 --preview --render
+```
+
+Windows 上 MediaPipe、PyBullet 与 Torch 的原生动态库存在加载顺序冲突。
+任务入口在创建仿真和摄像头模块之前预载 Torch，普通命令现在可直接启动；
+窗口启动信息应显示：
+
+```text
+hand -> native joints: dex
+```
+
+2026-11-23 第一次真实摄像头运行完成 1200 个摄像头帧。右手检测到 654 帧，
+Dex 有效输出 590 帧，手指求解约 4.3 ms；食指捏合分类出现过 207 帧。
+报告记录的真实物理接触最高达到 4 个手部连杆同时接触，接触法向力最高
+61.7 N，“接触即停”触发 1 次且没有创建吸附约束。60 秒 trial 内方块被推动
+但未达到抬起判据，最终返回前手已经张开，因此本次结果仍是
+`success=false`，不能当作握持或任务成功证据。后续现场复测应分别记录
+Dex/geometric 的峰值关节闭合、接触连杆数和任务成功率。
+
+相关回归：
+
+```text
+tests/test_arm_realtime_bridge.py::EntryAndReplayTests: 5 passed
+tests/test_task_audit.py + tests/test_hand_backend_factory.py:
+49 passed, 5 subtests passed
+Full test suite:
+642 passed, 5 skipped, 554 subtests passed
+30 tasks x 3 robots:
+90/90 evaluable, 0 excluded
+GBK strict check: OK
+```
+
+### 食指/拇指接触与鼠标演示
+
+现场反馈有两件事同时失败：
+
+- 真人拇指和食指已经相碰，机器人两指仍相距很远；
+- 新链路打开后，鼠标拖不动任务物体。
+
+两件事不是同一个根因。`pinch_signal_details()` 能测到真人捏合，但 Dex
+同时优化五个指尖；在 H1-2/GR1-T2 上，满足其余指尖目标的局部解仍可能让
+拇指与食指相差 40 mm 以上。现在 Dex 在检测到食指或中指捏合时，会从机器人
+URDF 的关节限位内求一个“两指尖真实接触”的独立关节位形，并按捏合强度分帧
+平滑过渡到该位形。它只在捏合期间生效，张手立即退回 Dex 原始输出；不创建
+手-物体约束，也不改变物体质量。该修正可用
+`--camera-pinch-correction off` 关闭做 A/B。
+
+鼠标拖动必须同时满足两个条件：GUI 中允许 picking，且任务物体没有被启动
+冻结门改成 `mass=0`。演示命令使用：
+
+```powershell
+--allow-gui-mouse-picking --demo-keep-open
+```
+
+前者会关闭摄像头启动阶段的物体冻结，后者保证任务判据已经满足后窗口仍保持
+打开。此类运行只能用于演示和排查，报告会写
+`gui_mouse_picking_enabled=true`，不能算论文成功率。
+
+本轮针对性回归：
+
+```text
+tests/test_normalized_dex.py
+tests/test_task_audit.py
+tests/test_arm_realtime_bridge.py::EntryAndReplayTests
+53 passed, 5 subtests passed
+
+Full test suite:
+644 passed, 5 skipped, 554 subtests passed
+GBK strict check: OK
+```
+
+同一次 180 秒手动演示报告中，`gui_mouse_picking_enabled=true`、
+`camera.freeze_objects=false`，鼠标拖动链路有效；Dex 捏合接触修正运行
+530 帧，右手有效 2015 帧，并两次触发“多连杆接触后停指”。这次 trial 也
+返回了成功，但鼠标 picking 允许人为移动物体，所以只能作为演示证据，
+不计入论文正式成功率。
+
+### 全掌握拳与误触发保护
+
+后续现场反馈有两点：
+
+- 食指和拇指捏合时，机器人仍不像一次有效捏取；
+- 手没有握持时，机器人偶尔也会闭手。
+
+第一个问题分成两层。Dex 的“五指尖联合优化”在 H1-2 上不保证拇指和食指
+相互接触；另外旧分类让图像空间无条件覆盖世界空间，图像视角下的完整握拳
+可能被标成单指捏合。现在：
+
+- 世界空间和图像空间都确认握拳时，才输出 `fist`；
+- Dex 四指闭合度较高且存在明确握持意图时，切到由机器人 URDF 求出的握拳
+  位形；该位形先让拇指与食指形成对掌接触，再把中指、无名指和小指卷向掌心，
+  不再采用“四指单独卷曲、拇指留在外侧”的旧位形；
+- 食指/中指捏合仍使用两指尖真实接触位形。
+
+第二个问题由三道门共同防止：握持信号必须连续 4 帧确认；食指/中指捏合
+强度至少 `0.45`、距离比不超过 `0.45`，并且被选手指自身的 Dex 闭合度
+至少 `0.25`；全拳分类与 Dex 原始闭合度必须
+同时成立（原始闭合度至少 `0.55`，单指捏合误判成全拳时要求至少 `0.85`）。
+没有明确握持意图时，`open_guard` 会把 Dex 的误闭合目标平滑
+拉回原装手张开位形。报告记录
+`max_raw_finger_closure`、`max_corrected_finger_closure` 和
+`open_guard_alpha`。
+
+闭合和释放采用不同时间常数：闭手每帧最多向接触位形靠近 `25%`，减少突然
+合拢把物体弹飞；确认张手后，握持保持只延续 3 帧，`open_guard` 每帧最多
+回张 `70%`，不会再维持约 1.5 秒的握持。
+
+鼠标有两种用途：
+
+- `--allow-gui-mouse-picking`：整个 trial 都允许鼠标，适合调场景，结果只算
+  手动演示；
+- `--setup-gui-mouse-picking`：只在摄像头标定阶段允许鼠标，机械臂开始跟手
+  时程序自动关闭 picking。
+
+当前现场按用户要求使用第一种，鼠标保持常开。
+
+### 手部碰撞与 GUI 相机记忆
+
+现场看到 4 cm 方块偶尔穿过手指。12 个原装手指连杆都有碰撞网格，因此不是
+“手没有碰撞体”，而是小物体在快速闭手时发生了离散步穿透。摄像头任务现在：
+
+- 给每条手指碰撞连杆增加 `1.5 mm` 表面余量、`1.4` 横向摩擦和零接触处理
+  阈值；
+- 给动态任务物体设置 CCD 扫掠球半径（`pickcube` 的 4 cm 方块为 `18 mm`）；
+- 不创建物体约束，真实接触仍由手指—物体碰撞决定；
+- 报告 `scene.hand_contact_reinforcement` 记录参与设置的连杆和物体。
+
+PyBullet 相机视角现在会记住。用户拖动/缩放仿真窗口后，程序每 30 个摄像头
+帧保存一次；正常退出时再保存。文件位于：
+
+```text
+F:\simulation_platform\outputs\task_eval\camera_view_<robot>.json
+```
+
+下一次同机器人启动时自动恢复最后一次视角；没有存档时使用正面 45 度、
+俯角 18 度、距离 2.2 m 的默认值。
+
+相关回归：
+
+```text
+native hand pinch + Dex contact + task policy:
+60 passed, 11 subtests passed
+
+Full test suite:
+650 passed, 5 skipped, 554 subtests passed
+```
