@@ -88,15 +88,15 @@ class NativeRobotBackend:
 
 
 class Tron2AL21Backend:
-    def __init__(self,spec,scene,physics_group,robot,part_bodies,names,world,calibration,*,create_controller=True):
+    def __init__(self,spec,scene,physics_group,robot,part_bodies,names,calibration):
         self.spec,self.scene,self.physics_group=spec,scene,physics_group
-        self.robot,self.part_bodies,self.names,self.world=robot,part_bodies,names,world
+        self.robot,self.part_bodies,self.names=robot,part_bodies,names
         self.bullet_binding = (scene.p, scene.cid, robot['body'])
-        self.robot_id=spec.robot_id; self.driver=None; self.arm_controller=None
+        self.robot_id=spec.robot_id; self.driver=None
         self.execution_config=({name:{side:np.asarray(value,dtype=float).tolist() for side,value in getattr(calibration,name).items()}
                                 for name in ('safe_q','hand_mount_pose')} if calibration is not None else {})
-        # This binding executes accepted commands only. The shared ArmPipeline
-        # owns camera kinematics; VR TRON arms are rejected by preflight.
+        self.execution_config['base_pose']=list(robot['base_pose'])
+        # The camera controller produces commands; this binding only executes them.
 
     def validate(self,frame):
         self.spec.validate_frame(frame)
@@ -116,5 +116,18 @@ class Tron2AL21Backend:
     def read_state(self):
         return {key:np.array([self.scene.p.getJointState(self.part_bodies[key],self.names[self.part_bodies[key]][n],
                     physicsClientId=self.scene.cid)[0] for n in part.joint_names]) for key,part in self.spec.parts.items()}
+
+    def read_arm_state(self):
+        from teleoperation.robots.specification import TRON2A_ARM_JOINTS
+        p=self.scene.p; result={}
+        inverse=p.invertTransform(self.robot['base_pose'],[0,0,0,1])
+        for side,index in self.robot.get('ee_indices',{}).items():
+            body=self.robot['body']
+            states=p.getJointStates(body,[self.names[body][n] for n in TRON2A_ARM_JOINTS[side]],physicsClientId=self.scene.cid)
+            ee=p.getLinkState(body,index,computeForwardKinematics=True,physicsClientId=self.scene.cid)
+            pose=p.multiplyTransforms(*inverse,ee[4],ee[5])
+            result[side]={'q':np.array([v[0] for v in states]),
+                          'velocity':np.array([v[1] for v in states]),'pose':np.array((*pose[0],*pose[1]))}
+        return result
 
     def close(self):pass

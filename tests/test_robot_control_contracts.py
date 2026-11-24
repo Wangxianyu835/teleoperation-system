@@ -1,3 +1,4 @@
+from pathlib import Path
 import unittest
 import numpy as np
 
@@ -30,7 +31,7 @@ class RobotControlContractTests(unittest.TestCase):
 
     def test_actual_robot_joint_sets_and_coupling(self):
         for name, size in (('h1_2',38),('gr1_t2',36),('g1',28),('tron2a_l21',48)):
-            spec = load_robot_control_spec(name)
+            spec = load_robot_control_spec(name,resource_overrides={'urdf_path':Path(__file__).parent/'fixtures/tron2a.urdf'} if name=='tron2a_l21' else None)
             self.assertEqual(sum(len(p.joint_names) for p in spec.parts.values()),size)
             self.assertEqual(len(spec.parts['left_arm'].joint_names),7)
             spec.validate_frame(spec.reference_frame(0,0.))

@@ -1,81 +1,66 @@
-"""Standalone TRON2A + L21 PyBullet demonstration, without tracking hardware."""
-
+"""Preset TRON2A/L21 motion through the shared scene and command output."""
 from __future__ import annotations
-
 import argparse
+from dataclasses import replace
 import math
-import time
 from pathlib import Path
-
+import time
+from types import SimpleNamespace
 import numpy as np
-
-from teleoperation.contracts.commands import Tron2AL21Command
 from teleoperation.paths import DEFAULT_TRON2A_URDF
-from teleoperation.simulation.tron2a_world import Tron2ADualArmWorld
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--urdf", type=Path, default=DEFAULT_TRON2A_URDF)
-    parser.add_argument("--calibration", type=Path, help="optional ArmCalibration JSON with hand mount poses")
-    parser.add_argument("--display", choices=("full", "simplified"), default="simplified")
-    parser.add_argument("--headless", action="store_true", help="run without a GUI and without real-time delays")
-    parser.add_argument("--seconds", type=float, default=10.0, help="simulation duration in seconds")
-    args = parser.parse_args(argv)
-    if not math.isfinite(args.seconds) or args.seconds <= 0:
-        parser.error("--seconds must be finite and positive")
-
-    # A known valid demonstration pose, not a measured robot calibration.
-    neutral = {side: np.array([0., 0., 0., -0.5, 0., 0., 0.]) for side in ("left", "right")}
-    mounts = None
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--urdf',type=Path,default=DEFAULT_TRON2A_URDF)
+    parser.add_argument('--calibration',type=Path)
+    parser.add_argument('--display',choices=('full','simplified'),default='simplified')
+    parser.add_argument('--headless',action='store_true')
+    parser.add_argument('--seconds',type=float,default=10.)
+    args=parser.parse_args(argv)
+    if not math.isfinite(args.seconds) or args.seconds<=0:
+        parser.error('--seconds must be finite and positive')
+    from teleoperation.robots.control_spec import load_robot_control_spec
+    from teleoperation.simulation.robot_backends import SimulationGroup
+    from teleoperation.simulation.robot_part_scene import RobotPartSceneBuilder
+    from teleoperation.simulation.robot_output import RobotOutput
+    calibration=SimpleNamespace(
+        safe_q={s:np.array([0,0,0,-.5,0,0,0.]) for s in ('left','right')},
+        hand_mount_pose={s:np.array([0,0,0,0,0,0,1.]) for s in ('left','right')})
     if args.calibration is not None:
         from teleoperation.retargeting.arm.calibration import ArmCalibration
-        calibration = ArmCalibration.load(args.calibration)
-        neutral = calibration.safe_q
-        mounts = calibration.hand_mount_pose
-
-    world = Tron2ADualArmWorld(args.urdf, gui=not args.headless, display=args.display,
-                               safe_q=neutral, hand_mount_pose=mounts)
+        calibration=ArmCalibration.load(args.calibration)
+    spec=load_robot_control_spec('tron2a_l21',resource_overrides={'urdf_path':args.urdf})
+    group=SimulationGroup(gui=not args.headless)
     try:
-        # Keep the example inside each arm's actual URDF limits, including when
-        # a user supplies a different neutral pose.
-        bounds = {side: np.array([world.joint_info[i][8:10] for i in world.arm_indices[side]])
-                  for side in ("left", "right")}
-        hand_bounds = {side: np.array([world.p.getJointInfo(body, i, physicsClientId=world.client)[8:10]
-                                      for i in world.hand_indices[side]])
-                       for side, body in world.hand_bodies.items()}
-        start = time.perf_counter()
-        steps = max(1, round(args.seconds / world.time_step))
-        for step in range(steps):
-            if not world.is_connected():
-                break
-            t = step * world.time_step
-            arms, hands = {}, {}
-            for side in ("left", "right"):
-                arm = np.array(neutral[side], dtype=float, copy=True)
-                arm[3] += 0.15 * math.sin(2.0 * math.pi * t / 4.0)
-                arms[side] = np.clip(arm, bounds[side][:, 0], bounds[side][:, 1])
-                # Flex pitch joints, leaving splay/roll at zero.
-                hand = np.zeros(17)
-                hand[[1, 2, 4, 5, 7, 8, 10, 11, 14, 15, 16]] = 0.4 * (1.0 - math.cos(2.0 * math.pi * t / 4.0))
-                hands[side] = np.clip(hand, hand_bounds[side][:, 0], hand_bounds[side][:, 1])
-            world.apply(Tron2AL21Command(t, arms["left"], hands["left"], arms["right"], hands["right"],
-                                         True, True, True, True))
-            world.step()
-            if not args.headless:
-                time.sleep(max(0., start + (step + 1) * world.time_step - time.perf_counter()))
-        if world.is_connected():
-            state = world.actual_state()
-            for side in ("left", "right"):
-                hand_state = world.p.getJointStates(world.hand_bodies[side], world.hand_indices[side], physicsClientId=world.client)
-                print(f"{side}: elbow={state['arms'][side]['q'][3]:.3f} rad, "
-                      f"index_pitch={hand_state[1][0]:.3f} rad")
+        backend=RobotPartSceneBuilder().build(spec,group=group,calibration=calibration,geometry=args.display)
+        output=RobotOutput({'tron2a_l21':backend})
+        start=time.perf_counter()
+        for index in range(max(1,round(args.seconds/group.time_step))):
+            if not group.alive():break
+            t=index*group.time_step
+            frame=spec.reference_frame(index,t)
+            parts={}
+            for key,part in frame.parts.items():
+                side,kind=key.split('_')
+                q=np.array(calibration.safe_q[side] if kind=='arm' else part.positions,copy=True)
+                if kind=='arm':q[3]+=.15*math.sin(2*math.pi*t/4)
+                else:q[[1,2,4,5,7,8,10,11,14,15,16]]=.4*(1-math.cos(2*math.pi*t/4))
+                low,high=np.asarray(spec.parts[key].limits).T
+                parts[key]=replace(part,positions=np.clip(q,low,high),source_timestamp=t,
+                                   source_timebase='demo_seconds',observed=True,status='tracking')
+            output.submit({'tron2a_l21':replace(frame,parts=parts)},steps=1)
+            if not args.headless:time.sleep(max(0.,start+(index+1)*group.time_step-time.perf_counter()))
+        if group.alive():
+            actual=backend.read_state()
+            for side in ('left','right'):
+                print(f"{side}: elbow={actual[side+'_arm'][3]:.3f} rad, index_pitch={actual[side+'_hand'][1]:.3f} rad")
     except KeyboardInterrupt:
         pass
     finally:
-        world.close()
+        group.close()
     return 0
 
 
-if __name__ == "__main__":
+if __name__=='__main__':
     raise SystemExit(main())

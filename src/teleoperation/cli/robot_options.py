@@ -29,6 +29,9 @@ def configure(parser, *, replay=False):
     source.add_argument('--input-h5', type=Path)
     parser.add_argument('--tron2a-calibration', type=Path)
     parser.add_argument('--tron2a-urdf', type=Path)
+    parser.add_argument('--tron2a-orientation-mode', choices=('fixed','forearm'), default='fixed')
+    parser.add_argument('--pose-min-visibility', type=float, default=None,
+                        help='Pose visibility threshold; TRON2A defaults to its calibration')
     parser.add_argument('--model-asset-path', type=Path)
     parser.add_argument('--pose-model-asset-path', type=Path, default=DEFAULT_POSE_ASSET)
     parser.add_argument('--camera-index', type=int, default=0)

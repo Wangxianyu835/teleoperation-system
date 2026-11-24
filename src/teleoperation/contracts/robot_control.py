@@ -31,7 +31,7 @@ class RobotPartCommand:
             raise ValueError('Invalid source timestamp')
         if not isinstance(self.source_timebase,str) or not self.source_timebase:
             raise ValueError('Source timebase must be explicit')
-        if not isinstance(self.observed,(bool,np.bool_)) or self.status not in ('tracking','holding','initialized'):
+        if not isinstance(self.observed,(bool,np.bool_)) or self.status not in ('tracking','holding','initialized','braking','returning'):
             raise ValueError('Invalid part observation status')
         if self.observed != (self.status=='tracking') or (self.observed and self.source_timestamp is None):
             raise ValueError('Tracking requires a current valid source target; held parts are not observed')

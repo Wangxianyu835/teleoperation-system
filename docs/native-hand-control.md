@@ -68,6 +68,34 @@ NN 后端按每种手型显式指定一份 shared 权重。
   --hand-checkpoint g1 'outputs/your-model/model_best.pth' --frames 0 --preview
 ```
 
+## TRON2A 统一控制（2026-11-24）
+
+TRON2A 已接入与 H1-2/GR1-T2/G1 相同的 `robot control` 入口、手部工厂和命令记录。
+准备真人标定后运行：
+
+```powershell
+& $python -B -E -s $runtime -m teleoperation robot control `
+  --robot tron2a_l21 --source camera --parts both --side both --backend dex `
+  --tron2a-urdf assets/Tron2a/urdf/robot.urdf `
+  --tron2a-calibration outputs/calibration/tron2a_camera_neutral.json `
+  --tron2a-orientation-mode fixed --geometry simplified --preview
+```
+
+NN 改为 `--backend nn --hand-checkpoint l21 <统一L21-shared-checkpoint>`。
+旧 18 维/左右成对 L21 权重与此格式不同，不能混用。
+`--parts arms/hands/both`、`--side left/right/both` 与其他机器人一致。
+只控制手时无需 TRON2A URDF 或手臂标定；多机器人可用 `--robots g1 tron2a_l21`。
+TRON2A 手臂保留标定 Pose world + Robotics Toolbox LM + 安全控制；
+另外三种机器人的 paper/pybullet 选择保持原样。Vision Pro 暂只支持 TRON2A 手部。
+
+新记录为 `robot_command_results_v3`，兼容读取 v1/v2，显式区分 tracking/holding/braking/returning。
+录制和回放都使用统一执行回执与每组一次的物理步进。
+`dual camera`、`dual realtime`、`DualTeleoperator` 及 `Tron2ADualArmWorld` 已移除；
+原标定采集、历史 H5 离线导出/回放与无相机演示保留。
+仿真场景加载、L21 安装和状态查询现在位于 `simulation/robot_part_scene.py`、`robot_backends.py`；
+TRON2A 数值控制器位于 `retargeting/arm/retargeter.py`。
+README 4.1 给出完整参数和真人审核要求。
+
 ## Vision Pro
 
 将地址替换为设备 Tracking Streamer 显示的地址。
@@ -136,3 +164,33 @@ Dex 导出使用同一条 `hand export` 命令，选择 `--backend dex` 并省�
 2026-11-21 后端随仓库分发补充验证覆盖实际导入来源、四手型 Dex 求解、源码与配置打包和上游文件哈希。运行记录中的 `dex_backend_source` 保存实际加载的源码路径。
 
 后端源码随仓库分发后的完整回归运行 641 项，638 项通过，3 项因本地历史权重缺失跳过，耗时 149.892 秒。构建 wheel 后检查了优化器、配置、许可证和来源清单。旧相机环境在未安装 NLopt/Pinocchio 时运行 16 项针对性测试，13 项通过，3 项 Dex 求解测试按实际原生依赖缺失跳过。
+
+### 2026-11-24 TRON2A 入口统一验收
+
+修改前提交为 `3dcd96a87045c530bf4afd368de8a5e4e9377d1b`，恢复标签为
+`checkpoint-20261124-1754-unify-tron2a-control`。本轮只迁移 TRON2A 控制链的组合与执行，
+保留原 Robotics Toolbox LM 求解、标定映射和安全控制数值行为。
+
+| 检查 | 结果 |
+| --- | --- |
+| `python -B -m unittest discover -s tests` | 648 项，647 项通过、1 项跳过，151.084 秒 |
+| 迁移前后固定 32 帧对照 | 关节命令最大绝对差 0 rad；固定夹具记录来源提交，覆盖运动、遮挡和工作空间拒绝 |
+| 同输入连续 7 轮控制器耗时 | 中位数 97.377 → 101.957 ms（+4.7%），P95 112.237 → 113.676 ms（+1.3%），均小于 10% 增幅 |
+| CLI 与物理集成 | 部位/侧别/后端组合、G1/TRON2A 单次采集与共享步进、异常重启、Ctrl+C 清理、历史 H5 回放通过 |
+| 命令记录 | v3 写入、v1/v2 读取、无推理回放、制动/回安全位状态及仅手模式安装高度回放一致性通过 |
+| 静态检查 | 37 个注册 handler 导入、216 个 Python 源文件解析、源代码 GBK 严格检查、`git diff --check` 通过 |
+| 无相机冒烟 | TRON2A 4 秒无窗口演示、H1-2 120 步 dummy 回放、6 项环境自检通过 |
+
+修改前完整测试运行 655 项，因默认 TRON2A 资产路径缺失出现 7 个失败和 45 个错误。
+本轮测试显式使用固定版本 URDF 夹具，已删除入口的旧测试改为统一入口集成测试；
+运行时仍要求显式准备机器人资产，不会隐式改用测试夹具。
+
+仓库整体验证仍有已存在的限制：`devtools/preflight.ps1` 会扫描忽略目录中的旧依赖缓存，
+其 GBK 检查因此失败；C 盘缓存检查发现已有 `~/.cache/huggingface` 残留；
+架构检查指出未修改的 `runtime_environment.py` 中有 5 处 `sys.path.insert`。
+本次源代码范围的 GBK 检查通过，测试临时目录和缓存均定向到 D 盘。
+`tools verify-hand-pipeline` 的历史默认样本缺失，虽退出码为 0，输出实际为 FAIL，
+不计入通过项。上述工具限制未在本次迁移中改动。
+
+真人摄像头动态效果、桌面 GUI、在线 Vision Pro 和实机接触仍需现场验收。
+本轮测试中的相机帧为固定输入，不能替代真实遮挡恢复、跟随延迟与操作舒适度验收。

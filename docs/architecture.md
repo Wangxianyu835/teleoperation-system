@@ -54,7 +54,7 @@ world 和 normalized 的来源选择在处理器中明确完成，离线与实�
 world 对齐文件使用独立契约 `mediapipe_world_palm_local_to_l21_v1`；Dataset 直接缓冲这些已对齐米制点，关闭身份重分配和额外缩放。
 模型加载与推理在 `contracts/coordinates.py` 的共同规则下验证来源、单位和尺度。原始 H5 的双空间存储在 `data/hand_recording.py`，来源声明与 world 字段读写在 `data/hand_h5.py`；应用层仅选择来源并组装流程。
 
-NPY 保留关闭跟踪、缩放和缺失清空行为；H5 Dataset 保留跟踪配置、frame gap 重置、timeline 和 mask；Vision Pro 输入返回原始矩阵，坐标提取发生在 retargeting/topology，没有新样本时不更新缓冲。dual realtime 显式选择 legacy 或 palm-local；输入声明与预处理、checkpoint 必须精确匹配，未知空间拒绝处理。
+NPY 保留关闭跟踪、缩放和缺失清空行为；H5 Dataset 保留跟踪配置、frame gap 重置、timeline 和 mask；Vision Pro 输入返回原始矩阵，坐标提取发生在 retargeting/topology，没有新样本时不更新缓冲。统一 robot control 显式选择目标手型 NN/Dex；输入声明与预处理、checkpoint 必须精确匹配，未知空间拒绝处理。
 
 `retargeting/hand/angles.py` 保留原有 float32 的 18→17 转换。原生回放先保留 float64 修复与平滑，再通过 `L21HandAngles.native_mapping_dofs()` 仅切掉占位维。原生映射仍依据原 18D 索引，取 17DOF 时显式使用索引减一。
 
@@ -71,7 +71,12 @@ UpperBodyObservation
 
 上身关键点、末端 pose、IK 关节角不能以裸数组互相冒充。实时观测严格检查结构和有限值；离线无效观测保留上一目标。IK 失败保留 previous q 和 inf 误差；安全控制仍按原有成功标志与时间戳处理。
 
-`apps/dual.py` 接收原始组合观测，手部与双臂分别处理，再组装 `Tron2AL21Command`。机器人层不解释人体 landmarks。
+`apps/robot_control.py` 创建一次组合输入及共享会话。`mediapipe_robot_arms.CameraArmControllers`
+按机器人选择相机手臂实现：H1/GR1/G1 复用 paper 映射，TRON2A 调用
+`retargeting/arm/retargeter.Tron2ADualArmController`。手部统一经 `hand_backend` NN/Dex。
+两路生成 `RobotPartCommand`，进入 `RobotCommandAssembler` 与 `RobotOutput`；机器人层不解释人体 landmarks。
+场景统一由 `RobotPartSceneBuilder` 构建，TRON2A 及所选 L21 也使用同一物理连接。
+`SimulationGroup` 独占步进；TRON2A backend 只下发与读状态。独立 world 和旧实时循环已删除。
 
 ## 机器人动作与执行
 
@@ -114,7 +119,7 @@ checkpoint 的文件序列化位于 `data/checkpoint`，state_dict 选择、严�
 | record_world_landmarks.py | hand record-world |
 | scripts/align_h5_coordinates.py | hand align |
 | main_offline_dual_teleop.py | dual export |
-| main_realtime_dual_teleop.py | dual realtime |
+| main_realtime_dual_teleop.py | robot control --robot tron2a_l21 |
 | main_pybullet_dual_teleop.py | dual replay |
 | scripts/replay_actions.py | replay actions |
 | scripts/replay_hand_native.py | replay native-hand |
@@ -161,3 +166,14 @@ learning/reporting 只保留指标格式化；learning/trainer 保留实际 epoc
 C 盘既有 pip/HuggingFace 缓存，以及 runtime_environment.py 中 5 处现有 sys.path.insert。
 检查前后的比较基线均为上述检查点，清理后的检查以 -Allow 显式列出本次用户授权修改的文件。
 完整测试、针对性测试和自检日志保存在 outputs/tmp_unused_cleanup，本次清理未新增测试失败。
+
+## TRON2A 统一迁移与验证
+
+2026-11-24：共享实时入口、掌长归一化 L21 NN/Dex、分部位命令与受限安全运动。
+`braking`/`returning` 是无当前有效观测的显式运动命令，不得丢弃或标记为 tracking。
+录制 v3 接受这两种状态，读取兼容 v1/v2；回放不运行输入检测、NN 或 IK。
+手部安装位姿以 URDF link frame 定义，装配时转换为 PyBullet 惯性坐标；基座布局只作用于场景。
+默认 TRON2A 基座 z=0.8 m，防止向下的手臂穿过共享地面；实际布局保存在 execution_config。
+测试夹具 `tests/fixtures/tron2a.urdf` 来自原仓库携带的上游 TRON2A 描述，来源许可见 NOTICE。
+`tests/test_native_control_alignment.py` 覆盖统一运行与安全录制，原标定/映射/安全/物理断言保留在
+`tests/test_mediapipe_tron2a.py`；共享场景测试组装位于 `tests/support.py`。

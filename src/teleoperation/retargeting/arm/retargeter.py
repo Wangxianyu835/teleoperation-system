@@ -90,3 +90,69 @@ def _forearm_rotation(points: np.ndarray, *, min_bend_sine=0.) -> np.ndarray | N
     z /= np.linalg.norm(z)
     y = np.cross(z, x)
     return np.column_stack((x, y, z))
+
+
+from .safety import ArmSafetyController
+from .ik import RoboticsToolboxArmIK, load_arm_specification, _pose_matrix, _pose_error
+
+
+class Tron2ADualArmController:
+    """Shared independent arm mapping, checked IK and bounded control."""
+
+    def __init__(self, calibration_path, urdf_path, *, input_mode="legacy", orientation_mode=None, sides=("left", "right"), specifications=None):
+        self.calibration = calibration = (calibration_path if isinstance(calibration_path, ArmCalibration)
+                                          else ArmCalibration.load(calibration_path))
+        self.arm_retargeter = ArmRetargeter(calibration, input_mode=input_mode, orientation_mode=orientation_mode)
+        self.sides = tuple(sides)
+        if not self.sides or len(set(self.sides)) != len(self.sides) or set(self.sides) - {"left", "right"}:
+            raise ValueError("Select unique arm sides")
+        self.solvers = {side: RoboticsToolboxArmIK(
+            load_arm_specification(urdf_path, side) if specifications is None else specifications[side])
+            for side in self.sides}
+        self.safe_q = {side: calibration.safe_q[side].astype(np.float64) for side in self.sides}
+        self.controllers = {}
+        for side, solver in self.solvers.items():
+            spec = solver.specification
+            if np.any(self.safe_q[side] < spec.lower) or np.any(self.safe_q[side] > spec.upper):
+                raise ValueError(f"{side} safe reference violates URDF joint limits")
+            if input_mode == "camera_world":
+                errors = _pose_error(_pose_matrix(calibration.robot_neutral_pose[side]), spec.robot.fkine(self.safe_q[side]).A)
+                if errors[0] > 1e-6 or errors[1] > 1e-6:
+                    raise ValueError(f"{side} calibration reference does not match this URDF FK")
+            self.controllers[side] = ArmSafetyController(spec, self.safe_q[side], calibration.max_acceleration, calibration.tracking_timeout)
+        self.diagnostics = {}
+
+    def update_side(self, body, side, timestamp):
+        if side not in self.controllers:
+            raise ValueError("Arm side is disabled")
+        if body is None:
+            from teleoperation.contracts.arm import ArmTargetPose
+            target = ArmTargetPose(side, self.arm_retargeter._previous[side].copy(), False)
+        else:
+            target = self.arm_retargeter.update(body, side)
+        solver, safety = self.solvers[side], self.controllers[side]
+        in_workspace = bool(np.all(target.pose[:3] >= self.calibration.workspace_min)
+                            and np.all(target.pose[:3] <= self.calibration.workspace_max))
+        workspace_rejected = self.arm_retargeter.input_mode == "camera_world" and target.valid and not in_workspace
+        result = solver.solve(target, safety.q, self.safe_q[side]) if target.valid and not workspace_rejected else None
+        success = False
+        position_error = orientation_error = None
+        if result is not None and result.success:
+            spec = solver.specification
+            q = np.asarray(result.q)
+            if (q.shape == (7,) and np.isfinite(q).all()
+                    and np.all(q >= spec.lower) and np.all(q <= spec.upper)):
+                position_error, orientation_error = _pose_error(_pose_matrix(target.pose), spec.robot.fkine(q).A)
+                success = position_error <= solver.position_tolerance and orientation_error <= solver.orientation_tolerance
+        _, accepted = safety.update(result.q if success else None, success, timestamp)
+        self.diagnostics[side] = dict(
+            observation_valid=bool(target.valid), ik_attempted=result is not None, ik_success=bool(success), command_observed=bool(success and accepted),
+            ik_position_error_m=position_error, ik_orientation_error_rad=orientation_error,
+            target_pose=target.pose.tolist(), orientation_held=self.arm_retargeter.orientation_held[side],
+            workspace_rejected=bool(workspace_rejected),
+            status=safety.status, control_q=safety.q.tolist(), control_velocity=safety.velocity.tolist(),
+        )
+        return bool(success)
+
+    def update(self, body, timestamp):
+        return {side: self.update_side(body, side, timestamp) for side in self.sides}

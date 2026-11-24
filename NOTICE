@@ -62,6 +62,8 @@ https://github.com/limxdynamics/tron2-robot-description
 
 本地 `assets/tron2-robot-description/tron2a/DACH_TRON2A/` 下的 URDF 与配套网格等资产应从该项目下载，
 用于双臂关节链读取、IK 和仿真。默认 URDF 为 `assets/tron2-robot-description/tron2a/DACH_TRON2A/urdf/robot.urdf`。
+`tests/fixtures/tron2a.urdf` 保留本项目迁移前携带的该上游 URDF 作为固定版本测试夹具，
+不包含网格，沿用上述 Apache-2.0 许可；它不是运行时资产的隐式替代。
 
 ------------------------------------------------------------
 4. dex-retargeting 0.4.6

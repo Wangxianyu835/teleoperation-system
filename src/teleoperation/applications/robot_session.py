@@ -2,6 +2,7 @@
 from collections import Counter
 from dataclasses import replace
 from types import MappingProxyType
+import numpy as np
 from teleoperation.contracts.robot_control import RobotPartCommand
 from teleoperation.contracts.observations import RawTeleopObservation
 from teleoperation.applications.native_hand_processing import UnifiedHandPipeline
@@ -41,7 +42,8 @@ class RobotControlSession:
                 p=initial[name].parts[side+'_hand']; named=dict(zip(p.joint_names,p.positions))
                 hand_initial[hand.key]=[named[n] for n in hand.independent_joint_names]
         self.commands=JointCommandPipeline(self.hand_specs,initial=hand_initial,**(command_options or {}))
-        self.wrists={}; self.previous_time=None
+        self.wrists={}; self.previous_time=None; self.previous_frame=None
+        self._source_timestamp=None
         self.camera_arms=camera_arms
         self._pending_batch=None
         self._pending_time=None
@@ -88,10 +90,22 @@ class RobotControlSession:
                    integration_dt=None, motion_allowed=True):
         if not motion_allowed:
             raw, new_observation = None, False
+        if (not np.isfinite(control_seconds) or control_seconds < 0
+                or isinstance(frame_id, (bool, np.bool_)) or not isinstance(frame_id, (int, np.integer))
+                or frame_id < 0 or self.previous_frame is not None and frame_id <= self.previous_frame
+                or self.previous_time is not None and control_seconds <= self.previous_time):
+            raise ValueError('Session control frame and time must strictly increase')
         hands=raw.hands if isinstance(raw,RawTeleopObservation) else raw
+        if self.source_kind=='camera' and hands is not None and new_observation:
+            if hands.timestamp is None or not np.isfinite(hands.timestamp):
+                raise ValueError('Camera source time must be finite')
+            if self._source_timestamp is not None and hands.timestamp <= self._source_timestamp:
+                new_observation=False
+            elif self.camera_arms is not None:
+                self.camera_arms.validate_observation(raw)
         dt=.01 if self.previous_time is None else control_seconds-self.previous_time
         if integration_dt is not None:dt=integration_dt
-        if dt<=0:raise ValueError('Session control time must strictly increase')
+        if not np.isfinite(dt) or dt<=0:raise ValueError('Session integration time must be finite and positive')
         updates={n:{} for n in self.specs}
         window=self.pipeline.process_window(hands) if self.hand_specs and new_observation and hands is not None else None
         results={} if window is None else self.retargeter.retarget(window)
@@ -132,12 +146,15 @@ class RobotControlSession:
                             or tracker.status not in ('tracking','reacquiring')):continue
                 names=spec.parts[side+'_arm'].joint_names
                 updates[name][side+'_arm']=RobotPartCommand(names,[report['joints'][n] for n in names],source_time,timebase,True,'tracking')
-        if self.camera_arms is not None and motion_allowed and new_observation:
-            for name, parts in self.camera_arms.solve(raw, dt).items():
+        if self.camera_arms is not None and motion_allowed:
+            for name, parts in self.camera_arms.solve(raw, dt, control_seconds=control_seconds,
+                                                      new_observation=new_observation).items():
                 updates[name].update(parts)
         batch=MappingProxyType({n:self.assembler.prepare(n,frame_id,control_seconds,updates[n]) for n in self.specs})
         self._pending_batch=batch
         self._pending_time=control_seconds
+        if self.source_kind=='camera' and hands is not None and new_observation:
+            self._source_timestamp=hands.timestamp
         return batch
 
     def submit(self,batch,*,steps):
@@ -150,6 +167,9 @@ class RobotControlSession:
             raise
         for frame in batch.values():self.assembler.commit(frame)
         self.previous_time=self._pending_time
+        self.previous_frame=next(iter(batch.values())).frame_id
+        if self.camera_arms is not None:
+            self.camera_arms.capture_actual()
         self._pending_batch=None
         return receipt
 

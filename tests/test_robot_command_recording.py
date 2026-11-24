@@ -56,6 +56,24 @@ def interrupted_writer(path, stage):
 
 
 class RobotRecordingTests(unittest.TestCase):
+    def test_v2_recordings_keep_target_identity_and_source_freshness(self):
+        from teleoperation.data.robot_command_recording import RobotCommandWriter,load_robot_recording
+        spec=load_robot_control_spec('g1',resource_overrides={'parts':'hands','side':'right'})
+        frame=spec.reference_frame(0,.2)
+        part=replace(frame.parts['right_hand'],source_timestamp=123.,source_timebase='camera_s',
+                     observed=True,status='tracking',target_sequence=7,target_expires_time=.5,source_is_new=False)
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'v2.h5'
+            with RobotCommandWriter(path,{'g1':spec},{}) as writer:
+                writer.append({'g1':replace(frame,parts={'right_hand':part})},
+                              replace(receipt(0,.2),statuses={'g1':'submitted'}))
+            with h5py.File(path,'r+') as stream:
+                stream.attrs['schema']='robot_command_results_v2';stream.attrs['schema_version']=2
+            restored=next(load_robot_recording(path,('g1',)).iter_frames())[0]['g1'].parts['right_hand']
+            self.assertEqual(restored.target_sequence,7)
+            self.assertEqual(restored.target_expires_time,.5)
+            self.assertFalse(restored.source_is_new)
+
     def test_interrupted_writer_never_publishes(self):
         from teleoperation.data.robot_command_recording import load_robot_recording
         from teleoperation import runtime_environment
@@ -196,7 +214,7 @@ class RobotRecordingTests(unittest.TestCase):
             self.assertEqual(restored.target_expires_time,.5)
             self.assertFalse(restored.source_is_new)
             with h5py.File(path,'r+') as stream:
-                self.assertEqual(stream.attrs['schema_version'],2)
+                self.assertEqual(stream.attrs['schema_version'],3)
                 stream.attrs['schema']='robot_command_results_v1'
                 del stream.attrs['schema_version']
                 for field in ('target_sequence','target_expires_time','source_is_new'):
@@ -225,7 +243,7 @@ class RobotRecordingTests(unittest.TestCase):
 
     def test_all_layouts_round_trip_source_clocks_and_holding(self):
         from teleoperation.data.robot_command_recording import RobotCommandWriter,load_robot_recording
-        specs={n:load_robot_control_spec(n) for n in ('h1_2','gr1_t2','g1','tron2a_l21')}
+        specs={n:load_robot_control_spec(n,resource_overrides={'urdf_path':Path(__file__).parent/'fixtures/tron2a.urdf'} if n=='tron2a_l21' else None) for n in ('h1_2','gr1_t2','g1','tron2a_l21')}
         with tempfile.TemporaryDirectory() as d:
             path=Path(d)/'commands.h5'
             with RobotCommandWriter(path,specs,{'geometry':'simplified'}) as writer:

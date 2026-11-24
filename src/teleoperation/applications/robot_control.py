@@ -24,7 +24,8 @@ def preflight(args):
         raise ValueError('VR options require --source visionpro')
     arms=args.parts!='hands'
     if args.source == 'camera' and arms and 'tron2a_l21' in targets:
-        raise ValueError('Unified MediaPipe camera arms support h1_2, gr1_t2 and g1; use dual camera for calibrated TRON2A')
+        if args.tron2a_calibration is None:
+            raise ValueError('TRON2A camera arms require --tron2a-calibration')
     if args.tron2a_calibration is not None and ('tron2a_l21' not in targets or not arms):
         raise ValueError('TRON2A calibration only applies to its enabled arms')
     pairs=args.hand_checkpoint or []
@@ -43,6 +44,9 @@ def preflight(args):
         raise ValueError('Outputs must differ from inputs and each other')
     if args.tron2a_urdf is not None and ('tron2a_l21' not in targets or not arms):
         raise ValueError('TRON2A URDF applies only to selected TRON2A arms')
+    visibility=getattr(args,'pose_min_visibility',None)
+    if visibility is not None and (not np.isfinite(visibility) or not 0<=visibility<=1):
+        raise ValueError('Pose visibility must be within [0,1]')
     return targets,checkpoints
 
 
@@ -61,6 +65,10 @@ def run(args):
     from teleoperation.simulation.robot_backends import SimulationGroup
     from teleoperation.simulation.robot_part_scene import RobotPartSceneBuilder
     from .robot_session import RobotControlSession
+    import os
+    import hashlib
+    from teleoperation.runtime_environment import cache_environment
+    os.environ.update(cache_environment(create=True))
     targets,checkpoints=preflight(args)
     if args.source=='camera':
         validate_camera_resources(args)
@@ -69,12 +77,32 @@ def run(args):
     # Load/check weights before devices or GUI. The session reuses this selection.
     from .hand_backend import build_target_hand_retargeters
     hand_selection=build_target_hand_retargeters(specs.values(),args.backend,checkpoints,args.device)
-    calibration=None
-    if args.tron2a_calibration is not None:
+    calibration = tron_controller = None
+    if 'tron2a_l21' in specs and args.parts != 'hands':
         from teleoperation.retargeting.arm.calibration import ArmCalibration
+        from teleoperation.retargeting.arm.retargeter import Tron2ADualArmController
         calibration=ArmCalibration.load(args.tron2a_calibration)
-        if calibration.metadata.get('capture_kind')=='synthetic_validation_only':
+        if ('synthetic' in str(calibration.metadata.get('capture_kind','')).lower()
+                or '.synthetic.' in args.tron2a_calibration.name.lower()):
             raise ValueError('Synthetic calibration is for offline validation only')
+        sides=('left','right') if args.side=='both' else (args.side,)
+        tron_controller=Tron2ADualArmController(calibration,specs['tron2a_l21'].urdf_path,
+            input_mode='camera_world',orientation_mode=args.tron2a_orientation_mode,sides=sides)
+        # Validate the inactive reference too: its joints remain under holding motors.
+        from teleoperation.retargeting.arm.ik import load_arm_specification
+        for side in ('left','right'):
+            arm=load_arm_specification(specs['tron2a_l21'].urdf_path,side)
+            if np.any(calibration.safe_q[side]<arm.lower) or np.any(calibration.safe_q[side]>arm.upper):
+                raise ValueError('TRON2A safe reference violates URDF limits')
+        if args.pose_min_visibility is None:
+            args.pose_min_visibility=calibration.metadata.get('min_visibility',.7)
+    if args.pose_min_visibility is None: args.pose_min_visibility=.7
+    if not np.isfinite(args.pose_min_visibility) or not 0<=args.pose_min_visibility<=1:
+        raise ValueError('Pose visibility must be within [0,1]')
+    asset_paths={s.urdf_path.resolve() for s in specs.values() if s.urdf_path is not None}
+    asset_paths.update(p.resolve() for p in (args.model_asset_path,args.pose_model_asset_path) if p is not None)
+    if any(p is not None and p.resolve() in asset_paths for p in (args.report,args.record_results)):
+        raise ValueError('Output must not overwrite robot or detector assets')
     with ExitStack() as resources:
         group=SimulationGroup(gui=not args.headless); resources.callback(group.close)
         backends={n:RobotPartSceneBuilder().build(s,group=group,
@@ -83,8 +111,8 @@ def run(args):
                   for i,(n,s) in enumerate(specs.items())}
         camera_arms = None
         if args.source == 'camera' and args.parts != 'hands':
-            from .mediapipe_robot_arms import MediaPipeRobotArms
-            camera_arms = MediaPipeRobotArms(backends, args)
+            from .mediapipe_robot_arms import CameraArmControllers
+            camera_arms = CameraArmControllers(backends, args, tron_controller)
         session=RobotControlSession(backends,camera_arms=camera_arms,backend=args.backend,checkpoints=checkpoints,device=args.device,
                     arm_calibrate_frames=args.arm_calibrate_frames,source_kind=args.source,hand_selection=hand_selection,
                     grasp_intent=getattr(args,'grasp_intent','off'),
@@ -95,16 +123,18 @@ def run(args):
         if args.record_results is not None:
             from teleoperation.data.robot_command_recording import RobotCommandWriter
             metadata={'source':args.source,'parts':args.parts,'side':args.side,'geometry':args.geometry,
-                      'backend':args.backend,'execution_config':{}}
+                      'backend':args.backend,'execution_config':{name:dict(getattr(b,'execution_config',{})) for name,b in backends.items()},
+                      'hand_checkpoint_sha256':{name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in checkpoints.items()}}
             from teleoperation.runtime_metadata import runtime_metadata
             metadata['runtime']=runtime_metadata()
             if calibration is not None:
-                metadata['execution_config']['tron2a_l21']={key:{s:v.tolist() for s,v in getattr(calibration,key).items()}
-                    for key in ('safe_q','hand_mount_pose')}
+                metadata['calibration']=calibration.to_dict()
+                metadata['calibration_sha256']=hashlib.sha256(args.tron2a_calibration.read_bytes()).hexdigest()
             writer=resources.enter_context(RobotCommandWriter(args.record_results,specs,metadata))
         source=_open_source(args); resources.callback(source.close if hasattr(source,'close') else source.release)
         from .camera_preview import open_control_preview
-        preview = open_control_preview(args, resources, source)
+        preview = open_control_preview(args, resources, source,
+                                       status=None if camera_arms is None else camera_arms.preview_status)
         count=0; origin=None; previous=None; started=time.perf_counter(); replaying=args.input_h5 is not None
         try:
             while group.scene.alive() and (not args.frames or count<args.frames):
@@ -114,15 +144,15 @@ def run(args):
                 if preview is not None and preview():
                     break
                 from teleoperation.contracts.observations import RawHandFrame,RawTeleopObservation
-                if raw is None:raw=RawHandFrame({'left':None,'right':None},time.time(),'visionpro')
+                if raw is None and args.source=='visionpro':raw=RawHandFrame({'left':None,'right':None},time.time(),'visionpro')
                 hands=raw.hands if isinstance(raw,RawTeleopObservation) else raw
-                stamp=float(hands.timestamp)
+                stamp=time.time() if hands is None else float(hands.timestamp)
                 if replaying:
                     if previous is not None and stamp<=previous:raise ValueError('Recorded source time must strictly increase')
                     if origin is None:origin=stamp
                     seconds=stamp-origin
                 else:seconds=time.perf_counter()-started
-                batch=session.next_batch(raw,count,seconds)
+                batch=session.next_batch(raw,count,seconds,new_observation=raw is not None)
                 dt=1/30 if previous is None else (stamp-previous if replaying else seconds-last_seconds)
                 try:receipt=session.submit(batch,steps=max(1,min(24,round(min(dt,.1)*240))))
                 except BaseException:
@@ -136,14 +166,17 @@ def run(args):
             if writer is not None:writer.abort('keyboard interrupt')
         from teleoperation.runtime_metadata import runtime_metadata
         report={'runtime':runtime_metadata(),'targets':list(targets),'parts':args.parts,'side':args.side,'source':args.source,
-                'arm_mode':'off' if args.parts=='hands' else 'wrist' if args.source=='visionpro' else 'mediapipe-' + args.arm_ik_solver,'frames':count,
+                'arm_mode':'off' if args.parts=='hands' else 'wrist' if args.source=='visionpro' else ('calibrated-tron2a-lm' if targets==('tron2a_l21',) else 'per-robot-camera'),'frames':count,
                 'physics_frames':group.scene.frames,'hardware_verified':False,
+                'hands':session.commands.summary(),
                 'grasp_intent':session.grasp_intent_summary()}
         if camera_arms is not None:
             report['arms'] = camera_arms.summary()
         if writer is not None:
             writer.set_metadata('grasp_intent', report['grasp_intent'])
             writer.set_metadata('arm_mode', report['arm_mode'])
+            writer.set_metadata('hands', report['hands'])
+            if camera_arms is not None:writer.set_metadata('arms',report['arms'])
         if args.report:
             args.report.parent.mkdir(parents=True,exist_ok=True)
             with args.report.open('x',encoding='utf-8') as f:json.dump(report,f,indent=2)
@@ -159,7 +192,8 @@ def _open_source(args):
     camera = MediaPipeCameraInput(args.model_asset_path, args.camera_index,
         width=args.width, height=args.height, fps=max(1,round(args.fps or 30)),
         invalid_hand_as_missing=True,
-        pose_model_asset_path=args.pose_model_asset_path if args.parts != 'hands' else None)
+        pose_model_asset_path=args.pose_model_asset_path if args.parts != 'hands' else None,
+        pose_min_visibility=args.pose_min_visibility)
     return _CameraSource(camera, args.parts != 'hands')
 
 
@@ -173,15 +207,22 @@ class _CameraSource:
         from dataclasses import replace
         if self.arms:
             raw = self.camera.next_teleop_observation()
+            if raw is None:return None
             hands = raw.hands
+            if hands.timestamp != raw.upper_body.timestamp:
+                raise ValueError('Camera hands and Pose must have matching timestamps')
         else:
             raw = None
             hands = self.camera.next_observation(include_world=True)
+        if hands is None:return None
+        if hands.metadata.get('timestamp_unit','unix_ms') != 'unix_ms':
+            raise ValueError('Camera input must declare Unix milliseconds')
         stamp = float(hands.timestamp) / 1000.
-        hands = replace(hands, timestamp=stamp, metadata={**hands.metadata, 'timestamp_unit':'unix_seconds'})
+        hands = replace(hands, timestamp=stamp, metadata={**hands.metadata, 'raw_timestamp_ms':hands.timestamp, 'timestamp_unit':'unix_seconds'})
         self.last_raw_frame = {**hands.hands, 'timestamp':stamp}
         if raw is None:
             return hands
+        self.last_raw_frame['arms'] = raw.upper_body.arms
         return replace(raw, hands=hands, upper_body=replace(raw.upper_body, timestamp=stamp))
 
     def close(self):
@@ -197,6 +238,9 @@ def replay(args):
     from teleoperation.simulation.robot_backends import SimulationGroup
     from teleoperation.simulation.robot_part_scene import RobotPartSceneBuilder
     from teleoperation.simulation.robot_output import RobotOutput
+    import os
+    from teleoperation.runtime_environment import cache_environment
+    os.environ.update(cache_environment(create=True))
     targets=resolve_robot_targets(args.robot,args.robots)
     if args.report is not None and args.report.exists():raise FileExistsError(args.report)
     if args.report is not None and args.report.resolve()==args.input.resolve():raise ValueError('Report must differ from input')
@@ -214,7 +258,7 @@ def replay(args):
         group=SimulationGroup(gui=not args.headless);resources.callback(group.close)
         backends={name:RobotPartSceneBuilder().build(spec,group=group,execution_only=True,
             execution_config=configs.get(name),geometry=args.geometry,
-            base_pose=(i*2.2,0.,.8) if len(targets)>1 else None)
+            base_pose=configs.get(name,{}).get('base_pose', (i*2.2,0.,.8) if len(targets)>1 else None))
             for i,(name,spec) in enumerate(recording.specs.items())}
         output=RobotOutput(backends);resources.callback(output.close)
         count=steps_total=0;previous=None;started=time.perf_counter();first=None

@@ -27,4 +27,6 @@ $python = 'D:\Anaconda\envs\teleoperation\python.exe'
 
 演示默认仍使用 `--display simplified`。简化模式仅用于观察运动学和基本动作，TRON2A 碰撞几何被禁用，不能用于验证接触或抓取。`--display full` 加载本地下载的网格和碰撞几何，但本演示仍是关节轨迹演示，未验证抓取。其他兼容模型可通过 `--urdf <URDF路径>` 指定。
 
-未指定标定文件时，双手以单位安装变换固定到末端，手的实际安装位置和朝向未经标定。可使用 `--calibration <标定JSON>` 指定 `ArmCalibration` 文件中的双臂初始关节角和双手安装位姿；这不会在演示中启用摄像头遥操作。真实摄像头流程见 README 的 `dual calibrate-camera` 和 `dual camera --with-hands`。
+未指定标定文件时，双手以单位安装变换固定到末端，手的实际安装位置和朝向未经标定。可使用 `--calibration <标定JSON>` 指定 `ArmCalibration` 文件中的双臂初始关节角和双手安装位姿；这不会在演示中启用摄像头遥操作。真实摄像头流程见 README 的 `dual calibrate-camera` 和 `robot control --robot tron2a_l21 --parts both`。
+
+演示与历史 H5 回放现在也通过共享 RobotPartSceneBuilder / RobotOutput 执行，已移除独立 TRON2A world。

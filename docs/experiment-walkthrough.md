@@ -8,14 +8,14 @@
 
 **入口范围澄清（2026-11-23）**：当前仓库的统一手部和机器人控制已经支持原生 `nn/dex`，
 不要求经过 L21 18 维中间表示。本文后面的任务运行、抓取辅助、单侧控制和计分说明，
-专门针对 `devtools/task_eval.py`；它仍调用旧的 `auto/geometric/checkpoint` 手部实现，
-尚未接入统一的原生后端工厂。不能将这个任务工具的限制推广到统一控制入口。
+专门针对 `devtools/task_eval.py`；其手部默认使用统一原生 Dex 工厂；
+显式 `auto/geometric/checkpoint` 才使用旧手部实现。不能将这个任务工具的限制推广到统一控制入口。
 
 | 入口 | 手部后端选择 | 手部输出路径 |
 |---|---|---|
 | `python -m teleoperation robot control` | `--backend dex` 或 `--backend nn`，默认 `dex` | 目标手型原生关节结果，再经过命令处理与执行；支持 `--side both` |
 | `python -m teleoperation hand control` | 显式 `--backend dex` 或 `--backend nn` | 所选手型的原生关节结果；支持 `--hand both` |
-| `python devtools/task_eval.py --policy camera` | `--hand-backend auto/geometric/checkpoint` | 旧 L21 18 维表示，再映射到机器人原装手；当前每次驱动一侧 |
+| `python devtools/task_eval.py --policy camera` | `--hand-backend dex` 默认；旧后端显式选择 | 默认原生手关节；旧后端经 L21 映射；当前每次驱动一侧 |
 
 定义见 [robot 参数](../src/teleoperation/cli/robot_options.py#L22)、
 [hand 参数](../src/teleoperation/cli/hand_joint_options.py#L11)、
@@ -117,7 +117,7 @@ q_lower <= q <= q_upper
 [NN 结果](../src/teleoperation/retargeting/hand/interface.py#L136)、
 [Dex 结果](../src/teleoperation/retargeting/hand/dex_native.py#L332)。
 
-下文的 `task_eval.py` 实验入口仍使用旧路径：手部 world 点经掌心局部坐标处理形成三帧窗口，
+`task_eval.py` 默认 Dex 使用原生手规格。以下仅描述显式选择旧后端的路径：手部 world 点经掌心局部坐标处理形成三帧窗口，
 再进入 `auto/geometric/checkpoint` 后端。
 `auto` 先寻找 world 权重，文件不存在时改用几何方法。输出为含固定占位的 L21 18 维角度，
 再通过 `NativeHandAdapter` 转成各机器人原装手的关节名与限位。捏合/握拳信号还会参与原装手闭合控制。

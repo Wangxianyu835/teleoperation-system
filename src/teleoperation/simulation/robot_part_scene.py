@@ -48,6 +48,9 @@ def prepare_visible_urdf(source,destination,visible):
 
 class RobotPartWorld:
     def __init__(self,gui=False):
+        import os
+        from teleoperation.runtime_environment import cache_environment
+        os.environ.update(cache_environment(create=True))
         import pybullet as p
         self.p=p; self.gui=gui; self.cid=p.connect(p.GUI if gui else p.DIRECT)
         if self.cid<0:raise RuntimeError('Cannot create simulation connection')
@@ -123,7 +126,7 @@ class RobotPartWorld:
         for robot in self.robots:
             for index,value in zip(robot['hold_ids'],robot['hold_targets']):
                 self.p.setJointMotorControl2(robot['body'],index,self.p.POSITION_CONTROL,
-                    targetPosition=value,force=500.,physicsClientId=self.cid)
+                    targetPosition=value,force=robot.get('hold_force',500.),physicsClientId=self.cid)
         for _ in range(self.steps_per_frame):self.p.stepSimulation(physicsClientId=self.cid)
         self.frames+=1
 
@@ -168,57 +171,83 @@ class RobotPartSceneBuilder:
         return NativeRobotBackend(spec,group.scene,group,create_driver=solve_arms and not execution_only)
 
     def _tron(self,spec,group,base_pose,calibration,geometry,execution_only=False):
+        """Assemble TRON2A and selected L21 bodies in the group's existing world."""
         from .robot_backends import Tron2AL21Backend
-        from .urdf_loader import load_urdf
+        from .urdf_loader import load_urdf, prepare_tron2a_urdf
+        from teleoperation.robots.specification import TRON2A_ARM_JOINTS, TRON2A_EE_LINKS
+
         scene=group.scene; p=scene.p; part_bodies={}; names={}; main=None
-        has_arms=any(k.endswith('_arm') for k in spec.parts)
+        has_arms=any(key.endswith('_arm') for key in spec.parts)
+        record={'type':spec.robot_id,'plans':{},'hold_ids':[],'hold_targets':[],
+                'hold_force':5000.,'base_pose':list(base_pose or (0.,0.,.8 if has_arms else .3))}
         if has_arms:
-            if calibration is None:raise ValueError('TRON2A arm scene requires explicit calibration')
-            from .tron2a_world import Tron2ADualArmWorld
+            if calibration is None:
+                raise ValueError('TRON2A arm scene requires explicit calibration')
             root=ET.parse(spec.urdf_path).getroot()
             visible=visible_part_links(root,spec)
-            world=Tron2ADualArmWorld(spec.urdf_path,client_id=scene.cid,owns_client=False,
-                base_pose=base_pose or (0,0,0),gui=False,display=geometry,visible_links=visible,
-                attach_hands=bool(spec.hand_specs),hand_sides=tuple(spec.hand_specs),
-                safe_q=calibration.safe_q,hand_mount_pose=calibration.hand_mount_pose)
-            scene.borrowed_resources.append(world); main=world.robot
-            names[main]=world.joint_indices
+            prepared=prepare_tron2a_urdf(spec.urdf_path,Path(scene._temporary.name),
+                                         display=geometry,visible_links=visible)
+            main=load_urdf(prepared,basePosition=record['base_pose'],useFixedBase=True,
+                          flags=p.URDF_USE_INERTIA_FROM_FILE,physicsClientId=scene.cid)
+            infos={p.getJointInfo(main,i,physicsClientId=scene.cid)[1].decode():
+                   p.getJointInfo(main,i,physicsClientId=scene.cid)
+                   for i in range(p.getNumJoints(main,physicsClientId=scene.cid))}
+            names[main]={name:info[0] for name,info in infos.items()}
+            links={info[12].decode():info[0] for info in infos.values()}
+            links[p.getBodyInfo(main,physicsClientId=scene.cid)[0].decode()]=-1
+            active={n for key,part in spec.parts.items() if key.endswith('_arm') for n in part.joint_names}
+            initial={n:float(q) for side in ('left','right')
+                     for n,q in zip(TRON2A_ARM_JOINTS[side],calibration.safe_q[side])}
+            for name,info in infos.items():
+                if info[2]==p.JOINT_FIXED:continue
+                q=initial.get(name,float(np.clip(0.,info[8],info[9])))
+                if not np.isfinite(q) or not info[8]-1e-7<=q<=info[9]+1e-7:
+                    raise ValueError('TRON2A safe pose exceeds URDF limits')
+                p.resetJointState(main,info[0],q,physicsClientId=scene.cid)
+                p.setJointMotorControl2(main,info[0],p.POSITION_CONTROL,targetPosition=q,
+                                       force=max(float(info[10]),1.),physicsClientId=scene.cid)
+                if name not in active:
+                    record['hold_ids'].append(info[0]); record['hold_targets'].append(q)
+            if geometry=='simplified':
+                for index in range(-1,p.getNumJoints(main,physicsClientId=scene.cid)):
+                    p.setCollisionFilterGroupMask(main,index,0,0,physicsClientId=scene.cid)
+            record['ee_indices']={side:links[TRON2A_EE_LINKS[side]] for side in ('left','right')}
             for side in ('left','right'):
                 if side+'_arm' in spec.parts:part_bodies[side+'_arm']=main
-            for side,body in world.hand_bodies.items():
-                if side+'_hand' not in spec.parts:continue
-                part_bodies[side+'_hand']=body
-                names[body]={p.getJointInfo(body,i,physicsClientId=scene.cid)[1].decode():i
-                             for i in range(p.getNumJoints(body,physicsClientId=scene.cid))}
             scene.visible_links[main]=visible
-            linkmap={info[12].decode():i for i in range(p.getNumJoints(main,physicsClientId=scene.cid))
-                     for info in (p.getJointInfo(main,i,physicsClientId=scene.cid),)}
-            linkmap[p.getBodyInfo(main,physicsClientId=scene.cid)[0].decode()]=-1
-            scene.visible_indices[main]={linkmap[n] for n in visible if n in linkmap}
-        else:
-            world=None
-            for side,hand in spec.hand_specs.items():
-                root=ET.parse(hand.urdf_path).getroot(); visible={n.get('name') for n in root.findall('link')}
-                destination=Path(scene._temporary.name)/('l21_'+side+'.urdf')
-                prepare_visible_urdf(hand.urdf_path,destination,visible)
-                offset=np.asarray(base_pose or (0,0,.3),dtype=float)+np.array((-.13 if side=='left' else .13,0,0))
-                body=load_urdf(destination,basePosition=offset.tolist(),useFixedBase=True,physicsClientId=scene.cid)
-                part_bodies[side+'_hand']=body
-                names[body]={p.getJointInfo(body,i,physicsClientId=scene.cid)[1].decode():i for i in range(p.getNumJoints(body,physicsClientId=scene.cid))}
-                scene.visible_links[body]=visible
-        for key,body in part_bodies.items():
-            if key.endswith('_hand'):
-                visible={p.getJointInfo(body,i,physicsClientId=scene.cid)[12].decode() for i in range(p.getNumJoints(body,physicsClientId=scene.cid))}
-                visible.add(p.getBodyInfo(body,physicsClientId=scene.cid)[0].decode())
-                scene.visible_links[body]=visible
-                scene.visible_indices[body]={item[1] for item in p.getVisualShapeData(body,physicsClientId=scene.cid)}
-                for n,q in zip(spec.parts[key].joint_names,spec.parts[key].reference):p.resetJointState(body,names[body][n],q,physicsClientId=scene.cid)
-        record={'type':spec.robot_id,'body':main if main is not None else next(iter(part_bodies.values())),
-                'plans':{},'hold_ids':[],'hold_targets':[]}
-        if main is not None:
-            active={names[main][n] for k,part in spec.parts.items() if k.endswith('_arm') for n in part.joint_names}
-            record['hold_ids']=[i for i in range(p.getNumJoints(main,physicsClientId=scene.cid))
-                                if p.getJointInfo(main,i,physicsClientId=scene.cid)[2]!=p.JOINT_FIXED and i not in active]
-            record['hold_targets']=[p.getJointState(main,i,physicsClientId=scene.cid)[0] for i in record['hold_ids']]
+            scene.visible_indices[main]={links[n] for n in visible if n in links}
+
+        for side,hand in spec.hand_specs.items():
+            body=load_urdf(hand.urdf_path,useFixedBase=main is None,physicsClientId=scene.cid)
+            if main is None:
+                position=np.asarray(record['base_pose'])+(-.13 if side=='left' else .13,0,0)
+                orientation=(0.,0.,0.,1.)
+            else:
+                mount=np.asarray(calibration.hand_mount_pose[side],dtype=float)
+                ee=p.getLinkState(main,record['ee_indices'][side],computeForwardKinematics=True,physicsClientId=scene.cid)
+                position,orientation=p.multiplyTransforms(ee[4],ee[5],mount[:3],mount[3:])
+            # resetBasePosition uses the COM frame; mount calibration addresses the URDF root link.
+            inertia=p.getDynamicsInfo(body,-1,physicsClientId=scene.cid)
+            com_position,com_orientation=p.multiplyTransforms(position,orientation,inertia[3],inertia[4])
+            p.resetBasePositionAndOrientation(body,com_position,com_orientation,physicsClientId=scene.cid)
+            if main is not None:
+                parent_inertia=p.getDynamicsInfo(main,record['ee_indices'][side],physicsClientId=scene.cid)
+                parent_mount=p.multiplyTransforms(*p.invertTransform(parent_inertia[3],parent_inertia[4]),mount[:3],mount[3:])
+                p.createConstraint(main,record['ee_indices'][side],body,-1,p.JOINT_FIXED,[0,0,0],
+                    parent_mount[0],p.invertTransform(inertia[3],inertia[4])[0],
+                    parentFrameOrientation=parent_mount[1],
+                    childFrameOrientation=p.invertTransform(inertia[3],inertia[4])[1],physicsClientId=scene.cid)
+            part_bodies[side+'_hand']=body
+            names[body]={p.getJointInfo(body,i,physicsClientId=scene.cid)[1].decode():i
+                         for i in range(p.getNumJoints(body,physicsClientId=scene.cid))}
+            for name,q in zip(spec.parts[side+'_hand'].joint_names,spec.parts[side+'_hand'].reference):
+                p.resetJointState(body,names[body][name],q,physicsClientId=scene.cid)
+                p.setJointMotorControl2(body,names[body][name],p.POSITION_CONTROL,
+                                       targetPosition=q,force=200.,physicsClientId=scene.cid)
+            scene.visible_links[body]={p.getBodyInfo(body,physicsClientId=scene.cid)[0].decode()} | {
+                p.getJointInfo(body,i,physicsClientId=scene.cid)[12].decode()
+                for i in range(p.getNumJoints(body,physicsClientId=scene.cid))}
+            scene.visible_indices[body]={item[1] for item in p.getVisualShapeData(body,physicsClientId=scene.cid)}
+        record['body']=main if main is not None else next(iter(part_bodies.values()))
         scene.robots.append(record); scene.frame_scene()
-        return Tron2AL21Backend(spec,scene,group,record,part_bodies,names,world,calibration,create_controller=not execution_only)
+        return Tron2AL21Backend(spec,scene,group,record,part_bodies,names,calibration)

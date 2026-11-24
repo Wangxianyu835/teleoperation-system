@@ -13,8 +13,8 @@ from teleoperation.contracts.robot_control import RobotCommandFrame,RobotPartCom
 from teleoperation.robots.control_spec import load_robot_control_spec,enabled_parts
 from teleoperation.simulation.robot_output import OutputReceipt
 
-SCHEMA='robot_command_results_v2'
-SCHEMA_VERSION=2
+SCHEMA='robot_command_results_v3'
+SCHEMA_VERSION=3
 TEXT=h5py.string_dtype('utf-8')
 
 
@@ -222,7 +222,7 @@ def _read_row(stream,index,targets):
         for name,part in group['parts'].items():
             source=float(part['source_timestamp'][index])
             extra={}
-            if stream.attrs['schema']==SCHEMA:
+            if stream.attrs['schema'] in (SCHEMA, 'robot_command_results_v2'):
                 sequence=int(part['target_sequence'][index])
                 expiry=float(part['target_expires_time'][index])
                 if sequence < -1:raise ValueError('Invalid recorded target sequence')
@@ -269,10 +269,12 @@ def load_robot_recording(path,targets):
     with h5py.File(path,'r') as stream:
         try:
             schema=stream.attrs.get('schema')
-            if (schema not in (SCHEMA,'robot_command_results_v1') or stream.attrs.get('recording_status')!='complete'
+            if (schema not in (SCHEMA,'robot_command_results_v2','robot_command_results_v1') or stream.attrs.get('recording_status')!='complete'
                 or stream.attrs.get('angle_unit')!='rad' or stream.attrs.get('timestamp_unit')!='control_relative_seconds'):
                 raise ValueError('Unsupported or incomplete robot recording')
             if schema==SCHEMA and stream.attrs.get('schema_version')!=SCHEMA_VERSION:
+                raise ValueError('Unsupported robot recording version')
+            if schema=='robot_command_results_v2' and stream.attrs.get('schema_version')!=2:
                 raise ValueError('Unsupported robot recording version')
             if schema=='robot_command_results_v1' and stream.attrs.get('schema_version',1)!=1:
                 raise ValueError('Unsupported robot recording version')
@@ -294,7 +296,7 @@ def load_robot_recording(path,targets):
                         expected_shape=(count,len(names)) if field=='positions' else (count,)
                         if part[field].shape!=expected_shape:raise ValueError('Incomplete command datasets')
                     if part['observed'].dtype.kind!='b':raise ValueError('Invalid observed flags')
-                    if schema==SCHEMA:
+                    if schema in (SCHEMA,'robot_command_results_v2'):
                         for field in ('target_sequence','target_expires_time','source_is_new'):
                             if part[field].shape!=(count,):raise ValueError('Incomplete target metadata')
                         if part['target_sequence'].dtype.kind not in 'iu' or part['source_is_new'].dtype.kind!='b':

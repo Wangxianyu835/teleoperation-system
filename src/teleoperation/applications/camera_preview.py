@@ -18,12 +18,13 @@ PREVIEW_HINT_ROBOTS = (
     "hands, the camera window shows your hand; press q/Esc in the camera window to stop.")
 
 
-def open_control_preview(args, resources, source):
+def open_control_preview(args, resources, source, *, status=None):
     """Poll the live capture on the control thread at a UI refresh rate."""
     if not getattr(args, 'preview', False):
         return None
     sink = attach_preview_capture(source)
-    preview = CameraPreview(sink, (), window_name='Teleoperation Camera (Q / Esc to stop)')
+    sides=('left','right') if args.side=='both' else (args.side,)
+    preview = CameraPreview(sink, sides, mirror=False, window_name='Teleoperation Camera (Q / Esc to stop)')
     resources.callback(preview.close)
     next_refresh = 0.
 
@@ -32,7 +33,7 @@ def open_control_preview(args, resources, source):
         now = time.monotonic()
         if now >= next_refresh:
             next_refresh = now + 1 / 30
-            preview.update(source.last_raw_frame, {}, '')
+            preview.update(source.last_raw_frame, {}, '' if status is None else status())
             if preview.note:
                 raise RuntimeError(preview.note)
         return preview.quit_requested
@@ -182,6 +183,10 @@ class CameraPreview:
         if self.sides and all((raw_frame or {}).get(side) is None for side in self.sides):
             self._text(canvas, "no hand detected (keep the hand in frame, well lit)",
                        (10, height - 12), (60, 60, 235), 0.55)
+        for side, points in (raw_frame or {}).get('arms', {}).items():
+            if points is not None and side in self.sides:
+                pixels = self.pixels(points, width, height)
+                self._draw_skeleton(canvas, pixels, ((0,1),(1,2)), self._colors[side], (), False)
         if hud:
             self._text(canvas, hud, (10, 22), (235, 235, 235), 0.5)
         return canvas

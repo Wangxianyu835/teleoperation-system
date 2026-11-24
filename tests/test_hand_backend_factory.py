@@ -44,12 +44,13 @@ class HandBackendFactoryTests(unittest.TestCase):
     def test_camera_hand_and_dual_boundaries_preserve_the_same_l21_predictions(self):
         from teleoperation.applications.hand_backend import build_hand_retargeter_from_specs,build_camera_retargeter
         from teleoperation.applications.hand_control import _selection
-        from teleoperation.applications.dual import load_camera_hand_retargeter
+        from teleoperation.applications.hand_backend import build_target_hand_retargeters
+        from teleoperation.robots.control_spec import load_robot_control_spec
         specs={('l21',s):load_hand_spec('l21',s) for s in ('left','right')}
         args=SimpleNamespace(input_profile='camera_palm_length_window3_v1',hand='both',hand_model='l21',backend='nn',checkpoint=self.weights['l21'],device='cpu')
         retargeters=[build_hand_retargeter_from_specs(specs,'nn',checkpoints={'l21':self.weights['l21']}),
             build_camera_retargeter(('l21',),('left','right'),'nn',{'l21':self.weights['l21']})[1],
-            _selection(args)[1],load_camera_hand_retargeter(self.weights['l21'])]
+            _selection(args)[1],build_target_hand_retargeters([load_robot_control_spec('tron2a_l21',resource_overrides={'parts':'hands'})],'nn',{'l21':self.weights['l21']})[1]]
         expected=retargeters[0].retarget(self.window)
         for retargeter in retargeters[1:]:
             actual=retargeter.retarget(self.window)
