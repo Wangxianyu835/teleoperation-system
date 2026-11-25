@@ -469,7 +469,7 @@ python -c "from teleoperation.retargeting.arm.calibration import ArmCalibration;
 
 摄像头打开后自动开始计数。左右手臂均需肩、肘、腕 world 数据完整且达到可见度阈值，双肘稍屈。稳定性使用每侧肘、腕相对本侧肩部的位置，窗口内与均值的最大距离不超过 `--stability-tolerance`（米）。遮挡、低可见度、伸直/过度弯肘或采集间断会清空窗口；运动超过阈值从当前帧重新计数。默认连续 60 帧通过后保存并关闭；按 q、Esc、关闭窗口或 Ctrl+C 取消且不保存。输出已存在会在打开摄像头前拒绝；再次运行选择新文件名。`--no-preview` 可关闭窗口。
 
-标定保存 `human_neutral_wrist = mean(wrist_world - shoulder_world)`，保留各侧 FK 参考位姿、配置的旋转/尺度/额外偏移、工作空间、安全参数、URDF 关节限位及采样帧号和两种时间。`extrinsics_calibrated=false` 明确表示没有自动估计完整相机外参；手部安装位姿为未标定的单位占位值。第 2 步的摄像头入口使用肩部相对的 Pose world 米制坐标；实时控制统一使用下节的 `robot control`。
+标定保存 `human_neutral_wrist = mean(wrist_world - shoulder_world)`，保留各侧 FK 参考位姿、配置的旋转/尺度/额外偏移、工作空间、安全参数、URDF 关节限位及采样帧号和两种时间。`extrinsics_calibrated=false` 明确表示没有自动估计完整相机外参；手部默认安装位姿来自 URDF 法兰与 L21 轴向关系（零平移、绕 X 轴旋转 180 度），不代表已测量实机适配板外参。旧标定中明确标记的单位安装占位值会在加载时迁移，显式自定义安装值保持原样。第 2 步的摄像头入口使用肩部相对的 Pose world 米制坐标；实时控制统一使用下节的 `robot control`。安装检查命令见 [TRON2A + L21 演示](docs/tron2a-l21-demo.md)。
 
 合成验收样例：[tron2a_camera_neutral.synthetic.json](tests/fixtures/tron2a_camera_neutral.synthetic.json)，使用合成肩肘腕及真实 TRON2A URDF FK，不能替代现场标定。其左右参考腕为 `[0, 0.45, -0.15]` 和 `[-0.1, 0.45, -0.1]` 米。测试命令（未安装 editable 包时先执行 `$env:PYTHONPATH = (Join-Path (Get-Location) 'src')`）：
 

@@ -29,6 +29,7 @@ class Tron2ASceneFixture:
         from teleoperation.simulation.robot_backends import SimulationGroup
         from teleoperation.simulation.robot_part_scene import RobotPartSceneBuilder
         from teleoperation.simulation.robot_output import RobotOutput
+        from teleoperation.robots.specification import TRON2A_L21_MOUNT_POSE
         self.group = SimulationGroup(gui=gui)
         self.p, self.client = self.group.scene.p, self.group.scene.cid
         self.time_step = self.group.time_step
@@ -38,7 +39,7 @@ class Tron2ASceneFixture:
                 'urdf_path': urdf_path, 'parts': 'both' if attach_hands else 'arms'})
             calibration = SimpleNamespace(
                 safe_q=safe_q or {s: np.zeros(7) for s in ('left','right')},
-                hand_mount_pose=hand_mount_pose or {s:[0,0,0,0,0,0,1] for s in ('left','right')})
+                hand_mount_pose=hand_mount_pose or {s:TRON2A_L21_MOUNT_POSE for s in ('left','right')})
             self.backend = RobotPartSceneBuilder().build(self.spec, group=self.group,
                 calibration=calibration, geometry=display)
             self.output = RobotOutput({'tron2a_l21':self.backend})
