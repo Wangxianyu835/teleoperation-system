@@ -186,7 +186,7 @@ class RobotPartSceneBuilder:
             root=ET.parse(spec.urdf_path).getroot()
             visible=visible_part_links(root,spec)
             prepared=prepare_tron2a_urdf(spec.urdf_path,Path(scene._temporary.name),
-                                         display=geometry,visible_links=visible,replace_grippers=True)
+                                         display=geometry,visible_links=visible)
             main=load_urdf(prepared,basePosition=record['base_pose'],useFixedBase=True,
                           flags=p.URDF_USE_INERTIA_FROM_FILE,physicsClientId=scene.cid)
             infos={p.getJointInfo(main,i,physicsClientId=scene.cid)[1].decode():
@@ -208,17 +208,6 @@ class RobotPartSceneBuilder:
                                        force=max(float(info[10]),1.),physicsClientId=scene.cid)
                 if name not in active:
                     record['hold_ids'].append(info[0]); record['hold_targets'].append(q)
-            if not execution_only:
-                # Like native scenes, place the complete stand above ground.
-                # Recorded replay poses are already resolved and must stay exact.
-                lowest=min(p.getAABB(main,i,physicsClientId=scene.cid)[0][2]
-                           for i in range(-1,p.getNumJoints(main,physicsClientId=scene.cid)))
-                rise=max(0.,.03-lowest)
-                if rise:
-                    position,orientation=p.getBasePositionAndOrientation(main,physicsClientId=scene.cid)
-                    p.resetBasePositionAndOrientation(main,[position[0],position[1],position[2]+rise],
-                                                     orientation,physicsClientId=scene.cid)
-                    record['base_pose'][2]+=rise
             if geometry=='simplified':
                 for index in range(-1,p.getNumJoints(main,physicsClientId=scene.cid)):
                     p.setCollisionFilterGroupMask(main,index,0,0,physicsClientId=scene.cid)
@@ -229,13 +218,7 @@ class RobotPartSceneBuilder:
             scene.visible_indices[main]={links[n] for n in visible if n in links}
 
         for side,hand in spec.hand_specs.items():
-            # Left/right STL basenames coincide but their geometry differs.
-            # Absolute mesh paths prevent Bullet's file cache reusing one side
-            # for the other when load_urdf changes the working directory.
-            hand_root=ET.parse(hand.urdf_path).getroot()
-            hand_urdf=prepare_visible_urdf(hand.urdf_path,Path(scene._temporary.name)/f'l21_{side}.urdf',
-                                          {link.get('name') for link in hand_root.findall('link')})
-            body=load_urdf(hand_urdf,useFixedBase=main is None,physicsClientId=scene.cid)
+            body=load_urdf(hand.urdf_path,useFixedBase=main is None,physicsClientId=scene.cid)
             if main is None:
                 position=np.asarray(record['base_pose'])+(-.13 if side=='left' else .13,0,0)
                 orientation=(0.,0.,0.,1.)
@@ -254,13 +237,6 @@ class RobotPartSceneBuilder:
                     parent_mount[0],p.invertTransform(inertia[3],inertia[4])[0],
                     parentFrameOrientation=parent_mount[1],
                     childFrameOrientation=p.invertTransform(inertia[3],inertia[4])[1],physicsClientId=scene.cid)
-                # The two bolted mounting faces touch. Bullet mesh margins must
-                # not push them apart; all other hand/robot collisions stay on.
-                wrist=p.getJointInfo(main,record['ee_indices'][side],physicsClientId=scene.cid)[16]
-                hand_base=(-1 if p.getBodyInfo(body,physicsClientId=scene.cid)[0].decode()=='hand_base_link'
-                           else next(i for i in range(p.getNumJoints(body,physicsClientId=scene.cid))
-                                     if p.getJointInfo(body,i,physicsClientId=scene.cid)[12].decode()=='hand_base_link'))
-                p.setCollisionFilterPair(main,body,wrist,hand_base,0,physicsClientId=scene.cid)
             part_bodies[side+'_hand']=body
             names[body]={p.getJointInfo(body,i,physicsClientId=scene.cid)[1].decode():i
                          for i in range(p.getNumJoints(body,physicsClientId=scene.cid))}

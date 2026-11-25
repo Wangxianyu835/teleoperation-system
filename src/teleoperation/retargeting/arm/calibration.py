@@ -5,7 +5,6 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 ARM_DOF = 7
 from teleoperation.data.calibration import read_calibration
-from teleoperation.robots.specification import TRON2A_L21_MOUNT_POSE
 @dataclass(frozen=True)
 class ArmCalibration:
     rotation: np.ndarray
@@ -68,18 +67,6 @@ class ArmCalibration:
         if scale.shape != (3,) or np.any(scale <= 0):
             raise ValueError("calibration.scale must be positive scalar or shape (3,)")
         sides = ("left", "right")
-        metadata = dict(data.get("metadata", {}))
-        mounts = {side: np.asarray(data.get("hand_mount_pose", {}).get(side, TRON2A_L21_MOUNT_POSE),
-                                  dtype=np.float64) for side in sides}
-        if metadata.get('hand_mount_source') == 'identity_placeholder_not_calibrated':
-            migrated = False
-            for side in sides:
-                if np.array_equal(mounts[side], [0, 0, 0, 0, 0, 0, 1]):
-                    mounts[side] = np.asarray(TRON2A_L21_MOUNT_POSE)
-                    migrated = True
-            if migrated:
-                metadata['hand_mount_migrated_from'] = 'identity_placeholder_not_calibrated'
-                metadata['hand_mount_source'] = 'tron2a_l21_urdf_flange_rx_pi'
         return cls(
             rotation=rotation, translation=vector("translation", 3), scale=scale,
             human_neutral_wrist={side: np.asarray(data["human_neutral_wrist"][side], dtype=np.float64) for side in sides},
@@ -89,8 +76,8 @@ class ArmCalibration:
             workspace_min=vector("workspace_min", 3), workspace_max=vector("workspace_max", 3),
             max_acceleration=float(data.get("max_acceleration", 20.0)),
             tracking_timeout=float(data.get("tracking_timeout", 0.5)),
-            hand_mount_pose=mounts,
-            metadata=metadata,
+            hand_mount_pose={side: np.asarray(data.get("hand_mount_pose", {}).get(side, [0, 0, 0, 0, 0, 0, 1]), dtype=np.float64) for side in sides},
+            metadata=dict(data.get("metadata", {})),
         )
 
 
@@ -296,7 +283,7 @@ class NeutralPoseCollector:
             neutral, poses, offsets, self.config.safe_q,
             self.config.workspace_min, self.config.workspace_max,
             self.config.max_acceleration, self.config.tracking_timeout,
-            {side: np.array(TRON2A_L21_MOUNT_POSE) for side in SIDES},
+            {side: np.array([0, 0, 0, 0, 0, 0, 1.], dtype=float) for side in SIDES},
             metadata={
                 "robot": "tron2a", "urdf": str(Path(urdf_path).resolve()),
                 "coordinate_source": "mediapipe_pose_world_meters", "units": "m",
@@ -307,7 +294,7 @@ class NeutralPoseCollector:
                 "extrinsics_calibrated": False, "rotation_source": "explicit_configuration",
                 "scale_source": "explicit_configuration",
                 "tool_offset_source": "neutral_forearm_alignment_to_reference_FK",
-                "hand_mount_source": "tron2a_l21_urdf_flange_rx_pi",
+                "hand_mount_source": "identity_placeholder_not_calibrated",
                 "notice": "Neutral capture estimates reference positions only; camera extrinsics and scale are not automatically calibrated. Shoulder-relative inputs are required before future retargeting.",
                 "sample_count": len(self.samples), "min_visibility": self.config.min_visibility,
                 "stability_tolerance_m": self.config.stability_tolerance,

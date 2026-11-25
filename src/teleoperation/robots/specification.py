@@ -16,10 +16,6 @@ TRON2A_ARM_JOINTS = {
     ),
 }
 TRON2A_EE_LINKS = {"left": "grasper_L_Link", "right": "grasper_R_Link"}
-# The grasper frame is the wrist flange: its distal axis is -Z, while
-# both L21 URDFs grow along +Z from a mounting face at z=0. Rx(pi) joins
-# those faces without moving the IK end-effector or changing its frame.
-TRON2A_L21_MOUNT_POSE = (0., 0., 0., 1., 0., 0., 0.)  # xyz + xyzw
 
 
 ROBOT_SPECS = {

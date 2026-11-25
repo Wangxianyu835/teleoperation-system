@@ -8,7 +8,6 @@ import time
 from types import SimpleNamespace
 import numpy as np
 from teleoperation.paths import DEFAULT_TRON2A_URDF
-from teleoperation.robots.specification import TRON2A_L21_MOUNT_POSE
 
 
 def main(argv=None):
@@ -18,7 +17,6 @@ def main(argv=None):
     parser.add_argument('--display',choices=('full','simplified'),default='simplified')
     parser.add_argument('--headless',action='store_true')
     parser.add_argument('--seconds',type=float,default=10.)
-    parser.add_argument('--static',action='store_true',help='Hold the initial pose for visual inspection')
     args=parser.parse_args(argv)
     if not math.isfinite(args.seconds) or args.seconds<=0:
         parser.error('--seconds must be finite and positive')
@@ -28,7 +26,7 @@ def main(argv=None):
     from teleoperation.simulation.robot_output import RobotOutput
     calibration=SimpleNamespace(
         safe_q={s:np.array([0,0,0,-.5,0,0,0.]) for s in ('left','right')},
-        hand_mount_pose={s:np.array(TRON2A_L21_MOUNT_POSE) for s in ('left','right')})
+        hand_mount_pose={s:np.array([0,0,0,0,0,0,1.]) for s in ('left','right')})
     if args.calibration is not None:
         from teleoperation.retargeting.arm.calibration import ArmCalibration
         calibration=ArmCalibration.load(args.calibration)
@@ -46,9 +44,8 @@ def main(argv=None):
             for key,part in frame.parts.items():
                 side,kind=key.split('_')
                 q=np.array(calibration.safe_q[side] if kind=='arm' else part.positions,copy=True)
-                if not args.static:
-                    if kind=='arm':q[3]+=.15*math.sin(2*math.pi*t/4)
-                    else:q[[1,2,4,5,7,8,10,11,14,15,16]]=.4*(1-math.cos(2*math.pi*t/4))
+                if kind=='arm':q[3]+=.15*math.sin(2*math.pi*t/4)
+                else:q[[1,2,4,5,7,8,10,11,14,15,16]]=.4*(1-math.cos(2*math.pi*t/4))
                 low,high=np.asarray(spec.parts[key].limits).T
                 parts[key]=replace(part,positions=np.clip(q,low,high),source_timestamp=t,
                                    source_timebase='demo_seconds',observed=True,status='tracking')

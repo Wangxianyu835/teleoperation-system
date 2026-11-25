@@ -68,8 +68,7 @@ def prepare_physics(call, positional, *, client_id, timeout=15.0):
             time.sleep(0.1)
 
 
-def prepare_tron2a_urdf(urdf_path: str | Path, directory: Path, *, display="full", visible_links=None,
-                       replace_grippers=False) -> Path:
+def prepare_tron2a_urdf(urdf_path: str | Path, directory: Path, *, display="full", visible_links=None) -> Path:
     import xml.etree.ElementTree as ET
     from scipy.spatial.transform import Rotation
     if display not in ("full", "simplified"):
@@ -79,21 +78,6 @@ def prepare_tron2a_urdf(urdf_path: str | Path, directory: Path, *, display="full
         raise FileNotFoundError(f"TRON2A URDF was not found: {source}")
     tree = ET.parse(source)
     root = tree.getroot()
-    removed = set()
-    if replace_grippers:
-        from teleoperation.robots.specification import TRON2A_EE_LINKS
-        for name in TRON2A_EE_LINKS.values():
-            link = root.find(f"link[@name='{name}']")
-            if link is None:
-                raise ValueError(f"TRON2A wrist flange frame missing: {name}")
-            # Retain the fixed frame for exact FK/calibration compatibility,
-            # but remove the replaced tool's geometry and physical mass.
-            for node in list(link):
-                link.remove(node)
-            inertial = ET.SubElement(link, 'inertial')
-            ET.SubElement(inertial, 'mass', value='0')
-            ET.SubElement(inertial, 'inertia', ixx='0', ixy='0', ixz='0', iyy='0', iyz='0', izz='0')
-            removed.add(name)
     if visible_links is not None:
         for link in root.findall("link"):
             if link.get("name") not in visible_links:
@@ -117,8 +101,6 @@ def prepare_tron2a_urdf(urdf_path: str | Path, directory: Path, *, display="full
         raise FileNotFoundError("TRON2A mesh resources missing; install them or explicitly use --display simplified: " + "; ".join(sorted(set(missing))))
     if display == "simplified":
         for link in root.findall("link"):
-            if link.get("name") in removed:
-                continue
             if visible_links is not None and link.get("name") not in visible_links:
                 continue
             # Replace mesh proxies only; keep all original joints and inertias.
